@@ -37,3 +37,19 @@
 - Verified in-browser at 3.5/8/10/12/16/24/30/48 px/m; 252 soldiers at 121 fps (vsync-capped).
 **Alternatives considered:** Pure per-frame procedural vector (rejected: pays path cost every frame, ~10k ops at 250 agents); offline PNG sprite atlases (rejected: wastes top-down's free rotation, combinatorial atlas across zoom tiers, pipeline friction per tweak).
 ---
+
+### [APPROVED] Strategic campaign layer — front commander, universal persistence, cell-grid sector
+**Date:** 2026-07-22
+**Context:** Design brainstorm replacing the linear 3-battle placeholder campaign. Full design: docs/specs/2026-07-22-strategic-campaign.md.
+**Decision:**
+- Player is the front commander (Total War / CC5 Grand Campaign): moves company chits across an operational sector, fights any battle tactically. Strategic layer is a real game vs. an enemy strategic AI; no friendly-side strategic AI needed.
+- Universal persistence: every soldier on the front, both sides, is a named CSoldier record (~3k soldiers ≈ MBs of JSON). Two-tier resolution: player-commanded battles use the full tactical sim; the rest go through a deterministic coarse resolver operating on the same soldier records via the same body-part tables, calibrated against the 1000-battle headless harness (calibration non-negotiable — uncalibrated resolvers get farmed).
+- Continuous strategic clock + pause (1 tick = 1 min); during a tactical battle the front runs 1:1, other contacts auto-resolve — choosing which battle to command is a real decision. V1 ships coarse speed steps, not smooth flow.
+- Sector = cell grid (~40×30 × 500 m cells; terrain composition per cell; road/river polylines with exact cell-edge crossings). Chit = company (~100–120 men), so one contested cell = one company-scale battle by construction. Front line = emergent cell-ownership boundary.
+- Tactical maps carved deterministically from cell + neighbor edges (map = f(sectorSeed, cellXY)); existing addBuilding/woods-blob machinery reused; flood-fill validation with deterministic reroll; per-cell scar lists persist wrecks/craters across battles. Ship one hand-authored sector; procgen sectors later share the same cell format (hand-built sector = generator's gold standard).
+- Supply: Unity of Command-style line tracing from railhead through friendly cells → company supply state (full/low/out) → per-soldier ammo loadouts at battle start (source of truth for the approved ammo mechanic), replacement/healing throttles. Encirclement emerges from tracing.
+- Objectives are data over cells ({type, targetCells, deadline}): operation mode, sandbox mode, and a procgen campaign generator all evaluate the same predicates.
+- New pure deterministic module src/strategic/ (no render imports); interface: carveBattle(sector, engagement, seed) → Sim; applyOutcome consumes one Outcome shape from both tactical and coarse results.
+- Tiers, each a complete game: T1 Operation (skeleton→carve→resolver→binary supply), T2 Front Alive (3-state supply, scars, enemy AI reserves/counterattack, campaign generator, sandbox), T3 Living War (procgen sectors, physical logistics + convoy-ambush battles, multi-cell engagements). Bond growth retunes from +0.15 to ~+0.05/battle with diminishing returns for dozens-of-battles scale.
+**Alternatives considered:** One flagship company w/ aggregate front (rejected: requires friendly strategic AI, abandons "everyone on the front is a person"); named persistence player-side only (rejected: loses returning-enemy texture for little savings); turn-based front (rejected by user for continuous clock); free vector map (rejected: approximate strategic→tactical correspondence); CC5 sector graph (rejected: abandons carved-from-real-terrain vision); procgen-only sectors (rejected: two generators to debug before one game exists).
+---
