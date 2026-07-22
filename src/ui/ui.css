@@ -223,7 +223,7 @@ button.hbtn.active { background: #4b4326; border-color: #ffca6a; color: #ffe9a0;
 #debrief table { width: 100%; border-collapse: collapse; }
 #debrief td, #debrief th { text-align: left; padding: 3px 8px 3px 0; }
 #debrief th { color: #8a8a74; font-weight: 400; font-size: 11px; letter-spacing: 1px; }
-#debrief th:nth-child(3), #debrief td:nth-child(3) { text-align: right; }
+#debrief th:nth-child(3), #debrief td:nth-child(3) { text-align: right; padding-right: 24px; }
 #debrief tr.kia { background: rgba(208, 92, 80, 0.07); }
 #debrief tr.kia td { color: #8a6a62; text-decoration: line-through; }
 #debrief tr.rec { background: rgba(224, 138, 60, 0.07); }
@@ -261,7 +261,7 @@ button.hbtn, .card, .srow, #debrief button {
     background-color 0.15s cubic-bezier(0.4, 0, 0.2, 1),
     color 0.15s cubic-bezier(0.4, 0, 0.2, 1);
 }
-button.hbtn:focus-visible, #debrief button:focus-visible {
+button.hbtn:focus-visible, #debrief button:focus-visible, .card:focus-visible, .srow:focus-visible {
   outline: 2px solid #ffca6a;
   outline-offset: 1px;
 }

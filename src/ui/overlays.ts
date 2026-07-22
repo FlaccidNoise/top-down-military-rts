@@ -75,13 +75,17 @@ export function drawOverlays(ctx: CanvasRenderingContext2D, cam: Camera, sim: Si
       if (!sim.map.inBounds(tx, ty)) continue;
       const covered = sim.inCover(tx + 0.5, ty + 0.5);
       const [sx, sy] = cam.worldToScreen(tx + 0.5, ty + 0.5, cw, ch);
+      const r = Math.max(2.5, cam.scale * 0.18);
       ctx.beginPath();
-      ctx.arc(sx, sy, Math.max(2.5, cam.scale * 0.18), 0, Math.PI * 2);
+      ctx.arc(sx, sy, r, 0, Math.PI * 2);
       ctx.fillStyle = covered ? 'rgba(127,191,106,0.9)' : 'rgba(232,228,216,0.55)';
       ctx.fill();
-      ctx.strokeStyle = 'rgba(18,22,15,0.6)';
-      ctx.lineWidth = 1;
-      ctx.stroke();
+      if (r > 3) {
+        // outline for edge definition only once the dot is big enough that it doesn't eat the fill
+        ctx.strokeStyle = 'rgba(18,22,15,0.6)';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+      }
     }
   }
 
@@ -100,8 +104,8 @@ export function drawOverlays(ctx: CanvasRenderingContext2D, cam: Camera, sim: Si
     ctx.strokeStyle = st.shot.ok ? 'rgba(255,202,106,0.85)' : 'rgba(150,150,140,0.7)';
     ctx.stroke();
     ctx.setLineDash([]);
-    // blocked shots tell the player why, not just that: matches the tooltip's own reason line
-    const blockedLabel = st.shot.lines[0]?.startsWith('out of range') ? 'OUT OF RANGE' : 'NO LOS';
+    // blocked shots tell the player why, not just that — from the structured reason, never prose
+    const blockedLabel = st.shot.reason === 'out-of-range' ? 'OUT OF RANGE' : st.shot.reason === 'no-los' ? 'NO LOS' : 'NO SHOT';
     chip(ctx, (x0 + x1) / 2, (y0 + y1) / 2, st.shot.ok ? `${Math.round(st.shot.acc * 100)}%` : blockedLabel, st.shot.ok ? '#ffe9a0' : '#a0a090');
   }
 
@@ -171,7 +175,8 @@ export class EventPings {
       const top = 60; // keep clear of the top bar
       ctx.globalAlpha = a;
       if (x < m || x > cw - m || y < top || y > ch - m) {
-        const edgeKey = (x < m ? 'L' : x > cw - m ? 'R' : '') + (y < top ? 'T' : y > ch - m ? 'B' : '');
+        // corners fold into the L/R edge so adjacent buckets share one stacking counter
+        const edgeKey = x < m ? 'L' : x > cw - m ? 'R' : y < top ? 'T' : 'B';
         const stack = edgeCounts.get(edgeKey) ?? 0;
         edgeCounts.set(edgeKey, stack + 1);
         let cx = Math.min(Math.max(x, m), cw - m);

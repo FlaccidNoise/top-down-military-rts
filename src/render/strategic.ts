@@ -10,8 +10,8 @@ const TERRAIN_COLORS: Record<CellTerrain, string> = {
   road: '#8a8172',
 };
 
-const TERRAIN_LABELS: Record<CellTerrain, string> = {
-  open: 'Open',
+export const TERRAIN_LABELS: Record<CellTerrain, string> = {
+  open: 'Open ground',
   woods: 'Woods',
   town: 'Town',
   river: 'River',
@@ -28,6 +28,8 @@ const AMBER = '#ffca6a';
 const AMBER_BRIGHT = '#ffe9a0';
 const BLUE = '#5b9bd5';
 const RED = '#d05c50';
+
+const REDUCED_MOTION = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 const HEADER_H = 34;
 const FOOTER_H = 24;
@@ -97,7 +99,7 @@ export class StrategicView {
   private drawObjectives(ctx: CanvasRenderingContext2D, front: Front, size: number, ox: number, oy: number): void {
     const isObjective = (x: number, y: number): boolean =>
       x >= 0 && y >= 0 && x < this.sector.w && y < this.sector.h && this.sector.cells[cellIndex(this.sector, x, y)].objective;
-    const pulse = 0.55 + 0.35 * Math.sin(front.clockMin * 0.05);
+    const pulse = REDUCED_MOTION ? 0.7 : 0.55 + 0.35 * Math.sin(front.clockMin * 0.05);
     for (let i = 0; i < this.sector.cells.length; i++) {
       if (!this.sector.cells[i].objective) continue;
       const { x, y } = cellXY(this.sector, i);
@@ -210,7 +212,7 @@ export class StrategicView {
     const w = pad * 2 + colW * 2;
     const h = pad * 2 + rowH * 5 + 6;
     const x = 12;
-    const y = canvasH - FOOTER_H - 12 - h;
+    const y = Math.max(HEADER_H + 4, canvasH - FOOTER_H - 12 - h);
 
     ctx.fillStyle = PANEL_BG;
     ctx.fillRect(x, y, w, h);
@@ -268,7 +270,7 @@ export class StrategicView {
   private drawSelectedPanel(ctx: CanvasRenderingContext2D, front: Front, chit: Chit, canvasW: number): void {
     const w = 220;
     const h = 78;
-    const x = canvasW - w - 12;
+    const x = Math.max(4, canvasW - w - 12);
     const y = HEADER_H + 12;
 
     ctx.fillStyle = PANEL_BG;

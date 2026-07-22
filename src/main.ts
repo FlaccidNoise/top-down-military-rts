@@ -1,7 +1,7 @@
 import { advanceDays, fillReplacements, newCampaign, type Campaign } from './campaign/campaign';
 import { Camera } from './render/camera';
 import { Renderer } from './render/renderer';
-import { StrategicView } from './render/strategic';
+import { StrategicView, TERRAIN_LABELS } from './render/strategic';
 import type { RedCommander } from './sim/ai';
 import { WEAPONS } from './sim/data';
 import { DT, type Sim } from './sim/sim';
@@ -108,13 +108,11 @@ const hud = new Hud({
 });
 const tooltip = new Tooltip(hud.root);
 
-const TERRAIN_LABEL: Partial<Record<string, string>> = { open: 'open ground' };
-
 function showContactModal(e: Engagement): void {
   const attacker = front.chits.find((c) => c.id === e.attackerId)!;
   const defender = front.chits.find((c) => c.id === e.defenderId)!;
   const cell = front.sector.cells[e.cell];
-  const terrain = TERRAIN_LABEL[cell.terrain] ?? cell.terrain;
+  const terrain = TERRAIN_LABELS[cell.terrain].toLowerCase();
   debriefEl.innerHTML = `<div class="db">
     <h1>CONTACT</h1>
     <p class="sub">${attacker.name} (${attacker.strength} men) has met ${defender.name} (~${defender.strength} men).</p>

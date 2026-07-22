@@ -69,6 +69,11 @@ export class Hud {
       const card = t.closest<HTMLElement>('[data-squad]');
       if (card) cb.selectSquad(Number(card.dataset.squad));
     });
+    this.q('#squads').addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      e.preventDefault();
+      (e.target as HTMLElement).click();
+    });
   }
 
   private q(sel: string): HTMLElement {
@@ -128,7 +133,7 @@ export class Hud {
       const crew = v.crewIds.map((id) => sim.soldiers[id]);
       const status = v.alive ? `crew ${crew.filter((c) => c.alive).length}/${crew.length}` : 'DESTROYED';
       cards.push(
-        `<div class="card panel${v.id === st.selectedVehicle ? ' sel' : ''}" data-vehicle="${v.id}">` +
+        `<div class="card panel${v.id === st.selectedVehicle ? ' sel' : ''}" data-vehicle="${v.id}" tabindex="0" role="button">` +
           `<div class="card-head"><b>${VEHICLES[v.kind].name}</b><span class="n">${status}</span></div></div>`,
       );
     }
@@ -145,7 +150,7 @@ export class Hud {
       const showLegend = sel && men.some((m) => m.alive && !m.downed);
       const rows = sel ? (showLegend ? BARS_LEGEND : '') + men.map((m) => soldierRow(m)).join('') : '';
       cards.push(
-        `<div class="card panel${sel ? ' sel' : ''}" data-squad="${sq.id}">` +
+        `<div class="card panel${sel ? ' sel' : ''}" data-squad="${sq.id}" tabindex="0" role="button">` +
           `<div class="card-head"><b>${sq.name}</b><span class="n">${men.filter((m) => m.alive).length}/${men.length}</span></div>` +
           `<div class="dots">${dots}</div>${rows}</div>`,
       );
@@ -159,7 +164,7 @@ function soldierRow(m: Soldier): string {
   const wpn = `<span class="wp">${WEAPONS[m.weapon].name}</span>`;
   const cross = m.wounds.length ? `<span class="flag${m.stabilized || m.bleedRate <= 0 ? ' stab' : ''}">✚</span>` : '';
   if (m.downed) {
-    return `<div class="srow urgent" data-soldier="${m.id}" title="click to pan to ${m.name}"><span class="chip" style="background:#d05c50" title="DOWN"></span><span class="nm">${m.name}</span>${wpn}${cross}<span class="down">DOWN</span></div>`;
+    return `<div class="srow urgent" data-soldier="${m.id}" tabindex="0" role="button" title="click to pan to ${m.name}"><span class="chip" style="background:#d05c50" title="DOWN"></span><span class="nm">${m.name}</span>${wpn}${cross}<span class="down">DOWN</span></div>`;
   }
   const supPct = Math.round(m.suppression * 100);
   const morPct = Math.round(m.morale * 100);
