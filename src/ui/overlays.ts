@@ -103,6 +103,7 @@ export class EventPings {
 
   draw(ctx: CanvasRenderingContext2D, cam: Camera, sim: Sim, cw: number, ch: number): void {
     this.pings = this.pings.filter((p) => sim.tick - p.tick < PING_TICKS);
+    const placed: { x: number; y: number; w: number }[] = []; // stack co-located chips instead of occluding
     for (const p of this.pings) {
       const a = 1 - (sim.tick - p.tick) / PING_TICKS;
       const [x, y] = cam.worldToScreen(p.x, p.y, cw, ch);
@@ -128,7 +129,12 @@ export class EventPings {
         const half = ctx.measureText(p.label).width / 2 + 16;
         chip(ctx, cx - Math.cos(ang) * half, cy - Math.sin(ang) * half, p.label, p.color);
       } else {
-        chip(ctx, x, y - cam.scale * 0.9 - 10, p.label, p.color);
+        ctx.font = '11px ui-monospace, Menlo, monospace';
+        const w = ctx.measureText(p.label).width + 10;
+        let cy = y - cam.scale * 0.9 - 10;
+        while (placed.some((q) => Math.abs(q.y - cy) < 18 && Math.abs(q.x - x) < (q.w + w) / 2)) cy -= 18;
+        placed.push({ x, y: cy, w });
+        chip(ctx, x, cy, p.label, p.color);
       }
       ctx.globalAlpha = 1;
     }
