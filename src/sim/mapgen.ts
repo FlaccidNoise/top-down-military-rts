@@ -26,7 +26,7 @@ export interface MapPlan {
   map: GameMap;
   buildings: Building[];
   spawns: { west: Vec; east: Vec }; // arterial road entry points, vehicle-reachable
-  objectives: Vec[]; // [0] village crossroads, [1] east woods anchor
+  objectives: Vec[]; // [0] village crossroads, [1] east woods anchor, [2] second hamlet (w >= 240 only)
 }
 
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
@@ -56,21 +56,26 @@ function tryGenerate(rng: Rng, w: number, h: number): MapPlan | null {
   }
   for (let x = 0; x < w; x++) for (let dy = -1; dy <= 1; dy++) road[(roadY[x] + dy) * w + x] = 1;
 
-  // cross lane north→south through the crossroads, 2 tiles wide
+  // cross lane north→south through a junction on the arterial, 2 tiles wide
+  const carveCrossLane = (jx: number): Int32Array => {
+    const laneX = new Int32Array(h);
+    const jy = roadY[jx];
+    let rx = jx;
+    for (let y = jy; y < h; y++) {
+      laneX[y] = rx;
+      if (rng.next() < 0.18) rx = clamp(rx + (rng.next() < 0.5 ? -1 : 1), 6, w - 8);
+    }
+    rx = jx;
+    for (let y = jy - 1; y >= 0; y--) {
+      laneX[y] = rx;
+      if (rng.next() < 0.18) rx = clamp(rx + (rng.next() < 0.5 ? -1 : 1), 6, w - 8);
+    }
+    for (let y = 0; y < h; y++) for (let dx = 0; dx <= 1; dx++) road[y * w + laneX[y] + dx] = 1;
+    return laneX;
+  };
   const crossX = Math.round(w * rng.range(0.45, 0.62));
   const cy = roadY[crossX];
-  const roadX = new Int32Array(h);
-  let rx = crossX;
-  for (let y = cy; y < h; y++) {
-    roadX[y] = rx;
-    if (rng.next() < 0.18) rx = clamp(rx + (rng.next() < 0.5 ? -1 : 1), 6, w - 8);
-  }
-  rx = crossX;
-  for (let y = cy - 1; y >= 0; y--) {
-    roadX[y] = rx;
-    if (rng.next() < 0.18) rx = clamp(rx + (rng.next() < 0.5 ? -1 : 1), 6, w - 8);
-  }
-  for (let y = 0; y < h; y++) for (let dx = 0; dx <= 1; dx++) road[y * w + roadX[y] + dx] = 1;
+  const roadX = carveCrossLane(crossX);
 
   // village: buildings snapped to road frontage near the crossroads
   const buildings: Building[] = [];
@@ -83,36 +88,74 @@ function tryGenerate(rng: Rng, w: number, h: number): MapPlan | null {
       for (let x = b.x - 1; x < b.x + b.w + 1; x++) if (road[y * w + x]) return true;
     return false;
   };
-  for (let tries = 0; tries < 300 && buildings.length < target; tries++) {
-    const bw = 6 + rng.int(7);
-    const bh = 5 + rng.int(5);
-    let b: Building;
-    let door: 'n' | 's' | 'e' | 'w';
-    if (rng.next() < 0.6) {
-      // along the arterial
-      const bx = clamp(crossX - 24 + rng.int(49 - bw), 2, w - bw - 3);
-      const north = rng.next() < 0.5;
-      let edge = north ? h : 0;
-      for (let x = bx; x < bx + bw; x++) edge = north ? Math.min(edge, roadY[x] - 1) : Math.max(edge, roadY[x] + 1);
-      b = { x: bx, y: north ? edge - bh - 1 : edge + 2, w: bw, h: bh };
-      door = north ? 's' : 'n';
-    } else {
-      // along the cross lane
-      const by = clamp(cy - 22 + rng.int(45 - bh), 2, h - bh - 3);
-      const west = rng.next() < 0.5;
-      let edge = west ? w : 0;
-      for (let y = by; y < by + bh; y++) edge = west ? Math.min(edge, roadX[y]) : Math.max(edge, roadX[y] + 1);
-      b = { x: west ? edge - bw - 1 : edge + 2, y: by, w: bw, h: bh };
-      door = west ? 'e' : 'w';
+  const placeCluster = (jx: number, jy: number, laneX: Int32Array, count: number, span: number): void => {
+    for (let tries = 0; tries < 300 && buildings.length < count; tries++) {
+      const bw = 6 + rng.int(7);
+      const bh = 5 + rng.int(5);
+      let b: Building;
+      let door: 'n' | 's' | 'e' | 'w';
+      if (rng.next() < 0.6) {
+        // along the arterial
+        const bx = clamp(jx - span + rng.int(Math.max(1, span * 2 + 1 - bw)), 2, w - bw - 3);
+        const north = rng.next() < 0.5;
+        let edge = north ? h : 0;
+        for (let x = bx; x < bx + bw; x++) edge = north ? Math.min(edge, roadY[x] - 1) : Math.max(edge, roadY[x] + 1);
+        b = { x: bx, y: north ? edge - bh - 1 : edge + 2, w: bw, h: bh };
+        door = north ? 's' : 'n';
+      } else {
+        // along the cross lane
+        const by = clamp(jy - span + 2 + rng.int(Math.max(1, span * 2 - 3 - bh)), 2, h - bh - 3);
+        const west = rng.next() < 0.5;
+        let edge = west ? w : 0;
+        for (let y = by; y < by + bh; y++) edge = west ? Math.min(edge, laneX[y]) : Math.max(edge, laneX[y] + 1);
+        b = { x: west ? edge - bw - 1 : edge + 2, y: by, w: bw, h: bh };
+        door = west ? 'e' : 'w';
+      }
+      if (b.x < 2 || b.y < 2 || b.x + b.w > w - 2 || b.y + b.h > h - 2) continue;
+      if (touchesRoad(b) || overlaps(b)) continue;
+      buildings.push(b);
+      doorSides.push(door);
     }
-    if (b.x < 2 || b.y < 2 || b.x + b.w > w - 2 || b.y + b.h > h - 2) continue;
-    if (touchesRoad(b) || overlaps(b)) continue;
-    buildings.push(b);
-    doorSides.push(door);
-  }
+  };
+  placeCluster(crossX, cy, roadX, target, 24);
   if (buildings.length < 4) return null;
 
-  const nearVillage = (x: number, y: number) => (x - crossX) * (x - crossX) + (y - cy) * (y - cy) < 26 * 26;
+  // second hamlet crossroads on large maps, further west along the arterial
+  const settlements = [{ x: crossX, y: cy, r: 26 }];
+  if (w >= 240) {
+    const crossX2 = Math.round(w * (0.15 + rng.range(0, 0.08)));
+    const cy2 = roadY[crossX2];
+    const roadX2 = carveCrossLane(crossX2);
+    placeCluster(crossX2, cy2, roadX2, buildings.length + 3 + rng.int(2), 14);
+    settlements.push({ x: crossX2, y: cy2, r: 16 });
+  }
+  const nearVillage = (x: number, y: number) => settlements.some((s) => (x - s.x) * (x - s.x) + (y - s.y) * (y - s.y) < s.r * s.r);
+
+  // outlying farm compounds: house + barn joined to the arterial by a lane
+  for (let f = 0, n = 2 + rng.int(2); f < n; f++) {
+    for (let tries = 0; tries < 60; tries++) {
+      const fx = 8 + rng.int(w - 28);
+      const fy = 8 + rng.int(h - 26);
+      // stay outside every settlement's clearing plus a margin (village: 26+9=35)
+      if (settlements.some((s) => (fx - s.x) * (fx - s.x) + (fy - s.y) * (fy - s.y) < (s.r + 9) * (s.r + 9))) continue;
+      const house: Building = { x: fx, y: fy, w: 6 + rng.int(3), h: 5 + rng.int(2) };
+      const barn: Building = { x: fx, y: fy + house.h + 3, w: 5 + rng.int(3), h: 4 + rng.int(2) };
+      if (barn.y + barn.h > h - 3 || fx + Math.max(house.w, barn.w) > w - 4) continue;
+      if (touchesRoad(house) || overlaps(house) || touchesRoad(barn) || overlaps(barn)) continue;
+      const lx = Math.min(w - 3, fx + Math.max(house.w, barn.w) + 1);
+      const laneTargetY = roadY[lx];
+      const step = fy + house.h + 1 < laneTargetY ? 1 : -1;
+      let laneBlocked = false;
+      for (let yy = fy + house.h + 1; yy !== laneTargetY && !laneBlocked; yy += step)
+        laneBlocked = buildings.some((o) => lx >= o.x - 1 && lx < o.x + o.w + 1 && yy >= o.y - 1 && yy < o.y + o.h + 1);
+      if (laneBlocked) continue;
+      buildings.push(house, barn);
+      doorSides.push('s', 'n'); // both doors open onto the shared yard row
+      for (let yy = fy + house.h + 1; yy !== laneTargetY; yy += step) road[yy * w + lx] = 1;
+      break;
+    }
+  }
+
   const nearBuilding = (x: number, y: number) =>
     buildings.some((b) => x >= b.x - 1 && x < b.x + b.w + 1 && y >= b.y - 1 && y < b.y + b.h + 1);
 
@@ -130,7 +173,7 @@ function tryGenerate(rng: Rng, w: number, h: number): MapPlan | null {
       if (rng.next() < 0.12) off = clamp(off + (rng.next() < 0.5 ? -1 : 1), -3, 3);
       const [x, y] = at(i, off);
       if (x >= 1 && y >= 1 && x < w - 1 && y < h - 1 && !road[y * w + x] && !nearVillage(x, y) && !nearBuilding(x, y) && map.terrainKeyAt(x, y) === 'grass') {
-        map.setTerrain(x, y, 'woods');
+        map.setTerrain(x, y, 'hedge');
       }
       i++;
     }
@@ -151,22 +194,47 @@ function tryGenerate(rng: Rng, w: number, h: number): MapPlan | null {
   };
   const eastWoods = { x: clamp(crossX + 38 + rng.int(20), 20, w - 14), y: clamp(cy - 18 + rng.int(37), 12, h - 12) };
   stand(eastWoods.x, eastWoods.y, 9 + rng.int(4));
-  for (let i = 0, n = 2 + rng.int(3); i < n; i++) {
+  for (let i = 0, n = 2 + rng.int(3) + Math.max(0, Math.round((w * h) / 19200) - 1); i < n; i++) {
     const sx = 10 + rng.int(w - 20);
     const sy = 8 + rng.int(h - 16);
     if ((sx - crossX) * (sx - crossX) + (sy - cy) * (sy - cy) < 34 * 34) continue;
     stand(sx, sy, 6 + rng.int(5));
   }
 
+  // orchards: staggered tree rows near the village
+  for (let i = 0, n = 1 + rng.int(2); i < n; i++) {
+    const ow = 8 + rng.int(7);
+    const oh = 6 + rng.int(5);
+    const ox = clamp(crossX - 30 + rng.int(Math.max(1, 60 - ow)), 2, w - ow - 2);
+    const oy = clamp(cy - 26 + rng.int(Math.max(1, 52 - oh)), 2, h - oh - 2);
+    for (let y = oy; y < oy + oh; y += 2)
+      for (let x = ox + (((y - oy) >> 1) % 2); x < ox + ow; x += 2)
+        if (!road[y * w + x] && !nearBuilding(x, y) && map.terrainKeyAt(x, y) === 'grass') map.setTerrain(x, y, 'woods');
+  }
+
+  // plowed fields: rect patches on remaining grass
+  for (let i = 0, n = 4 + rng.int(4); i < n; i++) {
+    const fw = 12 + rng.int(14);
+    const fh = 8 + rng.int(10);
+    const fx = 2 + rng.int(Math.max(1, w - fw - 4));
+    const fy = 2 + rng.int(Math.max(1, h - fh - 4));
+    for (let y = fy; y < fy + fh; y++)
+      for (let x = fx; x < fx + fw; x++)
+        if (!road[y * w + x] && !nearBuilding(x, y) && map.terrainKeyAt(x, y) === 'grass') map.setTerrain(x, y, 'field');
+  }
+
   // roads carved last: the corridor is clear by construction
   for (let i = 0; i < road.length; i++) if (road[i]) map.setTerrain(i % w, (i / w) | 0, 'road');
   buildings.forEach((b, i) => addBuilding(map, b, doorSides[i]));
+
+  const objectives: Vec[] = [{ x: crossX, y: cy }, eastWoods];
+  if (settlements.length > 1) objectives.push({ x: settlements[1].x, y: settlements[1].y });
 
   return {
     map,
     buildings,
     spawns: { west: { x: 3, y: roadY[3] }, east: { x: w - 4, y: roadY[w - 4] } },
-    objectives: [{ x: crossX, y: cy }, eastWoods],
+    objectives,
   };
 }
 

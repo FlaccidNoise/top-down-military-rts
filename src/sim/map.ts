@@ -60,7 +60,7 @@ export class GameMap {
     if (!this.inBounds(x1, y1) || !this.terrainAt(x1, y1).passable) return false;
     if (mode === 'vehicle') {
       const k = this.terrainKeyAt(x1, y1);
-      if (k === 'floor' || k === 'woods') return false;
+      if (k === 'floor' || k === 'woods' || k === 'hedge') return false;
     }
     let e: EdgeType = EDGE.NONE;
     if (x1 === x0 + 1) e = this.vEdge(x1, y0);

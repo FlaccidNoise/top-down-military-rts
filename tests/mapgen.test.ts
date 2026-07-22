@@ -34,8 +34,8 @@ describe('mapgen', () => {
   });
 
   it('matches known snapshots (catches accidental generator drift)', () => {
-    expect(fingerprint(1)).toMatchInlineSnapshot(`"edc6ca5c"`);
-    expect(fingerprint(2)).toMatchInlineSnapshot(`"7b13704f"`);
+    expect(fingerprint(1)).toMatchInlineSnapshot(`"ef00920e"`);
+    expect(fingerprint(2)).toMatchInlineSnapshot(`"2aa5e8b2"`);
   });
 
   it('spawns reach objectives and buildings on foot; the road carries vehicles (seeds 1-30)', () => {
@@ -51,6 +51,64 @@ describe('mapgen', () => {
         expect(astar(p.map, west.x, west.y, b.x + (b.w >> 1), b.y + (b.h >> 1))).not.toBeNull();
       }
       expect(astar(p.map, west.x, west.y, east.x, east.y, 'vehicle')).not.toBeNull();
+    }
+  });
+
+  it('village buildings stay first; farms append after (seeds 1-15)', () => {
+    for (let seed = 1; seed <= 15; seed++) {
+      const p = generateMap(seed);
+      for (const b of p.buildings.slice(0, 3)) {
+        const d2 = (b.x - p.objectives[0].x) ** 2 + (b.y - p.objectives[0].y) ** 2;
+        expect(d2).toBeLessThan(30 * 30);
+      }
+    }
+  });
+
+  it('hedgerows block vehicles but not infantry', () => {
+    const p = generateMap(3);
+    let hx = -1, hy = -1;
+    for (let y = 1; y < p.map.h - 1 && hx < 0; y++)
+      for (let x = 1; x < p.map.w - 1 && hx < 0; x++)
+        if (p.map.terrainKeyAt(x, y) === 'hedge') { hx = x; hy = y; }
+    expect(hx).toBeGreaterThanOrEqual(0);
+    expect(p.map.canStep(hx - 1, hy, hx, hy, 'vehicle')).toBe(false);
+    expect(p.map.canStep(hx - 1, hy, hx, hy)).toBe(true);
+  });
+
+  it('orchards plant isolated trees (seeds 1-5)', () => {
+    let isolatedTrees = 0;
+    for (let seed = 1; seed <= 5; seed++) {
+      const p = generateMap(seed);
+      for (let y = 1; y < p.map.h - 1; y++)
+        for (let x = 1; x < p.map.w - 1; x++) {
+          if (p.map.terrainKeyAt(x, y) !== 'woods') continue;
+          if (
+            p.map.terrainKeyAt(x - 1, y) !== 'woods' &&
+            p.map.terrainKeyAt(x + 1, y) !== 'woods' &&
+            p.map.terrainKeyAt(x, y - 1) !== 'woods' &&
+            p.map.terrainKeyAt(x, y + 1) !== 'woods'
+          ) isolatedTrees++;
+        }
+    }
+    // woods-stand fringe alone yields ~95 across seeds 1-5; orchards push it ~192
+    expect(isolatedTrees).toBeGreaterThan(150);
+  });
+
+  it('large maps grow a second hamlet and stay connected (320x240)', () => {
+    for (const seed of [1, 5, 9]) {
+      const a = generateMap(seed, 320, 240);
+      const b = generateMap(seed, 320, 240);
+      expect(a.map.tiles).toEqual(b.map.tiles);
+      expect(a.objectives.length).toBe(3);
+      expect(a.buildings.length).toBeGreaterThanOrEqual(7);
+      const hamlet = a.objectives[2];
+      const hamletBuildings = a.buildings.filter(
+        (b) => (b.x - hamlet.x) ** 2 + (b.y - hamlet.y) ** 2 < 22 * 22,
+      ).length;
+      expect(hamletBuildings).toBeGreaterThanOrEqual(3);
+      const { west, east } = a.spawns;
+      for (const o of a.objectives) expect(astar(a.map, west.x, west.y, o.x, o.y)).not.toBeNull();
+      expect(astar(a.map, west.x, west.y, east.x, east.y, 'vehicle')).not.toBeNull();
     }
   });
 });
