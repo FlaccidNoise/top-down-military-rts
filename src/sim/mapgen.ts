@@ -182,6 +182,17 @@ function tryGenerate(rng: Rng, w: number, h: number): MapPlan | null {
     stand(sx, sy, 6 + rng.int(5));
   }
 
+  // orchards: staggered tree rows near the village
+  for (let i = 0, n = 1 + rng.int(2); i < n; i++) {
+    const ow = 8 + rng.int(7);
+    const oh = 6 + rng.int(5);
+    const ox = clamp(crossX - 30 + rng.int(Math.max(1, 60 - ow)), 2, w - ow - 2);
+    const oy = clamp(cy - 26 + rng.int(Math.max(1, 52 - oh)), 2, h - oh - 2);
+    for (let y = oy; y < oy + oh; y += 2)
+      for (let x = ox + (((y - oy) >> 1) % 2); x < ox + ow; x += 2)
+        if (!road[y * w + x] && !nearBuilding(x, y) && map.terrainKeyAt(x, y) === 'grass') map.setTerrain(x, y, 'woods');
+  }
+
   // plowed fields: rect patches on remaining grass
   for (let i = 0, n = 4 + rng.int(4); i < n; i++) {
     const fw = 12 + rng.int(14);

@@ -97,8 +97,10 @@ function drawTileBase(g: Ctx, map: GameMap, x: number, y: number): void {
   }
 }
 
-function drawTree(g: Ctx, x: number, y: number): void {
-  if (hash(x, y, 40) >= 0.55) return;
+function drawTree(g: Ctx, map: GameMap, x: number, y: number): void {
+  const wooded = (tx: number, ty: number) => map.inBounds(tx, ty) && map.terrainKeyAt(tx, ty) === 'woods';
+  const isolated = !wooded(x - 1, y) && !wooded(x + 1, y) && !wooded(x, y - 1) && !wooded(x, y + 1);
+  if (!isolated && hash(x, y, 40) >= 0.55) return;
   const cx = x + 0.3 + hash(x, y, 41) * 0.4;
   const cy = y + 0.3 + hash(x, y, 42) * 0.4;
   const r = 0.55 + hash(x, y, 43) * 0.4;
@@ -175,7 +177,7 @@ export class TerrainLayer {
     }
     for (let y = ty0; y < ty1; y++) {
       for (let x = tx0; x < tx1; x++) {
-        if (this.map.terrainKeyAt(x, y) === 'woods') drawTree(g, x, y);
+        if (this.map.terrainKeyAt(x, y) === 'woods') drawTree(g, this.map, x, y);
       }
     }
     for (let y = ty0; y <= ty1; y++) {

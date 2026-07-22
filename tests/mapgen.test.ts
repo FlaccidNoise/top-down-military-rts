@@ -34,8 +34,8 @@ describe('mapgen', () => {
   });
 
   it('matches known snapshots (catches accidental generator drift)', () => {
-    expect(fingerprint(1)).toMatchInlineSnapshot(`"452dd6c1"`);
-    expect(fingerprint(2)).toMatchInlineSnapshot(`"677801e9"`);
+    expect(fingerprint(1)).toMatchInlineSnapshot(`"ef00920e"`);
+    expect(fingerprint(2)).toMatchInlineSnapshot(`"2aa5e8b2"`);
   });
 
   it('spawns reach objectives and buildings on foot; the road carries vehicles (seeds 1-30)', () => {
@@ -73,5 +73,24 @@ describe('mapgen', () => {
     expect(hx).toBeGreaterThanOrEqual(0);
     expect(p.map.canStep(hx - 1, hy, hx, hy, 'vehicle')).toBe(false);
     expect(p.map.canStep(hx - 1, hy, hx, hy)).toBe(true);
+  });
+
+  it('orchards plant isolated trees (seeds 1-5)', () => {
+    let isolatedTrees = 0;
+    for (let seed = 1; seed <= 5; seed++) {
+      const p = generateMap(seed);
+      for (let y = 1; y < p.map.h - 1; y++)
+        for (let x = 1; x < p.map.w - 1; x++) {
+          if (p.map.terrainKeyAt(x, y) !== 'woods') continue;
+          if (
+            p.map.terrainKeyAt(x - 1, y) !== 'woods' &&
+            p.map.terrainKeyAt(x + 1, y) !== 'woods' &&
+            p.map.terrainKeyAt(x, y - 1) !== 'woods' &&
+            p.map.terrainKeyAt(x, y + 1) !== 'woods'
+          ) isolatedTrees++;
+        }
+    }
+    // woods-stand fringe alone yields ~95 across seeds 1-5; orchards push it ~192
+    expect(isolatedTrees).toBeGreaterThan(150);
   });
 });
