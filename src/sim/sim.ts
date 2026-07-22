@@ -892,7 +892,9 @@ export class Sim {
         const s = this.soldiers[sid];
         if (!s.alive || s.downed || s.mental === 'broken') continue;
         eligible++;
-        if (s.path) moving++;
+        // a rescue task counts as busy: it holds path=null for a tick on pickup,
+        // and auto-dispatching the next leg would silently cancel the rescue
+        if (s.path || s.task) moving++;
       }
       if (eligible === 0) {
         this.squadWaypoints[sq.id] = [];

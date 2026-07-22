@@ -42,8 +42,8 @@
   background: #333a2c;
 }
 #tb-strength .ratio i { display: block; height: 100%; }
-.us { color: #5b9bd5; }
-.ge { color: #d05c50; }
+.us { color: #5b9bd5; font-weight: 600; }
+.ge { color: #d05c50; font-weight: 600; }
 #tb-actions { margin-left: auto; display: flex; gap: 6px; }
 button.hbtn {
   font: inherit;
@@ -100,11 +100,17 @@ button.hbtn.active { background: #4b4326; border-color: #ffca6a; color: #ffe9a0;
 .srow .wp { color: #8a8a74; flex: none; }
 .srow .bars { width: 36px; flex: none; display: flex; flex-direction: column; gap: 2px; }
 .srow.kia { color: #6a6a5a; text-decoration: line-through; }
-.srow .down { color: #e08a3c; font-weight: 600; flex: none; }
+.srow.urgent { background: rgba(208, 92, 80, 0.08); }
+.srow.urgent:hover { background: rgba(208, 92, 80, 0.18); }
+.srow .down { color: #d05c50; font-weight: 700; flex: none; animation: hud-pulse 1.3s ease-in-out infinite; }
 .bar { height: 4px; background: #333a2c; border-radius: 1px; overflow: hidden; }
 .bar i { display: block; height: 100%; }
 .flag { color: #d05c50; flex: none; }
 .flag.stab { color: #f2efe4; }
+.bars-key { display: flex; align-items: center; gap: 4px; color: #8a8a74; font-size: 10px; letter-spacing: 0.3px; padding: 1px 0 4px 14px; }
+.bars-key .sw { width: 8px; height: 3px; border-radius: 1px; display: inline-block; }
+.bars-key .sw.sup { background: #e0a83c; }
+.bars-key .sw.mor { background: #7fbf6a; margin-left: 8px; }
 
 /* ---- tooltip ---- */
 #tip {
@@ -145,9 +151,11 @@ button.hbtn.active { background: #4b4326; border-color: #ffca6a; color: #ffe9a0;
   letter-spacing: 1px;
   font-size: 10px;
 }
+.tt-sec.no { color: #d05c50; }
 .tt-rows div { display: flex; justify-content: space-between; gap: 8px; }
 .tt-rows .neg { color: #e08a3c; }
 .tt-rows .pos { color: #7fbf6a; }
+.tt-rows .crit { color: #d05c50; }
 .tt-acc { font-size: 20px; color: #ffe9a0; font-weight: 700; }
 .tt-note { color: #8a8a74; }
 .tt-kia { color: #d05c50; font-weight: 700; letter-spacing: 2px; margin: 2px 0; }
@@ -172,12 +180,17 @@ button.hbtn.active { background: #4b4326; border-color: #ffca6a; color: #ffe9a0;
   bottom: 8px;
   left: 50%;
   transform: translateX(-50%);
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 3px 18px;
+  max-width: 94vw;
   color: rgba(216, 212, 196, 0.55);
   background: rgba(18, 22, 15, 0.55);
   border-radius: 3px;
   padding: 3px 10px;
-  white-space: nowrap;
 }
+#hint .hg { white-space: nowrap; }
 
 /* ---- debrief ---- */
 #debrief {
@@ -196,30 +209,60 @@ button.hbtn.active { background: #4b4326; border-color: #ffca6a; color: #ffe9a0;
 #debrief h1.loss { color: #d05c50; }
 #debrief .sub { color: #8a8a74; margin: 0 0 6px; }
 #debrief .fallen { color: #d05c50; margin: 0 0 6px; }
-#debrief .repl { color: #7fbf6a; margin: 0 0 6px; }
+#debrief .intel { color: #d8d4c4; margin: 0 0 6px; }
+#debrief .intel b { color: #ffca6a; font-weight: 600; }
+#debrief .intel .obj { color: #ffca6a; }
 #debrief h3 {
   color: #ffe9a0;
   letter-spacing: 1px;
-  margin: 18px 0 6px;
+  margin: 22px 0 6px;
   border-bottom: 1px solid #3a412f;
   padding-bottom: 3px;
 }
 #debrief table { width: 100%; border-collapse: collapse; }
 #debrief td, #debrief th { text-align: left; padding: 3px 8px 3px 0; }
 #debrief th { color: #8a8a74; font-weight: 400; font-size: 11px; letter-spacing: 1px; }
+#debrief th:nth-child(3), #debrief td:nth-child(3) { text-align: right; padding-right: 24px; }
+#debrief tr.kia { background: rgba(208, 92, 80, 0.07); }
 #debrief tr.kia td { color: #8a6a62; text-decoration: line-through; }
+#debrief tr.rec { background: rgba(224, 138, 60, 0.07); }
 #debrief tr.rec td { color: #c9a86a; }
+#debrief tr.res td { color: #8a8a74; }
 #debrief .scar { color: #e08a3c; }
-#debrief h2 { font-size: 15px; margin-top: 24px; }
+#debrief .db-actions {
+  position: sticky;
+  bottom: 0;
+  margin-top: 20px;
+  padding: 14px 0 24px;
+  display: flex;
+  gap: 10px;
+  background: linear-gradient(to top, #0d0f0b 65%, rgba(13, 15, 11, 0));
+}
 #debrief button {
   font: inherit;
-  margin-top: 8px;
   padding: 8px 22px;
   cursor: pointer;
-  background: #2a3123;
-  color: #ffe9a0;
-  border: 1px solid #ffca6a;
+  background: transparent;
+  color: #8a8a74;
+  border: 1px solid #4a5240;
   border-radius: 3px;
   letter-spacing: 1px;
 }
-#debrief button:hover { background: #4b4326; }
+#debrief button:hover { background: rgba(255, 255, 255, 0.04); color: #d8d4c4; border-color: #8a8a74; }
+#debrief button.primary { background: #2a3123; color: #ffe9a0; border-color: #ffca6a; font-weight: 600; }
+#debrief button.primary:hover { background: #4b4326; }
+
+/* ---- interaction baseline: standard easing, keyboard focus, reduced motion ---- */
+button.hbtn, .card, .srow, #debrief button {
+  transition:
+    border-color 0.15s cubic-bezier(0.4, 0, 0.2, 1),
+    background-color 0.15s cubic-bezier(0.4, 0, 0.2, 1),
+    color 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+}
+button.hbtn:focus-visible, #debrief button:focus-visible, .card:focus-visible, .srow:focus-visible {
+  outline: 2px solid #ffca6a;
+  outline-offset: 1px;
+}
+@media (prefers-reduced-motion: reduce) {
+  #hud *, #debrief * { animation: none !important; transition: none !important; }
+}

@@ -1,7 +1,7 @@
 import { advanceDays, fillReplacements, newCampaign, type Campaign } from './campaign/campaign';
 import { Camera } from './render/camera';
 import { Renderer } from './render/renderer';
-import { StrategicView } from './render/strategic';
+import { StrategicView, TERRAIN_LABELS } from './render/strategic';
 import type { RedCommander } from './sim/ai';
 import { WEAPONS } from './sim/data';
 import { DT, type Sim } from './sim/sim';
@@ -111,11 +111,16 @@ const tooltip = new Tooltip(hud.root);
 function showContactModal(e: Engagement): void {
   const attacker = front.chits.find((c) => c.id === e.attackerId)!;
   const defender = front.chits.find((c) => c.id === e.defenderId)!;
+  const cell = front.sector.cells[e.cell];
+  const terrain = TERRAIN_LABELS[cell.terrain].toLowerCase();
   debriefEl.innerHTML = `<div class="db">
     <h1>CONTACT</h1>
     <p class="sub">${attacker.name} (${attacker.strength} men) has met ${defender.name} (~${defender.strength} men).</p>
-    <button id="fight">Attack</button>
-    <button id="standdown">Stand down</button></div>`;
+    <p class="intel">Terrain: <b>${terrain}</b>${cell.objective ? ' <span class="obj">— objective</span>' : ''}</p>
+    <div class="db-actions">
+      <button id="fight" class="primary">Attack</button>
+      <button id="standdown">Stand down</button>
+    </div></div>`;
   debriefEl.style.display = 'block';
   document.getElementById('fight')!.onclick = () => startEngagementBattle(e);
   document.getElementById('standdown')!.onclick = () => {
@@ -154,6 +159,7 @@ function showDebrief(): void {
   pendingEngagement = null;
   saveGame(campaign, front);
 
+  const deployedPids = new Set(sim.soldiers.filter((s) => s.side === 'blue').map((s) => s.pid));
   const rows = campaign.companies[battleCompany].squads
     .map((si) => campaign.squads[si])
     .map((sq) => {
@@ -161,8 +167,9 @@ function showDebrief(): void {
         .map((pid) => campaign.soldiers[pid])
         .map((cs) => {
           const scars = cs.bodyDamage.some((d) => d > 0) && cs.status === 'fit' ? ' <span class="scar">permanent injury</span>' : '';
-          const st = cs.status === 'kia' ? 'KIA' : cs.status === 'recovering' ? `recovering (${cs.recoveryDays}d)` : 'fit';
-          const cls = cs.status === 'kia' ? ' class="kia"' : cs.status === 'recovering' ? ' class="rec"' : '';
+          const deployed = deployedPids.has(cs.pid);
+          const st = cs.status === 'kia' ? 'KIA' : cs.status === 'recovering' ? `recovering (${cs.recoveryDays}d)` : deployed ? 'fit' : 'reserve';
+          const cls = cs.status === 'kia' ? ' class="kia"' : cs.status === 'recovering' ? ' class="rec"' : deployed ? '' : ' class="res"';
           return `<tr${cls}><td>${cs.name}</td><td>${WEAPONS[cs.weapon].name}</td><td>${cs.battles}</td><td>${st}${scars}</td></tr>`;
         })
         .join('');
@@ -170,13 +177,14 @@ function showDebrief(): void {
     })
     .join('');
 
+  const enemyLosses = out.redLosses > 0 ? `~${out.redLosses} enemy losses` : 'no enemy losses';
   debriefEl.innerHTML = `<div class="db">
     <h1 class="${out.record.won ? 'win' : 'loss'}">${out.record.won ? 'VICTORY' : 'DEFEAT'}</h1>
-    <p class="sub">${out.record.kia.length} KIA · ${out.record.wounded.length} wounded · ~${out.redLosses} enemy losses</p>
+    <p class="sub">${out.record.kia.length} KIA · ${out.record.wounded.length} wounded · ${enemyLosses}</p>
     <p class="fallen">${out.record.kia.length > 0 ? 'Fallen: ' + out.record.kia.join(', ') : 'No one died today.'}</p>
     <p class="sub">${out.cellTaken ? 'The ground is ours.' : 'The attack failed; the line is unchanged.'}</p>
     ${rows}
-    <button id="next">Return to the front</button></div>`;
+    <div class="db-actions"><button id="next" class="primary">Return to the front</button></div></div>`;
   debriefEl.style.display = 'block';
   document.getElementById('next')!.onclick = () => {
     debriefEl.style.display = 'none';
@@ -203,7 +211,7 @@ function showOperationEnd(status: 'won' | 'lost'): void {
   debriefEl.innerHTML = `<div class="db">
     <h1 class="${status === 'won' ? 'win' : 'loss'}">OPERATION ${status === 'won' ? 'ACCOMPLISHED' : 'FAILED'}</h1>
     <p class="sub">${campaign.log.length} battles fought over ${front.day} days · ${kia} men killed.</p>
-    <button id="next">New operation</button></div>`;
+    <div class="db-actions"><button id="next" class="primary">New operation</button></div></div>`;
   debriefEl.style.display = 'block';
   document.getElementById('next')!.onclick = () => {
     debriefEl.style.display = 'none';
