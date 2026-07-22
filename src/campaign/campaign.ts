@@ -31,6 +31,7 @@ export interface Campaign {
   day: number;
   battleIndex: number; // next battle to fight (0..2), 3 = operation over
   nextPid: number;
+  companies: { name: string; squads: number[] }[]; // indices into squads
   squads: { name: string; members: number[] }[];
   soldiers: Record<number, CSoldier>;
   log: BattleRecord[];
@@ -69,20 +70,29 @@ function newSoldier(c: Campaign, rng: { next(): number; int(n: number): number }
   return s;
 }
 
+export const COMPANY_NAMES = ['Able', 'Baker', 'Charlie'];
+export const SQUADS_PER_COMPANY = 3;
+
 export function newCampaign(seed: number): Campaign {
   const rng = mulberry32(seed);
-  const c: Campaign = { day: 1, battleIndex: 0, nextPid: 1, squads: [], soldiers: {}, log: [] };
-  for (const name of ['1st Squad', '2nd Squad']) {
-    const members: number[] = [];
-    for (let i = 0; i < SQUAD_SIZE; i++) {
-      const s = newSoldier(c, rng, false);
-      if (i === 0) s.weapon = 'smg';
-      if (i === 1) s.weapon = 'mg';
-      members.push(s.pid);
+  const c: Campaign = { day: 1, battleIndex: 0, nextPid: 1, companies: [], squads: [], soldiers: {}, log: [] };
+  const ordinal = ['1st', '2nd', '3rd'];
+  for (const coName of COMPANY_NAMES) {
+    const squadIndexes: number[] = [];
+    for (let q = 0; q < SQUADS_PER_COMPANY; q++) {
+      const members: number[] = [];
+      for (let i = 0; i < SQUAD_SIZE; i++) {
+        const s = newSoldier(c, rng, false);
+        if (i === 0) s.weapon = 'smg';
+        if (i === 1) s.weapon = 'mg';
+        members.push(s.pid);
+      }
+      // trained together: everyone starts somewhat bonded
+      for (const a of members) for (const b of members) if (a !== b) c.soldiers[a].bonds[b] = 0.3;
+      squadIndexes.push(c.squads.length);
+      c.squads.push({ name: `${coName} ${ordinal[q]}`, members });
     }
-    // trained together: everyone starts somewhat bonded
-    for (const a of members) for (const b of members) if (a !== b) c.soldiers[a].bonds[b] = 0.3;
-    c.squads.push({ name, members });
+    c.companies.push({ name: coName, squads: squadIndexes });
   }
   return c;
 }

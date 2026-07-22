@@ -167,4 +167,17 @@ describe('campaign', () => {
     expect(a.pid).toBeGreaterThan(0);
     expect(a.bonds[b.id]).toBeCloseTo(0.3); // trained-together baseline, from campaign
   });
+
+  it('a fresh campaign fields 3 companies of 3 squads of 9', () => {
+    const c = newCampaign(7);
+    expect(c.companies.map((co) => co.name)).toEqual(['Able', 'Baker', 'Charlie']);
+    expect(c.companies.every((co) => co.squads.length === 3)).toBe(true);
+    expect(c.squads.length).toBe(9);
+    expect(Object.keys(c.soldiers).length).toBe(81);
+    expect(c.squads[0].name).toBe('Able 1st');
+    // bonds stay within a squad at creation
+    const [sq0, sq3] = [c.squads[0].members, c.squads[3].members];
+    expect(c.soldiers[sq0[0]].bonds[sq0[1]]).toBeCloseTo(0.3);
+    expect(c.soldiers[sq0[0]].bonds[sq3[0]]).toBeUndefined();
+  });
 });
