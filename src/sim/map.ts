@@ -54,14 +54,20 @@ export class GameMap {
     this.vEdges[y * (this.w + 1) + x] = e;
   }
 
-  // Can a soldier step between two orthogonally adjacent tiles?
-  canStep(x0: number, y0: number, x1: number, y1: number): boolean {
+  // Can a unit step between two orthogonally adjacent tiles?
+  // Vehicles can't enter buildings or woods and never pass any edge feature.
+  canStep(x0: number, y0: number, x1: number, y1: number, mode: 'foot' | 'vehicle' = 'foot'): boolean {
     if (!this.inBounds(x1, y1) || !this.terrainAt(x1, y1).passable) return false;
+    if (mode === 'vehicle') {
+      const k = this.terrainKeyAt(x1, y1);
+      if (k === 'floor' || k === 'woods') return false;
+    }
     let e: EdgeType = EDGE.NONE;
     if (x1 === x0 + 1) e = this.vEdge(x1, y0);
     else if (x1 === x0 - 1) e = this.vEdge(x0, y0);
     else if (y1 === y0 + 1) e = this.hEdge(x0, y1);
     else if (y1 === y0 - 1) e = this.hEdge(x0, y0);
+    if (mode === 'vehicle') return e === EDGE.NONE;
     return e === EDGE.NONE || e === EDGE.DOOR; // walls and windows block movement
   }
 }

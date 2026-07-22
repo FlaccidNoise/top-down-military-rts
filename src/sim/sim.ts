@@ -1,5 +1,5 @@
 import { applyHit, capacities, consciousness, freshBody, rollPart, woundLabel, type Wound } from './body';
-import { WEAPONS, type WeaponKey } from './data';
+import { VEHICLES, WEAPONS, type VehicleKey, type WeaponKey } from './data';
 import { GameMap, los } from './map';
 import { astar } from './path';
 import { mulberry32, type Rng } from './rng';
@@ -57,6 +57,37 @@ export interface Soldier {
   task: RescueTask | null;
   rescuerId: number; // who claimed this casualty, -1 none
   carriedBy: number; // -1 = not being dragged
+  inVehicle: number; // vehicle id crewing, -1 = on foot
+}
+
+export interface Vehicle {
+  id: number;
+  side: Side;
+  kind: VehicleKey;
+  x: number;
+  y: number;
+  facing: number; // radians, hull
+  alive: boolean;
+  burning: boolean;
+  crewIds: number[];
+  path: { x: number; y: number }[] | null;
+  pathI: number;
+  gunCooldown: number;
+  mgCooldown: number;
+  targetVehicleId: number;
+  targetSoldierId: number;
+}
+
+// Which armor arc does a shot from (fx,fy) strike?
+export function armorFacing(v: { x: number; y: number; facing: number }, fx: number, fy: number): 'front' | 'side' | 'rear' {
+  const shotAngle = Math.atan2(fy - v.y, fx - v.x);
+  let rel = shotAngle - v.facing;
+  while (rel > Math.PI) rel -= 2 * Math.PI;
+  while (rel < -Math.PI) rel += 2 * Math.PI;
+  const a = Math.abs(rel);
+  if (a < Math.PI / 3) return 'front';
+  if (a > (2 * Math.PI) / 3) return 'rear';
+  return 'side';
 }
 
 export interface MemberInit {
@@ -105,11 +136,16 @@ export class Sim {
   rng: Rng;
   soldiers: Soldier[] = [];
   squads: Squad[] = [];
+  vehicles: Vehicle[] = [];
   winner: Side | null = null;
   barragesLeft: Record<Side, number> = { blue: 2, red: 1 };
+  airstrikesLeft: Record<Side, number> = { blue: 1, red: 0 };
+  startStrength: Record<Side, number> = { blue: 0, red: 0 };
   private barrages: Barrage[] = [];
+  private strafeImpacts: { tick: number; x: number; y: number }[] = [];
   private pendingEvents: ShotEvent[] = [];
   private pendingBooms: { x: number; y: number }[] = [];
+  private pendingPlanes: { x0: number; y: number; x1: number }[] = [];
 
   constructor(readonly map: GameMap, seed: number) {
     this.rng = mulberry32(seed);
@@ -151,10 +187,12 @@ export class Sim {
         task: null,
         rescuerId: -1,
         carriedBy: -1,
+        inVehicle: -1,
       };
       s.morale = 0.7 + s.courage * 0.3;
       this.soldiers.push(s);
       squad.soldierIds.push(s.id);
+      this.startStrength[side]++;
     }
     // default squad cohesion for one-off battles; campaign wiring overwrites
     for (const a of squad.soldierIds) {
@@ -193,6 +231,79 @@ export class Sim {
     this.barragesLeft[side]--;
     this.barrages.push({ side, x, y, roundsLeft: BARRAGE_ROUNDS, nextTick: this.tick + BARRAGE_DELAY_TICKS });
     return true;
+  }
+
+  // The superpower: a strafing run west→east through the target point.
+  callAirstrike(side: Side, x: number, y: number): boolean {
+    if (this.airstrikesLeft[side] <= 0) return false;
+    this.airstrikesLeft[side]--;
+    const start = this.tick + 25 * 30;
+    for (let i = 0; i < 10; i++) {
+      this.strafeImpacts.push({
+        tick: start + i * 5,
+        x: x - 20 + i * 4 + this.rng.range(-1, 1),
+        y: y + this.rng.range(-1.5, 1.5),
+      });
+    }
+    this.strafeImpacts.sort((a, b) => a.tick - b.tick);
+    return true;
+  }
+
+  addVehicle(side: Side, kind: VehicleKey, x: number, y: number, facing = 0): Vehicle {
+    const def = VEHICLES[kind];
+    const squad = this.addSquad(side, `${def.name} crew`, [
+      { name: 'Cmdr', weapon: 'smg', x, y },
+      { name: 'Gunner', weapon: 'smg', x, y },
+      { name: 'Driver', weapon: 'smg', x, y },
+    ]);
+    const v: Vehicle = {
+      id: this.vehicles.length,
+      side,
+      kind,
+      x,
+      y,
+      facing,
+      alive: true,
+      burning: false,
+      crewIds: [...squad.soldierIds],
+      path: null,
+      pathI: 0,
+      gunCooldown: 0,
+      mgCooldown: 0,
+      targetVehicleId: -1,
+      targetSoldierId: -1,
+    };
+    for (const sid of squad.soldierIds) this.soldiers[sid].inVehicle = v.id;
+    this.vehicles.push(v);
+    return v;
+  }
+
+  orderVehicleMove(vehicleId: number, wx: number, wy: number): void {
+    const v = this.vehicles[vehicleId];
+    if (!v || !v.alive) return;
+    const spot = this.findVehicleSpot(Math.floor(wx), Math.floor(wy));
+    if (!spot) return;
+    const path = astar(this.map, Math.floor(v.x), Math.floor(v.y), spot.x, spot.y, 'vehicle');
+    if (path && path.length > 1) {
+      v.path = path.slice(1).map((p) => ({ x: p.x + 0.5, y: p.y + 0.5 }));
+      v.pathI = 0;
+    }
+  }
+
+  private findVehicleSpot(x: number, y: number): { x: number; y: number } | null {
+    for (let r = 0; r <= 6; r++) {
+      for (let dy = -r; dy <= r; dy++) {
+        for (let dx = -r; dx <= r; dx++) {
+          if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+          const nx = x + dx;
+          const ny = y + dy;
+          if (!this.map.inBounds(nx, ny)) continue;
+          const k = this.map.terrainKeyAt(nx, ny);
+          if (this.map.terrainAt(nx, ny).passable && k !== 'floor' && k !== 'woods') return { x: nx, y: ny };
+        }
+      }
+    }
+    return null;
   }
 
   orderMove(squadId: number, wx: number, wy: number): void {
@@ -246,9 +357,19 @@ export class Sim {
     return b;
   }
 
+  takePlanes(): { x0: number; y: number; x1: number }[] {
+    const p = this.pendingPlanes;
+    this.pendingPlanes = [];
+    return p;
+  }
+
   step(): void {
     this.tick++;
     this.stepBarrages();
+    this.stepStrafes();
+    for (const v of this.vehicles) {
+      if (v.alive) this.updateVehicle(v);
+    }
     for (const s of this.soldiers) {
       if (s.alive) this.updateSoldier(s);
     }
@@ -260,8 +381,25 @@ export class Sim {
       else red++;
     }
     if (this.winner === null) {
-      if (blue === 0 && red > 0) this.winner = 'red';
+      // a side breaks off the battle below a quarter of starting strength
+      const floorOf = (side: Side) => Math.max(2, this.startStrength[side] * 0.25);
+      if (blue < floorOf('blue') && red >= floorOf('red')) this.winner = 'red';
+      else if (red < floorOf('red') && blue >= floorOf('blue')) this.winner = 'blue';
+      else if (blue === 0 && red > 0) this.winner = 'red';
       else if (red === 0 && blue > 0) this.winner = 'blue';
+    }
+  }
+
+  private stepStrafes(): void {
+    if (this.strafeImpacts.length === 0) return;
+    if (this.strafeImpacts[0].tick - this.tick === 60) {
+      // plane appears 2s ahead of the first burst
+      const first = this.strafeImpacts[0];
+      this.pendingPlanes.push({ x0: first.x - 60, y: first.y, x1: first.x + 100 });
+    }
+    while (this.strafeImpacts.length > 0 && this.tick >= this.strafeImpacts[0].tick) {
+      const s = this.strafeImpacts.shift()!;
+      this.explode(s.x, s.y, { suppRadius: 12, fragRadius: 5, frags: 2, dmg: [25, 70] });
     }
   }
 
@@ -278,26 +416,214 @@ export class Sim {
     this.barrages = this.barrages.filter((b) => b.roundsLeft > 0);
   }
 
-  private explode(x: number, y: number): void {
+  private explode(
+    x: number,
+    y: number,
+    p: { suppRadius: number; fragRadius: number; frags: number; dmg: [number, number] } = {
+      suppRadius: 15,
+      fragRadius: 9,
+      frags: 3,
+      dmg: [25, 75],
+    },
+  ): void {
     this.pendingBooms.push({ x, y });
     for (const s of this.soldiers) {
-      if (!s.alive) continue;
+      if (!s.alive || s.inVehicle >= 0) continue; // armor shrugs off fragments
       const d = Math.hypot(s.x - x, s.y - y);
-      if (d > 15) continue;
-      s.suppression = Math.min(1, s.suppression + 0.6 * (1 - d / 15) * (1.3 - s.courage * 0.6));
-      if (d > 9) continue;
+      if (d > p.suppRadius) continue;
+      s.suppression = Math.min(1, s.suppression + 0.6 * (1 - d / p.suppRadius) * (1.3 - s.courage * 0.6));
+      if (d > p.fragRadius) continue;
       if (!los(this.map, x, y, s.x, s.y).visible) continue; // walls stop fragments
-      const frags = d < 2 ? 3 : d < 5 ? 2 : 1;
+      const frags = d < 2 ? p.frags : d < p.fragRadius * 0.55 ? Math.max(1, p.frags - 1) : 1;
       for (let i = 0; i < frags; i++) {
-        const pHit = (1 - d / 10) * (s.downed || s.mental === 'pinned' ? 0.45 : 0.8);
+        const pHit = (1 - d / (p.fragRadius + 1)) * (s.downed || s.mental === 'pinned' ? 0.45 : 0.8);
         if (this.rng.next() < pHit) {
-          if (this.wound(s, this.rng.range(25, 75))) break;
+          if (this.wound(s, this.rng.range(p.dmg[0], p.dmg[1]))) break;
         }
       }
     }
   }
 
+  private updateVehicle(v: Vehicle): void {
+    const def = VEHICLES[v.kind];
+    // movement
+    if (v.path) {
+      const wp = v.path[v.pathI];
+      const dx = wp.x - v.x;
+      const dy = wp.y - v.y;
+      const d = Math.hypot(dx, dy);
+      const onRoad = this.map.terrainKeyAt(Math.floor(v.x), Math.floor(v.y)) === 'road';
+      let remaining = def.speed * (onRoad ? 1.3 : 1) * DT;
+      if (d > 0.01) v.facing = Math.atan2(dy, dx);
+      if (d <= remaining) {
+        v.x = wp.x;
+        v.y = wp.y;
+        v.pathI++;
+        if (v.pathI >= v.path.length) {
+          v.path = null;
+          v.pathI = 0;
+        }
+      } else {
+        v.x += (dx / d) * remaining;
+        v.y += (dy / d) * remaining;
+      }
+    }
+
+    // tank terror: enemy infantry with sight of an approaching tank feel it
+    if (this.tick % 30 === 0) {
+      for (const s of this.soldiers) {
+        if (!s.alive || s.downed || s.side === v.side || s.inVehicle >= 0) continue;
+        const d = Math.hypot(s.x - v.x, s.y - v.y);
+        if (d < 30 && los(this.map, v.x, v.y, s.x, s.y).visible) {
+          s.suppression = Math.min(1, s.suppression + 0.05 * (1.3 - s.courage * 0.6));
+        }
+      }
+    }
+
+    if (v.gunCooldown > 0) v.gunCooldown -= DT;
+    if (v.mgCooldown > 0) v.mgCooldown -= DT;
+
+    // prefer enemy armor with the main gun
+    if ((this.tick + v.id) % RETARGET_TICKS === 0 || v.targetVehicleId < 0) {
+      v.targetVehicleId = -1;
+      let bestD = Infinity;
+      for (const e of this.vehicles) {
+        if (!e.alive || e.side === v.side) continue;
+        const d = Math.hypot(e.x - v.x, e.y - v.y);
+        if (d <= def.gunRange && d < bestD && los(this.map, v.x, v.y, e.x, e.y).visible) {
+          bestD = d;
+          v.targetVehicleId = e.id;
+        }
+      }
+    }
+    if (v.targetVehicleId >= 0 && v.gunCooldown <= 0) {
+      const e = this.vehicles[v.targetVehicleId];
+      if (e.alive && los(this.map, v.x, v.y, e.x, e.y).visible) {
+        this.fireApAt(v.x, v.y, def.gunPen, def.gunAccuracy, def.gunRange, e, v.path !== null);
+        v.gunCooldown = def.gunCooldown * (0.85 + this.rng.next() * 0.3);
+      } else {
+        v.targetVehicleId = -1;
+      }
+      return;
+    }
+
+    // otherwise work the infantry: HE from the gun, bursts from the hull MG
+    if ((this.tick + v.id) % RETARGET_TICKS === 0 || v.targetSoldierId < 0) {
+      v.targetSoldierId = this.acquireSoldierTarget(v.x, v.y, v.side, def.mgRange);
+    }
+    const t = v.targetSoldierId >= 0 ? this.soldiers[v.targetSoldierId] : null;
+    if (t && (!t.alive || t.downed)) {
+      v.targetSoldierId = -1;
+      return;
+    }
+    if (t) {
+      if (!los(this.map, v.x, v.y, t.x, t.y).visible) {
+        v.targetSoldierId = -1;
+        return;
+      }
+      if (v.gunCooldown <= 0) {
+        // HE round at the infantry position
+        this.explode(t.x + this.rng.range(-2, 2), t.y + this.rng.range(-2, 2), { suppRadius: 10, fragRadius: 5, frags: 2, dmg: [25, 60] });
+        this.pendingEvents.push({ fx: v.x, fy: v.y, tx: t.x, ty: t.y, hit: true, kill: false });
+        v.gunCooldown = def.gunCooldown * (0.85 + this.rng.next() * 0.3);
+      } else if (v.mgCooldown <= 0) {
+        this.fireSmallArms(v.x, v.y, 'mg', t, false);
+        v.mgCooldown = WEAPONS.mg.cooldown * (0.85 + this.rng.next() * 0.3);
+      }
+    }
+  }
+
+  private acquireSoldierTarget(x: number, y: number, side: Side, range: number): number {
+    const candidates: { id: number; d: number }[] = [];
+    for (const e of this.soldiers) {
+      if (!e.alive || e.downed || e.side === side || e.inVehicle >= 0) continue;
+      const d = Math.hypot(e.x - x, e.y - y);
+      if (d <= range) candidates.push({ id: e.id, d });
+    }
+    candidates.sort((a, b) => a.d - b.d || a.id - b.id);
+    for (const c of candidates) {
+      const e = this.soldiers[c.id];
+      if (los(this.map, x, y, e.x, e.y).visible) return c.id;
+    }
+    return -1;
+  }
+
+  private fireApAt(fx: number, fy: number, pen: number, accuracy: number, range: number, target: Vehicle, moving: boolean): void {
+    const d = Math.hypot(target.x - fx, target.y - fy);
+    let acc = accuracy * (1 - 0.6 * (d / range));
+    if (moving) acc *= 0.6;
+    acc = Math.min(0.95, Math.max(0.05, acc));
+    const hit = this.rng.next() < acc;
+    this.pendingEvents.push({ fx, fy, tx: target.x, ty: target.y, hit, kill: false });
+    if (!hit) {
+      this.explode(target.x + this.rng.range(-4, 4), target.y + this.rng.range(-4, 4), { suppRadius: 8, fragRadius: 3, frags: 1, dmg: [20, 50] });
+      return;
+    }
+    const arc = armorFacing(target, fx, fy);
+    const armor = VEHICLES[target.kind].armor[arc];
+    const effPen = pen * this.rng.range(0.75, 1.25);
+    if (effPen <= armor) return; // clang — ricochet
+    // penetration: spall wounds crew, chance of brew-up
+    for (const cid of target.crewIds) {
+      const c = this.soldiers[cid];
+      if (c.alive && this.rng.next() < 0.45) this.wound(c, this.rng.range(30, 80));
+    }
+    if (this.rng.next() < 0.45) this.destroyVehicle(target);
+  }
+
+  private destroyVehicle(v: Vehicle): void {
+    v.alive = false;
+    v.burning = true;
+    v.path = null;
+    this.pendingBooms.push({ x: v.x, y: v.y });
+    // survivors bail out shaken
+    let slot = 0;
+    for (const cid of v.crewIds) {
+      const c = this.soldiers[cid];
+      c.inVehicle = -1;
+      if (!c.alive) continue;
+      const [ox, oy] = OFFSETS[slot++ % OFFSETS.length];
+      const spot = this.findSpot(Math.floor(v.x + ox * 2), Math.floor(v.y + oy * 2), new Set());
+      if (spot) {
+        c.x = spot.x + 0.5;
+        c.y = spot.y + 0.5;
+      }
+      c.suppression = Math.min(1, c.suppression + 0.8);
+      c.morale = Math.max(0, c.morale - 0.3);
+    }
+  }
+
+  // Shared small-arms resolution used by soldiers and vehicle MGs.
+  private fireSmallArms(fx: number, fy: number, weapon: WeaponKey, t: Soldier, shooterMoving: boolean, aim = 1): boolean {
+    const sight = los(this.map, fx, fy, t.x, t.y);
+    if (!sight.visible) return false;
+    const w = WEAPONS[weapon];
+    const d = Math.hypot(t.x - fx, t.y - fy);
+    let cover = sight.cover;
+    if (t.mental === 'pinned' || t.downed) cover = Math.min(0.9, cover + 0.3);
+    let acc = w.accuracy * (1 - 0.75 * (d / w.range)) * (1 - cover) * aim;
+    if (shooterMoving) acc *= 0.5;
+    if (t.path) acc *= 0.75;
+    acc = Math.min(0.95, Math.max(0.02, acc));
+    const hit = this.rng.next() < acc;
+    let kill = false;
+    if (hit) kill = this.wound(t, this.rng.range(w.damage[0], w.damage[1]));
+    this.suppressAround(t.x, t.y, t.side, w.suppression);
+    this.pendingEvents.push({ fx, fy, tx: t.x, ty: t.y, hit, kill });
+    return kill;
+  }
+
   private updateSoldier(s: Soldier): void {
+    // crew fight from inside the hull: physiology only
+    if (s.inVehicle >= 0) {
+      if (s.wounds.length > 0) {
+        s.bloodLoss = Math.min(1, s.bloodLoss + s.bleedRate * DT);
+        s.pain = Math.max(0, s.pain - PAIN_DECAY * DT);
+        if (s.bloodLoss >= 1) this.kill(s);
+        s.downed = consciousness(s.pain, s.bloodLoss) < 0.3 || s.pain >= 0.8;
+      }
+      return;
+    }
     // physiology
     if (s.wounds.length > 0) {
       s.bloodLoss = Math.min(1, s.bloodLoss + s.bleedRate * DT);
@@ -364,6 +690,26 @@ export class Sim {
     if (s.cooldown > 0) s.cooldown -= DT;
     if (s.mental === 'broken') return;
     const w = WEAPONS[s.weapon];
+
+    // AT men engage armor first
+    if (w.pen !== undefined && s.cooldown <= 0) {
+      let bestV: Vehicle | null = null;
+      let bestD = Infinity;
+      for (const v of this.vehicles) {
+        if (!v.alive || v.side === s.side) continue;
+        const d = Math.hypot(v.x - s.x, v.y - s.y);
+        if (d <= w.range && d < bestD && los(this.map, s.x, s.y, v.x, v.y).visible) {
+          bestD = d;
+          bestV = v;
+        }
+      }
+      if (bestV) {
+        this.fireApAt(s.x, s.y, w.pen, w.accuracy * this.aimFactor(s), w.range, bestV, s.path !== null);
+        s.cooldown = w.cooldown * (0.85 + this.rng.next() * 0.3);
+        return;
+      }
+    }
+
     const t = s.targetId >= 0 ? this.soldiers[s.targetId] : null;
     const targetInvalid = !t || !t.alive || t.downed || Math.hypot(t.x - s.x, t.y - s.y) > w.range;
     if (targetInvalid || (this.tick + s.id) % RETARGET_TICKS === 0) {
@@ -549,45 +895,18 @@ export class Sim {
   }
 
   private acquire(s: Soldier): number {
-    const w = WEAPONS[s.weapon];
-    const candidates: { id: number; d: number }[] = [];
-    for (const e of this.soldiers) {
-      if (!e.alive || e.downed || e.side === s.side) continue;
-      const d = Math.hypot(e.x - s.x, e.y - s.y);
-      if (d <= w.range) candidates.push({ id: e.id, d });
-    }
-    candidates.sort((a, b) => a.d - b.d || a.id - b.id);
-    for (const c of candidates) {
-      const e = this.soldiers[c.id];
-      if (los(this.map, s.x, s.y, e.x, e.y).visible) return c.id;
-    }
-    return -1;
+    return this.acquireSoldierTarget(s.x, s.y, s.side, WEAPONS[s.weapon].range);
   }
 
   private fire(s: Soldier, t: Soldier): void {
-    const sight = los(this.map, s.x, s.y, t.x, t.y);
-    if (!sight.visible) {
+    if (!los(this.map, s.x, s.y, t.x, t.y).visible) {
       s.targetId = -1;
       return;
     }
     const w = WEAPONS[s.weapon];
-    const d = Math.hypot(t.x - s.x, t.y - s.y);
-    let cover = sight.cover;
-    if (t.mental === 'pinned' || t.downed) cover = Math.min(0.9, cover + 0.3); // hugging the ground
-    let acc = w.accuracy * (1 - 0.75 * (d / w.range)) * (1 - cover) * this.aimFactor(s);
-    if (s.path) acc *= 0.5; // shooter moving
-    if (t.path) acc *= 0.75; // target moving
-    acc = Math.min(0.95, Math.max(0.02, acc));
-    const hit = this.rng.next() < acc;
-    let kill = false;
-    if (hit) {
-      kill = this.wound(t, this.rng.range(w.damage[0], w.damage[1]));
-    }
-    // near misses and hits suppress everyone around the impact point
-    this.suppressAround(t.x, t.y, t.side, w.suppression);
+    const kill = this.fireSmallArms(s.x, s.y, s.weapon, t, s.path !== null, this.aimFactor(s));
     const rate = s.mental === 'pinned' ? 2 : 1; // cowering: slower fire
     s.cooldown = w.cooldown * rate * (0.85 + this.rng.next() * 0.3);
-    this.pendingEvents.push({ fx: s.x, fy: s.y, tx: t.x, ty: t.y, hit, kill });
     if (kill || t.downed) s.targetId = -1;
   }
 
@@ -647,8 +966,8 @@ export class Sim {
 
   // For determinism tests: full mutable state, rounded to dodge float noise.
   snapshot(): string {
-    return JSON.stringify(
-      this.soldiers.map((s) => [
+    return JSON.stringify({
+      soldiers: this.soldiers.map((s) => [
         s.id,
         Math.round(s.x * 1e6),
         Math.round(s.y * 1e6),
@@ -664,6 +983,15 @@ export class Sim {
         s.task ? `${s.task.phase}:${s.task.casualtyId}` : '',
         s.stabilized,
       ]),
-    );
+      vehicles: this.vehicles.map((v) => [
+        v.id,
+        Math.round(v.x * 1e6),
+        Math.round(v.y * 1e6),
+        v.alive,
+        Math.round(v.facing * 1e6),
+        v.targetVehicleId,
+        v.targetSoldierId,
+      ]),
+    });
   }
 }

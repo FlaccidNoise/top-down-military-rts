@@ -39,9 +39,16 @@ const cam = new Camera(60, 60);
 
 let paused = true;
 let selectedSquad = -1;
-let barrageMode = false;
+let selectedVehicle = -1;
+let targetMode: '' | 'barrage' | 'air' = '';
 let winnerAt = -1; // ms timestamp when winner appeared
 let debriefShown = false;
+
+function setTargetMode(m: '' | 'barrage' | 'air'): void {
+  targetMode = m;
+  renderer.modeLine =
+    m === 'barrage' ? '>>> MORTAR BARRAGE: click the target <<<' : m === 'air' ? '>>> AIR STRIKE: click the target (strafe runs west to east) <<<' : '';
+}
 
 function startBattle(): void {
   const battle = makeCampaignBattle(campaign, campaign.day * 7919 + campaign.battleIndex);
@@ -54,7 +61,8 @@ function startBattle(): void {
   cam.scale = 8;
   paused = true;
   selectedSquad = -1;
-  barrageMode = false;
+  selectedVehicle = -1;
+  targetMode = '';
   winnerAt = -1;
   debriefShown = false;
   overlay.style.display = 'none';
@@ -131,33 +139,40 @@ canvas.addEventListener('mouseup', (e) => {
   if (e.button !== 0) return;
   if (!dragged) {
     const [wx, wy] = cam.screenToWorld(e.clientX, e.clientY, canvas.width, canvas.height);
-    if (barrageMode) {
-      if (sim.callBarrage('blue', wx, wy)) {
-        barrageMode = false;
-        renderer.barrageMode = false;
-      }
+    if (targetMode === 'barrage') {
+      if (sim.callBarrage('blue', wx, wy)) setTargetMode('');
+    } else if (targetMode === 'air') {
+      if (sim.callAirstrike('blue', wx, wy)) setTargetMode('');
     } else {
+      // vehicles first, then squads
+      selectedVehicle = -1;
+      for (const v of sim.vehicles) {
+        if (v.alive && v.side === 'blue' && Math.hypot(v.x - wx, v.y - wy) < 3.5) selectedVehicle = v.id;
+      }
       let best = -1;
-      let bestD = 15 / cam.scale;
-      for (const s of sim.soldiers) {
-        if (!s.alive || s.side !== 'blue') continue;
-        const d = Math.hypot(s.x - wx, s.y - wy);
-        if (d < bestD) {
-          bestD = d;
-          best = s.squadId;
+      if (selectedVehicle < 0) {
+        let bestD = 15 / cam.scale;
+        for (const s of sim.soldiers) {
+          if (!s.alive || s.side !== 'blue' || s.inVehicle >= 0) continue;
+          const d = Math.hypot(s.x - wx, s.y - wy);
+          if (d < bestD) {
+            bestD = d;
+            best = s.squadId;
+          }
         }
       }
       selectedSquad = best;
+      renderer.selectedVehicle = selectedVehicle;
     }
   }
   dragStart = null;
 });
 canvas.addEventListener('contextmenu', (e) => {
   e.preventDefault();
-  if (selectedSquad >= 0 && !barrageMode) {
-    const [wx, wy] = cam.screenToWorld(e.clientX, e.clientY, canvas.width, canvas.height);
-    sim.orderMove(selectedSquad, wx, wy);
-  }
+  if (targetMode !== '') return;
+  const [wx, wy] = cam.screenToWorld(e.clientX, e.clientY, canvas.width, canvas.height);
+  if (selectedVehicle >= 0) sim.orderVehicleMove(selectedVehicle, wx, wy);
+  else if (selectedSquad >= 0) sim.orderMove(selectedSquad, wx, wy);
 });
 canvas.addEventListener('wheel', (e) => {
   e.preventDefault();
@@ -168,14 +183,13 @@ window.addEventListener('keydown', (e) => {
     e.preventDefault();
     paused = !paused;
   }
-  if (e.code === 'KeyB' && sim.barragesLeft.blue > 0) {
-    barrageMode = !barrageMode;
-    renderer.barrageMode = barrageMode;
-  }
+  if (e.code === 'KeyB' && sim.barragesLeft.blue > 0) setTargetMode(targetMode === 'barrage' ? '' : 'barrage');
+  if (e.code === 'KeyA' && sim.airstrikesLeft.blue > 0) setTargetMode(targetMode === 'air' ? '' : 'air');
   if (e.code === 'Escape') {
     selectedSquad = -1;
-    barrageMode = false;
-    renderer.barrageMode = false;
+    selectedVehicle = -1;
+    renderer.selectedVehicle = -1;
+    setTargetMode('');
   }
 });
 
@@ -211,6 +225,7 @@ function frame(now: number): void {
   }
   renderer.addEvents(sim.takeEvents(), now);
   renderer.addBooms(sim.takeBooms(), now);
+  renderer.addPlanes(sim.takePlanes(), now);
   renderer.draw(ctx, cam, selectedSquad, paused, now);
   if (sim.winner && winnerAt < 0) winnerAt = now;
   if (winnerAt >= 0 && !debriefShown && now - winnerAt > 4000) showDebrief();

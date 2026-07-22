@@ -45,6 +45,18 @@ export class RedCommander {
       }
     }
 
+    // armor: attack stance pushes idle tanks at the first objective;
+    // defend stance holds them back as a mobile reserve near their spawn
+    for (const v of sim.vehicles) {
+      if (!v.alive || v.side !== 'red' || v.path) continue;
+      if (this.cfg.stance === 'attack') {
+        const firstPost = Object.values(this.cfg.posts)[0];
+        if (firstPost && Math.hypot(v.x - firstPost.x, v.y - firstPost.y) > 25) {
+          sim.orderVehicleMove(v.id, firstPost.x, firstPost.y);
+        }
+      }
+    }
+
     // one mortar barrage on the densest blue cluster once it commits
     if (!this.barrageUsed && sim.barragesLeft.red > 0) {
       const blues = sim.soldiers.filter((s) => s.alive && !s.downed && s.side === 'blue');

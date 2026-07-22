@@ -2,7 +2,14 @@ import type { GameMap } from './map';
 
 // A* on the tile grid, 8-directional, edge-aware (doors pass, walls/windows
 // don't), no corner cutting. Returns tile coords start→goal inclusive, or null.
-export function astar(map: GameMap, sx: number, sy: number, gx: number, gy: number): { x: number; y: number }[] | null {
+export function astar(
+  map: GameMap,
+  sx: number,
+  sy: number,
+  gx: number,
+  gy: number,
+  mode: 'foot' | 'vehicle' = 'foot',
+): { x: number; y: number }[] | null {
   const { w, h } = map;
   if (!map.inBounds(gx, gy) || !map.terrainAt(gx, gy).passable) return null;
   const n = w * h;
@@ -78,12 +85,12 @@ export function astar(map: GameMap, sx: number, sy: number, gx: number, gy: numb
         if (dx !== 0 && dy !== 0) {
           // diagonal: both L-paths must be fully steppable (no corner cutting)
           ok =
-            map.canStep(cx, cy, nx, cy) &&
-            map.canStep(nx, cy, nx, ny) &&
-            map.canStep(cx, cy, cx, ny) &&
-            map.canStep(cx, ny, nx, ny);
+            map.canStep(cx, cy, nx, cy, mode) &&
+            map.canStep(nx, cy, nx, ny, mode) &&
+            map.canStep(cx, cy, cx, ny, mode) &&
+            map.canStep(cx, ny, nx, ny, mode);
         } else {
-          ok = map.canStep(cx, cy, nx, ny);
+          ok = map.canStep(cx, cy, nx, ny, mode);
         }
         if (!ok) continue;
         const ni = ny * w + nx;

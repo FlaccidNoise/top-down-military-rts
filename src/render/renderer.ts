@@ -1,8 +1,10 @@
-import type { ShotEvent, Sim, Soldier } from '../sim/sim';
+import type { ShotEvent, Sim, Soldier, Vehicle } from '../sim/sim';
+import { VEHICLES } from '../sim/data';
 import type { Camera } from './camera';
 import { bandFor, getSprite, SPRITE_MIN_SCALE, SPRITE_SPAN, WALK_FRAMES, type Pose } from './dudes';
 import { RoofLayer } from './roofs';
 import { TerrainLayer } from './terrain';
+import { getVehicleSprite, vehicleBandFor, VEHICLE_SPAN } from './vehicles';
 
 interface Tracer extends ShotEvent {
   at: number; // ms timestamp
@@ -23,6 +25,15 @@ interface Boom {
   at: number;
 }
 
+interface Plane {
+  x0: number;
+  y: number;
+  x1: number;
+  at: number;
+}
+
+const PLANE_MS = 2600;
+
 const TEAM = { blue: '#5b9bd5', red: '#d05c50' } as const;
 
 export class Renderer {
@@ -32,8 +43,10 @@ export class Renderer {
   private rs = new Map<number, RState>();
   private lastNow = 0;
   private booms: Boom[] = [];
+  private planes: Plane[] = [];
   hudTitle = '';
-  barrageMode = false;
+  modeLine = ''; // targeting-mode banner set by input layer
+  selectedVehicle = -1;
 
   constructor(private sim: Sim) {
     this.terrain = new TerrainLayer(sim.map);
@@ -45,6 +58,10 @@ export class Renderer {
 
   addBooms(booms: { x: number; y: number }[], now: number): void {
     for (const b of booms) this.booms.push({ ...b, at: now });
+  }
+
+  addPlanes(planes: { x0: number; y: number; x1: number }[], now: number): void {
+    for (const p of planes) this.planes.push({ ...p, at: now });
   }
 
   draw(ctx: CanvasRenderingContext2D, cam: Camera, selectedSquad: number, paused: boolean, now: number): void {
@@ -60,18 +77,74 @@ export class Renderer {
     this.roofs.update(this.sim, cam, dt);
     this.roofs.drawShadows(ctx, cam, cw, ch);
 
+    for (const v of this.sim.vehicles) if (!v.alive) this.drawVehicle(ctx, cam, v, now, cw, ch);
     if (cam.scale < SPRITE_MIN_SCALE) {
-      for (const s of this.sim.soldiers) this.drawDot(ctx, cam, s, selectedSquad, cw, ch);
+      for (const s of this.sim.soldiers) if (s.inVehicle < 0) this.drawDot(ctx, cam, s, selectedSquad, cw, ch);
     } else {
       // dead below downed below the living
-      for (const s of this.sim.soldiers) if (!s.alive) this.drawSoldier(ctx, cam, s, selectedSquad, dt, cw, ch);
-      for (const s of this.sim.soldiers) if (s.alive && s.downed) this.drawSoldier(ctx, cam, s, selectedSquad, dt, cw, ch);
-      for (const s of this.sim.soldiers) if (s.alive && !s.downed) this.drawSoldier(ctx, cam, s, selectedSquad, dt, cw, ch);
+      for (const s of this.sim.soldiers) if (!s.alive && s.inVehicle < 0) this.drawSoldier(ctx, cam, s, selectedSquad, dt, cw, ch);
+      for (const s of this.sim.soldiers) if (s.alive && s.downed && s.inVehicle < 0) this.drawSoldier(ctx, cam, s, selectedSquad, dt, cw, ch);
+      for (const s of this.sim.soldiers) if (s.alive && !s.downed && s.inVehicle < 0) this.drawSoldier(ctx, cam, s, selectedSquad, dt, cw, ch);
     }
+    for (const v of this.sim.vehicles) if (v.alive) this.drawVehicle(ctx, cam, v, now, cw, ch);
 
     this.drawFire(ctx, cam, now, cw, ch);
     this.roofs.drawTops(ctx, cam, cw, ch);
+    this.drawPlanes(ctx, cam, now, cw, ch);
     this.drawHud(ctx, selectedSquad, paused);
+  }
+
+  private drawVehicle(ctx: CanvasRenderingContext2D, cam: Camera, v: Vehicle, now: number, cw: number, ch: number): void {
+    const [x, y] = cam.worldToScreen(v.x, v.y, cw, ch);
+    const pad = VEHICLE_SPAN * cam.scale;
+    if (x < -pad || y < -pad || x > cw + pad || y > ch + pad) return;
+    const spr = getVehicleSprite(v.kind, v.side, v.alive ? 'ok' : 'dead', vehicleBandFor(cam.scale));
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(v.facing);
+    ctx.drawImage(spr, -pad / 2, -pad / 2, pad, pad);
+    ctx.restore();
+    if (v.alive && v.id === this.selectedVehicle) {
+      ctx.strokeStyle = '#ffe9a0';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(x, y, cam.scale * 3.2, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    if (v.burning) {
+      // drifting smoke: three staggered puffs on a slow clock
+      for (let i = 0; i < 3; i++) {
+        const t = ((now / 1000 + i * 0.8 + v.id) % 2.4) / 2.4;
+        const r = (0.8 + t * 2.2) * cam.scale;
+        ctx.fillStyle = `rgba(30, 28, 25, ${(1 - t) * 0.4})`;
+        ctx.beginPath();
+        ctx.arc(x + t * cam.scale * 3 * Math.sin(v.id + i), y - t * cam.scale * 4, r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+  }
+
+  private drawPlanes(ctx: CanvasRenderingContext2D, cam: Camera, now: number, cw: number, ch: number): void {
+    this.planes = this.planes.filter((p) => now - p.at < PLANE_MS);
+    for (const p of this.planes) {
+      const t = (now - p.at) / PLANE_MS;
+      const wx = p.x0 + (p.x1 - p.x0) * t;
+      const [x, y] = cam.worldToScreen(wx, p.y, cw, ch);
+      const s = cam.scale;
+      // shadow racing along the ground, then the aircraft offset "above"
+      ctx.fillStyle = 'rgba(0,0,0,0.25)';
+      ctx.beginPath();
+      ctx.ellipse(x, y, s * 4.5, s * 1.1, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.save();
+      ctx.translate(x + s * 2, y - s * 6);
+      ctx.fillStyle = '#4a5240';
+      // fuselage + wings + tail, nose toward +X
+      ctx.fillRect(-s * 3.2, -s * 0.45, s * 6.4, s * 0.9);
+      ctx.fillRect(-s * 0.8, -s * 4.2, s * 1.9, s * 8.4);
+      ctx.fillRect(-s * 3.2, -s * 1.6, s * 0.9, s * 3.2);
+      ctx.restore();
+    }
   }
 
   private state(s: Soldier): RState {
@@ -301,8 +374,19 @@ export class Renderer {
     const title = this.hudTitle ? `${this.hudTitle}  ` : '';
     lines.push(`${title}T+${Math.floor((this.sim.tick / 30 / 60) | 0)}:${String(Math.floor(this.sim.tick / 30) % 60).padStart(2, '0')}  US ${blue} | GE ${red}`);
     if (paused) lines.push('PAUSED — space to resume');
-    if (this.barrageMode) lines.push('>>> MORTAR BARRAGE: click the target <<<');
-    lines.push(`click: select   right-click: move   B: barrage (${this.sim.barragesLeft.blue} left)   space: pause`);
+    if (this.modeLine) lines.push(this.modeLine);
+    lines.push(
+      `click: select   right-click: move   B: barrage (${this.sim.barragesLeft.blue})   A: airstrike (${this.sim.airstrikesLeft.blue})   space: pause`,
+    );
+    const veh = this.sim.vehicles[this.selectedVehicle];
+    if (veh) {
+      lines.push(`— ${VEHICLES[veh.kind].name} —`);
+      for (const cid of veh.crewIds) {
+        const c = this.sim.soldiers[cid];
+        const st = !c.alive ? 'KIA ' : c.downed ? 'DOWN' : 'OK  ';
+        lines.push(`${st} ${c.name}`);
+      }
+    }
     const squad = this.sim.squads[selectedSquad];
     if (squad) {
       lines.push(`— ${squad.name} —`);
