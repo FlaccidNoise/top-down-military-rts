@@ -1,5 +1,6 @@
 import type { ShotEvent, Sim, Soldier } from '../sim/sim';
 import type { Camera } from './camera';
+import { DecalLayer } from './decals';
 import { bandFor, getSprite, SPRITE_MIN_SCALE, SPRITE_SPAN, WALK_FRAMES, type Pose } from './dudes';
 import { RoofLayer } from './roofs';
 import { TerrainLayer } from './terrain';
@@ -15,6 +16,8 @@ interface RState {
   phase: number; // gait cycles (1 per stride pair)
   px: number;
   py: number;
+  smx: number; // last blood-smear deposit position (dragged casualties)
+  smy: number;
 }
 
 interface Boom {
@@ -32,11 +35,14 @@ export class Renderer {
   private rs = new Map<number, RState>();
   private lastNow = 0;
   private booms: Boom[] = [];
+  private decals: DecalLayer;
+  private barrageMarks: { x: number; y: number; at: number }[] = [];
   hudTitle = '';
   barrageMode = false;
 
   constructor(private sim: Sim) {
     this.terrain = new TerrainLayer(sim.map);
+    this.decals = new DecalLayer(sim.map.w, sim.map.h);
   }
 
   addEvents(events: ShotEvent[], now: number): void {
@@ -44,7 +50,15 @@ export class Renderer {
   }
 
   addBooms(booms: { x: number; y: number }[], now: number): void {
-    for (const b of booms) this.booms.push({ ...b, at: now });
+    for (const b of booms) {
+      this.booms.push({ ...b, at: now });
+      this.decals.scorch(b.x, b.y);
+    }
+  }
+
+  // Call-in feedback: rounds take 20 s to arrive; mark the target meanwhile.
+  markBarrage(x: number, y: number, now: number): void {
+    this.barrageMarks.push({ x, y, at: now });
   }
 
   draw(ctx: CanvasRenderingContext2D, cam: Camera, selectedSquad: number, paused: boolean, now: number): void {
@@ -57,6 +71,7 @@ export class Renderer {
     ctx.imageSmoothingEnabled = true;
 
     this.terrain.draw(ctx, cam, cw, ch);
+    this.decals.draw(ctx, cam, cw, ch);
     this.roofs.update(this.sim, cam, dt);
     this.roofs.drawShadows(ctx, cam, cw, ch);
 
@@ -71,20 +86,57 @@ export class Renderer {
 
     this.drawFire(ctx, cam, now, cw, ch);
     this.roofs.drawTops(ctx, cam, cw, ch);
+    this.drawBarrageMarks(ctx, cam, now, cw, ch);
     this.drawHud(ctx, selectedSquad, paused);
+  }
+
+  private drawBarrageMarks(ctx: CanvasRenderingContext2D, cam: Camera, now: number, cw: number, ch: number): void {
+    this.barrageMarks = this.barrageMarks.filter((m) => now - m.at < 20000);
+    for (const m of this.barrageMarks) {
+      const [x, y] = cam.worldToScreen(m.x, m.y, cw, ch);
+      const a = 0.45 + 0.25 * Math.sin(now / 160);
+      ctx.strokeStyle = `rgba(255, 202, 106, ${a})`;
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([6, 6]);
+      ctx.beginPath();
+      ctx.arc(x, y, 6 * cam.scale, 0, Math.PI * 2); // ~scatter radius
+      ctx.stroke();
+      ctx.setLineDash([]);
+      const c = Math.max(4, cam.scale * 0.5);
+      ctx.beginPath();
+      ctx.moveTo(x - c, y);
+      ctx.lineTo(x + c, y);
+      ctx.moveTo(x, y - c);
+      ctx.lineTo(x, y + c);
+      ctx.stroke();
+    }
   }
 
   private state(s: Soldier): RState {
     let st = this.rs.get(s.id);
     if (!st) {
-      st = { facing: s.side === 'blue' ? 0 : Math.PI, phase: 0, px: s.x, py: s.y };
+      st = { facing: s.side === 'blue' ? 0 : Math.PI, phase: 0, px: s.x, py: s.y, smx: s.x, smy: s.y };
       this.rs.set(s.id, st);
     }
     return st;
   }
 
   private drawSoldier(ctx: CanvasRenderingContext2D, cam: Camera, s: Soldier, selectedSquad: number, dt: number, cw: number, ch: number): void {
-    const [x, y] = cam.worldToScreen(s.x, s.y, cw, ch);
+    // The sim pins a dragged casualty to the rescuer's position; draw the
+    // body trailing behind the dragger instead of stacked under him.
+    const carried = s.alive && s.downed && s.carriedBy >= 0;
+    let wx = s.x;
+    let wy = s.y;
+    let dragFacing: number | null = null;
+    if (carried) {
+      const rst = this.rs.get(s.carriedBy);
+      if (rst) {
+        dragFacing = rst.facing;
+        wx -= Math.cos(rst.facing) * 1.0;
+        wy -= Math.sin(rst.facing) * 1.0;
+      }
+    }
+    const [x, y] = cam.worldToScreen(wx, wy, cw, ch);
     const pad = SPRITE_SPAN * cam.scale;
     if (x < -pad || y < -pad || x > cw + pad || y > ch + pad) return;
 
@@ -98,7 +150,9 @@ export class Renderer {
     let pose: Pose;
     let frame = 0;
     if (!s.alive) pose = 'dead';
-    else if (s.downed) pose = 'downed';
+    else if (s.downed) pose = carried ? 'dragged' : 'downed';
+    else if (s.task?.phase === 'drag') pose = 'drag';
+    else if (s.task?.phase === 'aid') pose = 'aid';
     else if (s.mental === 'pinned' || (s.mental === 'broken' && !s.path)) pose = 'prone';
     else if (moved > 1e-4) {
       pose = 'walk';
@@ -108,7 +162,10 @@ export class Renderer {
 
     if (s.alive) {
       let desired = st.facing;
-      if (s.targetId >= 0 && !s.downed) {
+      if (s.task?.phase === 'aid') {
+        const c = this.sim.soldiers[s.task.casualtyId];
+        desired = Math.atan2(c.y - s.y, c.x - s.x);
+      } else if (s.targetId >= 0 && !s.downed) {
         const t = this.sim.soldiers[s.targetId];
         desired = Math.atan2(t.y - s.y, t.x - s.x);
       } else if (moved > 1e-4) {
@@ -118,6 +175,13 @@ export class Renderer {
       while (diff > Math.PI) diff -= Math.PI * 2;
       while (diff < -Math.PI) diff += Math.PI * 2;
       st.facing += Math.sign(diff) * Math.min(Math.abs(diff), 8 * dt);
+    }
+
+    // dragged bleeding men leave a smear trail
+    if (carried && s.bloodLoss > 0.03 && Math.hypot(wx - st.smx, wy - st.smy) > 0.45) {
+      this.decals.smear(wx, wy, dragFacing ?? st.facing);
+      st.smx = wx;
+      st.smy = wy;
     }
 
     // blood pool under the immobile wounded and the dead
@@ -144,7 +208,7 @@ export class Renderer {
 
     const band = bandFor(cam.scale);
     const spr = getSprite(s.side, s.weapon, pose, frame, band);
-    const facing = s.alive ? st.facing : st.facing + ((s.id * 2654435761) % 100) / 100 - 0.5;
+    const facing = s.alive ? (dragFacing ?? st.facing) : st.facing + ((s.id * 2654435761) % 100) / 100 - 0.5;
     ctx.save();
     ctx.translate(x, y);
     ctx.rotate(facing);

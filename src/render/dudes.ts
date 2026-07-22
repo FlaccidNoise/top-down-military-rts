@@ -6,7 +6,7 @@ import type { Side } from '../sim/sim';
 // one rotated drawImage per soldier; rotation is free because top-down art has
 // a single valid view angle.
 
-export type Pose = 'idle' | 'walk' | 'aim' | 'prone' | 'downed' | 'dead';
+export type Pose = 'idle' | 'walk' | 'aim' | 'prone' | 'downed' | 'dead' | 'drag' | 'aid' | 'dragged';
 export const WALK_FRAMES = 6;
 export const SPRITE_SPAN = 3.6; // meters covered by the (square) sprite canvas
 const DUDE_SCALE = 1.35; // genre-standard oversize so figures read at tactical zoom
@@ -109,19 +109,7 @@ function standing(g: Ctx, k: Kit, w: WeaponKey, gunAngle: number, legSwing: numb
       dot(g, lx, side * 0.13, 0.07, '#3a3128');
     }
   }
-  // team silhouette halo under the body
-  g.fillStyle = k.outline;
-  g.beginPath();
-  g.ellipse(0, 0, 0.27, 0.37, 0, 0, Math.PI * 2);
-  g.fill();
-  g.fillStyle = k.uniform;
-  g.beginPath();
-  g.ellipse(0, 0, 0.22, 0.31, 0, 0, Math.PI * 2);
-  g.fill();
-  g.strokeStyle = 'rgba(0,0,0,0.25)';
-  g.lineWidth = 0.035;
-  g.stroke();
-  torsoStraps(g);
+  torso(g, k, 0.22, 0.31);
   // arms to the weapon
   const gx = 0.14;
   const gy = 0.13;
@@ -191,6 +179,61 @@ function dead(g: Ctx, k: Kit, w: WeaponKey): void {
   dot(g, 0.7, -0.18, 0.16, k.helmet);
 }
 
+function torso(g: Ctx, k: Kit, rx: number, ry: number): void {
+  g.fillStyle = k.outline;
+  g.beginPath();
+  g.ellipse(0, 0, rx + 0.05, ry + 0.06, 0, 0, Math.PI * 2);
+  g.fill();
+  g.fillStyle = k.uniform;
+  g.beginPath();
+  g.ellipse(0, 0, rx, ry, 0, 0, Math.PI * 2);
+  g.fill();
+  g.strokeStyle = 'rgba(0,0,0,0.25)';
+  g.lineWidth = 0.035;
+  g.stroke();
+  torsoStraps(g);
+}
+
+// Rescuer hauling a casualty: leaning into it, both arms trailing back to the
+// grip, weapon slung across the back.
+function drag(g: Ctx, k: Kit, w: WeaponKey): void {
+  torso(g, k, 0.22, 0.31);
+  gun(g, w, -0.08, 0, 2.45); // slung
+  cap(g, 0.02, 0.24, -0.36, 0.15, 0.12, k.sleeve);
+  cap(g, 0.02, -0.24, -0.36, -0.15, 0.12, k.sleeve);
+  dot(g, -0.36, 0.15, 0.055, k.skin);
+  dot(g, -0.36, -0.15, 0.055, k.skin);
+  helmet(g, k, 0.1, 0);
+}
+
+// Kneeling over the casualty, hands working, weapon slung.
+function aid(g: Ctx, k: Kit, w: WeaponKey): void {
+  dot(g, -0.26, 0.17, 0.075, '#3a3128'); // tucked boots
+  dot(g, -0.26, -0.17, 0.075, '#3a3128');
+  torso(g, k, 0.24, 0.29);
+  gun(g, w, -0.08, 0, 2.45);
+  cap(g, 0.04, 0.22, 0.4, 0.12, 0.12, k.sleeve);
+  cap(g, 0.04, -0.22, 0.4, -0.12, 0.12, k.sleeve);
+  dot(g, 0.4, 0.12, 0.055, k.skin);
+  dot(g, 0.4, -0.12, 0.055, k.skin);
+  helmet(g, k, 0.13, 0);
+}
+
+// Casualty on his back, arms overhead toward the dragger, weapon left behind.
+function dragged(g: Ctx, k: Kit): void {
+  for (const side of [-1, 1] as const) {
+    cap(g, -0.35, side * 0.06, -0.95, side * 0.13, 0.14, k.trousers);
+    dot(g, -0.95, side * 0.13, 0.075, '#3a3128');
+  }
+  cap(g, -0.4, 0, 0.15, 0, 0.52, k.outline);
+  cap(g, -0.4, 0, 0.15, 0, 0.42, k.uniform);
+  cap(g, 0.08, 0.15, 0.52, 0.17, 0.12, k.sleeve);
+  cap(g, 0.08, -0.15, 0.52, -0.17, 0.12, k.sleeve);
+  dot(g, 0.52, 0.17, 0.055, k.skin);
+  dot(g, 0.52, -0.17, 0.055, k.skin);
+  helmet(g, k, 0.32, 0);
+}
+
 function drawDude(g: Ctx, side: Side, weapon: WeaponKey, pose: Pose, frame: number): void {
   const k = KITS[side];
   switch (pose) {
@@ -213,6 +256,15 @@ function drawDude(g: Ctx, side: Side, weapon: WeaponKey, pose: Pose, frame: numb
       break;
     case 'dead':
       dead(g, deadKit(k), weapon);
+      break;
+    case 'drag':
+      drag(g, k, weapon);
+      break;
+    case 'aid':
+      aid(g, k, weapon);
+      break;
+    case 'dragged':
+      dragged(g, k);
       break;
   }
 }

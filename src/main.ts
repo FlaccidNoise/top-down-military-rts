@@ -135,6 +135,7 @@ canvas.addEventListener('mouseup', (e) => {
       if (sim.callBarrage('blue', wx, wy)) {
         barrageMode = false;
         renderer.barrageMode = false;
+        renderer.markBarrage(wx, wy, performance.now());
       }
     } else {
       let best = -1;
