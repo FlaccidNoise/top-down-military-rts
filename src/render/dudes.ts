@@ -48,7 +48,7 @@ function deadKit(k: Kit): Kit {
     trousers: mix(k.trousers, g, 0.45),
     helmet: mix(k.helmet, g, 0.45),
     skin: mix(k.skin, g, 0.3),
-    outline: k.outline.replace('0.9', '0.35'),
+    outline: k.outline.replace(/[\d.]+\)$/, '0.35)'),
   };
 }
 

@@ -116,14 +116,18 @@ export class Renderer {
     this.drawHud(ctx, selectedSquad, paused);
   }
 
+  // Pulsing dashed amber — shared style for call-in target markers.
+  private markStroke(ctx: CanvasRenderingContext2D, now: number): void {
+    ctx.strokeStyle = `rgba(255, 202, 106, ${0.45 + 0.25 * Math.sin(now / 160)})`;
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([6, 6]);
+  }
+
   private drawBarrageMarks(ctx: CanvasRenderingContext2D, cam: Camera, now: number, cw: number, ch: number): void {
     this.barrageMarks = this.barrageMarks.filter((m) => this.sim.tick - m.tick < 20 * 30);
     for (const m of this.barrageMarks) {
       const [x, y] = cam.worldToScreen(m.x, m.y, cw, ch);
-      const a = 0.45 + 0.25 * Math.sin(now / 160);
-      ctx.strokeStyle = `rgba(255, 202, 106, ${a})`;
-      ctx.lineWidth = 1.5;
-      ctx.setLineDash([6, 6]);
+      this.markStroke(ctx, now);
       ctx.beginPath();
       ctx.arc(x, y, 6 * cam.scale, 0, Math.PI * 2); // ~scatter radius
       ctx.stroke();
@@ -140,10 +144,7 @@ export class Renderer {
     for (const m of this.strafeMarks) {
       const [x0, y] = cam.worldToScreen(m.x - 20, m.y, cw, ch);
       const [x1] = cam.worldToScreen(m.x + 20, m.y, cw, ch);
-      const a = 0.45 + 0.25 * Math.sin(now / 160);
-      ctx.strokeStyle = `rgba(255, 202, 106, ${a})`;
-      ctx.lineWidth = 1.5;
-      ctx.setLineDash([6, 6]);
+      this.markStroke(ctx, now);
       ctx.beginPath();
       ctx.moveTo(x0, y);
       ctx.lineTo(x1, y);
@@ -242,7 +243,9 @@ export class Renderer {
     const st = this.state(s);
     const dx = s.x - st.px;
     const dy = s.y - st.py;
-    const moved = Math.hypot(dx, dy);
+    // >2m in one frame is a sim teleport (vehicle bailout), not movement —
+    // don't let it fake a walk frame or wrench the facing
+    const moved = Math.hypot(dx, dy) > 2 ? 0 : Math.hypot(dx, dy);
     st.px = s.x;
     st.py = s.y;
 
