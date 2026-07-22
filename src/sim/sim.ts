@@ -885,7 +885,9 @@ export class Sim {
     s.task = null;
   }
 
-  private inCover(x: number, y: number): boolean {
+  // Public: the same cover predicate AI cover-seeking uses drives the UI's
+  // move-preview dot colors — one definition of "in cover".
+  inCover(x: number, y: number): boolean {
     const t = this.map.terrainAt(Math.floor(x), Math.floor(y));
     return t.cover > 0.2 || this.map.terrainKeyAt(Math.floor(x), Math.floor(y)) === 'floor';
   }

@@ -75,10 +75,14 @@ export function computeShot(sim: Sim, squadId: number, vehicleId: number, pick: 
   if (shooters.length === 0) return null;
 
   if (pick.kind === 'vehicle' && pick.v.alive && pick.v.side === 'red') {
-    const at = shooters.find((s) => WEAPONS[s.weapon].pen !== undefined);
-    if (!at) return null;
-    const w = WEAPONS[at.weapon];
-    return apSolution(sim, at.x, at.y, w.pen!, w.accuracy * sim.aimFactor(at), w.range, pick.v, at.path !== null, `${w.name.toUpperCase()} — ${at.name}`);
+    let best: ShotSolution | null = null;
+    for (const at of shooters) {
+      const w = WEAPONS[at.weapon];
+      if (w.pen === undefined) continue;
+      const sol = apSolution(sim, at.x, at.y, w.pen, w.accuracy * sim.aimFactor(at), w.range, pick.v, at.path !== null, `${w.name.toUpperCase()} — ${at.name}`);
+      if (!best || (sol.ok && (!best.ok || sol.acc > best.acc))) best = sol;
+    }
+    return best;
   }
 
   if (pick.kind === 'soldier' && pick.s.alive && !pick.s.downed && pick.s.side === 'red') {
