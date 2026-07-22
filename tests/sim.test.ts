@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { WEAPONS } from '../src/sim/data';
 import { EDGE, GameMap, los } from '../src/sim/map';
 import { astar } from '../src/sim/path';
-import { BUILDINGS, makeScenario } from '../src/sim/scenario';
+import { generateMap } from '../src/sim/mapgen';
+import { makeScenario } from '../src/sim/scenario';
 import { Sim } from '../src/sim/sim';
 
 describe('line of sight', () => {
@@ -39,10 +40,10 @@ describe('line of sight', () => {
 
 describe('pathfinding', () => {
   it('routes through the door, not through walls or windows', () => {
-    const sim = makeScenario(1);
-    const b = BUILDINGS[0];
+    const plan = generateMap(1);
+    const b = plan.buildings[0];
     const inside = { x: b.x + 2, y: b.y + 2 };
-    const path = astar(sim.map, 10, 44, inside.x, inside.y);
+    const path = astar(plan.map, plan.spawns.west.x, plan.spawns.west.y, inside.x, inside.y);
     expect(path).not.toBeNull();
     expect(path![path!.length - 1]).toEqual(inside);
     // every consecutive step must be legal (edge-aware)
@@ -52,7 +53,7 @@ describe('pathfinding', () => {
       const dx = c.x - a.x;
       const dy = c.y - a.y;
       if (dx !== 0 && dy !== 0) continue; // diagonals validated by canStep in astar itself
-      expect(sim.map.canStep(a.x, a.y, c.x, c.y)).toBe(true);
+      expect(plan.map.canStep(a.x, a.y, c.x, c.y)).toBe(true);
     }
   });
 
@@ -133,8 +134,9 @@ describe('simulation', () => {
 
   it('an assault produces a resolved firefight with no NaN state', () => {
     const sim = makeScenario(7);
-    sim.orderMove(0, 96, 52);
-    sim.orderMove(1, 98, 79);
+    const [b0, b2] = [sim.buildings[0], sim.buildings[2]];
+    sim.orderMove(0, b0.x + b0.w / 2, b0.y + b0.h / 2);
+    sim.orderMove(1, b2.x + b2.w / 2, b2.y + b2.h / 2);
     let steps = 0;
     while (sim.winner === null && steps < 30 * 60 * 10) {
       sim.step();

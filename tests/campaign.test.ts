@@ -52,17 +52,14 @@ describe('bonds', () => {
 });
 
 describe('barrage', () => {
-  it('lands after a call-in delay, wounds men in the open, spares men behind walls', () => {
-    const sim = makeScenario(21);
-    const before = sim.snapshot();
-    // barrage the red woods position (2. Gruppe men in the open at ~122-134, 40-52)
-    expect(sim.callBarrage('blue', 128, 46)).toBe(true);
+  it('lands after a call-in delay and wounds or suppresses men in the open', () => {
+    const map = new GameMap(60, 60);
+    const sim = new Sim(map, 21);
+    sim.addSquad('red', 'targets', [0, 1, 2, 3, 4, 5, 6, 7, 8].map((i) => ({ name: `t${i}`, weapon: 'rifle', x: 26.5 + (i % 3) * 3, y: 26.5 + Math.floor(i / 3) * 3 })));
+    expect(sim.callBarrage('blue', 30, 30)).toBe(true);
     expect(sim.barragesLeft.blue).toBe(1);
-    for (let i = 0; i < 30 * 21; i++) sim.step(); // 20s delay + first round
-    expect(sim.snapshot()).not.toBe(before);
-    for (let i = 0; i < 30 * 40; i++) sim.step(); // rest of the barrage
-    const woodsRed = sim.soldiers.filter((s) => s.side === 'red' && s.x > 118);
-    const touched = woodsRed.filter((s) => s.wounds.length > 0 || s.suppression > 0 || !s.alive || s.downed);
+    for (let i = 0; i < 30 * 61; i++) sim.step(); // 20s delay + full barrage
+    const touched = sim.soldiers.filter((s) => s.wounds.length > 0 || s.suppression > 0 || !s.alive || s.downed);
     expect(touched.length).toBeGreaterThan(0);
   });
 
@@ -76,25 +73,14 @@ describe('barrage', () => {
 
 describe('red commander', () => {
   it('counterattacks a captured post', () => {
-    const sim = makeScenario(23);
-    const commander = new RedCommander({
-      stance: 'defend',
-      posts: { 2: { x: 97, y: 52 }, 3: { x: 98, y: 79 } },
-    });
-    // teleport a blue squad onto 1. Gruppe's post (building A)
-    for (const sid of sim.squads[0].soldierIds) {
-      const s = sim.soldiers[sid];
-      s.x = 96 + (sid % 3);
-      s.y = 51 + (sid % 2);
-    }
-    // pull 1. Gruppe off its post so it must counterattack
-    for (const sid of sim.squads[2].soldierIds) {
-      const s = sim.soldiers[sid];
-      s.x = 120;
-      s.y = 100;
-    }
+    const map = new GameMap(40, 40);
+    const sim = new Sim(map, 23);
+    // blue squad sits on red's post; red squad is far off it
+    sim.addSquad('blue', 'A', [0, 1, 2].map((i) => ({ name: `b${i}`, weapon: 'rifle', x: 10.5 + i, y: 10.5 })));
+    sim.addSquad('red', '1. Gruppe', [0, 1, 2, 3].map((i) => ({ name: `r${i}`, weapon: 'rifle', x: 30.5 + i, y: 30.5 })));
+    const commander = new RedCommander({ stance: 'defend', posts: { 1: { x: 10, y: 10 } } });
     commander.update(sim);
-    const ordered = sim.squads[2].soldierIds.map((i) => sim.soldiers[i]).filter((s) => s.path !== null);
+    const ordered = sim.squads[1].soldierIds.map((i) => sim.soldiers[i]).filter((s) => s.path !== null);
     expect(ordered.length).toBeGreaterThan(0);
   });
 });
@@ -153,6 +139,24 @@ describe('campaign', () => {
     const c = newCampaign(4);
     saveCampaign(c, storage);
     expect(loadCampaign(storage)).toEqual(c);
+  });
+
+  it('battles 1 and 2 place both sides on the generated map', () => {
+    for (const idx of [1, 2]) {
+      const c = newCampaign(9);
+      c.battleIndex = idx;
+      const { sim, camStart } = makeCampaignBattle(c, 13 + idx);
+      expect(sim.soldiers.length).toBeGreaterThan(20);
+      for (const s of sim.soldiers) {
+        expect(s.x).toBeGreaterThan(0);
+        expect(s.x).toBeLessThan(sim.map.w);
+        expect(s.y).toBeGreaterThan(0);
+        expect(s.y).toBeLessThan(sim.map.h);
+      }
+      expect(Number.isFinite(camStart.x)).toBe(true);
+      for (let i = 0; i < 300; i++) sim.step();
+      for (const s of sim.soldiers) expect(Number.isFinite(s.x)).toBe(true);
+    }
   });
 
   it('a campaign battle wires persistent bonds onto battle soldiers', () => {
