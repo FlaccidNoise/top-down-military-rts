@@ -8,6 +8,27 @@ import { Sim, type MemberInit, type Side } from './sim';
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 const center = (b: Building): Vec => ({ x: b.x + b.w / 2, y: b.y + b.h / 2 });
 
+// Nearest road tile center to (x,y) — vehicles spawn on the road, never in a
+// woods stand or hedge the map happened to grow next to the entry point.
+function roadSpot(sim: Sim, x: number, y: number): Vec {
+  for (let r = 0; r < 8; r++) {
+    for (let dy = -r; dy <= r; dy++) {
+      for (let dx = -r; dx <= r; dx++) {
+        if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+        const tx = Math.floor(x) + dx;
+        const ty = Math.floor(y) + dy;
+        if (sim.map.inBounds(tx, ty) && sim.map.terrainKeyAt(tx, ty) === 'road') return { x: tx + 0.5, y: ty + 0.5 };
+      }
+    }
+  }
+  return { x, y };
+}
+
+function addVehicleOnRoad(sim: Sim, side: Side, kind: 'sherman' | 'panzer4', x: number, y: number, facing: number): void {
+  const p = roadSpot(sim, x, y);
+  sim.addVehicle(side, kind, p.x, p.y, facing);
+}
+
 function squadMembers(sim: Sim, side: Side, cx: number, cy: number, spread: number): { name: string; weapon: WeaponKey; x: number; y: number }[] {
   const names = side === 'blue' ? US_NAMES : DE_NAMES;
   const at: WeaponKey = side === 'blue' ? 'bazooka' : 'panzerfaust';
@@ -72,8 +93,8 @@ export function makeScenario(seed: number): Sim {
   sim.addSquad('blue', '1st Squad', squadMembers(sim, 'blue', west.x + 7, clamp(west.y - 14, 4, plan.map.h - 5), 3));
   sim.addSquad('blue', '2nd Squad', squadMembers(sim, 'blue', west.x + 7, clamp(west.y + 14, 4, plan.map.h - 5), 3));
   addRedDefenders(sim, plan);
-  sim.addVehicle('blue', 'sherman', west.x + 0.5, west.y + 0.5, 0);
-  sim.addVehicle('red', 'panzer4', east.x - 1.5, east.y + 0.5, Math.PI);
+  addVehicleOnRoad(sim, 'blue', 'sherman', west.x + 0.5, west.y + 0.5, 0);
+  addVehicleOnRoad(sim, 'red', 'panzer4', east.x - 1.5, east.y + 0.5, Math.PI);
   return sim;
 }
 
@@ -182,14 +203,14 @@ export function makeCampaignBattle(campaign: Campaign, seed: number): CampaignBa
   // armor: the player always brings a Sherman; the Germans field armor
   // from battle 2 onward (their counterattack and their last stand)
   if (battle === 1) {
-    sim.addVehicle('blue', 'sherman', village.x - 2.5, village.y + 0.5, 0);
-    sim.addVehicle('red', 'panzer4', east.x - 1.5, east.y + 0.5, Math.PI);
-    sim.addVehicle('red', 'panzer4', east.x - 5.5, east.y + 0.5, Math.PI);
+    addVehicleOnRoad(sim, 'blue', 'sherman', village.x - 2.5, village.y + 0.5, 0);
+    addVehicleOnRoad(sim, 'red', 'panzer4', east.x - 1.5, east.y + 0.5, Math.PI);
+    addVehicleOnRoad(sim, 'red', 'panzer4', east.x - 5.5, east.y + 0.5, Math.PI);
   } else if (battle === 2) {
-    sim.addVehicle('blue', 'sherman', village.x - 2.5, village.y + 0.5, 0);
-    sim.addVehicle('red', 'panzer4', east.x - 8.5, east.y + 0.5, Math.PI);
+    addVehicleOnRoad(sim, 'blue', 'sherman', village.x - 2.5, village.y + 0.5, 0);
+    addVehicleOnRoad(sim, 'red', 'panzer4', east.x - 8.5, east.y + 0.5, Math.PI);
   } else {
-    sim.addVehicle('blue', 'sherman', west.x + 0.5, west.y + 0.5, 0);
+    addVehicleOnRoad(sim, 'blue', 'sherman', west.x + 0.5, west.y + 0.5, 0);
   }
 
   wireBonds(sim, rosters);
