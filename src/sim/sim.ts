@@ -1,5 +1,18 @@
 import { applyHit, capacities, consciousness, freshBody, rollPart, woundLabel, type Wound } from './body';
-import { VEHICLES, WEAPONS, type AmmoKey, type VehicleKey, type WeaponDef, type WeaponKey } from './data';
+import {
+  DE_NAMES,
+  SQUADS,
+  TEAMS,
+  US_NAMES,
+  VEHICLES,
+  WEAPONS,
+  type AmmoKey,
+  type Role,
+  type SquadKey,
+  type VehicleKey,
+  type WeaponDef,
+  type WeaponKey,
+} from './data';
 import { GameMap, los } from './map';
 import type { Building } from './mapgen';
 import { astar } from './path';
@@ -29,6 +42,8 @@ export interface Soldier {
   pid: number; // campaign roster id, -1 for one-off battles
   side: Side;
   squadId: number;
+  teamId: number;
+  role: Role;
   name: string;
   weapon: WeaponKey;
   secondary?: WeaponKey; // one-shot items (panzerfaust) revert to this once spent
@@ -116,6 +131,17 @@ export interface Squad {
   side: Side;
   name: string;
   soldierIds: number[];
+  teamIds: number[];
+}
+
+// The atomic command unit (spec §1): 3-6 men, one order at a time. A squad is
+// 1-3 teams sharing a leader and bonds; crewed weapons/vehicles are
+// single-team squads — same data shape, no special cases.
+export interface Team {
+  id: number;
+  squadId: number;
+  name: string;
+  soldierIds: number[];
 }
 
 export interface ShotEvent {
@@ -174,6 +200,7 @@ export class Sim {
   buildings: Building[] = []; // set by the scenario from the map plan; render + placement data
   soldiers: Soldier[] = [];
   squads: Squad[] = [];
+  teams: Team[] = [];
   vehicles: Vehicle[] = [];
   winner: Side | null = null;
   barragesLeft: Record<Side, number> = { blue: 2, red: 1 };
@@ -193,63 +220,124 @@ export class Sim {
     this.rng = mulberry32(seed);
   }
 
-  addSquad(side: Side, name: string, members: MemberInit[]): Squad {
-    const squad: Squad = { id: this.squads.length, side, name, soldierIds: [] };
-    for (const m of members) {
-      const body = freshBody();
-      if (m.bodyDamage) for (let i = 0; i < body.length; i++) body[i] = Math.max(0, body[i] - (m.bodyDamage[i] ?? 0));
-      const w = WEAPONS[m.weapon];
-      const s: Soldier = {
-        id: this.soldiers.length,
-        pid: m.pid ?? -1,
-        side,
-        squadId: squad.id,
-        name: m.name,
-        weapon: m.weapon,
-        secondary: m.secondary,
-        courage: m.courage ?? 0.3 + this.rng.next() * 0.6,
-        xp: m.xp ?? 0,
-        x: m.x,
-        y: m.y,
-        alive: true,
-        body,
-        wounds: [],
-        pain: 0,
-        bloodLoss: 0,
-        bleedRate: 0,
-        stabilized: false,
-        downed: false,
-        ammo: m.ammo ?? { [w.ammo.type]: 6 }, // fallback for legacy callers
-        magLeft: w.ammo.perUnit,
-        reloading: 0,
-        heat: 0,
-        stamina: 1,
-        suppression: 0,
-        morale: 0,
-        mental: 'steady',
-        bonds: {},
-        path: null,
-        pathI: 0,
-        cooldown: 0,
-        targetId: -1,
-        fleeing: false,
-        task: null,
-        rescuerId: -1,
-        carriedBy: -1,
-        inVehicle: -1,
-      };
-      s.morale = 0.7 + s.courage * 0.3;
-      this.soldiers.push(s);
+  private spawnSoldier(side: Side, squadId: number, teamId: number, role: Role, m: MemberInit): Soldier {
+    const body = freshBody();
+    if (m.bodyDamage) for (let i = 0; i < body.length; i++) body[i] = Math.max(0, body[i] - (m.bodyDamage[i] ?? 0));
+    const w = WEAPONS[m.weapon];
+    const s: Soldier = {
+      id: this.soldiers.length,
+      pid: m.pid ?? -1,
+      side,
+      squadId,
+      teamId,
+      role,
+      name: m.name,
+      weapon: m.weapon,
+      secondary: m.secondary,
+      courage: m.courage ?? 0.3 + this.rng.next() * 0.6,
+      xp: m.xp ?? 0,
+      x: m.x,
+      y: m.y,
+      alive: true,
+      body,
+      wounds: [],
+      pain: 0,
+      bloodLoss: 0,
+      bleedRate: 0,
+      stabilized: false,
+      downed: false,
+      ammo: m.ammo ?? { [w.ammo.type]: 6 }, // fallback for legacy callers
+      magLeft: w.ammo.perUnit,
+      reloading: 0,
+      heat: 0,
+      stamina: 1,
+      suppression: 0,
+      morale: 0,
+      mental: 'steady',
+      bonds: {},
+      path: null,
+      pathI: 0,
+      cooldown: 0,
+      targetId: -1,
+      fleeing: false,
+      task: null,
+      rescuerId: -1,
+      carriedBy: -1,
+      inVehicle: -1,
+    };
+    s.morale = 0.7 + s.courage * 0.3;
+    this.soldiers.push(s);
+    return s;
+  }
+
+  // Spawns one team's soldiers onto a squad already pushed into this.squads.
+  private spawnTeam(squad: Squad, name: string, entries: { role: Role; member: MemberInit }[]): Team {
+    const team: Team = { id: this.teams.length, squadId: squad.id, name, soldierIds: [] };
+    this.teams.push(team);
+    squad.teamIds.push(team.id);
+    for (const { role, member } of entries) {
+      const s = this.spawnSoldier(squad.side, squad.id, team.id, role, member);
+      team.soldierIds.push(s.id);
       squad.soldierIds.push(s.id);
-      this.startStrength[side]++;
+      this.startStrength[squad.side]++;
     }
-    // default squad cohesion for one-off battles; campaign wiring overwrites
+    return team;
+  }
+
+  // Default squad cohesion for one-off battles; campaign wiring overwrites bonds.
+  private bondSquad(squad: Squad): void {
     for (const a of squad.soldierIds) {
       for (const b of squad.soldierIds) {
         if (a !== b) this.soldiers[a].bonds[b] = 0.25 + this.rng.next() * 0.3;
       }
     }
+  }
+
+  // Legacy call shape: one implicit team holds the whole roster. Used by
+  // campaign wiring (strategic/bridge.ts) and any hand-built test squad.
+  addSquad(side: Side, name: string, members: MemberInit[]): Squad {
+    const squad: Squad = { id: this.squads.length, side, name, soldierIds: [], teamIds: [] };
     this.squads.push(squad);
+    this.spawnTeam(
+      squad,
+      name,
+      members.map((m) => ({ role: 'rifleman' as const, member: m })),
+    );
+    this.bondSquad(squad);
+    return squad;
+  }
+
+  // Data-driven force building: spawns every team a SquadDef calls for, named
+  // and armed from data.ts. `roster` supplies per-team, per-slot overrides
+  // (campaign soldiers) — any field left out falls back to the slot default.
+  addSquadFromDef(side: Side, key: SquadKey, x: number, y: number, roster?: MemberInit[][]): Squad {
+    const def = SQUADS[key];
+    const names = side === 'blue' ? US_NAMES : DE_NAMES;
+    const squad: Squad = { id: this.squads.length, side, name: def.name, soldierIds: [], teamIds: [] };
+    this.squads.push(squad);
+    const n = def.teams.length;
+    def.teams.forEach((teamKey, ti) => {
+      const teamDef = TEAMS[teamKey];
+      const cy = y + (ti - (n - 1) / 2) * 8; // fan teams out so a multi-team squad doesn't stack
+      const entries = teamDef.slots.map((slot, si) => {
+        const ov = roster?.[ti]?.[si];
+        const member: MemberInit = {
+          name: ov?.name ?? names[this.rng.int(names.length)],
+          weapon: ov?.weapon ?? slot.weapon,
+          x: ov?.x ?? x + this.rng.range(-3, 3),
+          y: ov?.y ?? cy + this.rng.range(-3, 3),
+          courage: ov?.courage,
+          xp: ov?.xp,
+          bodyDamage: ov?.bodyDamage,
+          pid: ov?.pid,
+          ammo: ov?.ammo ?? { ...slot.ammo },
+          secondary: ov?.secondary,
+        };
+        return { role: slot.role, member };
+      });
+      this.spawnTeam(squad, teamDef.name, entries);
+    });
+    this.bondSquad(squad);
     return squad;
   }
 
@@ -290,8 +378,13 @@ export class Sim {
 
   // Served-weapon rule: a living assistant nearby speeds reloads and barrel
   // swaps. Exposed for UI legibility and tests.
-  assistFactor(_s: Soldier): number {
-    return 1.75; // Task 5 wires roles: 1 when an assistant is within 3m in the same team
+  assistFactor(s: Soldier): number {
+    for (const sid of this.teams[s.teamId].soldierIds) {
+      if (sid === s.id) continue;
+      const m = this.soldiers[sid];
+      if (m.alive && !m.downed && m.role === 'assistant' && Math.hypot(m.x - s.x, m.y - s.y) <= 3) return 1;
+    }
+    return 1.75;
   }
 
   callBarrage(side: Side, x: number, y: number): boolean {
@@ -319,12 +412,14 @@ export class Sim {
 
   addVehicle(side: Side, kind: VehicleKey, x: number, y: number, facing = 0): Vehicle {
     const def = VEHICLES[kind];
-    const crewWeapon: WeaponKey = side === 'blue' ? 'carbine' : 'mp40';
-    const squad = this.addSquad(side, `${def.name} crew`, [
-      { name: 'Cmdr', weapon: crewWeapon, x, y },
-      { name: 'Gunner', weapon: crewWeapon, x, y },
-      { name: 'Driver', weapon: crewWeapon, x, y },
-    ]);
+    const squad: Squad = { id: this.squads.length, side, name: `${def.name} crew`, soldierIds: [], teamIds: [] };
+    this.squads.push(squad);
+    const entries = def.crew.map((slot) => ({
+      role: slot.role,
+      member: { name: slot.role[0].toUpperCase() + slot.role.slice(1), weapon: slot.weapon, x, y, ammo: { ...slot.ammo } },
+    }));
+    this.spawnTeam(squad, `${def.name} crew`, entries);
+    this.bondSquad(squad);
     const v: Vehicle = {
       id: this.vehicles.length,
       side,
@@ -375,29 +470,14 @@ export class Sim {
     return null;
   }
 
-  // A direct order overrides any queued route.
-  orderMove(squadId: number, wx: number, wy: number): void {
-    this.squadWaypoints[squadId] = [];
-    this.moveSquadTo(squadId, wx, wy);
-  }
-
-  // Shift-click: append a waypoint; dispatches immediately if the squad is idle.
-  queueMove(squadId: number, wx: number, wy: number): void {
-    if (!this.squads[squadId]) return;
-    if (!this.squadDest[squadId] && (this.squadWaypoints[squadId] ?? []).length === 0) {
-      this.moveSquadTo(squadId, wx, wy);
-      return;
-    }
-    (this.squadWaypoints[squadId] ??= []).push({ x: wx, y: wy });
-  }
-
-  private moveSquadTo(squadId: number, wx: number, wy: number): void {
-    const squad = this.squads[squadId];
-    if (!squad) return;
-    this.squadDest[squadId] = { x: wx, y: wy };
+  // Direct order to one team: the opt-in fire-and-maneuver granularity (spec
+  // §1). Paths every eligible member to a formation spot around (wx, wy).
+  orderMove(teamId: number, wx: number, wy: number): void {
+    const team = this.teams[teamId];
+    if (!team) return;
     const used = new Set<number>();
     let slot = 0;
-    for (const sid of squad.soldierIds) {
+    for (const sid of team.soldierIds) {
       const s = this.soldiers[sid];
       if (!s.alive || s.downed || s.mental === 'broken') continue; // broken men ignore orders
       const [ox, oy] = OFFSETS[slot % OFFSETS.length];
@@ -413,6 +493,35 @@ export class Sim {
         s.fleeing = false;
       }
     }
+  }
+
+  // A direct order overrides any queued route.
+  orderSquadMove(squadId: number, wx: number, wy: number): void {
+    this.squadWaypoints[squadId] = [];
+    this.dispatchSquadTo(squadId, wx, wy);
+  }
+
+  // Shift-click: append a waypoint; dispatches immediately if the squad is idle.
+  queueMove(squadId: number, wx: number, wy: number): void {
+    if (!this.squads[squadId]) return;
+    if (!this.squadDest[squadId] && (this.squadWaypoints[squadId] ?? []).length === 0) {
+      this.dispatchSquadTo(squadId, wx, wy);
+      return;
+    }
+    (this.squadWaypoints[squadId] ??= []).push({ x: wx, y: wy });
+  }
+
+  // Squad-level broadcast: fans out to each member team, offsetting
+  // destinations by team index x 8m so a multi-team squad doesn't stack.
+  private dispatchSquadTo(squadId: number, wx: number, wy: number): void {
+    const squad = this.squads[squadId];
+    if (!squad) return;
+    this.squadDest[squadId] = { x: wx, y: wy };
+    const n = squad.teamIds.length;
+    squad.teamIds.forEach((teamId, ti) => {
+      const oy = (ti - (n - 1) / 2) * 8;
+      this.orderMove(teamId, wx, wy + oy);
+    });
   }
 
   private findSpot(x: number, y: number, used: Set<number>): { x: number; y: number } | null {
@@ -503,7 +612,7 @@ export class Sim {
       }
       if (moving > 0) continue;
       const next = q?.shift();
-      if (next) this.moveSquadTo(sq.id, next.x, next.y);
+      if (next) this.dispatchSquadTo(sq.id, next.x, next.y);
       else this.squadDest[sq.id] = null; // arrived, route done
     }
   }
@@ -896,6 +1005,28 @@ export class Sim {
         this.fireApAt(s.x, s.y, w.pen, w.accuracy * this.aimFactor(s), w.range, bestV, s.path !== null);
         s.magLeft--;
         s.cooldown = w.cooldown * (0.85 + this.rng.next() * 0.3);
+        return;
+      }
+    }
+
+    // Faust carriers: a rifleman with a stashed panzerfaust engages armor too —
+    // a one-off item, not a weapon slot, decremented straight from inventory.
+    if (w.pen === undefined && (s.ammo.faust ?? 0) > 0 && s.cooldown <= 0) {
+      const faust = WEAPONS.panzerfaust;
+      let bestV: Vehicle | null = null;
+      let bestD = Infinity;
+      for (const v of this.vehicles) {
+        if (!v.alive || v.side === s.side) continue;
+        const d = Math.hypot(v.x - s.x, v.y - s.y);
+        if (d <= faust.range && d < bestD && los(this.map, s.x, s.y, v.x, v.y).visible) {
+          bestD = d;
+          bestV = v;
+        }
+      }
+      if (bestV) {
+        this.fireApAt(s.x, s.y, faust.pen!, faust.accuracy * this.aimFactor(s), faust.range, bestV, s.path !== null);
+        s.ammo.faust!--;
+        s.cooldown = faust.cooldown * (0.85 + this.rng.next() * 0.3);
         return;
       }
     }

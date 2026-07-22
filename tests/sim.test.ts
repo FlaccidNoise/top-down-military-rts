@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { WEAPONS } from '../src/sim/data';
+import { TEAMS, WEAPONS } from '../src/sim/data';
 import { EDGE, GameMap, los } from '../src/sim/map';
 import { astar } from '../src/sim/path';
 import { generateMap } from '../src/sim/mapgen';
@@ -75,8 +75,8 @@ describe('simulation', () => {
   it('is deterministic: same seed and orders produce identical state', () => {
     const run = () => {
       const sim = makeScenario(42);
-      sim.orderMove(0, 80, 55);
-      sim.orderMove(1, 80, 70);
+      sim.orderSquadMove(0, 80, 55);
+      sim.orderSquadMove(1, 80, 70);
       for (let i = 0; i < 3000; i++) sim.step();
       return sim.snapshot();
     };
@@ -86,7 +86,7 @@ describe('simulation', () => {
   it('different seeds diverge', () => {
     const run = (seed: number) => {
       const sim = makeScenario(seed);
-      sim.orderMove(0, 80, 55);
+      sim.orderSquadMove(0, 80, 55);
       for (let i = 0; i < 3000; i++) sim.step();
       return sim.snapshot();
     };
@@ -164,15 +164,15 @@ describe('simulation', () => {
 
     sim.queueMove(0, 20, 10);
     sim.queueMove(0, 2, 10);
-    sim.orderMove(0, 50, 10); // direct order wipes the queue
+    sim.orderSquadMove(0, 50, 10); // direct order wipes the queue
     expect(sim.squadWaypoints[0]).toEqual([]);
   });
 
   it('an assault produces a resolved firefight with no NaN state', () => {
     const sim = makeScenario(7);
     const [b0, b2] = [sim.buildings[0], sim.buildings[2]];
-    sim.orderMove(0, b0.x + b0.w / 2, b0.y + b0.h / 2);
-    sim.orderMove(1, b2.x + b2.w / 2, b2.y + b2.h / 2);
+    sim.orderSquadMove(0, b0.x + b0.w / 2, b0.y + b0.h / 2);
+    sim.orderSquadMove(1, b2.x + b2.w / 2, b2.y + b2.h / 2);
     let steps = 0;
     while (sim.winner === null && steps < 30 * 60 * 10) {
       sim.step();
@@ -265,5 +265,34 @@ describe('stamina', () => {
     const rested = sim.aimFactor(s);
     s.stamina = 0.1;
     expect(sim.aimFactor(s)).toBeLessThan(rested);
+  });
+});
+
+describe('teams and data-driven squads', () => {
+  it('addSquadFromDef spawns a US rifle squad as 12 men in 2 teams with the roster weapons', () => {
+    const sim = new Sim(new GameMap(40, 40), 60);
+    const squad = sim.addSquadFromDef('blue', 'us_rifle', 20, 20);
+    expect(squad.soldierIds.length).toBe(12);
+    expect(squad.teamIds.length).toBe(2);
+    const [able, baker] = squad.teamIds.map((id) => sim.teams[id]);
+    expect(able.soldierIds.map((id) => sim.soldiers[id].weapon)).toEqual(TEAMS.us_able.slots.map((sl) => sl.weapon));
+    expect(able.soldierIds.map((id) => sim.soldiers[id].role)).toEqual(TEAMS.us_able.slots.map((sl) => sl.role));
+    expect(baker.soldierIds.map((id) => sim.soldiers[id].weapon)).toEqual(TEAMS.us_baker.slots.map((sl) => sl.weapon));
+  });
+
+  it('addSquadFromDef spawns a German Gruppe as 9 men, MG-Trupp holding 3', () => {
+    const sim = new Sim(new GameMap(40, 40), 61);
+    const squad = sim.addSquadFromDef('red', 'de_gruppe', 20, 20);
+    expect(squad.soldierIds.length).toBe(9);
+    const mgTrupp = sim.teams[squad.teamIds[0]];
+    expect(mgTrupp.soldierIds.length).toBe(3);
+  });
+
+  it('orderSquadMove moves both teams of a multi-team squad', () => {
+    const sim = new Sim(new GameMap(60, 40), 62);
+    const squad = sim.addSquadFromDef('blue', 'us_rifle', 5, 20);
+    sim.orderSquadMove(squad.id, 50, 20);
+    const moving = (teamId: number) => sim.teams[teamId].soldierIds.some((id) => sim.soldiers[id].path !== null);
+    expect(squad.teamIds.every(moving)).toBe(true);
   });
 });

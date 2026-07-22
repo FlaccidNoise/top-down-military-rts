@@ -295,7 +295,7 @@ canvas.addEventListener('contextmenu', (e) => {
   if (selectedVehicle >= 0) sim.orderVehicleMove(selectedVehicle, wx, wy);
   else if (selectedSquad >= 0) {
     if (e.shiftKey) sim.queueMove(selectedSquad, wx, wy);
-    else sim.orderMove(selectedSquad, wx, wy);
+    else sim.orderSquadMove(selectedSquad, wx, wy);
   }
 });
 canvas.addEventListener('wheel', (e) => {
