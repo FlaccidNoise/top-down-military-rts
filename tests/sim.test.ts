@@ -134,7 +134,7 @@ describe('simulation', () => {
 
   it('queues unit events so DOWN then KIA across one frame batch keeps both', () => {
     const sim = new Sim(new GameMap(10, 10), 1);
-    sim.addSquad('blue', 'a', [{ name: 'A', weapon: 'rifle', x: 2.5, y: 2.5 }]);
+    sim.addSquad('blue', 'a', [{ name: 'A', weapon: 'garand', x: 2.5, y: 2.5 }]);
     const s = sim.soldiers[0];
     s.pain = 1; // >= 0.8 → downed
     sim.step();
@@ -148,7 +148,7 @@ describe('simulation', () => {
 
   it('waypoint queue dispatches legs in order; a direct order cancels it', () => {
     const sim = new Sim(new GameMap(60, 20), 1);
-    sim.addSquad('blue', 'a', [{ name: 'A', weapon: 'rifle', x: 2.5, y: 10.5 }]);
+    sim.addSquad('blue', 'a', [{ name: 'A', weapon: 'garand', x: 2.5, y: 10.5 }]);
     const s = sim.soldiers[0];
     sim.queueMove(0, 20, 10); // idle → dispatches immediately
     sim.queueMove(0, 40, 10);
