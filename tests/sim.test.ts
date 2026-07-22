@@ -146,6 +146,28 @@ describe('simulation', () => {
     expect(sim.takeUnitEvents()).toEqual([]); // queue drains
   });
 
+  it('waypoint queue dispatches legs in order; a direct order cancels it', () => {
+    const sim = new Sim(new GameMap(60, 20), 1);
+    sim.addSquad('blue', 'a', [{ name: 'A', weapon: 'rifle', x: 2.5, y: 10.5 }]);
+    const s = sim.soldiers[0];
+    sim.queueMove(0, 20, 10); // idle → dispatches immediately
+    sim.queueMove(0, 40, 10);
+    expect(sim.squadWaypoints[0].length).toBe(1);
+    let reachedFirst = false;
+    for (let i = 0; i < 30 * 120 && (sim.squadDest[0] || sim.squadWaypoints[0].length); i++) {
+      if (Math.hypot(s.x - 20, s.y - 10) < 6) reachedFirst = true;
+      sim.step();
+    }
+    expect(reachedFirst).toBe(true);
+    expect(Math.hypot(s.x - 40, s.y - 10)).toBeLessThan(6);
+    expect(sim.squadDest[0]).toBeNull();
+
+    sim.queueMove(0, 20, 10);
+    sim.queueMove(0, 2, 10);
+    sim.orderMove(0, 50, 10); // direct order wipes the queue
+    expect(sim.squadWaypoints[0]).toEqual([]);
+  });
+
   it('an assault produces a resolved firefight with no NaN state', () => {
     const sim = makeScenario(7);
     const [b0, b2] = [sim.buildings[0], sim.buildings[2]];

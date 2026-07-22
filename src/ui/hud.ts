@@ -46,7 +46,7 @@ export class Hud {
       <div id="modeline" class="panel"></div>
       <div id="squads"></div>
       <div id="banner"></div>
-      <div id="hint">left-drag pan · wheel zoom · click select · right-click move · 1-9 squad · B barrage · A airstrike · space pause · esc cancel</div>`;
+      <div id="hint">left-drag pan · wheel zoom · click select · right-click move · shift+right-click waypoint · 1-9 squad · B barrage · A airstrike · space pause · esc cancel</div>`;
     document.body.appendChild(this.root);
 
     this.q('#tb-actions').addEventListener('click', (e) => {

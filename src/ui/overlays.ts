@@ -14,6 +14,55 @@ export function drawOverlays(ctx: CanvasRenderingContext2D, cam: Camera, sim: Si
   const cw = ctx.canvas.width;
   const ch = ctx.canvas.height;
 
+  // Route preview for the selected squad: current leg, then queued waypoints.
+  if (st.selectedSquad >= 0) {
+    const sq = sim.squads[st.selectedSquad];
+    const dest = sim.squadDest[st.selectedSquad];
+    const queue = sim.squadWaypoints[st.selectedSquad] ?? [];
+    if (sq && dest) {
+      let cx = 0;
+      let cy = 0;
+      let n = 0;
+      for (const sid of sq.soldierIds) {
+        const s = sim.soldiers[sid];
+        if (!s.alive || s.downed) continue;
+        cx += s.x;
+        cy += s.y;
+        n++;
+      }
+      if (n > 0) {
+        const pts = [{ x: cx / n, y: cy / n }, dest, ...queue];
+        ctx.lineWidth = 1.5;
+        ctx.strokeStyle = 'rgba(255,202,106,0.55)';
+        ctx.setLineDash([5, 5]);
+        ctx.beginPath();
+        pts.forEach((p, i) => {
+          const [sx, sy] = cam.worldToScreen(p.x, p.y, cw, ch);
+          if (i === 0) ctx.moveTo(sx, sy);
+          else ctx.lineTo(sx, sy);
+        });
+        ctx.stroke();
+        ctx.setLineDash([]);
+        pts.slice(1).forEach((p, i) => {
+          const [sx, sy] = cam.worldToScreen(p.x, p.y, cw, ch);
+          ctx.fillStyle = i === 0 ? 'rgba(255,202,106,0.9)' : 'rgba(255,202,106,0.6)';
+          ctx.beginPath();
+          ctx.arc(sx, sy, i === 0 ? 4 : 6, 0, Math.PI * 2);
+          ctx.fill();
+          if (i > 0) {
+            ctx.fillStyle = '#12160f';
+            ctx.font = '8px ui-monospace, Menlo, monospace';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(String(i + 1), sx, sy);
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'alphabetic';
+          }
+        });
+      }
+    }
+  }
+
   // Move-order preview: the actual formation spots, green where they have cover.
   if (!st.targetMode && st.selectedSquad >= 0 && st.pick?.kind === 'terrain') {
     for (const [ox, oy] of OFFSETS) {
