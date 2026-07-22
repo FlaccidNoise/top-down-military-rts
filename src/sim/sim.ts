@@ -117,6 +117,21 @@ export interface ShotEvent {
   kill: boolean;
 }
 
+export interface ShotPreview {
+  visible: boolean;
+  dist: number;
+  cover: number; // effective cover incl. pinned/downed hug-the-ground bonus
+  acc: number;
+}
+
+export interface ApShotPreview {
+  dist: number;
+  acc: number;
+  arc: 'front' | 'side' | 'rear';
+  armor: number;
+  penChance: number;
+}
+
 interface Barrage {
   side: Side;
   x: number;
@@ -125,8 +140,9 @@ interface Barrage {
   nextTick: number;
 }
 
-// Formation offsets around a squad destination, meters.
-const OFFSETS = [
+// Formation offsets around a squad destination, meters. Exported for the
+// move-order cover preview, which must show the real spots men will take.
+export const OFFSETS = [
   [0, 0], [1.5, 0], [-1.5, 0], [0, 1.5], [0, -1.5],
   [2.2, 1.5], [-2.2, 1.5], [2.2, -1.5], [-2.2, -1.5], [0, 3],
 ];
@@ -208,15 +224,24 @@ export class Sim {
     return a.bonds[b.id] ?? 0;
   }
 
+  // The aim multiplier as named terms, product = aimFactor. Exposed so the UI
+  // can show WHY a man shoots the way he does without re-deriving the math.
+  aimBreakdown(s: Soldier): { label: string; mult: number }[] {
+    const cap = capacities(s.body);
+    return [
+      { label: 'Hands', mult: 0.4 + 0.6 * cap.manipulation },
+      { label: 'Sight', mult: 0.3 + 0.7 * cap.sight },
+      { label: 'Pain', mult: 1 - s.pain * 0.35 },
+      { label: 'Suppressed', mult: 1 - s.suppression * 0.5 },
+      { label: 'Veterancy', mult: 1 + Math.min(s.xp, 5) * 0.04 },
+      { label: 'Nerves', mult: s.mental === 'shaken' ? 0.8 : s.mental === 'pinned' ? 0.6 : 1 },
+    ];
+  }
+
   // Effective aim multiplier from body + psyche + veterancy. Exposed for UI legibility.
   aimFactor(s: Soldier): number {
-    const cap = capacities(s.body);
-    let f = (0.4 + 0.6 * cap.manipulation) * (0.3 + 0.7 * cap.sight);
-    f *= 1 - s.pain * 0.35;
-    f *= 1 - s.suppression * 0.5;
-    f *= 1 + Math.min(s.xp, 5) * 0.04;
-    if (s.mental === 'shaken') f *= 0.8;
-    if (s.mental === 'pinned') f *= 0.6;
+    let f = 1;
+    for (const t of this.aimBreakdown(s)) f *= t.mult;
     return f;
   }
 
@@ -549,20 +574,15 @@ export class Sim {
   }
 
   private fireApAt(fx: number, fy: number, pen: number, accuracy: number, range: number, target: Vehicle, moving: boolean): void {
-    const d = Math.hypot(target.x - fx, target.y - fy);
-    let acc = accuracy * (1 - 0.6 * (d / range));
-    if (moving) acc *= 0.6;
-    acc = Math.min(0.95, Math.max(0.05, acc));
-    const hit = this.rng.next() < acc;
+    const p = this.apShotPreview(fx, fy, pen, accuracy, range, target, moving);
+    const hit = this.rng.next() < p.acc;
     this.pendingEvents.push({ fx, fy, tx: target.x, ty: target.y, hit, kill: false });
     if (!hit) {
       this.explode(target.x + this.rng.range(-4, 4), target.y + this.rng.range(-4, 4), { suppRadius: 8, fragRadius: 3, frags: 1, dmg: [20, 50] });
       return;
     }
-    const arc = armorFacing(target, fx, fy);
-    const armor = VEHICLES[target.kind].armor[arc];
     const effPen = pen * this.rng.range(0.75, 1.25);
-    if (effPen <= armor) return; // clang — ricochet
+    if (effPen <= p.armor) return; // clang — ricochet
     // penetration: spall wounds crew, chance of brew-up
     for (const cid of target.crewIds) {
       const c = this.soldiers[cid];
@@ -593,19 +613,41 @@ export class Sim {
     }
   }
 
-  // Shared small-arms resolution used by soldiers and vehicle MGs.
-  private fireSmallArms(fx: number, fy: number, weapon: WeaponKey, t: Soldier, shooterMoving: boolean, aim = 1): boolean {
+  // The exact accuracy math live fire uses, exposed for hit-chance previews —
+  // the UI must never re-derive (and drift from) this formula.
+  shotPreview(fx: number, fy: number, weapon: WeaponKey, t: Soldier, shooterMoving: boolean, aim: number): ShotPreview {
     const sight = los(this.map, fx, fy, t.x, t.y);
-    if (!sight.visible) return false;
-    const w = WEAPONS[weapon];
     const d = Math.hypot(t.x - fx, t.y - fy);
+    if (!sight.visible) return { visible: false, dist: d, cover: 0, acc: 0 };
+    const w = WEAPONS[weapon];
     let cover = sight.cover;
     if (t.mental === 'pinned' || t.downed) cover = Math.min(0.9, cover + 0.3);
     let acc = w.accuracy * (1 - 0.75 * (d / w.range)) * (1 - cover) * aim;
     if (shooterMoving) acc *= 0.5;
     if (t.path) acc *= 0.75;
     acc = Math.min(0.95, Math.max(0.02, acc));
-    const hit = this.rng.next() < acc;
+    return { visible: true, dist: d, cover, acc };
+  }
+
+  // AP fire preview: hit chance plus which plate the shot meets and the odds
+  // of beating it (effective pen rolls uniform in 0.75–1.25 × pen).
+  apShotPreview(fx: number, fy: number, pen: number, accuracy: number, range: number, target: Vehicle, moving: boolean): ApShotPreview {
+    const d = Math.hypot(target.x - fx, target.y - fy);
+    let acc = accuracy * (1 - 0.6 * (d / range));
+    if (moving) acc *= 0.6;
+    acc = Math.min(0.95, Math.max(0.05, acc));
+    const arc = armorFacing(target, fx, fy);
+    const armor = VEHICLES[target.kind].armor[arc];
+    const penChance = Math.min(1, Math.max(0, (1.25 - armor / pen) / 0.5));
+    return { dist: d, acc, arc, armor, penChance };
+  }
+
+  // Shared small-arms resolution used by soldiers and vehicle MGs.
+  private fireSmallArms(fx: number, fy: number, weapon: WeaponKey, t: Soldier, shooterMoving: boolean, aim = 1): boolean {
+    const p = this.shotPreview(fx, fy, weapon, t, shooterMoving, aim);
+    if (!p.visible) return false;
+    const w = WEAPONS[weapon];
+    const hit = this.rng.next() < p.acc;
     let kill = false;
     if (hit) kill = this.wound(t, this.rng.range(w.damage[0], w.damage[1]));
     this.suppressAround(t.x, t.y, t.side, w.suppression);
