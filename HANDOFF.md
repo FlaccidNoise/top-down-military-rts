@@ -27,7 +27,9 @@ Execute the mapgen v2 plan: hedge/field terrain types, farm compounds with lanes
 | `docs/decisions/INDEX.md` | Generator architecture decision + rejected alternatives |
 
 ## Context & Warnings
-- Working tree clean; no git remote (push is a no-op); a hook blocks the `Co-Authored-By` trailer — omit it
+- Branch `worktree-purrfect-herding-stearns` contains all of main plus the plan/handoff commits, but was NOT fast-forwarded into main at handoff: the M-A session had uncommitted edits in the root checkout. First action next session: `git merge main` in the worktree (M-A will have advanced), test, then `git -C <root> merge --ff-only worktree-purrfect-herding-stearns` once root is clean
+- No git remote (push is a no-op); a hook blocks the `Co-Authored-By` trailer — omit it
+- M-A's bridge landed: battles now come from `makeStrategicBattle` (`src/strategic/bridge.ts`), which consumes `generateMap` — the MapPlan contract held through that transition without changes
 - Parallel session is executing the M-A strategic plan on main (main moved 4× today). MERGE MAIN INTO YOUR BRANCH FIRST, test, then start; merge back via `git -C <root> merge --ff-only <branch>` (memory: design-sequencing-2026-07)
 - Do not touch `src/main.ts`, `src/campaign/**`, `src/strategic/**`, `src/ui/**`, `src/sim/scenario.ts` — M-A owns them
 - Custom agent types (coder/auditor/etc.) pin unreachable models — always pass an explicit `model:` when spawning (memory: agent-model-pins)
