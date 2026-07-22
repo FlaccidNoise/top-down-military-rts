@@ -93,4 +93,22 @@ describe('mapgen', () => {
     // woods-stand fringe alone yields ~95 across seeds 1-5; orchards push it ~192
     expect(isolatedTrees).toBeGreaterThan(150);
   });
+
+  it('large maps grow a second hamlet and stay connected (320x240)', () => {
+    for (const seed of [1, 5, 9]) {
+      const a = generateMap(seed, 320, 240);
+      const b = generateMap(seed, 320, 240);
+      expect(a.map.tiles).toEqual(b.map.tiles);
+      expect(a.objectives.length).toBe(3);
+      expect(a.buildings.length).toBeGreaterThanOrEqual(7);
+      const hamlet = a.objectives[2];
+      const hamletBuildings = a.buildings.filter(
+        (b) => (b.x - hamlet.x) ** 2 + (b.y - hamlet.y) ** 2 < 22 * 22,
+      ).length;
+      expect(hamletBuildings).toBeGreaterThanOrEqual(3);
+      const { west, east } = a.spawns;
+      for (const o of a.objectives) expect(astar(a.map, west.x, west.y, o.x, o.y)).not.toBeNull();
+      expect(astar(a.map, west.x, west.y, east.x, east.y, 'vehicle')).not.toBeNull();
+    }
+  });
 });
