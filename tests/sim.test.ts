@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
+import { WEAPONS } from '../src/sim/data';
 import { EDGE, GameMap, los } from '../src/sim/map';
 import { astar } from '../src/sim/path';
 import { BUILDINGS, makeScenario } from '../src/sim/scenario';
+import { Sim } from '../src/sim/sim';
 
 describe('line of sight', () => {
   const wallMap = (edge: number) => {
@@ -88,6 +90,45 @@ describe('simulation', () => {
       return sim.snapshot();
     };
     expect(run(1)).not.toBe(run(2));
+  });
+
+  it('aimFactor is exactly the product of its exposed breakdown', () => {
+    const sim = makeScenario(3);
+    const s = sim.soldiers[0];
+    s.pain = 0.3;
+    s.suppression = 0.5;
+    s.xp = 3;
+    s.mental = 'shaken';
+    const product = sim.aimBreakdown(s).reduce((a, t) => a * t.mult, 1);
+    expect(sim.aimFactor(s)).toBe(product);
+  });
+
+  it('shotPreview reports blocked LOS and matches the live-fire formula in the open', () => {
+    const m = new GameMap(20, 10);
+    for (let y = 0; y < 10; y++) m.setVEdge(10, y, EDGE.WALL);
+    const sim = new Sim(m, 1);
+    sim.addSquad('blue', 'a', [{ name: 'A', weapon: 'rifle', x: 2.5, y: 2.5 }]);
+    sim.addSquad('red', 'b', [{ name: 'B', weapon: 'rifle', x: 15.5, y: 2.5 }]);
+    const [shooter, target] = sim.soldiers;
+    expect(sim.shotPreview(shooter.x, shooter.y, 'rifle', target, false, 1).visible).toBe(false);
+    target.x = 8.5; // same side of the wall
+    const p = sim.shotPreview(shooter.x, shooter.y, 'rifle', target, false, 1);
+    const w = WEAPONS.rifle;
+    const d = Math.hypot(target.x - shooter.x, target.y - shooter.y);
+    expect(p.visible).toBe(true);
+    expect(p.acc).toBeCloseTo(w.accuracy * (1 - 0.75 * (d / w.range)), 12);
+  });
+
+  it('apShotPreview reports the struck arc and certain/impossible penetration odds', () => {
+    const sim = makeScenario(5);
+    const panzer = sim.vehicles.find((v) => v.kind === 'panzer4')!;
+    // shot from dead ahead: front arc
+    const front = sim.apShotPreview(panzer.x + Math.cos(panzer.facing) * 50, panzer.y + Math.sin(panzer.facing) * 50, 120, 0.5, 120, panzer, false);
+    expect(front.arc).toBe('front');
+    expect(front.armor).toBe(85);
+    const rear = sim.apShotPreview(panzer.x - Math.cos(panzer.facing) * 50, panzer.y - Math.sin(panzer.facing) * 50, 120, 0.5, 120, panzer, false);
+    expect(rear.arc).toBe('rear');
+    expect(rear.penChance).toBe(1); // 25mm plate vs 90+ effective pen
   });
 
   it('an assault produces a resolved firefight with no NaN state', () => {
