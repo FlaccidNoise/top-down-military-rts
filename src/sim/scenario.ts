@@ -45,6 +45,16 @@ function squadMembers(sim: Sim, side: Side, cx: number, cy: number, spread: numb
   return members;
 }
 
+// A 9-man squad placed exactly on the given positions.
+function placedSquad(sim: Sim, side: Side, positions: { x: number; y: number }[]): { name: string; weapon: WeaponKey; x: number; y: number }[] {
+  const g = squadMembers(sim, side, 0, 0, 0);
+  g.forEach((m, i) => {
+    m.x = positions[i].x;
+    m.y = positions[i].y;
+  });
+  return g;
+}
+
 function placeInBuilding(sim: Sim, b: Building, count: number): { x: number; y: number }[] {
   const spots: { x: number; y: number }[] = [];
   for (let i = 0; i < count; i++) {
@@ -60,15 +70,9 @@ function addRedDefenders(sim: Sim, plan: MapPlan): Record<number, Vec> {
   const [b0, b1, b2] = plan.buildings;
   const woods = plan.objectives[1];
 
-  const g1 = squadMembers(sim, 'red', 0, 0, 0);
   const spots1 = [...placeInBuilding(sim, b0, 5), ...placeInBuilding(sim, b1, 4)];
-  g1.forEach((m, i) => {
-    m.x = spots1[i].x;
-    m.y = spots1[i].y;
-  });
-  const s1 = sim.addSquad('red', '1. Gruppe', g1);
+  const s1 = sim.addSquad('red', '1. Gruppe', placedSquad(sim, 'red', spots1));
 
-  const g2 = squadMembers(sim, 'red', 0, 0, 0);
   const spots2 = [
     ...placeInBuilding(sim, b2, 4),
     ...Array.from({ length: 5 }, () => ({
@@ -76,11 +80,7 @@ function addRedDefenders(sim: Sim, plan: MapPlan): Record<number, Vec> {
       y: woods.y + sim.rng.range(-6, 6),
     })),
   ];
-  g2.forEach((m, i) => {
-    m.x = spots2[i].x;
-    m.y = spots2[i].y;
-  });
-  const s2 = sim.addSquad('red', '2. Gruppe', g2);
+  const s2 = sim.addSquad('red', '2. Gruppe', placedSquad(sim, 'red', spots2));
 
   return { [s1.id]: center(b0), [s2.id]: center(b2) };
 }
@@ -163,12 +163,7 @@ export function makeCampaignBattle(campaign: Campaign, seed: number): CampaignBa
     posts = {};
     const anchors = [center(buildings[0]), center(buildings[2]), village];
     for (let i = 0; i < 3; i++) {
-      const g = squadMembers(sim, 'red', 0, 0, 0);
-      const sp = spread(east.x - 8, cyc(east.y + (i - 1) * 18), g.length);
-      g.forEach((m, j) => {
-        m.x = sp[j].x;
-        m.y = sp[j].y;
-      });
+      const g = placedSquad(sim, 'red', spread(east.x - 8, cyc(east.y + (i - 1) * 18), 9));
       posts[sim.addSquad('red', `${i + 1}. Gruppe`, g).id] = anchors[i];
     }
     camStart = village;
@@ -182,12 +177,7 @@ export function makeCampaignBattle(campaign: Campaign, seed: number): CampaignBa
     posts = {};
     const anchors = [woods, { x: clamp(woods.x + 7, 4, map.w - 5), y: cyc(woods.y + 16) }];
     for (let i = 0; i < 2; i++) {
-      const g = squadMembers(sim, 'red', 0, 0, 0);
-      const sp = spread(anchors[i].x, anchors[i].y, g.length);
-      g.forEach((m, j) => {
-        m.x = sp[j].x;
-        m.y = sp[j].y;
-      });
+      const g = placedSquad(sim, 'red', spread(anchors[i].x, anchors[i].y, 9));
       posts[sim.addSquad('red', `${i + 1}. Gruppe`, g).id] = anchors[i];
     }
     camStart = village;
