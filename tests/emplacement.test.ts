@@ -70,6 +70,19 @@ describe('emplacement lifecycle', () => {
     expect(e.state).toBe('deploying');
   });
 
+  it('an idle crewman adjacent to a dropped load shoulders it', () => {
+    const sim = new Sim(new GameMap(60, 20), 4);
+    const e = sim.addEmplacement('blue', 'm1919_tripod', 10.5, 10.5);
+    const crew = sim.teams[e.crewTeamId].soldierIds.map((id) => sim.soldiers[id]);
+    const bearer = crew.find((s) => s.carries.includes('tripod_m1919'))!;
+    bearer.carries = [];
+    sim.droppedKit.push({ side: 'blue', x: bearer.x + 1, y: bearer.y, weapon: bearer.weapon, ammo: {}, magLeft: 0, load: 'tripod_m1919' });
+
+    for (let i = 0; i < 90; i++) sim.step();
+    expect(bearer.carries).toContain('tripod_m1919');
+    expect(sim.droppedKit.some((k) => k.load === 'tripod_m1919')).toBe(false);
+  });
+
   it('a wheeled AT gun stops rolling when nobody is left to push it', () => {
     const sim = new Sim(new GameMap(60, 20), 9);
     const e = sim.addEmplacement('blue', 'at57', 10.5, 10.5);
