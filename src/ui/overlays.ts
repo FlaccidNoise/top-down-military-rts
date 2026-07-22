@@ -6,7 +6,7 @@ export interface OverlayState {
   pick: Pick;
   shot: ShotSolution | null;
   selectedSquad: number;
-  targetMode: string;
+  targetMode: '' | 'barrage' | 'air';
 }
 
 // World-anchored order feedback, drawn on the canvas after the scene.

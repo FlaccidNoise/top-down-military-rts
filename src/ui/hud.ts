@@ -155,7 +155,21 @@ export class Hud {
           `<div class="dots">${dots}</div>${rows}</div>`,
       );
     }
-    this.q('#squads').innerHTML = cards.join('');
+    const sq = this.q('#squads');
+    // innerHTML rebuild destroys keyboard focus (sig rebuilds run every 5 ticks
+    // while unpaused) — re-focus the same entity's element afterwards.
+    const focused =
+      document.activeElement instanceof HTMLElement && sq.contains(document.activeElement)
+        ? document.activeElement.closest<HTMLElement>('[data-squad],[data-vehicle],[data-soldier]')
+        : null;
+    const focusSel = focused
+      ? ['data-squad', 'data-vehicle', 'data-soldier']
+          .filter((a) => focused.hasAttribute(a))
+          .map((a) => `[${a}="${focused.getAttribute(a)}"]`)
+          .join('')
+      : '';
+    sq.innerHTML = cards.join('');
+    if (focusSel) sq.querySelector<HTMLElement>(focusSel)?.focus();
   }
 }
 

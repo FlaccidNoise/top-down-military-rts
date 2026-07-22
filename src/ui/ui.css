@@ -209,7 +209,6 @@ button.hbtn.active { background: #4b4326; border-color: #ffca6a; color: #ffe9a0;
 #debrief h1.loss { color: #d05c50; }
 #debrief .sub { color: #8a8a74; margin: 0 0 6px; }
 #debrief .fallen { color: #d05c50; margin: 0 0 6px; }
-#debrief .repl { color: #7fbf6a; margin: 0 0 6px; }
 #debrief .intel { color: #d8d4c4; margin: 0 0 6px; }
 #debrief .intel b { color: #ffca6a; font-weight: 600; }
 #debrief .intel .obj { color: #ffca6a; }
@@ -230,7 +229,6 @@ button.hbtn.active { background: #4b4326; border-color: #ffca6a; color: #ffe9a0;
 #debrief tr.rec td { color: #c9a86a; }
 #debrief tr.res td { color: #8a8a74; }
 #debrief .scar { color: #e08a3c; }
-#debrief h2 { font-size: 15px; margin-top: 24px; }
 #debrief .db-actions {
   position: sticky;
   bottom: 0;
