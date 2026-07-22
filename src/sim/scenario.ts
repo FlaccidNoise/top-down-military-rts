@@ -77,9 +77,10 @@ export function makeMap(seed: number): GameMap {
 
 function squadMembers(sim: Sim, side: Side, cx: number, cy: number, spread: number): { name: string; weapon: WeaponKey; x: number; y: number }[] {
   const names = side === 'blue' ? US_NAMES : DE_NAMES;
+  const at: WeaponKey = side === 'blue' ? 'bazooka' : 'panzerfaust';
   const members: { name: string; weapon: WeaponKey; x: number; y: number }[] = [];
   for (let i = 0; i < 9; i++) {
-    const weapon: WeaponKey = i === 0 ? 'smg' : i === 1 ? 'mg' : 'rifle';
+    const weapon: WeaponKey = i === 0 ? 'smg' : i === 1 ? 'mg' : i === 2 ? at : 'rifle';
     members.push({
       name: names[sim.rng.int(names.length)],
       weapon,
@@ -136,6 +137,8 @@ export function makeScenario(seed: number): Sim {
   sim.addSquad('blue', '1st Squad', squadMembers(sim, 'blue', 10, 44, 3));
   sim.addSquad('blue', '2nd Squad', squadMembers(sim, 'blue', 10, 76, 3));
   addRedDefenders(sim);
+  sim.addVehicle('blue', 'sherman', 8.5, 61.5, 0);
+  sim.addVehicle('red', 'panzer4', 119.5, 61.5, Math.PI);
   return sim;
 }
 
@@ -235,6 +238,19 @@ export function makeCampaignBattle(campaign: Campaign, seed: number): CampaignBa
     sim.addSquad('blue', '2nd Squad', rosterMembers(rosters[1], spread(10, 76, rosters[1].length)));
     stance = 'defend';
     posts = addRedDefenders(sim);
+  }
+
+  // armor: the player always brings a Sherman; the Germans field armor
+  // from battle 2 onward (their counterattack and their last stand)
+  if (battle === 1) {
+    sim.addVehicle('blue', 'sherman', 100.5, 61.5, 0);
+    sim.addVehicle('red', 'panzer4', 152.5, 61.5, Math.PI);
+    sim.addVehicle('red', 'panzer4', 152.5, 75.5, Math.PI);
+  } else if (battle === 2) {
+    sim.addVehicle('blue', 'sherman', 96.5, 61.5, 0);
+    sim.addVehicle('red', 'panzer4', 140.5, 61.5, Math.PI);
+  } else {
+    sim.addVehicle('blue', 'sherman', 8.5, 61.5, 0);
   }
 
   wireBonds(sim, rosters);
