@@ -4,7 +4,7 @@ import { EDGE, GameMap, los } from '../src/sim/map';
 import { astar } from '../src/sim/path';
 import { generateMap } from '../src/sim/mapgen';
 import { makeScenario } from '../src/sim/scenario';
-import { Sim } from '../src/sim/sim';
+import { DT, Sim } from '../src/sim/sim';
 
 describe('line of sight', () => {
   const wallMap = (edge: number) => {
@@ -189,5 +189,58 @@ describe('simulation', () => {
       expect(Number.isFinite(s.suppression)).toBe(true);
       expect(Number.isFinite(s.morale)).toBe(true);
     }
+  });
+});
+
+describe('ammo, reload, heat, one-shot', () => {
+  it('reload starts when the mag runs dry, and the clip count drops', () => {
+    const sim = new Sim(new GameMap(10, 10), 40);
+    sim.addSquad('blue', 'a', [{ name: 'A', weapon: 'garand', x: 2.5, y: 2.5, ammo: { clip_3006: 3 } }]);
+    const s = sim.soldiers[0];
+    s.magLeft = 0;
+    sim.step();
+    expect(s.reloading).toBeGreaterThan(0);
+    expect(s.ammo.clip_3006).toBe(2);
+  });
+
+  it('a Garand reload from empty pings', () => {
+    const sim = new Sim(new GameMap(10, 10), 45);
+    sim.addSquad('blue', 'a', [{ name: 'A', weapon: 'garand', x: 2.5, y: 2.5, ammo: { clip_3006: 3 } }]);
+    sim.soldiers[0].magLeft = 0;
+    sim.step();
+    expect(sim.takeUnitEvents().map((e) => e.kind)).toEqual(['ping']);
+  });
+
+  it('MG42 barrel heat forces a long swap with no shots fired during it', () => {
+    const sim = new Sim(new GameMap(180, 10), 41);
+    sim.addSquad('blue', 'a', [{ name: 'A', weapon: 'mg42', x: 2.5, y: 5.5 }]);
+    // out of the gunner's garand-armed target's own range, so there's no return fire muddying the window
+    sim.addSquad('red', 'b', [{ name: 'B', weapon: 'garand', x: 130.5, y: 5.5 }]);
+    const gunner = sim.soldiers[0];
+    gunner.heat = 1;
+    const swapTicks = Math.ceil((WEAPONS.mg42.heat!.swapTime * sim.assistFactor(gunner)) / DT);
+    for (let i = 0; i < swapTicks - 5; i++) sim.step();
+    expect(gunner.heat).toBe(1); // still mid-swap, not yet reset
+    expect(gunner.reloading).toBeGreaterThan(0);
+    expect(sim.takeEvents().length).toBe(0); // no shots landed during the swap window
+  });
+
+  it('a panzerfaust soldier fires once at a vehicle, then reverts to his secondary weapon', () => {
+    const sim = new Sim(new GameMap(20, 10), 42);
+    sim.addSquad('red', 'a', [{ name: 'A', weapon: 'panzerfaust', x: 5.5, y: 5.5, ammo: {}, secondary: 'kar98k' }]);
+    const v = sim.addVehicle('blue', 'sherman', 15.5, 5.5, Math.PI);
+    v.gunCooldown = 999; // isolate: only the faust shot should register this test
+    v.mgCooldown = 999;
+    const soldier = sim.soldiers[0];
+    sim.step(); // fires the faust
+    expect(soldier.weapon).toBe('panzerfaust');
+    sim.step(); // dry, no faust reserve left: reverts to the secondary
+    expect(soldier.weapon).toBe('kar98k');
+  });
+
+  it('assistFactor: a lone gunner gets the unassisted (slower) multiplier', () => {
+    const sim = new Sim(new GameMap(10, 10), 44);
+    sim.addSquad('blue', 'gun', [{ name: 'G', weapon: 'm1919', x: 2.5, y: 2.5 }]);
+    expect(sim.assistFactor(sim.soldiers[0])).toBe(1.75);
   });
 });

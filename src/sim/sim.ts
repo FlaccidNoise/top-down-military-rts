@@ -1,5 +1,5 @@
 import { applyHit, capacities, consciousness, freshBody, rollPart, woundLabel, type Wound } from './body';
-import { VEHICLES, WEAPONS, type VehicleKey, type WeaponDef, type WeaponKey } from './data';
+import { VEHICLES, WEAPONS, type AmmoKey, type VehicleKey, type WeaponDef, type WeaponKey } from './data';
 import { GameMap, los } from './map';
 import type { Building } from './mapgen';
 import { astar } from './path';
@@ -31,6 +31,7 @@ export interface Soldier {
   squadId: number;
   name: string;
   weapon: WeaponKey;
+  secondary?: WeaponKey; // one-shot items (panzerfaust) revert to this once spent
   courage: number; // 0..1 trait
   xp: number; // battles survived; veterancy
   x: number;
@@ -44,6 +45,11 @@ export interface Soldier {
   bleedRate: number; // blood loss per second (sum of untreated wounds)
   stabilized: boolean;
   downed: boolean; // unconscious, in shock, or can't walk
+  // ammo/weapon service
+  ammo: Partial<Record<AmmoKey, number>>; // discrete reload-worths carried
+  magLeft: number; // rounds left in the current mag/belt/clip
+  reloading: number; // seconds left on a reload or barrel-swap, 0 = not busy
+  heat: number; // 0..1.5, belt-fed barrel model
   // psyche
   suppression: number; // 0..1, fast decay
   morale: number; // 0..1, battle state
@@ -100,6 +106,8 @@ export interface MemberInit {
   xp?: number;
   bodyDamage?: number[]; // permanent damage per part (campaign scars)
   pid?: number;
+  ammo?: Partial<Record<AmmoKey, number>>;
+  secondary?: WeaponKey;
 }
 
 export interface Squad {
@@ -122,7 +130,7 @@ export interface ShotEvent {
 // UI never has to diff sim state (a DOWN followed by KIA in one frame batch
 // would otherwise drop the DOWN).
 export interface UnitEvent {
-  kind: 'downed' | 'kia' | 'broken' | 'vehicle-destroyed';
+  kind: 'downed' | 'kia' | 'broken' | 'vehicle-destroyed' | 'ping';
   x: number;
   y: number;
   side: Side;
@@ -189,6 +197,7 @@ export class Sim {
     for (const m of members) {
       const body = freshBody();
       if (m.bodyDamage) for (let i = 0; i < body.length; i++) body[i] = Math.max(0, body[i] - (m.bodyDamage[i] ?? 0));
+      const w = WEAPONS[m.weapon];
       const s: Soldier = {
         id: this.soldiers.length,
         pid: m.pid ?? -1,
@@ -196,6 +205,7 @@ export class Sim {
         squadId: squad.id,
         name: m.name,
         weapon: m.weapon,
+        secondary: m.secondary,
         courage: m.courage ?? 0.3 + this.rng.next() * 0.6,
         xp: m.xp ?? 0,
         x: m.x,
@@ -208,6 +218,10 @@ export class Sim {
         bleedRate: 0,
         stabilized: false,
         downed: false,
+        ammo: m.ammo ?? { [w.ammo.type]: 6 }, // fallback for legacy callers
+        magLeft: w.ammo.perUnit,
+        reloading: 0,
+        heat: 0,
         suppression: 0,
         morale: 0,
         mental: 'steady',
@@ -266,6 +280,12 @@ export class Sim {
     const cap = capacities(s.body);
     if (cap.moving < 0.15) return 0;
     return BASE_SPEED * (0.3 + 0.7 * cap.moving);
+  }
+
+  // Served-weapon rule: a living assistant nearby speeds reloads and barrel
+  // swaps. Exposed for UI legibility and tests.
+  assistFactor(_s: Soldier): number {
+    return 1.75; // Task 5 wires roles: 1 when an assistant is within 3m in the same team
   }
 
   callBarrage(side: Side, x: number, y: number): boolean {
@@ -620,7 +640,7 @@ export class Sim {
         v.gunCooldown = def.gunCooldown * (0.85 + this.rng.next() * 0.3);
       } else if (v.mgCooldown <= 0) {
         const hullMg: WeaponKey = v.side === 'blue' ? 'm1919' : 'mg42';
-        this.fireSmallArms(v.x, v.y, hullMg, t, false);
+        this.fireVehicleMg(v.x, v.y, hullMg, t, false);
         v.mgCooldown = WEAPONS[hullMg].cooldown * (0.85 + this.rng.next() * 0.3);
       }
     }
@@ -712,16 +732,31 @@ export class Sim {
   }
 
   // Shared small-arms resolution used by soldiers and vehicle MGs.
-  private fireSmallArms(fx: number, fy: number, weapon: WeaponKey, t: Soldier, shooterMoving: boolean, aim = 1): boolean {
+  private resolveSmallArmsShot(fx: number, fy: number, weapon: WeaponKey, t: Soldier, shooterMoving: boolean, aim: number): { fired: boolean; kill: boolean } {
     const p = this.shotPreview(fx, fy, weapon, t, shooterMoving, aim);
-    if (!p.visible) return false;
+    if (!p.visible) return { fired: false, kill: false };
     const w = WEAPONS[weapon];
     const hit = this.rng.next() < p.acc;
     let kill = false;
     if (hit) kill = this.wound(t, this.rng.range(w.damage[0], w.damage[1]));
     this.suppressAround(t.x, t.y, t.side, w.suppression);
     this.pendingEvents.push({ fx, fy, tx: t.x, ty: t.y, hit, kill });
-    return kill;
+    return { fired: true, kill };
+  }
+
+  // Vehicle hull MGs: unlimited ammo — no vehicle ammo model until Task 10.
+  private fireVehicleMg(fx: number, fy: number, weapon: WeaponKey, t: Soldier, shooterMoving: boolean): boolean {
+    return this.resolveSmallArmsShot(fx, fy, weapon, t, shooterMoving, 1).kill;
+  }
+
+  // Infantry small-arms fire: consumes the shooter's mag and builds barrel heat.
+  private fireSmallArms(shooter: Soldier, t: Soldier, shooterMoving: boolean, aim = 1): boolean {
+    const r = this.resolveSmallArmsShot(shooter.x, shooter.y, shooter.weapon, t, shooterMoving, aim);
+    if (!r.fired) return false;
+    shooter.magLeft--;
+    const w: WeaponDef = WEAPONS[shooter.weapon];
+    if (w.heat) shooter.heat = Math.min(1.5, shooter.heat + w.heat.perShot);
+    return r.kill;
   }
 
   private updateSoldier(s: Soldier): void {
@@ -805,7 +840,36 @@ export class Sim {
     // combat
     if (s.cooldown > 0) s.cooldown -= DT;
     if (s.mental === 'broken') return;
+
+    // reload / barrel-swap: soldier services the weapon before firing again
+    if (s.reloading > 0) {
+      s.reloading = Math.max(0, s.reloading - DT);
+      if (s.reloading === 0) {
+        if (s.heat >= 1) s.heat = 0;
+        if (s.magLeft <= 0) s.magLeft = WEAPONS[s.weapon].ammo.perUnit;
+      }
+      return;
+    }
     const w: WeaponDef = WEAPONS[s.weapon];
+    if (w.heat && s.heat >= 1) {
+      s.reloading = w.heat.swapTime * this.assistFactor(s);
+      return;
+    }
+    if (s.magLeft <= 0) {
+      const type = w.ammo.type;
+      if ((s.ammo[type] ?? 0) > 0) {
+        s.ammo[type] = (s.ammo[type] ?? 0) - 1;
+        s.reloading = w.ammo.reload * this.assistFactor(s);
+        if (s.reloading <= 0) s.magLeft = w.ammo.perUnit; // zero-duration reload (panzerfaust) completes at once
+        // Garand en-bloc ping: audible tell that the rifle just went dry.
+        if (type === 'clip_3006') this.pendingUnitEvents.push({ kind: 'ping', x: s.x, y: s.y, side: s.side, name: s.name });
+      } else if (w.oneShot && s.secondary) {
+        s.weapon = s.secondary;
+        s.secondary = undefined;
+        s.magLeft = WEAPONS[s.weapon].ammo.perUnit;
+      }
+      return; // dry (no ammo, no secondary): holds fire — runner arrives Task 8
+    }
 
     // AT men engage armor first
     if (w.pen !== undefined && s.cooldown <= 0) {
@@ -821,6 +885,7 @@ export class Sim {
       }
       if (bestV) {
         this.fireApAt(s.x, s.y, w.pen, w.accuracy * this.aimFactor(s), w.range, bestV, s.path !== null);
+        s.magLeft--;
         s.cooldown = w.cooldown * (0.85 + this.rng.next() * 0.3);
         return;
       }
@@ -1022,7 +1087,7 @@ export class Sim {
       return;
     }
     const w = WEAPONS[s.weapon];
-    const kill = this.fireSmallArms(s.x, s.y, s.weapon, t, s.path !== null, this.aimFactor(s));
+    const kill = this.fireSmallArms(s, t, s.path !== null, this.aimFactor(s));
     const rate = s.mental === 'pinned' ? 2 : 1; // cowering: slower fire
     s.cooldown = w.cooldown * rate * (0.85 + this.rng.next() * 0.3);
     if (kill || t.downed) s.targetId = -1;
@@ -1101,6 +1166,10 @@ export class Sim {
         s.targetId,
         s.task ? `${s.task.phase}:${s.task.casualtyId}` : '',
         s.stabilized,
+        s.magLeft,
+        s.reloading > 0,
+        Math.round(s.heat * 1e6),
+        Object.values(s.ammo).reduce((a: number, n) => a + (n ?? 0), 0),
       ]),
       vehicles: this.vehicles.map((v) => [
         v.id,
