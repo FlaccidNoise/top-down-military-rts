@@ -188,3 +188,27 @@ describe('strategic view', () => {
     expect(view.cellAtScreen(0, 0, 800, 650)).toBe(-1);
   });
 });
+
+describe('m-a loop', () => {
+  it('order → march → contact → battle → outcome → objective → won', () => {
+    const c = newCampaign(10);
+    const sector = makeDefaultSector();
+    const front = newFront(c, sector);
+    const able = front.chits.find((ch) => ch.side === 'blue')!;
+    front.orderMove(able.id, cellIndex(sector, 20, 15));
+    let e = null;
+    for (let i = 0; i < 100000 && !e; i++) e = front.step();
+    expect(e).not.toBeNull();
+    expect(e!.cell).toBe(cellIndex(sector, 20, 15));
+    const seed = front.clockMin * 7919 + e!.cell;
+    const { sim } = makeStrategicBattle(c, front, e!, seed);
+    for (const s of sim.soldiers) if (s.side === 'red') s.alive = false;
+    sim.step();
+    const out = applyEngagementOutcome(c, front, e!, sim);
+    expect(out.cellTaken).toBe(true);
+    expect(able.cell).toBe(cellIndex(sector, 20, 15));
+    expect(operationStatus(front)).toBe('ongoing');
+    for (const cell of sector.cells) if (cell.objective) cell.owner = 'blue';
+    expect(operationStatus(front)).toBe('won');
+  });
+});
