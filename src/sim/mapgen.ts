@@ -113,9 +113,10 @@ function tryGenerate(rng: Rng, w: number, h: number): MapPlan | null {
   const nearBuilding = (x: number, y: number) =>
     buildings.some((b) => x >= b.x - 1 && x < b.x + b.w + 1 && y >= b.y - 1 && y < b.y + b.h + 1);
 
-  // hedgerow parcel borders: 1-tile woods lines with gates
-  const hedgeLine = (len: number, at: (i: number) => [number, number]) => {
+  // hedgerow parcel borders: 1-tile woods lines that drift, with gates
+  const hedgeLine = (len: number, at: (i: number, off: number) => [number, number]) => {
     let gate = 6 + rng.int(10);
+    let off = 0;
     let i = 0;
     while (i < len) {
       if (i >= gate) {
@@ -123,15 +124,16 @@ function tryGenerate(rng: Rng, w: number, h: number): MapPlan | null {
         gate = i + 8 + rng.int(12);
         continue;
       }
-      const [x, y] = at(i);
+      if (rng.next() < 0.12) off = clamp(off + (rng.next() < 0.5 ? -1 : 1), -3, 3);
+      const [x, y] = at(i, off);
       if (x >= 1 && y >= 1 && x < w - 1 && y < h - 1 && !road[y * w + x] && !nearVillage(x, y) && !nearBuilding(x, y) && map.terrainKeyAt(x, y) === 'grass') {
         map.setTerrain(x, y, 'woods');
       }
       i++;
     }
   };
-  for (let px = 12 + rng.int(12); px < w - 8; px += 16 + rng.int(14)) hedgeLine(h, (i) => [px, i]);
-  for (let py = 10 + rng.int(12); py < h - 6; py += 14 + rng.int(12)) hedgeLine(w, (i) => [i, py]);
+  for (let px = 12 + rng.int(12); px < w - 8; px += 16 + rng.int(16)) hedgeLine(h, (i, off) => [px + off, i]);
+  for (let py = 10 + rng.int(12); py < h - 6; py += 14 + rng.int(14)) hedgeLine(w, (i, off) => [i, py + off]);
 
   // woods stands; the first, east of the village, is the far objective
   const stand = (cx0: number, cy0: number, r: number) => {
@@ -144,8 +146,8 @@ function tryGenerate(rng: Rng, w: number, h: number): MapPlan | null {
         }
       }
   };
-  const eastWoods = { x: clamp(crossX + 34 + rng.int(18), 20, w - 14), y: clamp(cy - 18 + rng.int(37), 12, h - 12) };
-  stand(eastWoods.x, eastWoods.y, 8 + rng.int(4));
+  const eastWoods = { x: clamp(crossX + 38 + rng.int(20), 20, w - 14), y: clamp(cy - 18 + rng.int(37), 12, h - 12) };
+  stand(eastWoods.x, eastWoods.y, 9 + rng.int(4));
   for (let i = 0, n = 2 + rng.int(3); i < n; i++) {
     const sx = 10 + rng.int(w - 20);
     const sy = 8 + rng.int(h - 16);

@@ -141,6 +141,24 @@ describe('campaign', () => {
     expect(loadCampaign(storage)).toEqual(c);
   });
 
+  it('battles 1 and 2 place both sides on the generated map', () => {
+    for (const idx of [1, 2]) {
+      const c = newCampaign(9);
+      c.battleIndex = idx;
+      const { sim, camStart } = makeCampaignBattle(c, 13 + idx);
+      expect(sim.soldiers.length).toBeGreaterThan(20);
+      for (const s of sim.soldiers) {
+        expect(s.x).toBeGreaterThan(0);
+        expect(s.x).toBeLessThan(sim.map.w);
+        expect(s.y).toBeGreaterThan(0);
+        expect(s.y).toBeLessThan(sim.map.h);
+      }
+      expect(Number.isFinite(camStart.x)).toBe(true);
+      for (let i = 0; i < 300; i++) sim.step();
+      for (const s of sim.soldiers) expect(Number.isFinite(s.x)).toBe(true);
+    }
+  });
+
   it('a campaign battle wires persistent bonds onto battle soldiers', () => {
     const c = newCampaign(6);
     const { sim } = makeCampaignBattle(c, 8);

@@ -29,8 +29,8 @@ describe('mapgen', () => {
   });
 
   it('matches known snapshots (catches accidental generator drift)', () => {
-    expect(fingerprint(1)).toMatchInlineSnapshot(`"d5371d1e"`);
-    expect(fingerprint(2)).toMatchInlineSnapshot(`"f32bd8d9"`);
+    expect(fingerprint(1)).toMatchInlineSnapshot(`"edc6ca5c"`);
+    expect(fingerprint(2)).toMatchInlineSnapshot(`"7b13704f"`);
   });
 
   it('spawns reach objectives and buildings on foot; the road carries vehicles (seeds 1-30)', () => {
