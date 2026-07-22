@@ -326,7 +326,7 @@ export class Sim {
           const ny = y + dy;
           if (!this.map.inBounds(nx, ny)) continue;
           const k = this.map.terrainKeyAt(nx, ny);
-          if (this.map.terrainAt(nx, ny).passable && k !== 'floor' && k !== 'woods') return { x: nx, y: ny };
+          if (this.map.terrainAt(nx, ny).passable && k !== 'floor' && k !== 'woods' && k !== 'hedge') return { x: nx, y: ny };
         }
       }
     }

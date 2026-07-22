@@ -34,8 +34,8 @@ describe('mapgen', () => {
   });
 
   it('matches known snapshots (catches accidental generator drift)', () => {
-    expect(fingerprint(1)).toMatchInlineSnapshot(`"edc6ca5c"`);
-    expect(fingerprint(2)).toMatchInlineSnapshot(`"7b13704f"`);
+    expect(fingerprint(1)).toMatchInlineSnapshot(`"f055a163"`);
+    expect(fingerprint(2)).toMatchInlineSnapshot(`"b85246e1"`);
   });
 
   it('spawns reach objectives and buildings on foot; the road carries vehicles (seeds 1-30)', () => {
@@ -52,5 +52,16 @@ describe('mapgen', () => {
       }
       expect(astar(p.map, west.x, west.y, east.x, east.y, 'vehicle')).not.toBeNull();
     }
+  });
+
+  it('hedgerows block vehicles but not infantry', () => {
+    const p = generateMap(3);
+    let hx = -1, hy = -1;
+    for (let y = 1; y < p.map.h - 1 && hx < 0; y++)
+      for (let x = 1; x < p.map.w - 1 && hx < 0; x++)
+        if (p.map.terrainKeyAt(x, y) === 'hedge') { hx = x; hy = y; }
+    expect(hx).toBeGreaterThanOrEqual(0);
+    expect(p.map.canStep(hx - 1, hy, hx, hy, 'vehicle')).toBe(false);
+    expect(p.map.canStep(hx - 1, hy, hx, hy)).toBe(true);
   });
 });

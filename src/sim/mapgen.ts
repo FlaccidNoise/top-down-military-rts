@@ -130,7 +130,7 @@ function tryGenerate(rng: Rng, w: number, h: number): MapPlan | null {
       if (rng.next() < 0.12) off = clamp(off + (rng.next() < 0.5 ? -1 : 1), -3, 3);
       const [x, y] = at(i, off);
       if (x >= 1 && y >= 1 && x < w - 1 && y < h - 1 && !road[y * w + x] && !nearVillage(x, y) && !nearBuilding(x, y) && map.terrainKeyAt(x, y) === 'grass') {
-        map.setTerrain(x, y, 'woods');
+        map.setTerrain(x, y, 'hedge');
       }
       i++;
     }
@@ -156,6 +156,17 @@ function tryGenerate(rng: Rng, w: number, h: number): MapPlan | null {
     const sy = 8 + rng.int(h - 16);
     if ((sx - crossX) * (sx - crossX) + (sy - cy) * (sy - cy) < 34 * 34) continue;
     stand(sx, sy, 6 + rng.int(5));
+  }
+
+  // plowed fields: rect patches on remaining grass
+  for (let i = 0, n = 4 + rng.int(4); i < n; i++) {
+    const fw = 12 + rng.int(14);
+    const fh = 8 + rng.int(10);
+    const fx = 2 + rng.int(Math.max(1, w - fw - 4));
+    const fy = 2 + rng.int(Math.max(1, h - fh - 4));
+    for (let y = fy; y < fy + fh; y++)
+      for (let x = fx; x < fx + fw; x++)
+        if (!road[y * w + x] && !nearBuilding(x, y) && map.terrainKeyAt(x, y) === 'grass') map.setTerrain(x, y, 'field');
   }
 
   // roads carved last: the corridor is clear by construction
