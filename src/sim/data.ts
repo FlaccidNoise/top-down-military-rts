@@ -130,7 +130,7 @@ export const TEAMS = {
   us_bazooka_team: {
     name: 'Bazooka Team',
     slots: [
-      { role: 'gunner', weapon: 'bazooka', ammo: { rocket_bazooka: 4 } },
+      { role: 'gunner', weapon: 'bazooka', ammo: { rocket_bazooka: 3 } }, // +1 loaded = 4 total
       { role: 'bearer', weapon: 'carbine', ammo: { mag_carbine: 6 } },
     ],
   },
@@ -184,7 +184,7 @@ export const TEAMS = {
   de_schreck_team: {
     name: 'Panzerschreck Team',
     slots: [
-      { role: 'gunner', weapon: 'schreck', ammo: { rocket_schreck: 4 } },
+      { role: 'gunner', weapon: 'schreck', ammo: { rocket_schreck: 3 } }, // +1 loaded = 4 total
       { role: 'bearer', weapon: 'kar98k', ammo: { clip_792: 8 } },
     ],
   },
