@@ -39,7 +39,9 @@ export function newFront(c: Campaign, sector: SectorMap): Front {
   return front;
 }
 
-// Blue chit strength mirrors the roster; red carries attrition. Wiped chits vanish.
+// Blue chit strength mirrors the roster; red carries attrition. Blue chits
+// vanish only when the whole company is dead — an all-wounded company stays
+// on the map at strength 0 and recovers as men heal and replacements arrive.
 export function syncStrengths(c: Campaign, front: Front): void {
   for (const chit of front.chits) {
     if (chit.side !== 'blue') continue;
@@ -48,7 +50,11 @@ export function syncStrengths(c: Campaign, front: Front): void {
       0,
     );
   }
-  front.chits = front.chits.filter((ch) => ch.strength > 0);
+  front.chits = front.chits.filter((ch) =>
+    ch.side === 'red'
+      ? ch.strength > 0
+      : c.companies[ch.companyIndex].squads.some((si) => c.squads[si].members.some((pid) => c.soldiers[pid].status !== 'kia')),
+  );
 }
 
 function redMembers(sim: Sim, count: number, cx: number, cy: number): MemberInit[] {

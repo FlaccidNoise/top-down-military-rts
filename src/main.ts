@@ -85,7 +85,7 @@ function setTargetMode(m: '' | 'barrage' | 'air'): void {
 }
 
 const urlSeed = new URLSearchParams(location.search).get('seed'); // debug: ?seed=N pins the map
-if (urlSeed !== null && !Number.isFinite(Number(urlSeed))) console.warn(`?seed=${urlSeed} is not a number; using 0`);
+if (urlSeed !== null && !Number.isFinite(Number(urlSeed))) console.warn(`?seed=${urlSeed} is not a number; ignoring`);
 
 const hud = new Hud({
   selectSquad,
@@ -125,7 +125,7 @@ function showContactModal(e: Engagement): void {
 }
 
 function startEngagementBattle(e: Engagement): void {
-  const seed = urlSeed !== null ? Number(urlSeed) : front.clockMin * 7919 + e.cell;
+  const seed = urlSeed !== null && Number.isFinite(Number(urlSeed)) ? Number(urlSeed) : front.clockMin * 7919 + e.cell;
   const battle = makeStrategicBattle(campaign, front, e, seed);
   sim = battle.sim;
   commander = battle.commander;

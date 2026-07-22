@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { newCampaign } from '../src/campaign/campaign';
+import { advanceDays, newCampaign } from '../src/campaign/campaign';
 import { Front, findPath, operationStatus, OP_START_MIN, OP_DEADLINE_DAYS } from '../src/strategic/front';
 import { cellIndex, makeDefaultSector, parseSector } from '../src/strategic/sector';
-import { applyEngagementOutcome, makeStrategicBattle, newFront } from '../src/strategic/bridge';
+import { applyEngagementOutcome, makeStrategicBattle, newFront, syncStrengths } from '../src/strategic/bridge';
 import { loadGame, saveGame } from '../src/strategic/save';
 import { StrategicView } from '../src/render/strategic';
 
@@ -177,6 +177,22 @@ describe('bridge', () => {
     expect(loaded.campaign).toEqual(c);
     expect(loaded.front.chits).toEqual(front.chits);
     expect(loaded.front.clockMin).toBe(front.clockMin);
+  });
+
+  it('an all-wounded company stays on the map and recovers strength', () => {
+    const { c, front } = setup();
+    const able = front.chits.find((ch) => ch.side === 'blue')!;
+    for (const si of c.companies[able.companyIndex].squads)
+      for (const pid of c.squads[si].members) {
+        c.soldiers[pid].status = 'recovering';
+        c.soldiers[pid].recoveryDays = 1;
+      }
+    syncStrengths(c, front);
+    expect(front.chits.find((ch) => ch.id === able.id)).toBeDefined();
+    expect(able.strength).toBe(0);
+    advanceDays(c, 1);
+    syncStrengths(c, front);
+    expect(able.strength).toBe(27);
   });
 });
 
