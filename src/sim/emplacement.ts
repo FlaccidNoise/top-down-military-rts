@@ -51,15 +51,21 @@ export function crewDegrade(sim: Sim, e: Emplacement): number {
   return Math.max(1, EMPLACEMENTS[e.kind].minCrew / present);
 }
 
-// Every load the emplacement needs must be on a living nearby crewman's back
-// — a load merely lying dropped nearby (a casualty's, not yet retrieved)
-// does NOT count: kill the tripod carrier and the gun stays stranded until
-// someone picks it back up (Sim.considerLoadPickup). AT guns declare
-// loads: [] and are vacuously ready (not man-packable at all).
+// Every load the emplacement needs must either be on a living nearby
+// crewman's back or lying dropped within reach of the gun (a casualty's,
+// hauled to the site but not re-shouldered) — plan-literal: "requires all
+// loads within 3m (carried or dropped there)". A load still stranded where
+// its carrier died en route (anywhere outside CREW_RADIUS) does NOT count:
+// kill the tripod carrier 20m out and the gun stays stranded until someone
+// physically hauls it back to the site. AT guns declare loads: [] and are
+// vacuously ready (not man-packable at all).
 export function loadsReady(sim: Sim, e: Emplacement): boolean {
   const def = EMPLACEMENTS[e.kind];
   const carried = new Set<LoadKey>();
   for (const s of crewNear(sim, e)) for (const l of s.carries) carried.add(l);
+  for (const k of sim.droppedKit) {
+    if (k.load && k.side === e.side && Math.hypot(k.x - e.x, k.y - e.y) <= CREW_RADIUS) carried.add(k.load);
+  }
   return def.loads.every((l) => carried.has(l));
 }
 

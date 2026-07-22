@@ -44,28 +44,46 @@ describe('emplacement lifecycle', () => {
     expect(e.cooldown).toBeGreaterThan(WEAPONS.m1919.cooldown * 1.5);
   });
 
-  it('deploy is blocked while a load is missing, and unblocks once a soldier picks it dropped one up', () => {
+  it('deploy is blocked while a load is stranded where its carrier died en route, and unblocks once it is hauled to the gun and dropped there', () => {
     const sim = new Sim(new GameMap(60, 20), 3);
     const e = sim.addEmplacement('blue', 'm1919_tripod', 10.5, 10.5);
     const crew = sim.teams[e.crewTeamId].soldierIds.map((id) => sim.soldiers[id]);
     const tripodBearer = crew.find((s) => s.carries.includes('tripod_m1919'))!;
-    // bearer killed en route, before ever reaching the gun: his load never
-    // arrives, so deploy must refuse even though the rest of the crew is present.
+    // bearer killed 20m out — still short of the gun. His load lands well
+    // outside CREW_RADIUS, so deploy must refuse even though the rest of the
+    // crew is present and ready.
     tripodBearer.alive = false;
+    tripodBearer.x = e.x + 20;
+    tripodBearer.y = e.y;
     sim.droppedKit.push({ side: 'blue', x: tripodBearer.x, y: tripodBearer.y, weapon: tripodBearer.weapon, ammo: {}, magLeft: 0, load: 'tripod_m1919' });
 
     sim.orderDeploy(e.id);
-    expect(e.state).toBe('packed'); // blocked: tripod is on the ground, not on the gun
+    expect(e.state).toBe('packed'); // blocked: the tripod never made it to the site
 
-    // a living crewman walks over and picks it up
-    const other = crew.find((s) => s.alive && s.id !== tripodBearer.id)!;
-    other.x = tripodBearer.x;
-    other.y = tripodBearer.y;
-    for (let i = 0; i < 90; i++) sim.step(); // considerLoadPickup runs on a 60-tick cadence
-    expect(other.carries).toContain('tripod_m1919');
+    // a crewman hauls it the rest of the way and drops it at the gun — no
+    // need to re-shoulder it onto his back, merely dropped there is enough.
+    const dropped = sim.droppedKit.find((k) => k.load === 'tripod_m1919')!;
+    dropped.x = e.x;
+    dropped.y = e.y;
 
     sim.orderDeploy(e.id);
     expect(e.state).toBe('deploying');
+  });
+
+  it('a wheeled AT gun stops rolling when nobody is left to push it', () => {
+    const sim = new Sim(new GameMap(60, 20), 9);
+    const e = sim.addEmplacement('blue', 'at57', 10.5, 10.5);
+    sim.orderWheel(e.id, 40, 10.5);
+    expect(e.moveTarget).toEqual({ x: 40, y: 10.5 });
+    for (let i = 0; i < 60; i++) sim.step(); // 2s at 1 m/s: rolls a couple meters
+    const rolledTo = e.x;
+    expect(rolledTo).toBeGreaterThan(10.5);
+
+    const crew = sim.teams[e.crewTeamId].soldierIds.map((id) => sim.soldiers[id]);
+    for (const s of crew) s.alive = false; // wiped out mid-wheel
+
+    for (let i = 0; i < 60; i++) sim.step();
+    expect(e.x).toBeCloseTo(rolledTo, 5); // frozen: nobody left to push it
   });
 
   it('mortar HE hits a shared-vision target with tighter scatter when the crew has its own LOS, wider without it', () => {

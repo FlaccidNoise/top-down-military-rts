@@ -827,18 +827,22 @@ export class Sim {
       }
     }
     if (e.moveTarget) {
-      const dx = e.moveTarget.x - e.x;
-      const dy = e.moveTarget.y - e.y;
-      const d = Math.hypot(dx, dy);
-      const step = (def.wheeled?.speed ?? 0) * DT;
-      if (d <= step || d < 0.05) {
-        e.x = e.moveTarget.x;
-        e.y = e.moveTarget.y;
-        e.moveTarget = null;
-      } else {
-        e.x += (dx / d) * step;
-        e.y += (dy / d) * step;
-        e.facing = Math.atan2(dy, dx);
+      // Crew pushes the gun by hand — nobody left near it, it stops rolling,
+      // same pause convention as the deploy/pack timer below.
+      if (crewNear(this, e).length > 0) {
+        const dx = e.moveTarget.x - e.x;
+        const dy = e.moveTarget.y - e.y;
+        const d = Math.hypot(dx, dy);
+        const step = (def.wheeled?.speed ?? 0) * DT;
+        if (d <= step || d < 0.05) {
+          e.x = e.moveTarget.x;
+          e.y = e.moveTarget.y;
+          e.moveTarget = null;
+        } else {
+          e.x += (dx / d) * step;
+          e.y += (dy / d) * step;
+          e.facing = Math.atan2(dy, dx);
+        }
       }
       for (const sid of this.teams[e.crewTeamId].soldierIds) {
         const s = this.soldiers[sid];
@@ -864,7 +868,11 @@ export class Sim {
     const firer = pickFirer(this, e);
     if (!firer || e.cooldown > 0) return;
     const w: WeaponDef = WEAPONS[def.weapon];
-    const degrade = crewDegrade(this, e);
+    // Same "cowering: slower fire" penalty personal fire() applies (rate =
+    // pinned ? 2 : 1), folded into the served-weapon degrade multiplier so
+    // every emplacement fire path (heat swap, indirect, AT, small arms)
+    // picks it up for free.
+    const degrade = crewDegrade(this, e) * (firer.mental === 'pinned' ? 2 : 1);
 
     // Barrel heat (belt-fed only): forced swap, slower below minCrew — same
     // served-weapon rule that gates every other emplacement fire rate.
