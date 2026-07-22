@@ -68,11 +68,21 @@ function dot(g: Ctx, x: number, y: number, r: number, color: string): void {
   g.fill();
 }
 
+// Silhouette bucket per weapon: short SMG-length guns, bipod'd MGs, else rifle-length.
+const SMG_CLASS: ReadonlySet<WeaponKey> = new Set(['thompson', 'mp40']);
+const MG_CLASS: ReadonlySet<WeaponKey> = new Set(['m1919', 'mg42']);
+function gunClass(w: WeaponKey): 'rifle' | 'smg' | 'mg' {
+  if (SMG_CLASS.has(w)) return 'smg';
+  if (MG_CLASS.has(w)) return 'mg';
+  return 'rifle';
+}
+
 // Weapon drawn with grip at (x, y), muzzle toward +X (before `angle`).
-function gun(g: Ctx, w: WeaponKey, x: number, y: number, angle: number): void {
+function gun(g: Ctx, weapon: WeaponKey, x: number, y: number, angle: number): void {
   g.save();
   g.translate(x, y);
   g.rotate(angle);
+  const w = gunClass(weapon);
   const len = w === 'rifle' ? 1.05 : w === 'smg' ? 0.62 : 1.25;
   const back = w === 'smg' ? 0.2 : 0.32;
   cap(g, -back, 0, -back * 0.25, 0, 0.1, '#5d4126'); // stock
@@ -113,7 +123,7 @@ function standing(g: Ctx, k: Kit, w: WeaponKey, gunAngle: number, legSwing: numb
   // arms to the weapon
   const gx = 0.14;
   const gy = 0.13;
-  const fore = w === 'smg' ? 0.24 : 0.38;
+  const fore = gunClass(w) === 'smg' ? 0.24 : 0.38;
   const fx = gx + Math.cos(gunAngle) * fore;
   const fy = gy + Math.sin(gunAngle) * fore;
   cap(g, 0.02, 0.24, gx, gy, 0.12, k.sleeve);

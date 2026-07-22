@@ -108,13 +108,13 @@ describe('simulation', () => {
     const m = new GameMap(20, 10);
     for (let y = 0; y < 10; y++) m.setVEdge(10, y, EDGE.WALL);
     const sim = new Sim(m, 1);
-    sim.addSquad('blue', 'a', [{ name: 'A', weapon: 'rifle', x: 2.5, y: 2.5 }]);
-    sim.addSquad('red', 'b', [{ name: 'B', weapon: 'rifle', x: 15.5, y: 2.5 }]);
+    sim.addSquad('blue', 'a', [{ name: 'A', weapon: 'garand', x: 2.5, y: 2.5 }]);
+    sim.addSquad('red', 'b', [{ name: 'B', weapon: 'garand', x: 15.5, y: 2.5 }]);
     const [shooter, target] = sim.soldiers;
-    expect(sim.shotPreview(shooter.x, shooter.y, 'rifle', target, false, 1).visible).toBe(false);
+    expect(sim.shotPreview(shooter.x, shooter.y, 'garand', target, false, 1).visible).toBe(false);
     target.x = 8.5; // same side of the wall
-    const p = sim.shotPreview(shooter.x, shooter.y, 'rifle', target, false, 1);
-    const w = WEAPONS.rifle;
+    const p = sim.shotPreview(shooter.x, shooter.y, 'garand', target, false, 1);
+    const w = WEAPONS.garand;
     const d = Math.hypot(target.x - shooter.x, target.y - shooter.y);
     expect(p.visible).toBe(true);
     expect(p.acc).toBeCloseTo(w.accuracy * (1 - 0.75 * (d / w.range)), 12);

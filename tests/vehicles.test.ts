@@ -17,8 +17,10 @@ describe('armor', () => {
     const map = new GameMap(60, 60);
     const sim = new Sim(map, 31);
     const v = sim.addVehicle('blue', 'sherman', 30.5, 30.5, 0);
-    // five faust men, 12m behind the tank
-    sim.addSquad('red', 'AT', [0, 1, 2, 3, 4].map((i) => ({ name: `at${i}`, weapon: 'panzerfaust', x: 18.5, y: 26.5 + i * 2, courage: 0.9 })));
+    // five faust men, close assault distance (national weapon data gave the Sherman's
+    // hull MG a faster cooldown than the old generic placeholder — a stand-off rush
+    // now gets shredded before landing hits, so the hunting party closes in first)
+    sim.addSquad('red', 'AT', [0, 1, 2, 3, 4].map((i) => ({ name: `at${i}`, weapon: 'panzerfaust', x: 26.5, y: 26.5 + i * 2, courage: 0.9 })));
     let t = 0;
     while (v.alive && t < 30 * 240) {
       sim.step();
@@ -32,7 +34,7 @@ describe('armor', () => {
     const map = new GameMap(60, 60);
     const sim = new Sim(map, 32);
     const v = sim.addVehicle('blue', 'sherman', 30.5, 30.5, 0);
-    sim.addSquad('red', 'rifles', [{ name: 'r', weapon: 'rifle', x: 45.5, y: 30.5 }]);
+    sim.addSquad('red', 'rifles', [{ name: 'r', weapon: 'garand', x: 45.5, y: 30.5 }]);
     for (let i = 0; i < 30 * 30; i++) sim.step();
     expect(v.alive).toBe(true);
   });
@@ -70,7 +72,7 @@ describe('air support', () => {
   it('strafe wounds or suppresses men along the run after the delay', () => {
     const map = new GameMap(160, 40);
     const sim = new Sim(map, 35);
-    sim.addSquad('red', 'targets', [0, 1, 2, 3, 4].map((i) => ({ name: `t${i}`, weapon: 'rifle', x: 70.5 + i * 4, y: 20.5 })));
+    sim.addSquad('red', 'targets', [0, 1, 2, 3, 4].map((i) => ({ name: `t${i}`, weapon: 'garand', x: 70.5 + i * 4, y: 20.5 })));
     expect(sim.callAirstrike('blue', 78, 20.5)).toBe(true);
     expect(sim.callAirstrike('blue', 78, 20.5)).toBe(false); // one per battle
     for (let i = 0; i < 30 * 28; i++) sim.step();
@@ -84,8 +86,8 @@ describe('battle end', () => {
     const map = new GameMap(200, 40);
     const sim = new Sim(map, 36);
     // far apart: no actual combat, we just declare casualties
-    sim.addSquad('blue', 'A', [0, 1, 2, 3, 4, 5, 6, 7].map((i) => ({ name: `b${i}`, weapon: 'rifle', x: 5.5, y: 5.5 + i * 2 })));
-    sim.addSquad('red', 'B', [0, 1, 2, 3, 4, 5, 6, 7].map((i) => ({ name: `r${i}`, weapon: 'rifle', x: 190.5, y: 5.5 + i * 2 })));
+    sim.addSquad('blue', 'A', [0, 1, 2, 3, 4, 5, 6, 7].map((i) => ({ name: `b${i}`, weapon: 'garand', x: 5.5, y: 5.5 + i * 2 })));
+    sim.addSquad('red', 'B', [0, 1, 2, 3, 4, 5, 6, 7].map((i) => ({ name: `r${i}`, weapon: 'garand', x: 190.5, y: 5.5 + i * 2 })));
     for (let i = 0; i < 7; i++) sim.soldiers[8 + i].alive = false; // red: 1 of 8 left (< 2 floor)
     sim.step();
     expect(sim.winner).toBe('blue');

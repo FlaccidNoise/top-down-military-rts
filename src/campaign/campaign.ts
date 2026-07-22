@@ -53,7 +53,7 @@ function newSoldier(c: Campaign, rng: { next(): number; int(n: number): number }
   const s: CSoldier = {
     pid: c.nextPid++,
     name: uniqueName(c, rng),
-    weapon: 'rifle',
+    weapon: 'garand',
     courage: green ? 0.25 + rng.next() * 0.35 : 0.3 + rng.next() * 0.6,
     xp: 0,
     bodyDamage: PARTS.map(() => 0),
@@ -79,8 +79,8 @@ export function newCampaign(seed: number): Campaign {
       const members: number[] = [];
       for (let i = 0; i < SQUAD_SIZE; i++) {
         const s = newSoldier(c, rng, false);
-        if (i === 0) s.weapon = 'smg';
-        if (i === 1) s.weapon = 'mg';
+        if (i === 0) s.weapon = 'thompson';
+        if (i === 1) s.weapon = 'bar';
         members.push(s.pid);
       }
       // trained together: everyone starts somewhat bonded

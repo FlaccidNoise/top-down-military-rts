@@ -54,7 +54,7 @@ export function syncStrengths(c: Campaign, front: Front): void {
 function redMembers(sim: Sim, count: number, cx: number, cy: number): MemberInit[] {
   const members: MemberInit[] = [];
   for (let i = 0; i < count; i++) {
-    const weapon: WeaponKey = i === 0 ? 'smg' : i === 1 ? 'mg' : i === 2 ? 'panzerfaust' : 'rifle';
+    const weapon: WeaponKey = i === 0 ? 'mp40' : i === 1 ? 'mg42' : i === 2 ? 'panzerfaust' : 'kar98k';
     members.push({
       name: DE_NAMES[sim.rng.int(DE_NAMES.length)],
       weapon,

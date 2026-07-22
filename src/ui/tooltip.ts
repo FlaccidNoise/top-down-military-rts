@@ -1,6 +1,6 @@
 import type { Camera } from '../render/camera';
 import { woundLabel } from '../sim/body';
-import { TERRAIN, VEHICLES, WEAPONS, type TerrainKey } from '../sim/data';
+import { TERRAIN, VEHICLES, WEAPONS, type TerrainKey, type WeaponDef } from '../sim/data';
 import { los } from '../sim/map';
 import type { Sim, Soldier, Vehicle } from '../sim/sim';
 import { STATE_COLOR } from './hud';
@@ -77,7 +77,7 @@ export function computeShot(sim: Sim, squadId: number, vehicleId: number, pick: 
   if (pick.kind === 'vehicle' && pick.v.alive && pick.v.side === 'red') {
     let best: ShotSolution | null = null;
     for (const at of shooters) {
-      const w = WEAPONS[at.weapon];
+      const w: WeaponDef = WEAPONS[at.weapon];
       if (w.pen === undefined) continue;
       const sol = apSolution(sim, at.x, at.y, w.pen, w.accuracy * sim.aimFactor(at), w.range, pick.v, at.path !== null, `${w.name.toUpperCase()} — ${at.name}`);
       if (!best || (sol.ok && (!best.ok || sol.acc > best.acc))) best = sol;

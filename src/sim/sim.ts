@@ -1,5 +1,5 @@
 import { applyHit, capacities, consciousness, freshBody, rollPart, woundLabel, type Wound } from './body';
-import { VEHICLES, WEAPONS, type VehicleKey, type WeaponKey } from './data';
+import { VEHICLES, WEAPONS, type VehicleKey, type WeaponDef, type WeaponKey } from './data';
 import { GameMap, los } from './map';
 import type { Building } from './mapgen';
 import { astar } from './path';
@@ -278,10 +278,11 @@ export class Sim {
 
   addVehicle(side: Side, kind: VehicleKey, x: number, y: number, facing = 0): Vehicle {
     const def = VEHICLES[kind];
+    const crewWeapon: WeaponKey = side === 'blue' ? 'carbine' : 'mp40';
     const squad = this.addSquad(side, `${def.name} crew`, [
-      { name: 'Cmdr', weapon: 'smg', x, y },
-      { name: 'Gunner', weapon: 'smg', x, y },
-      { name: 'Driver', weapon: 'smg', x, y },
+      { name: 'Cmdr', weapon: crewWeapon, x, y },
+      { name: 'Gunner', weapon: crewWeapon, x, y },
+      { name: 'Driver', weapon: crewWeapon, x, y },
     ]);
     const v: Vehicle = {
       id: this.vehicles.length,
@@ -554,8 +555,9 @@ export class Sim {
         this.pendingEvents.push({ fx: v.x, fy: v.y, tx: t.x, ty: t.y, hit: true, kill: false });
         v.gunCooldown = def.gunCooldown * (0.85 + this.rng.next() * 0.3);
       } else if (v.mgCooldown <= 0) {
-        this.fireSmallArms(v.x, v.y, 'mg', t, false);
-        v.mgCooldown = WEAPONS.mg.cooldown * (0.85 + this.rng.next() * 0.3);
+        const hullMg: WeaponKey = v.side === 'blue' ? 'm1919' : 'mg42';
+        this.fireSmallArms(v.x, v.y, hullMg, t, false);
+        v.mgCooldown = WEAPONS[hullMg].cooldown * (0.85 + this.rng.next() * 0.3);
       }
     }
   }
@@ -733,7 +735,7 @@ export class Sim {
     // combat
     if (s.cooldown > 0) s.cooldown -= DT;
     if (s.mental === 'broken') return;
-    const w = WEAPONS[s.weapon];
+    const w: WeaponDef = WEAPONS[s.weapon];
 
     // AT men engage armor first
     if (w.pen !== undefined && s.cooldown <= 0) {

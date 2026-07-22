@@ -15,8 +15,8 @@ describe('bonds', () => {
       const map = new GameMap(20, 20);
       const sim = new Sim(map, 9);
       sim.addSquad('blue', 'A', [
-        { name: 'victim', weapon: 'rifle', x: 5.5, y: 5.5 },
-        { name: 'witness', weapon: 'rifle', x: 6.5, y: 5.5 },
+        { name: 'victim', weapon: 'garand', x: 5.5, y: 5.5 },
+        { name: 'witness', weapon: 'garand', x: 6.5, y: 5.5 },
       ]);
       const [victim, witness] = sim.soldiers;
       witness.bonds[victim.id] = bond;
@@ -36,9 +36,9 @@ describe('bonds', () => {
     const map = new GameMap(40, 40);
     const sim = new Sim(map, 11);
     sim.addSquad('blue', 'A', [
-      { name: 'casualty', weapon: 'rifle', x: 20.5, y: 20.5, courage: 0.5 },
-      { name: 'buddy', weapon: 'rifle', x: 25.5, y: 20.5, courage: 0.5 },
-      { name: 'stranger', weapon: 'rifle', x: 15.5, y: 20.5, courage: 0.5 },
+      { name: 'casualty', weapon: 'garand', x: 20.5, y: 20.5, courage: 0.5 },
+      { name: 'buddy', weapon: 'garand', x: 25.5, y: 20.5, courage: 0.5 },
+      { name: 'stranger', weapon: 'garand', x: 15.5, y: 20.5, courage: 0.5 },
     ]);
     const [casualty, buddy, stranger] = sim.soldiers;
     buddy.bonds[casualty.id] = 0.9;
@@ -58,7 +58,7 @@ describe('barrage', () => {
   it('lands after a call-in delay and wounds or suppresses men in the open', () => {
     const map = new GameMap(60, 60);
     const sim = new Sim(map, 21);
-    sim.addSquad('red', 'targets', [0, 1, 2, 3, 4, 5, 6, 7, 8].map((i) => ({ name: `t${i}`, weapon: 'rifle', x: 26.5 + (i % 3) * 3, y: 26.5 + Math.floor(i / 3) * 3 })));
+    sim.addSquad('red', 'targets', [0, 1, 2, 3, 4, 5, 6, 7, 8].map((i) => ({ name: `t${i}`, weapon: 'garand', x: 26.5 + (i % 3) * 3, y: 26.5 + Math.floor(i / 3) * 3 })));
     expect(sim.callBarrage('blue', 30, 30)).toBe(true);
     expect(sim.barragesLeft.blue).toBe(1);
     for (let i = 0; i < 30 * 61; i++) sim.step(); // 20s delay + full barrage
@@ -79,8 +79,8 @@ describe('red commander', () => {
     const map = new GameMap(40, 40);
     const sim = new Sim(map, 23);
     // blue squad sits on red's post; red squad is far off it
-    sim.addSquad('blue', 'A', [0, 1, 2].map((i) => ({ name: `b${i}`, weapon: 'rifle', x: 10.5 + i, y: 10.5 })));
-    sim.addSquad('red', '1. Gruppe', [0, 1, 2, 3].map((i) => ({ name: `r${i}`, weapon: 'rifle', x: 30.5 + i, y: 30.5 })));
+    sim.addSquad('blue', 'A', [0, 1, 2].map((i) => ({ name: `b${i}`, weapon: 'garand', x: 10.5 + i, y: 10.5 })));
+    sim.addSquad('red', '1. Gruppe', [0, 1, 2, 3].map((i) => ({ name: `r${i}`, weapon: 'garand', x: 30.5 + i, y: 30.5 })));
     const commander = new RedCommander({ stance: 'defend', posts: { 1: { x: 10, y: 10 } } });
     commander.update(sim);
     const ordered = sim.squads[1].soldierIds.map((i) => sim.soldiers[i]).filter((s) => s.path !== null);

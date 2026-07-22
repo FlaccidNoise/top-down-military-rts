@@ -32,7 +32,11 @@ function squadMembers(sim: Sim, side: Side, cx: number, cy: number, spread: numb
   const at: WeaponKey = side === 'blue' ? 'bazooka' : 'panzerfaust';
   const members: { name: string; weapon: WeaponKey; x: number; y: number }[] = [];
   for (let i = 0; i < 9; i++) {
-    const weapon: WeaponKey = i === 0 ? 'smg' : i === 1 ? 'mg' : i === 2 ? at : 'rifle';
+    const weapon: WeaponKey =
+      i === 0 ? (side === 'blue' ? 'thompson' : 'mp40')
+      : i === 1 ? (side === 'blue' ? 'bar' : 'mg42')
+      : i === 2 ? at
+      : side === 'blue' ? 'garand' : 'kar98k';
     members.push({
       name: names[sim.rng.int(names.length)],
       weapon,

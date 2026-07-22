@@ -44,7 +44,7 @@ describe('physiology in battle', () => {
   const duel = (dmg: number, part: number) => {
     const map = new GameMap(20, 20);
     const sim = new Sim(map, 1);
-    sim.addSquad('blue', 'A', [{ name: 'a', weapon: 'rifle', x: 2.5, y: 2.5 }]);
+    sim.addSquad('blue', 'A', [{ name: 'a', weapon: 'garand', x: 2.5, y: 2.5 }]);
     const s = sim.soldiers[0];
     const r = applyHit(s.body, part, dmg);
     s.wounds.push(r.wound);
@@ -85,10 +85,10 @@ describe('psychology', () => {
     const map = new GameMap(160, 20);
     const sim = new Sim(map, 3);
     sim.addSquad('blue', 'MG', [
-      { name: 'mg1', weapon: 'mg', x: 2.5, y: 8.5 },
-      { name: 'mg2', weapon: 'mg', x: 2.5, y: 12.5 },
+      { name: 'mg1', weapon: 'm1919', x: 2.5, y: 8.5 },
+      { name: 'mg2', weapon: 'm1919', x: 2.5, y: 12.5 },
     ]);
-    sim.addSquad('red', 'targets', [0, 1, 2, 3].map((i) => ({ name: `t${i}`, weapon: 'rifle', x: 140.5, y: 7.5 + i * 2 })));
+    sim.addSquad('red', 'targets', [0, 1, 2, 3].map((i) => ({ name: `t${i}`, weapon: 'garand', x: 140.5, y: 7.5 + i * 2 })));
     for (let i = 0; i < 30 * 45; i++) sim.step();
     const pinnedOrWorse = sim.soldiers.filter(
       (s) => s.side === 'red' && s.alive && !s.downed && (s.mental === 'pinned' || s.mental === 'broken'),
@@ -100,8 +100,8 @@ describe('psychology', () => {
   it('broken men flee away from the enemy and ignore orders', () => {
     const map = new GameMap(80, 20);
     const sim = new Sim(map, 4);
-    sim.addSquad('blue', 'A', [{ name: 'a', weapon: 'rifle', x: 40.5, y: 10.5 }]);
-    sim.addSquad('red', 'B', [{ name: 'b', weapon: 'rifle', x: 20.5, y: 10.5 }]);
+    sim.addSquad('blue', 'A', [{ name: 'a', weapon: 'garand', x: 40.5, y: 10.5 }]);
+    sim.addSquad('red', 'B', [{ name: 'b', weapon: 'garand', x: 20.5, y: 10.5 }]);
     const s = sim.soldiers[0];
     s.morale = 0.1; // broken
     for (let i = 0; i < 30 * 10; i++) sim.step();
@@ -117,7 +117,7 @@ describe('psychology', () => {
   it('suppression decays and morale recovers when the fire stops', () => {
     const map = new GameMap(20, 20);
     const sim = new Sim(map, 5);
-    sim.addSquad('blue', 'A', [{ name: 'a', weapon: 'rifle', x: 10.5, y: 10.5 }]);
+    sim.addSquad('blue', 'A', [{ name: 'a', weapon: 'garand', x: 10.5, y: 10.5 }]);
     const s = sim.soldiers[0];
     s.suppression = 0.9;
     s.morale = 0.4;
