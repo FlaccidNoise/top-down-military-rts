@@ -164,6 +164,8 @@ export class Tooltip {
     let y = my + pad;
     if (x + this.el.offsetWidth > innerWidth - 8) x = mx - this.el.offsetWidth - pad;
     if (y + this.el.offsetHeight > innerHeight - 8) y = my - this.el.offsetHeight - pad;
+    x = Math.min(Math.max(x, 8), Math.max(8, innerWidth - this.el.offsetWidth - 8));
+    y = Math.min(Math.max(y, 8), Math.max(8, innerHeight - this.el.offsetHeight - 8));
     this.el.style.left = `${x}px`;
     this.el.style.top = `${y}px`;
   }
@@ -176,13 +178,13 @@ function barRow(label: string, v: number, color: string): string {
 function woundList(s: Soldier): string {
   const items = s.wounds.slice(-4).map(woundLabel).join(' · ');
   const more = s.wounds.length > 4 ? ` +${s.wounds.length - 4}` : '';
-  const bleed = !s.alive ? '' : s.stabilized ? ' <span class="flag stab">stabilized</span>' : s.bleedRate > 0.0005 ? ' <span class="flag">bleeding</span>' : '';
+  const bleed = !s.alive || s.downed ? '' : s.stabilized ? ' <span class="flag stab">stabilized</span>' : s.bleedRate > 0.0005 ? ' <span class="flag">bleeding</span>' : '';
   return `<div class="wound">${items}${more}${bleed}</div>`;
 }
 
 function shotSection(shot: ShotSolution): string {
   return (
-    `<div class="tt-sec">${shot.title}</div>` +
+    `<div class="tt-sec${shot.ok ? '' : ' no'}">${shot.title}</div>` +
     (shot.ok ? `<div class="tt-acc">${pct(shot.acc)}</div>` : '') +
     shot.lines.map((l) => `<div class="tt-note">${l}</div>`).join('')
   );
@@ -212,6 +214,7 @@ function soldierCard(sim: Sim, s: Soldier, shot: ShotSolution | null): string {
     const rows = sim
       .aimBreakdown(s)
       .filter((t) => Math.abs(t.mult - 1) > 0.005)
+      .sort((a, b) => Math.abs(b.mult - 1) - Math.abs(a.mult - 1))
       .map((t) => {
         const d = t.mult - 1;
         return `<div><span>${t.label}</span><span class="${d < 0 ? 'neg' : 'pos'}">${d > 0 ? '+' : ''}${Math.round(d * 100)}%</span></div>`;
@@ -232,7 +235,7 @@ function vehicleCard(sim: Sim, v: Vehicle, shot: ShotSolution | null): string {
     const crew = v.crewIds
       .map((id) => {
         const c = sim.soldiers[id];
-        const st = !c.alive ? '<span class="neg">KIA</span>' : c.downed ? '<span class="neg">DOWN</span>' : '<span class="pos">OK</span>';
+        const st = !c.alive ? '<span class="crit">KIA</span>' : c.downed ? '<span class="crit">DOWN</span>' : '<span class="pos">OK</span>';
         return `<div><span>${c.name}</span>${st}</div>`;
       })
       .join('');

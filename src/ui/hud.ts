@@ -26,6 +26,8 @@ export function infantrySquads(sim: Sim): Squad[] {
   return sim.squads.filter((q) => q.side === 'blue' && q.soldierIds.some((id) => sim.soldiers[id].inVehicle < 0));
 }
 
+const BARS_LEGEND = '<div class="bars-key"><i class="sw sup"></i>suppression<i class="sw mor"></i>morale</div>';
+
 export class Hud {
   readonly root: HTMLDivElement;
   private sig = '';
@@ -46,7 +48,10 @@ export class Hud {
       <div id="modeline" class="panel"></div>
       <div id="squads"></div>
       <div id="banner"></div>
-      <div id="hint">left-drag pan · wheel zoom · click select · right-click move · shift+right-click waypoint · 1-9 squad · B barrage · A airstrike · space pause · esc cancel</div>`;
+      <div id="hint">
+        <span class="hg">left-drag pan · wheel zoom · click select · right-click move · shift+right-click waypoint</span>
+        <span class="hg">1-9 squad · B barrage · A airstrike · space pause · esc cancel</span>
+      </div>`;
     document.body.appendChild(this.root);
 
     this.q('#tb-actions').addEventListener('click', (e) => {
@@ -133,10 +138,12 @@ export class Hud {
       const dots = men
         .map((m) => {
           const c = !m.alive ? '#4a4a3e' : m.downed ? '#d05c50' : STATE_COLOR[m.mental];
-          return `<i style="${m.alive && m.downed ? `border:1px solid ${c}` : `background:${c}`}"></i>`;
+          const label = !m.alive ? 'KIA' : m.downed ? 'DOWN' : m.mental.toUpperCase();
+          return `<i title="${m.name} — ${label}" style="${m.alive && m.downed ? `border:1px solid ${c}` : `background:${c}`}"></i>`;
         })
         .join('');
-      const rows = sel ? men.map((m) => soldierRow(m)).join('') : '';
+      const showLegend = sel && men.some((m) => m.alive && !m.downed);
+      const rows = sel ? (showLegend ? BARS_LEGEND : '') + men.map((m) => soldierRow(m)).join('') : '';
       cards.push(
         `<div class="card panel${sel ? ' sel' : ''}" data-squad="${sq.id}">` +
           `<div class="card-head"><b>${sq.name}</b><span class="n">${men.filter((m) => m.alive).length}/${men.length}</span></div>` +
@@ -148,16 +155,18 @@ export class Hud {
 }
 
 function soldierRow(m: Soldier): string {
-  if (!m.alive) return `<div class="srow kia"><span class="chip" style="background:#4a4a3e"></span><span class="nm">${m.name}</span></div>`;
+  if (!m.alive) return `<div class="srow kia"><span class="chip" style="background:#4a4a3e" title="KIA"></span><span class="nm">${m.name}</span></div>`;
   const wpn = `<span class="wp">${WEAPONS[m.weapon].name}</span>`;
   const cross = m.wounds.length ? `<span class="flag${m.stabilized || m.bleedRate <= 0 ? ' stab' : ''}">✚</span>` : '';
   if (m.downed) {
-    return `<div class="srow" data-soldier="${m.id}"><span class="chip" style="background:#d05c50"></span><span class="nm">${m.name}</span>${wpn}${cross}<span class="down">DOWN</span></div>`;
+    return `<div class="srow urgent" data-soldier="${m.id}" title="click to pan to ${m.name}"><span class="chip" style="background:#d05c50" title="DOWN"></span><span class="nm">${m.name}</span>${wpn}${cross}<span class="down">DOWN</span></div>`;
   }
+  const supPct = Math.round(m.suppression * 100);
+  const morPct = Math.round(m.morale * 100);
   return (
-    `<div class="srow" data-soldier="${m.id}"><span class="chip" style="background:${STATE_COLOR[m.mental]}"></span>` +
+    `<div class="srow" data-soldier="${m.id}"><span class="chip" style="background:${STATE_COLOR[m.mental]}" title="${m.mental.toUpperCase()}"></span>` +
     `<span class="nm">${m.name}</span>${wpn}${cross}` +
-    `<span class="bars"><span class="bar"><i style="width:${Math.round(m.suppression * 100)}%;background:#e0a83c"></i></span>` +
-    `<span class="bar"><i style="width:${Math.round(m.morale * 100)}%;background:#7fbf6a"></i></span></span></div>`
+    `<span class="bars"><span class="bar" title="Suppression ${supPct}%"><i style="width:${supPct}%;background:#e0a83c"></i></span>` +
+    `<span class="bar" title="Morale ${morPct}%"><i style="width:${morPct}%;background:#7fbf6a"></i></span></span></div>`
   );
 }

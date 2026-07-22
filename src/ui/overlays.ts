@@ -32,15 +32,19 @@ export function drawOverlays(ctx: CanvasRenderingContext2D, cam: Camera, sim: Si
       }
       if (n > 0) {
         const pts = [{ x: cx / n, y: cy / n }, dest, ...queue];
-        ctx.lineWidth = 1.5;
-        ctx.strokeStyle = 'rgba(255,202,106,0.55)';
-        ctx.setLineDash([5, 5]);
         ctx.beginPath();
         pts.forEach((p, i) => {
           const [sx, sy] = cam.worldToScreen(p.x, p.y, cw, ch);
           if (i === 0) ctx.moveTo(sx, sy);
           else ctx.lineTo(sx, sy);
         });
+        ctx.setLineDash([5, 5]);
+        // dark halo pass first so the dashed line reads on light terrain (roads, sand), then the amber line on top
+        ctx.lineWidth = 3.5;
+        ctx.strokeStyle = 'rgba(12,14,10,0.5)';
+        ctx.stroke();
+        ctx.lineWidth = 1.5;
+        ctx.strokeStyle = 'rgba(255,202,106,0.7)';
         ctx.stroke();
         ctx.setLineDash([]);
         pts.slice(1).forEach((p, i) => {
@@ -71,29 +75,34 @@ export function drawOverlays(ctx: CanvasRenderingContext2D, cam: Camera, sim: Si
       if (!sim.map.inBounds(tx, ty)) continue;
       const covered = sim.inCover(tx + 0.5, ty + 0.5);
       const [sx, sy] = cam.worldToScreen(tx + 0.5, ty + 0.5, cw, ch);
-      ctx.fillStyle = covered ? 'rgba(127,191,106,0.9)' : 'rgba(232,228,216,0.5)';
       ctx.beginPath();
-      ctx.arc(sx, sy, Math.max(2, cam.scale * 0.18), 0, Math.PI * 2);
+      ctx.arc(sx, sy, Math.max(2.5, cam.scale * 0.18), 0, Math.PI * 2);
+      ctx.fillStyle = covered ? 'rgba(127,191,106,0.9)' : 'rgba(232,228,216,0.55)';
       ctx.fill();
+      ctx.strokeStyle = 'rgba(18,22,15,0.6)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
     }
   }
 
   if (st.shot) {
     const [x0, y0] = cam.worldToScreen(st.shot.fx, st.shot.fy, cw, ch);
     const [x1, y1] = cam.worldToScreen(st.shot.tx, st.shot.ty, cw, ch);
-    ctx.lineWidth = 1.5;
-    if (st.shot.ok) {
-      ctx.strokeStyle = 'rgba(255,202,106,0.8)';
-    } else {
-      ctx.strokeStyle = 'rgba(150,150,140,0.6)';
-      ctx.setLineDash([4, 6]);
-    }
+    if (!st.shot.ok) ctx.setLineDash([4, 6]);
     ctx.beginPath();
     ctx.moveTo(x0, y0);
     ctx.lineTo(x1, y1);
+    // dark halo pass first so the line reads over light terrain, matching the route preview
+    ctx.lineWidth = 3.5;
+    ctx.strokeStyle = 'rgba(12,14,10,0.45)';
+    ctx.stroke();
+    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = st.shot.ok ? 'rgba(255,202,106,0.85)' : 'rgba(150,150,140,0.7)';
     ctx.stroke();
     ctx.setLineDash([]);
-    chip(ctx, (x0 + x1) / 2, (y0 + y1) / 2, st.shot.ok ? `${Math.round(st.shot.acc * 100)}%` : '✕', st.shot.ok ? '#ffe9a0' : '#a0a090');
+    // blocked shots tell the player why, not just that: matches the tooltip's own reason line
+    const blockedLabel = st.shot.lines[0]?.startsWith('out of range') ? 'OUT OF RANGE' : 'NO LOS';
+    chip(ctx, (x0 + x1) / 2, (y0 + y1) / 2, st.shot.ok ? `${Math.round(st.shot.acc * 100)}%` : blockedLabel, st.shot.ok ? '#ffe9a0' : '#a0a090');
   }
 
   pings.draw(ctx, cam, sim, cw, ch);
@@ -153,15 +162,22 @@ export class EventPings {
   draw(ctx: CanvasRenderingContext2D, cam: Camera, sim: Sim, cw: number, ch: number): void {
     this.pings = this.pings.filter((p) => sim.tick - p.tick < PING_TICKS);
     const placed: { x: number; y: number; w: number }[] = []; // stack co-located chips instead of occluding
+    const edgeCounts = new Map<string, number>(); // stack off-screen arrow chips along the edge instead of overlapping
     for (const p of this.pings) {
-      const a = 1 - (sim.tick - p.tick) / PING_TICKS;
+      const life = (sim.tick - p.tick) / PING_TICKS; // 0..1
+      const a = life < 0.6 ? 1 : 1 - (life - 0.6) / 0.4; // hold at full readability, ease out only over the tail
       const [x, y] = cam.worldToScreen(p.x, p.y, cw, ch);
       const m = 30;
       const top = 60; // keep clear of the top bar
       ctx.globalAlpha = a;
       if (x < m || x > cw - m || y < top || y > ch - m) {
-        const cx = Math.min(Math.max(x, m), cw - m);
-        const cy = Math.min(Math.max(y, top), ch - m);
+        const edgeKey = (x < m ? 'L' : x > cw - m ? 'R' : '') + (y < top ? 'T' : y > ch - m ? 'B' : '');
+        const stack = edgeCounts.get(edgeKey) ?? 0;
+        edgeCounts.set(edgeKey, stack + 1);
+        let cx = Math.min(Math.max(x, m), cw - m);
+        let cy = Math.min(Math.max(y, top), ch - m);
+        if (edgeKey === 'L' || edgeKey === 'R') cy = Math.min(Math.max(cy + stack * 20, top), ch - m);
+        else cx = Math.min(Math.max(cx + stack * 20, m), cw - m);
         const ang = Math.atan2(y - cy, x - cx);
         ctx.save();
         ctx.translate(cx, cy);

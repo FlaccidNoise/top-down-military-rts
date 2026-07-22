@@ -28,6 +28,25 @@ export interface FrontSave {
 export const OP_START_MIN = 6 * 60; // day 1, 06:00
 export const OP_DEADLINE_DAYS = 14;
 
+export function formatClock(min: number): { day: number; hhmm: string } {
+  const day = Math.floor(min / 1440) + 1;
+  const m = min % 1440;
+  const hhmm = `${String(Math.floor(m / 60)).padStart(2, '0')}${String(m % 60).padStart(2, '0')}`;
+  return { day, hhmm };
+}
+
+// Minutes remaining until the chit finishes its ordered path: the unwalked
+// portion of the current leg plus the full cost of every leg after it. 0 if
+// idle. Pure display arithmetic — mirrors the terrain costs step() consumes.
+export function chitEtaMinutes(front: Front, chit: Chit): number {
+  if (chit.path.length === 0) return 0;
+  let total = CELL_MINUTES[front.sector.cells[chit.path[0]].terrain] - chit.progress;
+  for (let i = 1; i < chit.path.length; i++) {
+    total += CELL_MINUTES[front.sector.cells[chit.path[i]].terrain];
+  }
+  return Math.max(0, total);
+}
+
 export class Front {
   clockMin = OP_START_MIN;
   chits: Chit[] = [];
@@ -36,12 +55,11 @@ export class Front {
   constructor(readonly sector: SectorMap) {}
 
   get day(): number {
-    return Math.floor(this.clockMin / 1440) + 1;
+    return formatClock(this.clockMin).day;
   }
 
   get hhmm(): string {
-    const m = this.clockMin % 1440;
-    return `${String(Math.floor(m / 60)).padStart(2, '0')}${String(m % 60).padStart(2, '0')}`;
+    return formatClock(this.clockMin).hhmm;
   }
 
   addChit(init: Omit<Chit, 'id' | 'path' | 'progress'>): Chit {

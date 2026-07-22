@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { newCampaign } from '../src/campaign/campaign';
-import { Front, findPath, operationStatus, OP_START_MIN, OP_DEADLINE_DAYS } from '../src/strategic/front';
+import { Front, findPath, formatClock, chitEtaMinutes, operationStatus, OP_START_MIN, OP_DEADLINE_DAYS } from '../src/strategic/front';
 import { cellIndex, makeDefaultSector, parseSector } from '../src/strategic/sector';
 import { applyEngagementOutcome, makeStrategicBattle, newFront } from '../src/strategic/bridge';
 import { loadGame, saveGame } from '../src/strategic/save';
@@ -89,6 +89,26 @@ describe('front', () => {
     f.clockMin = OP_START_MIN;
     f.chits[0].strength = 0;
     expect(operationStatus(f)).toBe('lost');
+  });
+
+  it('formatClock: converts absolute minutes to day/hhmm, rolling at midnight', () => {
+    expect(formatClock(0)).toEqual({ day: 1, hhmm: '0000' });
+    expect(formatClock(1440)).toEqual({ day: 2, hhmm: '0000' });
+    expect(formatClock(OP_START_MIN)).toEqual({ day: 1, hhmm: '0600' });
+  });
+
+  it('chitEtaMinutes: sums remaining path cost minus progress on the current leg', () => {
+    const s = miniSector();
+    const f = new Front(s);
+    const chit = f.addChit({ side: 'blue', name: 'Able', cell: 0, strength: 27, companyIndex: 0 });
+    expect(chitEtaMinutes(f, chit)).toBe(0); // idle, no path
+    f.orderMove(chit.id, 3);
+    expect(chitEtaMinutes(f, chit)).toBe(30); // 3 road cells * 10 min
+    for (let i = 0; i < 4; i++) f.step();
+    expect(chitEtaMinutes(f, chit)).toBe(26);
+    for (let i = 0; i < 6; i++) f.step(); // completes the first leg into cell 1
+    expect(chit.cell).toBe(1);
+    expect(chitEtaMinutes(f, chit)).toBe(20);
   });
 
   it('save/restore roundtrips through JSON', () => {
