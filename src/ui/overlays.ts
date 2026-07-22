@@ -1,6 +1,5 @@
 import type { Camera } from '../render/camera';
-import { VEHICLES } from '../sim/data';
-import { OFFSETS, type Mental, type Sim } from '../sim/sim';
+import { OFFSETS, type Sim, type UnitEvent } from '../sim/sim';
 import type { Pick, ShotSolution } from './tooltip';
 
 export interface OverlayState {
@@ -14,6 +13,55 @@ export interface OverlayState {
 export function drawOverlays(ctx: CanvasRenderingContext2D, cam: Camera, sim: Sim, st: OverlayState, pings: EventPings): void {
   const cw = ctx.canvas.width;
   const ch = ctx.canvas.height;
+
+  // Route preview for the selected squad: current leg, then queued waypoints.
+  if (st.selectedSquad >= 0) {
+    const sq = sim.squads[st.selectedSquad];
+    const dest = sim.squadDest[st.selectedSquad];
+    const queue = sim.squadWaypoints[st.selectedSquad] ?? [];
+    if (sq && dest) {
+      let cx = 0;
+      let cy = 0;
+      let n = 0;
+      for (const sid of sq.soldierIds) {
+        const s = sim.soldiers[sid];
+        if (!s.alive || s.downed) continue;
+        cx += s.x;
+        cy += s.y;
+        n++;
+      }
+      if (n > 0) {
+        const pts = [{ x: cx / n, y: cy / n }, dest, ...queue];
+        ctx.lineWidth = 1.5;
+        ctx.strokeStyle = 'rgba(255,202,106,0.55)';
+        ctx.setLineDash([5, 5]);
+        ctx.beginPath();
+        pts.forEach((p, i) => {
+          const [sx, sy] = cam.worldToScreen(p.x, p.y, cw, ch);
+          if (i === 0) ctx.moveTo(sx, sy);
+          else ctx.lineTo(sx, sy);
+        });
+        ctx.stroke();
+        ctx.setLineDash([]);
+        pts.slice(1).forEach((p, i) => {
+          const [sx, sy] = cam.worldToScreen(p.x, p.y, cw, ch);
+          ctx.fillStyle = i === 0 ? 'rgba(255,202,106,0.9)' : 'rgba(255,202,106,0.6)';
+          ctx.beginPath();
+          ctx.arc(sx, sy, i === 0 ? 4 : 6, 0, Math.PI * 2);
+          ctx.fill();
+          if (i > 0) {
+            ctx.fillStyle = '#12160f';
+            ctx.font = '8px ui-monospace, Menlo, monospace';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(String(i + 1), sx, sy);
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'alphabetic';
+          }
+        });
+      }
+    }
+  }
 
   // Move-order preview: the actual formation spots, green where they have cover.
   if (!st.targetMode && st.selectedSquad >= 0 && st.pick?.kind === 'terrain') {
@@ -77,58 +125,34 @@ interface Ping {
 
 const PING_TICKS = 8 * 30;
 
-// Watches sim state transitions and pings events the player must not miss —
-// with edge arrows when they happen off-screen. Sim-tick expiry: pause-safe.
+// Pings sim-emitted unit events the player must not miss — with edge arrows
+// when they happen off-screen. Sim-tick expiry: pause-safe.
 export class EventPings {
-  private sim: Sim | null = null;
-  private lastTick = 0;
-  private alive: boolean[] = [];
-  private downed: boolean[] = [];
-  private mental: Mental[] = [];
-  private vAlive: boolean[] = [];
   private pings: Ping[] = [];
 
-  watch(sim: Sim): void {
-    if (sim !== this.sim || sim.tick < this.lastTick) {
-      this.sim = sim;
-      this.pings = [];
-      this.lastTick = sim.tick;
-      this.snap(sim);
-      return;
-    }
-    if (sim.tick === this.lastTick) return;
-    this.lastTick = sim.tick;
-    for (const s of sim.soldiers) {
-      if (s.side === 'blue' && s.inVehicle < 0) {
-        if (!s.alive && this.alive[s.id]) this.add(s.x, s.y, `${s.name} KIA`, '#d05c50', sim.tick);
-        else if (s.alive && s.downed && !this.downed[s.id]) this.add(s.x, s.y, `${s.name} DOWN`, '#e08a3c', sim.tick);
-        else if (s.alive && !s.downed && s.mental === 'broken' && this.mental[s.id] !== 'broken') this.add(s.x, s.y, `${s.name} BROKE`, '#d05c50', sim.tick);
+  add(events: UnitEvent[], tick: number): void {
+    for (const e of events) {
+      if (e.kind === 'vehicle-destroyed') {
+        this.push(e.x, e.y, `${e.name} DESTROYED`, e.side === 'blue' ? '#d05c50' : '#ffca6a', tick);
+      } else if (e.side === 'blue') {
+        const label = e.kind === 'kia' ? 'KIA' : e.kind === 'downed' ? 'DOWN' : 'BROKE';
+        this.push(e.x, e.y, `${e.name} ${label}`, e.kind === 'downed' ? '#e08a3c' : '#d05c50', tick);
       }
     }
-    for (const v of sim.vehicles) {
-      if (!v.alive && this.vAlive[v.id]) {
-        this.add(v.x, v.y, `${VEHICLES[v.kind].name} DESTROYED`, v.side === 'blue' ? '#d05c50' : '#ffca6a', sim.tick);
-      }
-    }
-    this.snap(sim);
   }
 
-  private snap(sim: Sim): void {
-    for (const s of sim.soldiers) {
-      this.alive[s.id] = s.alive;
-      this.downed[s.id] = s.downed;
-      this.mental[s.id] = s.mental;
-    }
-    for (const v of sim.vehicles) this.vAlive[v.id] = v.alive;
+  reset(): void {
+    this.pings = [];
   }
 
-  private add(x: number, y: number, label: string, color: string, tick: number): void {
+  private push(x: number, y: number, label: string, color: string, tick: number): void {
     this.pings.push({ x, y, label, color, tick });
     if (this.pings.length > 12) this.pings.shift();
   }
 
   draw(ctx: CanvasRenderingContext2D, cam: Camera, sim: Sim, cw: number, ch: number): void {
     this.pings = this.pings.filter((p) => sim.tick - p.tick < PING_TICKS);
+    const placed: { x: number; y: number; w: number }[] = []; // stack co-located chips instead of occluding
     for (const p of this.pings) {
       const a = 1 - (sim.tick - p.tick) / PING_TICKS;
       const [x, y] = cam.worldToScreen(p.x, p.y, cw, ch);
@@ -154,7 +178,12 @@ export class EventPings {
         const half = ctx.measureText(p.label).width / 2 + 16;
         chip(ctx, cx - Math.cos(ang) * half, cy - Math.sin(ang) * half, p.label, p.color);
       } else {
-        chip(ctx, x, y - cam.scale * 0.9 - 10, p.label, p.color);
+        ctx.font = '11px ui-monospace, Menlo, monospace';
+        const w = ctx.measureText(p.label).width + 10;
+        let cy = y - cam.scale * 0.9 - 10;
+        while (placed.some((q) => Math.abs(q.y - cy) < 18 && Math.abs(q.x - x) < (q.w + w) / 2)) cy -= 18;
+        placed.push({ x, y: cy, w });
+        chip(ctx, x, cy, p.label, p.color);
       }
       ctx.globalAlpha = 1;
     }

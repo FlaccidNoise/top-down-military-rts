@@ -144,6 +144,7 @@ function startEngagementBattle(e: Engagement): void {
   winnerAt = -1;
   debriefShown = false;
   debriefEl.style.display = 'none';
+  pings.reset();
 }
 
 function showDebrief(): void {
@@ -292,7 +293,10 @@ canvas.addEventListener('contextmenu', (e) => {
   if (targetMode !== '') return;
   const [wx, wy] = cam.screenToWorld(e.clientX, e.clientY, canvas.width, canvas.height);
   if (selectedVehicle >= 0) sim.orderVehicleMove(selectedVehicle, wx, wy);
-  else if (selectedSquad >= 0) sim.orderMove(selectedSquad, wx, wy);
+  else if (selectedSquad >= 0) {
+    if (e.shiftKey) sim.queueMove(selectedSquad, wx, wy);
+    else sim.orderMove(selectedSquad, wx, wy);
+  }
 });
 canvas.addEventListener('wheel', (e) => {
   e.preventDefault();
@@ -388,7 +392,7 @@ function frame(now: number): void {
     renderer.addEvents(sim.takeEvents(), now);
     renderer.addBooms(sim.takeBooms(), now);
     renderer.addPlanes(sim.takePlanes(), now);
-    pings.watch(sim);
+    pings.add(sim.takeUnitEvents(), sim.tick);
 
     const pick = mouse.onCanvas && !targetMode ? pickAt(sim, cam, mouse.x, mouse.y, canvas.width, canvas.height) : null;
     const shot = computeShot(sim, selectedSquad, selectedVehicle, pick);

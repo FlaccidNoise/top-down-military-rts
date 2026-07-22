@@ -132,6 +132,42 @@ describe('simulation', () => {
     expect(rear.penChance).toBe(1); // 25mm plate vs 90+ effective pen
   });
 
+  it('queues unit events so DOWN then KIA across one frame batch keeps both', () => {
+    const sim = new Sim(new GameMap(10, 10), 1);
+    sim.addSquad('blue', 'a', [{ name: 'A', weapon: 'rifle', x: 2.5, y: 2.5 }]);
+    const s = sim.soldiers[0];
+    s.pain = 1; // >= 0.8 → downed
+    sim.step();
+    s.wounds.push({ part: 0, dmg: 10 });
+    s.bloodLoss = 1; // → kill on next physiology tick
+    sim.step();
+    const kinds = sim.takeUnitEvents().map((e) => e.kind);
+    expect(kinds).toEqual(['downed', 'kia']);
+    expect(sim.takeUnitEvents()).toEqual([]); // queue drains
+  });
+
+  it('waypoint queue dispatches legs in order; a direct order cancels it', () => {
+    const sim = new Sim(new GameMap(60, 20), 1);
+    sim.addSquad('blue', 'a', [{ name: 'A', weapon: 'rifle', x: 2.5, y: 10.5 }]);
+    const s = sim.soldiers[0];
+    sim.queueMove(0, 20, 10); // idle → dispatches immediately
+    sim.queueMove(0, 40, 10);
+    expect(sim.squadWaypoints[0].length).toBe(1);
+    let reachedFirst = false;
+    for (let i = 0; i < 30 * 120 && (sim.squadDest[0] || sim.squadWaypoints[0].length); i++) {
+      if (Math.hypot(s.x - 20, s.y - 10) < 6) reachedFirst = true;
+      sim.step();
+    }
+    expect(reachedFirst).toBe(true);
+    expect(Math.hypot(s.x - 40, s.y - 10)).toBeLessThan(6);
+    expect(sim.squadDest[0]).toBeNull();
+
+    sim.queueMove(0, 20, 10);
+    sim.queueMove(0, 2, 10);
+    sim.orderMove(0, 50, 10); // direct order wipes the queue
+    expect(sim.squadWaypoints[0]).toEqual([]);
+  });
+
   it('an assault produces a resolved firefight with no NaN state', () => {
     const sim = makeScenario(7);
     const [b0, b2] = [sim.buildings[0], sim.buildings[2]];
