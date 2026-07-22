@@ -4,6 +4,7 @@ import { Front, findPath, operationStatus, OP_START_MIN, OP_DEADLINE_DAYS } from
 import { cellIndex, makeDefaultSector, parseSector } from '../src/strategic/sector';
 import { applyEngagementOutcome, makeStrategicBattle, newFront } from '../src/strategic/bridge';
 import { loadGame, saveGame } from '../src/strategic/save';
+import { StrategicView } from '../src/render/strategic';
 
 describe('sector', () => {
   it('parses the default sector: 40×30, river neutral, bridges, objective town', () => {
@@ -176,5 +177,14 @@ describe('bridge', () => {
     expect(loaded.campaign).toEqual(c);
     expect(loaded.front.chits).toEqual(front.chits);
     expect(loaded.front.clockMin).toBe(front.clockMin);
+  });
+});
+
+describe('strategic view', () => {
+  it('cellAtScreen inverts layout', () => {
+    const view = new StrategicView(makeDefaultSector());
+    const { size, ox, oy } = view.layout(800, 650);
+    expect(view.cellAtScreen(ox + size * 4 + 1, oy + size * 15 + 1, 800, 650)).toBe(15 * 40 + 4);
+    expect(view.cellAtScreen(0, 0, 800, 650)).toBe(-1);
   });
 });

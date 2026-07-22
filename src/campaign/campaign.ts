@@ -20,7 +20,6 @@ export interface CSoldier {
 }
 
 export interface BattleRecord {
-  battleIndex: number;
   day: number;
   won: boolean;
   kia: string[];
@@ -29,7 +28,6 @@ export interface BattleRecord {
 
 export interface Campaign {
   day: number;
-  battleIndex: number; // next battle to fight (0..2), 3 = operation over
   nextPid: number;
   companies: { name: string; squads: number[] }[]; // indices into squads
   squads: { name: string; members: number[] }[];
@@ -37,8 +35,6 @@ export interface Campaign {
   log: BattleRecord[];
 }
 
-export const BATTLES_PER_OPERATION = 3;
-export const DAYS_BETWEEN_BATTLES = 3;
 const SQUAD_SIZE = 9;
 
 function uniqueName(c: Campaign, rng: { int(n: number): number }): string {
@@ -75,7 +71,7 @@ export const SQUADS_PER_COMPANY = 3;
 
 export function newCampaign(seed: number): Campaign {
   const rng = mulberry32(seed);
-  const c: Campaign = { day: 1, battleIndex: 0, nextPid: 1, companies: [], squads: [], soldiers: {}, log: [] };
+  const c: Campaign = { day: 1, nextPid: 1, companies: [], squads: [], soldiers: {}, log: [] };
   const ordinal = ['1st', '2nd', '3rd'];
   for (const coName of COMPANY_NAMES) {
     const squadIndexes: number[] = [];
@@ -99,7 +95,7 @@ export function newCampaign(seed: number): Campaign {
 
 // Battle-end bookkeeping: casualties, healing clocks, xp, bond growth.
 export function applyBattleResults(c: Campaign, sim: Sim, won: boolean): BattleRecord {
-  const record: BattleRecord = { battleIndex: c.battleIndex, day: c.day, won, kia: [], wounded: [] };
+  const record: BattleRecord = { day: c.day, won, kia: [], wounded: [] };
   const survivorsBySquad: number[][] = c.squads.map(() => []);
 
   for (const s of sim.soldiers) {
@@ -137,7 +133,6 @@ export function applyBattleResults(c: Campaign, sim: Sim, won: boolean): BattleR
   }
 
   c.log.push(record);
-  c.battleIndex++;
   return record;
 }
 
@@ -195,20 +190,4 @@ export function fitRoster(c: Campaign, squadIndex: number): RosterEntry[] {
       bodyDamage: cs.bodyDamage,
       bonds: cs.bonds,
     }));
-}
-
-const STORAGE_KEY = 'ccg-campaign-v1';
-
-export function saveCampaign(c: Campaign, storage: Pick<Storage, 'setItem' | 'getItem'> = localStorage): void {
-  storage.setItem(STORAGE_KEY, JSON.stringify(c));
-}
-
-export function loadCampaign(storage: Pick<Storage, 'setItem' | 'getItem'> = localStorage): Campaign | null {
-  const raw = storage.getItem(STORAGE_KEY);
-  if (!raw) return null;
-  try {
-    return JSON.parse(raw) as Campaign;
-  } catch {
-    return null;
-  }
 }

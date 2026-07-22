@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { advanceDays, applyBattleResults, fillReplacements, fitRoster, loadCampaign, newCampaign, saveCampaign } from '../src/campaign/campaign';
+import { advanceDays, applyBattleResults, fillReplacements, fitRoster, newCampaign } from '../src/campaign/campaign';
 import { PARTS, P, applyHit } from '../src/sim/body';
 import { RedCommander } from '../src/sim/ai';
 import { GameMap } from '../src/sim/map';
 import { Sim } from '../src/sim/sim';
-import { makeCampaignBattle, makeScenario } from '../src/sim/scenario';
+import { makeScenario } from '../src/sim/scenario';
+import { makeStrategicBattle, newFront } from '../src/strategic/bridge';
+import { makeDefaultSector } from '../src/strategic/sector';
+import { loadGame, saveGame } from '../src/strategic/save';
 
 describe('bonds', () => {
   it('a bonded squadmate death hits morale harder than a stranger death', () => {
@@ -86,9 +89,16 @@ describe('red commander', () => {
 });
 
 describe('campaign', () => {
+  const battleFor = (c: ReturnType<typeof newCampaign>, seed: number) => {
+    const front = newFront(c, makeDefaultSector());
+    const able = front.chits.find((ch) => ch.side === 'blue')!;
+    const wache = front.chits.find((ch) => ch.name === 'Brückenwache Süd')!;
+    return makeStrategicBattle(c, front, { attackerId: able.id, defenderId: wache.id, cell: wache.cell }, seed);
+  };
+
   it('battle results persist: KIA, recovery, xp, bonds growth', () => {
     const c = newCampaign(1);
-    const { sim } = makeCampaignBattle(c, 5);
+    const { sim } = battleFor(c, 5);
     const pids = c.squads[0].members;
     // fabricate outcomes: first man dies, second is wounded, rest survive clean
     const first = sim.soldiers.find((s) => s.pid === pids[0])!;
@@ -137,36 +147,39 @@ describe('campaign', () => {
       setItem: (k: string, v: string) => void store.set(k, v),
     };
     const c = newCampaign(4);
-    saveCampaign(c, storage);
-    expect(loadCampaign(storage)).toEqual(c);
+    const front = newFront(c, makeDefaultSector());
+    saveGame(c, front, storage);
+    expect(loadGame(storage)!.campaign).toEqual(c);
   });
 
-  it('all battles place both sides in bounds and every vehicle on the road', () => {
-    for (const idx of [0, 1, 2]) {
-      for (const seed of [13, 42, 77]) {
-        const c = newCampaign(9);
-        c.battleIndex = idx;
-        const { sim, camStart } = makeCampaignBattle(c, seed + idx);
-        expect(sim.soldiers.length).toBeGreaterThan(20);
-        for (const s of sim.soldiers) {
-          expect(s.x).toBeGreaterThan(0);
-          expect(s.x).toBeLessThan(sim.map.w);
-          expect(s.y).toBeGreaterThan(0);
-          expect(s.y).toBeLessThan(sim.map.h);
-        }
-        for (const v of sim.vehicles) {
-          expect(sim.map.terrainKeyAt(Math.floor(v.x), Math.floor(v.y))).toBe('road');
-        }
-        expect(Number.isFinite(camStart.x)).toBe(true);
-        for (let i = 0; i < 300; i++) sim.step();
-        for (const s of sim.soldiers) expect(Number.isFinite(s.x)).toBe(true);
+  it('strategic battles place both sides on the generated map', () => {
+    for (const seed of [13, 14]) {
+      const c = newCampaign(9);
+      const { sim } = battleFor(c, seed);
+      expect(sim.soldiers.length).toBeGreaterThan(20);
+      for (const s of sim.soldiers) {
+        expect(s.x).toBeGreaterThan(0);
+        expect(s.x).toBeLessThan(sim.map.w);
+        expect(s.y).toBeGreaterThan(0);
+        expect(s.y).toBeLessThan(sim.map.h);
+      }
+      for (let i = 0; i < 300; i++) sim.step();
+      for (const s of sim.soldiers) expect(Number.isFinite(s.x)).toBe(true);
+    }
+  });
+
+  it('makeScenario spawns every vehicle on the road', () => {
+    for (const seed of [13, 42, 77]) {
+      const sim = makeScenario(seed);
+      for (const v of sim.vehicles) {
+        expect(sim.map.terrainKeyAt(Math.floor(v.x), Math.floor(v.y))).toBe('road');
       }
     }
   });
 
   it('a campaign battle wires persistent bonds onto battle soldiers', () => {
     const c = newCampaign(6);
-    const { sim } = makeCampaignBattle(c, 8);
+    const { sim } = battleFor(c, 8);
     const a = sim.soldiers[0];
     const b = sim.soldiers[1];
     expect(a.pid).toBeGreaterThan(0);
