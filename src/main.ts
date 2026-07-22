@@ -1,20 +1,14 @@
-import {
-  advanceDays,
-  applyBattleResults,
-  BATTLES_PER_OPERATION,
-  DAYS_BETWEEN_BATTLES,
-  fillReplacements,
-  loadCampaign,
-  newCampaign,
-  saveCampaign,
-  type Campaign,
-} from './campaign/campaign';
+import { advanceDays, fillReplacements, newCampaign, type Campaign } from './campaign/campaign';
 import { Camera } from './render/camera';
 import { Renderer } from './render/renderer';
+import { StrategicView } from './render/strategic';
 import type { RedCommander } from './sim/ai';
 import { WEAPONS } from './sim/data';
-import { makeCampaignBattle } from './sim/scenario';
 import { DT, type Sim } from './sim/sim';
+import { applyEngagementOutcome, makeStrategicBattle, newFront, syncStrengths } from './strategic/bridge';
+import { operationStatus, type Engagement, type Front } from './strategic/front';
+import { loadGame, saveGame } from './strategic/save';
+import { makeDefaultSector } from './strategic/sector';
 import { Hud, infantrySquads } from './ui/hud';
 import { drawOverlays, EventPings } from './ui/overlays';
 import { computeShot, pickAt, Tooltip } from './ui/tooltip';
@@ -34,13 +28,36 @@ const debriefEl = document.createElement('div');
 debriefEl.id = 'debrief';
 document.body.appendChild(debriefEl);
 
-let campaign: Campaign = loadCampaign() ?? newCampaign(Date.now() % 100000);
+let campaign: Campaign;
+let front: Front;
+const loaded = loadGame();
+if (loaded) {
+  campaign = loaded.campaign;
+  front = loaded.front;
+} else {
+  campaign = newCampaign(Date.now() % 100000);
+  front = newFront(campaign, makeDefaultSector());
+  saveGame(campaign, front);
+}
+
+let mode: 'strategic' | 'battle' = 'strategic';
+let stratView = new StrategicView(front.sector);
+let selectedChit = -1;
+const SPEEDS = [1, 10, 60]; // strategic minutes per real second
+let speedIdx = 1;
+let stratPaused = true;
+let stratAcc = 0;
+let prevDay = front.day;
+let pendingEngagement: Engagement | null = null;
+let opEnded = false;
+
+// battle state
 let sim: Sim;
 let commander: RedCommander;
 let renderer: Renderer;
+let battleCompany = -1;
 let battleTitle = '';
 const cam = new Camera(60, 60);
-
 let paused = true;
 let selectedSquad = -1;
 let selectedVehicle = -1;
@@ -84,20 +101,42 @@ const hud = new Hud({
   callAirstrike: () => {
     if (sim.airstrikesLeft.blue > 0) setTargetMode(targetMode === 'air' ? '' : 'air');
   },
-  togglePause: () => (paused = !paused),
+  togglePause: () => {
+    if (mode === 'strategic') stratPaused = !stratPaused;
+    else paused = !paused;
+  },
 });
 const tooltip = new Tooltip(hud.root);
 
-function startBattle(): void {
-  const seed = urlSeed !== null ? Number(urlSeed) : campaign.day * 7919 + campaign.battleIndex;
-  const battle = makeCampaignBattle(campaign, seed);
+function showContactModal(e: Engagement): void {
+  const attacker = front.chits.find((c) => c.id === e.attackerId)!;
+  const defender = front.chits.find((c) => c.id === e.defenderId)!;
+  debriefEl.innerHTML = `<div class="db">
+    <h1>CONTACT</h1>
+    <p class="sub">${attacker.name} (${attacker.strength} men) has met ${defender.name} (~${defender.strength} men).</p>
+    <button id="fight">Attack</button>
+    <button id="standdown">Stand down</button></div>`;
+  debriefEl.style.display = 'block';
+  document.getElementById('fight')!.onclick = () => startEngagementBattle(e);
+  document.getElementById('standdown')!.onclick = () => {
+    debriefEl.style.display = 'none';
+    pendingEngagement = null;
+  };
+}
+
+function startEngagementBattle(e: Engagement): void {
+  const seed = urlSeed !== null ? Number(urlSeed) : front.clockMin * 7919 + e.cell;
+  const battle = makeStrategicBattle(campaign, front, e, seed);
   sim = battle.sim;
   commander = battle.commander;
+  battleCompany = battle.companyIndex;
   renderer = new Renderer(sim);
-  battleTitle = `Day ${campaign.day}: ${battle.name}`;
-  cam.x = battle.camStart.x;
-  cam.y = battle.camStart.y;
+  battleTitle = `Day ${front.day} ${front.hhmm} — ${battle.name}`;
+  const first = sim.soldiers.find((s) => s.side === 'blue');
+  cam.x = first ? first.x + 12 : 60;
+  cam.y = first ? first.y : 60;
   cam.scale = 8;
+  mode = 'battle';
   paused = true;
   selectedSquad = -1;
   selectedVehicle = -1;
@@ -109,14 +148,13 @@ function startBattle(): void {
 
 function showDebrief(): void {
   debriefShown = true;
-  const won = sim.winner === 'blue';
-  const record = applyBattleResults(campaign, sim, won);
-  advanceDays(campaign, DAYS_BETWEEN_BATTLES);
-  const replacements = fillReplacements(campaign, campaign.day * 31 + 7);
-  saveCampaign(campaign);
+  const e = pendingEngagement!;
+  const out = applyEngagementOutcome(campaign, front, e, sim);
+  pendingEngagement = null;
+  saveGame(campaign, front);
 
-  const operationOver = campaign.battleIndex >= BATTLES_PER_OPERATION;
-  const rows = campaign.squads
+  const rows = campaign.companies[battleCompany].squads
+    .map((si) => campaign.squads[si])
     .map((sq) => {
       const men = sq.members
         .map((pid) => campaign.soldiers[pid])
@@ -131,27 +169,44 @@ function showDebrief(): void {
     })
     .join('');
 
-  const wins = campaign.log.filter((r) => r.won).length;
   debriefEl.innerHTML = `<div class="db">
-    <h1 class="${record.won ? 'win' : 'loss'}">${record.won ? 'VICTORY' : 'DEFEAT'}</h1>
-    <p class="sub">${record.kia.length} KIA · ${record.wounded.length} wounded</p>
-    <p class="fallen">${record.kia.length > 0 ? 'Fallen: ' + record.kia.join(', ') : 'No one died today.'}</p>
-    ${replacements > 0 ? `<p class="repl">${replacements} green replacements arrive — strangers, for now.</p>` : ''}
+    <h1 class="${out.record.won ? 'win' : 'loss'}">${out.record.won ? 'VICTORY' : 'DEFEAT'}</h1>
+    <p class="sub">${out.record.kia.length} KIA · ${out.record.wounded.length} wounded · ~${out.redLosses} enemy losses</p>
+    <p class="fallen">${out.record.kia.length > 0 ? 'Fallen: ' + out.record.kia.join(', ') : 'No one died today.'}</p>
+    <p class="sub">${out.cellTaken ? 'The ground is ours.' : 'The attack failed; the line is unchanged.'}</p>
     ${rows}
-    ${
-      operationOver
-        ? `<h2>Operation complete: ${wins}/${BATTLES_PER_OPERATION} battles won.</h2>
-           <button id="next">New operation (fresh campaign)</button>`
-        : `<h2>Next: battle ${campaign.battleIndex + 1} of ${BATTLES_PER_OPERATION}, day ${campaign.day}</h2>
-           <button id="next">Move out</button>`
-    }</div>`;
+    <button id="next">Return to the front</button></div>`;
   debriefEl.style.display = 'block';
   document.getElementById('next')!.onclick = () => {
-    if (operationOver) {
-      campaign = newCampaign(Date.now() % 100000);
-      saveCampaign(campaign);
-    }
-    startBattle();
+    debriefEl.style.display = 'none';
+    mode = 'strategic';
+    stratPaused = true;
+  };
+}
+
+function freshCampaign(): void {
+  campaign = newCampaign(Date.now() % 100000);
+  front = newFront(campaign, makeDefaultSector());
+  stratView = new StrategicView(front.sector);
+  selectedChit = -1;
+  pendingEngagement = null;
+  opEnded = false;
+  prevDay = front.day;
+  stratPaused = true;
+  saveGame(campaign, front);
+}
+
+function showOperationEnd(status: 'won' | 'lost'): void {
+  opEnded = true;
+  const kia = Object.values(campaign.soldiers).filter((s) => s.status === 'kia').length;
+  debriefEl.innerHTML = `<div class="db">
+    <h1 class="${status === 'won' ? 'win' : 'loss'}">OPERATION ${status === 'won' ? 'ACCOMPLISHED' : 'FAILED'}</h1>
+    <p class="sub">${campaign.log.length} battles fought over ${front.day} days · ${kia} men killed.</p>
+    <button id="next">New operation</button></div>`;
+  debriefEl.style.display = 'block';
+  document.getElementById('next')!.onclick = () => {
+    debriefEl.style.display = 'none';
+    freshCampaign();
   };
 }
 
@@ -168,7 +223,7 @@ window.addEventListener('mousemove', (e) => {
   mouse.x = e.clientX;
   mouse.y = e.clientY;
   mouse.onCanvas = e.target === canvas;
-  if (dragStart && e.buttons & 1) {
+  if (mode === 'battle' && dragStart && e.buttons & 1) {
     const dx = e.clientX - dragStart.x;
     const dy = e.clientY - dragStart.y;
     if (dragged || Math.hypot(dx, dy) > 5) {
@@ -181,6 +236,13 @@ window.addEventListener('mousemove', (e) => {
 });
 canvas.addEventListener('mouseup', (e) => {
   if (e.button !== 0) return;
+  if (mode === 'strategic') {
+    const cell = stratView.cellAtScreen(e.clientX, e.clientY, canvas.width, canvas.height);
+    const chit = cell >= 0 ? front.chitAt(cell, 'blue') : undefined;
+    selectedChit = chit ? chit.id : -1;
+    dragStart = null;
+    return;
+  }
   if (!dragged) {
     const [wx, wy] = cam.screenToWorld(e.clientX, e.clientY, canvas.width, canvas.height);
     if (targetMode === 'barrage') {
@@ -220,6 +282,13 @@ canvas.addEventListener('mouseup', (e) => {
 });
 canvas.addEventListener('contextmenu', (e) => {
   e.preventDefault();
+  if (mode === 'strategic') {
+    if (selectedChit >= 0) {
+      const cell = stratView.cellAtScreen(e.clientX, e.clientY, canvas.width, canvas.height);
+      if (cell >= 0) front.orderMove(selectedChit, cell);
+    }
+    return;
+  }
   if (targetMode !== '') return;
   const [wx, wy] = cam.screenToWorld(e.clientX, e.clientY, canvas.width, canvas.height);
   if (selectedVehicle >= 0) sim.orderVehicleMove(selectedVehicle, wx, wy);
@@ -227,12 +296,20 @@ canvas.addEventListener('contextmenu', (e) => {
 });
 canvas.addEventListener('wheel', (e) => {
   e.preventDefault();
-  cam.zoom(Math.pow(1.1, -e.deltaY / 100), e.clientX, e.clientY, canvas.width, canvas.height);
+  if (mode === 'battle') cam.zoom(Math.pow(1.1, -e.deltaY / 100), e.clientX, e.clientY, canvas.width, canvas.height);
 });
 window.addEventListener('keydown', (e) => {
   if (e.code === 'Space') {
     e.preventDefault();
-    paused = !paused;
+    if (mode === 'strategic') stratPaused = !stratPaused;
+    else paused = !paused;
+  }
+  if (mode === 'strategic') {
+    if (e.code === 'Digit1') speedIdx = 0;
+    if (e.code === 'Digit2') speedIdx = 1;
+    if (e.code === 'Digit3') speedIdx = 2;
+    if (e.code === 'Escape') selectedChit = -1;
+    return;
   }
   if (e.code === 'KeyB' && sim.barragesLeft.blue > 0) setTargetMode(targetMode === 'barrage' ? '' : 'barrage');
   if (e.code === 'KeyA' && sim.airstrikesLeft.blue > 0) setTargetMode(targetMode === 'air' ? '' : 'air');
@@ -252,46 +329,78 @@ window.addEventListener('keydown', (e) => {
   get sim() {
     return sim;
   },
+  get front() {
+    return front;
+  },
   cam,
-  setPaused: (p: boolean) => (paused = p),
+  setPaused: (p: boolean) => {
+    stratPaused = p;
+    paused = p;
+  },
   selectSquad: (i: number) => selectSquad(i),
   getCampaign: () => campaign,
+  startEngagementBattle,
   showDebrief,
 };
-
-startBattle();
 
 let last = performance.now();
 let acc = 0;
 const DT_MS = DT * 1000;
 
 function frame(now: number): void {
-  acc += Math.min(now - last, 250);
+  const dtReal = Math.min(now - last, 250);
   last = now;
-  if (!paused) {
-    while (acc >= DT_MS) {
-      commander.update(sim);
-      sim.step();
-      acc -= DT_MS;
+  hud.root.style.display = mode === 'battle' ? '' : 'none';
+  if (mode === 'strategic') {
+    if (!stratPaused && !pendingEngagement && !opEnded) {
+      stratAcc += (dtReal / 1000) * SPEEDS[speedIdx];
+      while (stratAcc >= 1 && !pendingEngagement) {
+        stratAcc -= 1;
+        const e = front.step();
+        if (front.day > prevDay) {
+          advanceDays(campaign, front.day - prevDay);
+          fillReplacements(campaign, front.day * 31 + 7);
+          syncStrengths(campaign, front);
+          prevDay = front.day;
+          saveGame(campaign, front);
+        }
+        if (e) {
+          pendingEngagement = e;
+          stratPaused = true;
+          showContactModal(e);
+        }
+      }
+      const status = operationStatus(front);
+      if (status !== 'ongoing') showOperationEnd(status);
     }
+    stratView.draw(ctx, front, selectedChit, stratPaused, SPEEDS[speedIdx], canvas.width, canvas.height);
   } else {
-    acc = 0;
+    acc += dtReal;
+    if (!paused) {
+      while (acc >= DT_MS) {
+        commander.update(sim);
+        sim.step();
+        acc -= DT_MS;
+      }
+    } else {
+      acc = 0;
+    }
+    renderer.addEvents(sim.takeEvents(), now);
+    renderer.addBooms(sim.takeBooms(), now);
+    renderer.addPlanes(sim.takePlanes(), now);
+    pings.watch(sim);
+
+    const pick = mouse.onCanvas && !targetMode ? pickAt(sim, cam, mouse.x, mouse.y, canvas.width, canvas.height) : null;
+    const shot = computeShot(sim, selectedSquad, selectedVehicle, pick);
+
+    renderer.draw(ctx, cam, selectedSquad, now);
+    drawOverlays(ctx, cam, sim, { pick, shot, selectedSquad, targetMode }, pings);
+    tooltip.update(sim, pick, shot, mouse.x, mouse.y, pick?.kind === 'terrain' && (selectedSquad >= 0 || selectedVehicle >= 0));
+    hud.update(sim, { selectedSquad, selectedVehicle, paused, targetMode, title: battleTitle });
+
+    if (sim.winner && winnerAt < 0) winnerAt = now;
+    if (winnerAt >= 0 && !debriefShown && now - winnerAt > 4000) showDebrief();
   }
-  renderer.addEvents(sim.takeEvents(), now);
-  renderer.addBooms(sim.takeBooms(), now);
-  renderer.addPlanes(sim.takePlanes(), now);
-  pings.watch(sim);
-
-  const pick = mouse.onCanvas && !targetMode ? pickAt(sim, cam, mouse.x, mouse.y, canvas.width, canvas.height) : null;
-  const shot = computeShot(sim, selectedSquad, selectedVehicle, pick);
-
-  renderer.draw(ctx, cam, selectedSquad, now);
-  drawOverlays(ctx, cam, sim, { pick, shot, selectedSquad, targetMode }, pings);
-  tooltip.update(sim, pick, shot, mouse.x, mouse.y, pick?.kind === 'terrain' && (selectedSquad >= 0 || selectedVehicle >= 0));
-  hud.update(sim, { selectedSquad, selectedVehicle, paused, targetMode, title: battleTitle });
-
-  if (sim.winner && winnerAt < 0) winnerAt = now;
-  if (winnerAt >= 0 && !debriefShown && now - winnerAt > 4000) showDebrief();
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);

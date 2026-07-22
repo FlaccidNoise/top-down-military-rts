@@ -4,6 +4,7 @@ import { Front, findPath, operationStatus, OP_START_MIN, OP_DEADLINE_DAYS } from
 import { cellIndex, makeDefaultSector, parseSector } from '../src/strategic/sector';
 import { applyEngagementOutcome, makeStrategicBattle, newFront } from '../src/strategic/bridge';
 import { loadGame, saveGame } from '../src/strategic/save';
+import { StrategicView } from '../src/render/strategic';
 
 describe('sector', () => {
   it('parses the default sector: 40×30, river neutral, bridges, objective town', () => {
@@ -176,5 +177,38 @@ describe('bridge', () => {
     expect(loaded.campaign).toEqual(c);
     expect(loaded.front.chits).toEqual(front.chits);
     expect(loaded.front.clockMin).toBe(front.clockMin);
+  });
+});
+
+describe('strategic view', () => {
+  it('cellAtScreen inverts layout', () => {
+    const view = new StrategicView(makeDefaultSector());
+    const { size, ox, oy } = view.layout(800, 650);
+    expect(view.cellAtScreen(ox + size * 4 + 1, oy + size * 15 + 1, 800, 650)).toBe(15 * 40 + 4);
+    expect(view.cellAtScreen(0, 0, 800, 650)).toBe(-1);
+  });
+});
+
+describe('m-a loop', () => {
+  it('order → march → contact → battle → outcome → objective → won', () => {
+    const c = newCampaign(10);
+    const sector = makeDefaultSector();
+    const front = newFront(c, sector);
+    const able = front.chits.find((ch) => ch.side === 'blue')!;
+    front.orderMove(able.id, cellIndex(sector, 20, 15));
+    let e = null;
+    for (let i = 0; i < 100000 && !e; i++) e = front.step();
+    expect(e).not.toBeNull();
+    expect(e!.cell).toBe(cellIndex(sector, 20, 15));
+    const seed = front.clockMin * 7919 + e!.cell;
+    const { sim } = makeStrategicBattle(c, front, e!, seed);
+    for (const s of sim.soldiers) if (s.side === 'red') s.alive = false;
+    sim.step();
+    const out = applyEngagementOutcome(c, front, e!, sim);
+    expect(out.cellTaken).toBe(true);
+    expect(able.cell).toBe(cellIndex(sector, 20, 15));
+    expect(operationStatus(front)).toBe('ongoing');
+    for (const cell of sector.cells) if (cell.objective) cell.owner = 'blue';
+    expect(operationStatus(front)).toBe('won');
   });
 });
