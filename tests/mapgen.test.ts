@@ -28,6 +28,11 @@ describe('mapgen', () => {
     expect(a.objectives).toEqual(b.objectives);
   });
 
+  it('rejects maps too small for the layout', () => {
+    expect(() => generateMap(1, 59, 120)).toThrow(/too small/);
+    expect(() => generateMap(1, 160, 39)).toThrow(/too small/);
+  });
+
   it('matches known snapshots (catches accidental generator drift)', () => {
     expect(fingerprint(1)).toMatchInlineSnapshot(`"edc6ca5c"`);
     expect(fingerprint(2)).toMatchInlineSnapshot(`"7b13704f"`);

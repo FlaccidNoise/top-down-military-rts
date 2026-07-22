@@ -12,7 +12,7 @@ Execute the approved M-A milestone plan: replace the linear 3-battle campaign wi
 - All design docs committed (`dd455ac`)
 
 ## Key Decisions
-- Front commander on a 40×30 × 500 m cell grid; universal both-sides soldier persistence; continuous clock + pause; battles carved from cells (M-B — M-A still uses today's `makeMap`)
+- Front commander on a 40×30 × 500 m cell grid; universal both-sides soldier persistence; continuous clock + pause; battles carved from cells (M-B — M-A still uses today's whole-map generator: `makeMap` was replaced 2026-07-22 by `generateMap` in `src/sim/mapgen.ts`, consumed via `makeCampaignBattle`)
 - M-A plan is written against TODAY's code (9-man squads). The parallel unit-system + TOE designs (`docs/specs/2026-07-22-unit-system.md`, `docs/specs/2026-07-22-toe-attachments.md` — the latter supersedes the spec's `CompanyChit` sketch for later tiers) land AFTER M-A, never interleaved. M-A's minimal `Chit` is a deliberate subset and stays valid
 
 ## Relevant Files
