@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { GameMap } from '../src/sim/map';
 import { astar } from '../src/sim/path';
 import { armorFacing, Sim } from '../src/sim/sim';
-import { BUILDINGS, makeScenario } from '../src/sim/scenario';
+import { generateMap } from '../src/sim/mapgen';
 
 describe('armor', () => {
   it('facing arcs resolve correctly', () => {
@@ -58,10 +58,11 @@ describe('armor', () => {
   });
 
   it('vehicles cannot path into buildings', () => {
-    const sim = makeScenario(34);
-    const b = BUILDINGS[0];
-    expect(astar(sim.map, 8, 61, b.x + 2, b.y + 2, 'vehicle')).toBeNull();
-    expect(astar(sim.map, 8, 61, 80, 61, 'vehicle')).not.toBeNull();
+    const plan = generateMap(34);
+    const b = plan.buildings[0];
+    const { west, east } = plan.spawns;
+    expect(astar(plan.map, west.x, west.y, b.x + 2, b.y + 2, 'vehicle')).toBeNull();
+    expect(astar(plan.map, west.x, west.y, east.x, east.y, 'vehicle')).not.toBeNull();
   });
 });
 

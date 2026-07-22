@@ -1,20 +1,26 @@
-import { BUILDINGS } from '../sim/scenario';
+import type { Building } from '../sim/mapgen';
 import type { Sim } from '../sim/sim';
 import type { Camera } from './camera';
 
-// Gable roofs drawn over building footprints. A roof fades out when the
-// camera is zoomed in close or a friendly soldier is inside, revealing the
-// interior (interiors are ordinary walkable sim space).
+// Gable roofs drawn over building footprints (sim.buildings, from the map
+// plan). A roof fades out when the camera is zoomed in close or a friendly
+// soldier is inside, revealing the interior (interiors are ordinary walkable
+// sim space).
 
 const OVERHANG = 0.35; // meters past the walls
 const FADE_SCALE = 14; // px/m at which zoom alone reveals interiors
 const PALETTES = ['#8a4b37', '#77503c', '#5a5e65'];
 
 export class RoofLayer {
-  private alphas = BUILDINGS.map(() => 1);
+  private buildings: Building[] = [];
+  private alphas: number[] = [];
 
   update(sim: Sim, cam: Camera, dt: number): void {
-    BUILDINGS.forEach((b, i) => {
+    if (this.buildings !== sim.buildings) {
+      this.buildings = sim.buildings;
+      this.alphas = this.buildings.map(() => 1);
+    }
+    this.buildings.forEach((b, i) => {
       const inside = sim.soldiers.some(
         (s) => s.alive && s.side === 'blue' && s.x >= b.x && s.x < b.x + b.w && s.y >= b.y && s.y < b.y + b.h,
       );
@@ -35,7 +41,7 @@ export class RoofLayer {
 
   drawShadows(ctx: CanvasRenderingContext2D, cam: Camera, cw: number, ch: number): void {
     this.withWorldTransform(ctx, cam, cw, ch, () => {
-      BUILDINGS.forEach((b, i) => {
+      this.buildings.forEach((b, i) => {
         ctx.fillStyle = `rgba(12,15,10,${0.3 * this.alphas[i]})`;
         ctx.fillRect(b.x - OVERHANG + 0.45, b.y - OVERHANG + 0.55, b.w + OVERHANG * 2, b.h + OVERHANG * 2);
       });
@@ -44,7 +50,7 @@ export class RoofLayer {
 
   drawTops(ctx: CanvasRenderingContext2D, cam: Camera, cw: number, ch: number): void {
     this.withWorldTransform(ctx, cam, cw, ch, () => {
-      BUILDINGS.forEach((b, i) => {
+      this.buildings.forEach((b, i) => {
         const a = this.alphas[i];
         if (a < 0.01) return;
         ctx.globalAlpha = a;

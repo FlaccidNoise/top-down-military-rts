@@ -1,6 +1,7 @@
 import { applyHit, capacities, consciousness, freshBody, rollPart, woundLabel, type Wound } from './body';
 import { VEHICLES, WEAPONS, type VehicleKey, type WeaponKey } from './data';
 import { GameMap, los } from './map';
+import type { Building } from './mapgen';
 import { astar } from './path';
 import { mulberry32, type Rng } from './rng';
 
@@ -134,6 +135,7 @@ const OFFSETS = [
 export class Sim {
   tick = 0;
   rng: Rng;
+  buildings: Building[] = []; // set by the scenario from the map plan; render + placement data
   soldiers: Soldier[] = [];
   squads: Squad[] = [];
   vehicles: Vehicle[] = [];

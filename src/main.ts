@@ -50,14 +50,17 @@ function setTargetMode(m: '' | 'barrage' | 'air'): void {
     m === 'barrage' ? '>>> MORTAR BARRAGE: click the target <<<' : m === 'air' ? '>>> AIR STRIKE: click the target (strafe runs west to east) <<<' : '';
 }
 
+const urlSeed = new URLSearchParams(location.search).get('seed'); // debug: ?seed=N pins the map
+
 function startBattle(): void {
-  const battle = makeCampaignBattle(campaign, campaign.day * 7919 + campaign.battleIndex);
+  const seed = urlSeed !== null ? Number(urlSeed) : campaign.day * 7919 + campaign.battleIndex;
+  const battle = makeCampaignBattle(campaign, seed);
   sim = battle.sim;
   commander = battle.commander;
   renderer = new Renderer(sim);
   renderer.hudTitle = `Day ${campaign.day}: ${battle.name}`;
-  cam.x = campaign.battleIndex === 0 ? 60 : 100;
-  cam.y = 60;
+  cam.x = battle.camStart.x;
+  cam.y = battle.camStart.y;
   cam.scale = 8;
   paused = true;
   selectedSquad = -1;
