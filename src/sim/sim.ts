@@ -16,6 +16,7 @@ import {
   type Role,
   type SoldierSlot,
   type SquadKey,
+  type VehicleDef,
   type VehicleKey,
   type WeaponDef,
   type WeaponKey,
@@ -109,6 +110,7 @@ export interface Soldier {
   inVehicle: number; // vehicle id crewing, -1 = on foot
   inEmplacement: number; // emplacement id crewing, -1 = none
   carries: LoadKey[]; // emplacement loads on his back (Task 4's speedCap/staminaMult factor)
+  mountTarget: number; // vehicle id he's walking to board, -1 = none
 }
 
 export interface Vehicle {
@@ -258,6 +260,11 @@ export const OFFSETS = [
   [2.2, 1.5], [-2.2, 1.5], [2.2, -1.5], [-2.2, -1.5], [0, 3],
 ];
 
+function isOpenTop(kind: VehicleKey): boolean {
+  const def: VehicleDef = VEHICLES[kind];
+  return def.openTop === true;
+}
+
 // Squared distance from a point to a segment — used to test whether a smoke
 // puff sits close enough to a sightline to obscure it.
 function distToSegment(px: number, py: number, x0: number, y0: number, x1: number, y1: number): number {
@@ -370,6 +377,7 @@ export class Sim {
       inVehicle: -1,
       inEmplacement: -1,
       carries: m.carries ? [...m.carries] : [],
+      mountTarget: -1,
     };
     s.morale = 0.7 + s.courage * 0.3;
     this.soldiers.push(s);
@@ -564,6 +572,104 @@ export class Sim {
     for (const sid of squad.soldierIds) this.soldiers[sid].inVehicle = v.id;
     this.vehicles.push(v);
     return v;
+  }
+
+  private passengerCount(v: Vehicle): number {
+    let n = 0;
+    for (const tid of v.passengerTeamIds) {
+      for (const sid of this.teams[tid].soldierIds) if (this.soldiers[sid].inVehicle === v.id) n++;
+    }
+    return n;
+  }
+
+  // Team paths to the vehicle and boards within 2m (Soldier.mountTarget,
+  // resolved in updateSoldier). Whole-team boarding only — refuses if the
+  // team wouldn't all fit in the remaining seats.
+  orderMount(teamId: number, vehicleId: number): void {
+    const team = this.teams[teamId];
+    const v = this.vehicles[vehicleId];
+    if (!team || !v || !v.alive) return;
+    const def: VehicleDef = VEHICLES[v.kind];
+    if (def.seats === undefined) return;
+    const eligibleIds = team.soldierIds.filter((id) => this.eligible(this.soldiers[id]) && this.soldiers[id].inVehicle < 0);
+    if (eligibleIds.length === 0) return;
+    if (this.passengerCount(v) + eligibleIds.length > def.seats) return;
+    if (!v.passengerTeamIds.includes(teamId)) v.passengerTeamIds.push(teamId);
+    // Straight to the vehicle itself, not moveSoldiersTo's OFFSETS-fanned
+    // formation spots (up to 3m out — well past the 2m boarding radius,
+    // which would strand a soldier assigned the widest offset).
+    for (const id of eligibleIds) {
+      const s = this.soldiers[id];
+      if (s.task) this.dropTask(s);
+      s.path = null; // (re)path fresh toward the vehicle in updateSoldier
+      s.mountTarget = v.id;
+    }
+  }
+
+  // Dismount-under-fire runs the Task 6 compliance check per passenger team
+  // (dest = the vehicle's own position, i.e. "the exposure of getting out
+  // here"): a balk keeps that team mounted. Complying teams disembark via
+  // findSpot in a ring, staggered 1 soldier per 0.5s (dismountQueue).
+  orderDismount(vehicleId: number): void {
+    const v = this.vehicles[vehicleId];
+    if (!v) return;
+    for (const teamId of v.passengerTeamIds) {
+      const team = this.teams[teamId];
+      const aboard = team.soldierIds.filter((id) => this.soldiers[id].inVehicle === v.id && this.soldiers[id].alive);
+      if (aboard.length === 0) continue;
+      const danger = dangerScore(this, team, { x: v.x, y: v.y });
+      if (compliance(this, team, danger) === 'balk') {
+        team.orderState = { order: null, phase: 'balked', reason: BALK_REASON };
+        continue;
+      }
+      team.orderState = { order: null, phase: 'idle', reason: '' };
+      aboard.forEach((sid, i) => this.dismountQueue.push({ vehicleId: v.id, soldierId: sid, tick: this.tick + i * 15 }));
+    }
+    v.passengerTeamIds = v.passengerTeamIds.filter((tid) => this.teams[tid].soldierIds.some((id) => this.soldiers[id].inVehicle === v.id));
+  }
+
+  private stepDismounts(): void {
+    if (this.dismountQueue.length === 0) return;
+    const used = new Set<number>();
+    this.dismountQueue = this.dismountQueue.filter((d) => {
+      if (this.tick < d.tick) return true;
+      const s = this.soldiers[d.soldierId];
+      const v = this.vehicles[d.vehicleId];
+      if (s.inVehicle === d.vehicleId && v) {
+        const spot = this.findSpot(Math.floor(v.x), Math.floor(v.y), used);
+        if (spot) used.add(spot.y * this.map.w + spot.x);
+        s.inVehicle = -1;
+        s.x = (spot?.x ?? v.x) + 0.5;
+        s.y = (spot?.y ?? v.y) + 0.5;
+      }
+      return false;
+    });
+  }
+
+  // Wheeled/towable emplacement + towHook vehicle, adjacent, gun limbered
+  // (packed): hitches on. Towed emplacements can't deploy (Sim.orderDeploy).
+  orderHitch(vehicleId: number, empId: number): void {
+    const v = this.vehicles[vehicleId];
+    const e = this.emplacements[empId];
+    if (!v || !v.alive || !e || e.state !== 'packed' || e.towedBy >= 0) return;
+    const def: VehicleDef = VEHICLES[v.kind];
+    const edef: EmplacementDef = EMPLACEMENTS[e.kind];
+    if (!def.towHook || !edef.towable) return;
+    if (Math.hypot(v.x - e.x, v.y - e.y) > 4) return;
+    e.towedBy = v.id;
+    e.moveTarget = null;
+  }
+
+  // Drops the gun at the tow vehicle's rear.
+  orderUnhitch(empId: number): void {
+    const e = this.emplacements[empId];
+    if (!e || e.towedBy < 0) return;
+    const v = this.vehicles[e.towedBy];
+    e.towedBy = -1;
+    if (v) {
+      e.x = v.x - Math.cos(v.facing) * 3;
+      e.y = v.y - Math.sin(v.facing) * 3;
+    }
   }
 
   orderVehicleMove(vehicleId: number, wx: number, wy: number): void {
@@ -1146,6 +1252,7 @@ export class Sim {
     this.stepSmoke();
     this.stepOrders();
     this.stepEmplacements();
+    this.stepDismounts();
     for (const v of this.vehicles) {
       if (v.alive) this.updateVehicle(v);
     }
@@ -1267,15 +1374,21 @@ export class Sim {
   ): void {
     this.pendingBooms.push({ x, y });
     for (const s of this.soldiers) {
-      if (!s.alive || s.inVehicle >= 0) continue; // armor shrugs off fragments
+      if (!s.alive) continue;
+      let mult = 1;
+      if (s.inVehicle >= 0) {
+        const v = this.vehicles[s.inVehicle];
+        if (!v || !v.alive || !isOpenTop(v.kind)) continue; // armor shrugs off fragments
+        mult = 0.5; // open-topped: exposed to arcing fragments/plunging fire
+      }
       const d = Math.hypot(s.x - x, s.y - y);
       if (d > p.suppRadius) continue;
-      s.suppression = Math.min(1, s.suppression + 0.6 * (1 - d / p.suppRadius) * (1.3 - s.courage * 0.6));
+      s.suppression = Math.min(1, s.suppression + 0.6 * (1 - d / p.suppRadius) * (1.3 - s.courage * 0.6) * mult);
       if (d > p.fragRadius) continue;
       if (!los(this.map, x, y, s.x, s.y).visible) continue; // walls stop fragments
       const frags = d < 2 ? p.frags : d < p.fragRadius * 0.55 ? Math.max(1, p.frags - 1) : 1;
       for (let i = 0; i < frags; i++) {
-        const pHit = (1 - d / (p.fragRadius + 1)) * (s.downed || s.mental === 'pinned' ? 0.45 : 0.8);
+        const pHit = (1 - d / (p.fragRadius + 1)) * (s.downed || s.mental === 'pinned' ? 0.45 : 0.8) * mult;
         if (this.rng.next() < pHit) {
           if (this.wound(s, this.rng.range(p.dmg[0], p.dmg[1]))) break;
         }
@@ -1307,6 +1420,24 @@ export class Sim {
         v.y += (dy / d) * remaining;
       }
     }
+    // crew and passengers ride the hull — sync their position so range/LOS
+    // math (and an exposed pintle gunner's targetability) reads correctly.
+    for (const cid of v.crewIds) {
+      const c = this.soldiers[cid];
+      if (c.alive) {
+        c.x = v.x;
+        c.y = v.y;
+      }
+    }
+    for (const tid of v.passengerTeamIds) {
+      for (const sid of this.teams[tid].soldierIds) {
+        const s = this.soldiers[sid];
+        if (s.alive && s.inVehicle === v.id) {
+          s.x = v.x;
+          s.y = v.y;
+        }
+      }
+    }
 
     // tank terror: enemy infantry with sight of an approaching tank feel it
     if (this.tick % 30 === 0) {
@@ -1335,11 +1466,14 @@ export class Sim {
         }
       }
     }
-    if (v.targetVehicleId >= 0 && v.gunCooldown <= 0) {
+    if (v.targetVehicleId >= 0 && v.gunCooldown <= 0 && v.ammo.ap > 0) {
       const e = this.vehicles[v.targetVehicleId];
       if (e.alive && sightBetween(this, v.x, v.y, e.x, e.y).visible) {
-        this.fireApAt(v.x, v.y, def.gunPen, def.gunAccuracy, def.gunRange, e, v.path !== null);
-        v.gunCooldown = def.gunCooldown * (0.85 + this.rng.next() * 0.3);
+        if (this.turretBearingReady(v, def, e.x, e.y)) {
+          this.fireApAt(v.x, v.y, def.gunPen, def.gunAccuracy, def.gunRange, e, v.path !== null);
+          v.ammo.ap--;
+          v.gunCooldown = def.gunCooldown * (0.85 + this.rng.next() * 0.3);
+        }
       } else {
         v.targetVehicleId = -1;
       }
@@ -1360,10 +1494,12 @@ export class Sim {
         v.targetSoldierId = -1;
         return;
       }
-      if (v.gunCooldown <= 0) {
-        // HE round at the infantry position
+      // guard HE fire on remaining he ammo — the M3/SdKfz (ammo.he: 0, no
+      // real main gun) fall straight through to the pintle MG.
+      if (v.gunCooldown <= 0 && v.ammo.he > 0 && this.turretBearingReady(v, def, t.x, t.y)) {
         this.explode(t.x + this.rng.range(-2, 2), t.y + this.rng.range(-2, 2), { suppRadius: 10, fragRadius: 5, frags: 2, dmg: [25, 60] });
         this.pendingEvents.push({ fx: v.x, fy: v.y, tx: t.x, ty: t.y, hit: true, kill: false });
+        v.ammo.he--;
         v.gunCooldown = def.gunCooldown * (0.85 + this.rng.next() * 0.3);
       } else if (v.mgCooldown <= 0) {
         const hullMg: WeaponKey = v.side === 'blue' ? 'm1919' : 'mg42';
@@ -1373,12 +1509,41 @@ export class Sim {
     }
   }
 
+  // Restricted-arc turret (StuG: turret is a traverse-degree number, not
+  // 'full'): fires only within |bearing - hull facing| <= arc; otherwise
+  // rotates the hull toward the target at 30 deg/s and holds fire this tick.
+  // "Facing IS the weapon" — a vehicle mid-path keeps its movement heading
+  // rather than also chasing a firing solution.
+  private turretBearingReady(v: Vehicle, def: VehicleDef, tx: number, ty: number): boolean {
+    if (def.turret === 'full') return true;
+    const bearing = Math.atan2(ty - v.y, tx - v.x);
+    let diff = bearing - v.facing;
+    while (diff > Math.PI) diff -= 2 * Math.PI;
+    while (diff < -Math.PI) diff += 2 * Math.PI;
+    const arcRad = (def.turret * Math.PI) / 180;
+    if (Math.abs(diff) <= arcRad) {
+      v.turning = false;
+      return true;
+    }
+    if (v.path) return false;
+    const rotSpeed = ((30 * Math.PI) / 180) * DT;
+    v.facing += Math.sign(diff) * Math.min(Math.abs(diff), rotSpeed);
+    v.turning = true;
+    return false;
+  }
+
   // `arc` restricts candidates to a facing sector (defend/ambush: spec's
-  // "members only acquire targets inside arc").
+  // "members only acquire targets inside arc"). Vehicle crew are normally
+  // hull-protected and untargetable — except an open-top vehicle's pintle
+  // gunner, who's standing up in the back exposed to small arms.
   private acquireSoldierTarget(x: number, y: number, side: Side, range: number, arc?: [number, number]): number {
     const candidates: { id: number; d: number }[] = [];
     for (const e of this.soldiers) {
-      if (!e.alive || e.downed || e.side === side || e.inVehicle >= 0) continue;
+      if (!e.alive || e.downed || e.side === side) continue;
+      if (e.inVehicle >= 0) {
+        const ev = this.vehicles[e.inVehicle];
+        if (!ev || !ev.alive || !isOpenTop(ev.kind) || e.role !== 'gunner') continue;
+      }
       const d = Math.hypot(e.x - x, e.y - y);
       if (d <= range) candidates.push({ id: e.id, d });
     }
@@ -1401,8 +1566,15 @@ export class Sim {
     }
     const effPen = pen * this.rng.range(0.75, 1.25);
     if (effPen <= p.armor) return; // clang — ricochet
-    // penetration: spall wounds crew, chance of brew-up
-    for (const cid of target.crewIds) {
+    // penetration: spall wounds crew (and, if open-topped, everyone riding
+    // in back too — no armor to shrug it off), chance of brew-up
+    const aboard = [...target.crewIds];
+    if (isOpenTop(target.kind)) {
+      for (const tid of target.passengerTeamIds) {
+        for (const sid of this.teams[tid].soldierIds) if (this.soldiers[sid].inVehicle === target.id) aboard.push(sid);
+      }
+    }
+    for (const cid of aboard) {
       const c = this.soldiers[cid];
       if (c.alive && this.rng.next() < 0.45) this.wound(c, this.rng.range(30, 80));
     }
@@ -1415,9 +1587,14 @@ export class Sim {
     v.burning = true;
     v.path = null;
     this.pendingBooms.push({ x: v.x, y: v.y });
-    // survivors bail out shaken
+    // survivors (crew and any passengers still aboard) bail out shaken
+    const aboard = [...v.crewIds];
+    for (const tid of v.passengerTeamIds) {
+      for (const sid of this.teams[tid].soldierIds) if (this.soldiers[sid].inVehicle === v.id) aboard.push(sid);
+    }
+    v.passengerTeamIds = [];
     let slot = 0;
-    for (const cid of v.crewIds) {
+    for (const cid of aboard) {
       const c = this.soldiers[cid];
       c.inVehicle = -1;
       if (!c.alive) continue;
@@ -1584,6 +1761,31 @@ export class Sim {
 
     // movement (pinned men hug the ground)
     if (s.path && s.mental !== 'pinned') this.advance(s, this.moveSpeed(s));
+
+    // Sim.orderMount: walking to board, or arrived and boarding within 2m.
+    // Re-paths if he arrives short (a formation spot, a vehicle that moved)
+    // rather than stranding him just outside the boarding radius.
+    if (s.mountTarget >= 0) {
+      const v = this.vehicles[s.mountTarget];
+      if (!v || !v.alive) {
+        s.mountTarget = -1;
+      } else if (Math.hypot(v.x - s.x, v.y - s.y) <= 2) {
+        s.inVehicle = v.id;
+        s.mountTarget = -1;
+        s.path = null;
+        s.x = v.x;
+        s.y = v.y;
+      } else if (!s.path) {
+        const path = astar(this.map, Math.floor(s.x), Math.floor(s.y), Math.floor(v.x), Math.floor(v.y));
+        if (path && path.length > 1) {
+          s.path = path.slice(1).map((p) => ({ x: p.x + 0.5, y: p.y + 0.5 }));
+          s.pathI = 0;
+        } else {
+          s.mountTarget = -1; // unreachable: give up rather than loop forever
+        }
+      }
+      return;
+    }
 
     // combat
     if (s.cooldown > 0) s.cooldown -= DT;
@@ -2155,6 +2357,10 @@ export class Sim {
         s.ammoRunnerId,
         s.pickingUp,
         s.weapon,
+        s.inVehicle,
+        s.inEmplacement,
+        s.carries.join(','),
+        s.mountTarget,
       ]),
       vehicles: this.vehicles.map((v) => [
         v.id,
@@ -2164,6 +2370,10 @@ export class Sim {
         Math.round(v.facing * 1e6),
         v.targetVehicleId,
         v.targetSoldierId,
+        v.ammo.ap,
+        v.ammo.he,
+        v.turning,
+        v.passengerTeamIds.join(','),
       ]),
       teams: this.teams.map((t) => [t.id, t.orderState.phase, t.orderState.order?.kind ?? '', t.smokeLeft, t.ambushBonusTick]),
       emplacements: this.emplacements.map((e) => [

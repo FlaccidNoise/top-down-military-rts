@@ -68,6 +68,117 @@ describe('armor', () => {
   });
 });
 
+describe('transports: mount, ride, dismount', () => {
+  it('a squad mounts an M3, rides ~60m, and dismounts in an orderly staggered fashion', () => {
+    const sim = new Sim(new GameMap(160, 20), 40);
+    const squad = sim.addSquadFromDef('blue', 'us_rifle', 10.5, 10.5);
+    const m3 = sim.addVehicle('blue', 'm3_halftrack', 10.5, 10.5, 0);
+    const teamId = squad.teamIds[0];
+    sim.orderMount(teamId, m3.id);
+    for (let i = 0; i < 300; i++) sim.step(); // co-located: boards almost immediately
+    const team = sim.teams[teamId];
+    expect(team.soldierIds.every((id) => sim.soldiers[id].inVehicle === m3.id)).toBe(true);
+
+    sim.orderVehicleMove(m3.id, 90, 10);
+    for (let i = 0; i < 600; i++) sim.step();
+    expect(Math.hypot(m3.x - 10.5, m3.y - 10.5)).toBeGreaterThan(50);
+
+    sim.orderDismount(m3.id);
+    for (let i = 0; i < 300; i++) sim.step();
+    expect(team.soldierIds.every((id) => sim.soldiers[id].inVehicle < 0)).toBe(true);
+  });
+
+  it('MG fire kills the exposed pintle gunner but leaves the hull-protected driver alone', () => {
+    const sim = new Sim(new GameMap(60, 20), 41);
+    const m3 = sim.addVehicle('blue', 'm3_halftrack', 30.5, 10.5, 0);
+    sim.addSquad('red', 'mg', [{ name: 'G', weapon: 'mg42', x: 10.5, y: 10.5 }]);
+    const gunner = sim.soldiers.find((s) => s.inVehicle === m3.id && s.role === 'gunner')!;
+    const driver = sim.soldiers.find((s) => s.inVehicle === m3.id && s.role === 'driver')!;
+    let t = 0;
+    while (gunner.alive && t < 30 * 90) {
+      sim.step();
+      t++;
+    }
+    expect(gunner.alive).toBe(false);
+    expect(driver.alive).toBe(true);
+    expect(driver.inVehicle).toBe(m3.id); // never targeted, never bailed
+  });
+
+  it('a penetrating AP hit on an open-top M3 wounds the passengers riding in back, not just the crew', () => {
+    const sim = new Sim(new GameMap(40, 20), 42);
+    const m3 = sim.addVehicle('blue', 'm3_halftrack', 15.5, 10.5, 0);
+    const squad = sim.addSquadFromDef('blue', 'us_rifle', 15.5, 10.5);
+    const teamId = squad.teamIds[0];
+    sim.orderMount(teamId, m3.id);
+    for (let i = 0; i < 300; i++) sim.step(); // co-located: boards almost immediately
+    const passengers = sim.teams[teamId].soldierIds.map((id) => sim.soldiers[id]);
+    expect(passengers.every((s) => s.inVehicle === m3.id)).toBe(true);
+
+    // Fire a battery of AP shells directly at the halftrack — bypasses the
+    // acquire/cooldown loop so the penetration-spall path itself (not the
+    // hit-chance roll) is what's under test.
+    const before = passengers.reduce((a, s) => a + s.wounds.length, 0);
+    for (let i = 0; i < 20 && m3.alive; i++) (sim as unknown as { fireApAt: (...a: unknown[]) => void }).fireApAt(0.5, 10.5, 150, 0.95, 200, m3, false);
+    const after = passengers.reduce((a, s) => a + s.wounds.length, 0);
+    expect(after).toBeGreaterThan(before);
+  });
+});
+
+describe('StuG restricted turret arc', () => {
+  it('cannot hit a flanking Sherman until the hull rotates onto it (turret arc = 12 deg)', () => {
+    const sim = new Sim(new GameMap(80, 80), 43);
+    const stug = sim.addVehicle('red', 'stug3', 40.5, 40.5, 0); // hull facing +X
+    const sherman = sim.addVehicle('blue', 'sherman', 40.5, 25.5, 0); // due "north": well outside the arc
+    let sawOutOfArcShot = false;
+    for (let i = 0; i < 30 * 60 && stug.alive && sherman.alive; i++) {
+      sim.step();
+      const bearing = Math.atan2(sherman.y - stug.y, sherman.x - stug.x);
+      let diff = bearing - stug.facing;
+      while (diff > Math.PI) diff -= Math.PI * 2;
+      while (diff < -Math.PI) diff += Math.PI * 2;
+      const events = sim.takeEvents();
+      if (Math.abs(diff) > (12 * Math.PI) / 180 + 1e-6 && events.some((ev) => ev.fx === stug.x && ev.fy === stug.y)) {
+        sawOutOfArcShot = true;
+      }
+    }
+    expect(sawOutOfArcShot).toBe(false);
+  });
+});
+
+describe('AT gun: towing and a deterministic side-armor kill', () => {
+  it('an at57 is towed by an M3, unhitched, deployed, and kills a Panzer IV shot into its side armor', () => {
+    const sim = new Sim(new GameMap(200, 200), 44);
+    const emp = sim.addEmplacement('blue', 'at57', 20.5, 50.5);
+    const m3 = sim.addVehicle('blue', 'm3_halftrack', 20.5, 50.5, 0);
+
+    sim.orderHitch(m3.id, emp.id);
+    expect(emp.towedBy).toBe(m3.id);
+
+    sim.orderVehicleMove(m3.id, 60, 50);
+    for (let i = 0; i < 400; i++) sim.step();
+    expect(Math.hypot(emp.x - 20.5, emp.y - 50.5)).toBeGreaterThan(20); // towed along behind the M3
+
+    sim.orderUnhitch(emp.id);
+    expect(emp.towedBy).toBe(-1);
+
+    sim.orderDeploy(emp.id);
+    for (let i = 0; i < 1801; i++) sim.step(); // 60s setup
+    expect(emp.state).toBe('deployed');
+
+    // 120m out, facing east (0): the incoming round from due "south" of it
+    // strikes broadside — side armor 35 vs at57's pen 110 (front 85 is
+    // marginal by design; side is the deterministic case). Beyond the
+    // Panzer's own 100m MG range, so it can never shoot back at the crew.
+    const panzer = sim.addVehicle('red', 'panzer4', emp.x, emp.y + 120, 0);
+    let t = 0;
+    while (panzer.alive && t < 30 * 150) {
+      sim.step();
+      t++;
+    }
+    expect(panzer.alive).toBe(false);
+  });
+});
+
 describe('air support', () => {
   it('strafe wounds or suppresses men along the run after the delay', () => {
     const map = new GameMap(160, 40);

@@ -1,6 +1,7 @@
 import type { RosterEntry } from '../campaign/campaign';
+import type { VehicleKey } from './data';
 import { generateMap, type Building, type Vec } from './mapgen';
-import { Sim, type Side } from './sim';
+import { Sim, type Side, type Vehicle } from './sim';
 
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 const center = (b: Building): Vec => ({ x: b.x + b.w / 2, y: b.y + b.h / 2 });
@@ -21,9 +22,9 @@ function roadSpot(sim: Sim, x: number, y: number): Vec {
   return { x, y };
 }
 
-function addVehicleOnRoad(sim: Sim, side: Side, kind: 'sherman' | 'panzer4', x: number, y: number, facing: number): void {
+function addVehicleOnRoad(sim: Sim, side: Side, kind: VehicleKey, x: number, y: number, facing: number): Vehicle {
   const p = roadSpot(sim, x, y);
-  sim.addVehicle(side, kind, p.x, p.y, facing);
+  return sim.addVehicle(side, kind, p.x, p.y, facing);
 }
 
 export function makeScenario(seed: number): Sim {
@@ -36,7 +37,10 @@ export function makeScenario(seed: number): Sim {
   sim.addSquadFromDef('blue', 'us_rifle', west.x + 7, by(16));
   sim.addSquadFromDef('blue', 'us_bazooka', west.x + 3, by(0));
   sim.addSquadFromDef('blue', 'us_m1919', west.x + 11, by(0));
-  sim.addEmplacement('blue', 'mortar60', west.x + 1, by(-6)); // packed, west spawn
+  // 60mm mortar team rides in packed, aboard an M3 out of the west spawn
+  const mortarEmp = sim.addEmplacement('blue', 'mortar60', west.x + 1, by(-6));
+  const m3 = addVehicleOnRoad(sim, 'blue', 'm3_halftrack', west.x + 1, by(-6), 0);
+  sim.orderMount(mortarEmp.crewTeamId, m3.id);
 
   // German garrison: two Gruppen holding buildings, the sMG42 team in the east
   // woods, an MG42 dug in on the crossroads objective facing the west approach
@@ -51,6 +55,7 @@ export function makeScenario(seed: number): Sim {
 
   addVehicleOnRoad(sim, 'blue', 'sherman', west.x + 0.5, west.y + 0.5, 0);
   addVehicleOnRoad(sim, 'red', 'panzer4', east.x - 1.5, east.y + 0.5, Math.PI);
+  addVehicleOnRoad(sim, 'red', 'stug3', east.x - 3, east.y + 0.5, Math.PI);
   return sim;
 }
 
