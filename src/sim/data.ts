@@ -197,6 +197,32 @@ export const TEAMS = {
       { role: 'scout', weapon: 'mp40', ammo: { mag_mp40: 5 } },
     ],
   },
+  // AT gun crews: not man-packable (EMPLACEMENTS.at57/pak40 declare loads: []),
+  // so slot weapons are personal sidearms only — the gun itself is fired by
+  // the emplacement, funded from the gunner's own ammo (shell_57/shell_75),
+  // not from a Soldier.weapon field. Batch 1 deliberately left these out;
+  // Task 9 (EMPLACEMENT_CREW) owns them.
+  us_at57_team: {
+    name: '57mm AT Gun Crew',
+    slots: [
+      { role: 'gunner', weapon: 'carbine', ammo: { mag_carbine: 6, shell_57: 6 } },
+      { role: 'assistant', weapon: 'carbine', ammo: { mag_carbine: 6, shell_57: 4 } },
+      { role: 'bearer', weapon: 'carbine', ammo: { mag_carbine: 6, shell_57: 4 } },
+      { role: 'bearer', weapon: 'carbine', ammo: { mag_carbine: 6 } },
+      { role: 'bearer', weapon: 'carbine', ammo: { mag_carbine: 6 } },
+    ],
+  },
+  de_pak40_team: {
+    name: 'PaK 40 Crew',
+    slots: [
+      { role: 'gunner', weapon: 'kar98k', ammo: { clip_792: 8, shell_75: 6 } },
+      { role: 'assistant', weapon: 'kar98k', ammo: { clip_792: 8, shell_75: 4 } },
+      { role: 'bearer', weapon: 'kar98k', ammo: { clip_792: 8, shell_75: 4 } },
+      { role: 'bearer', weapon: 'kar98k', ammo: { clip_792: 8 } },
+      { role: 'bearer', weapon: 'kar98k', ammo: { clip_792: 8 } },
+      { role: 'bearer', weapon: 'kar98k', ammo: { clip_792: 8 } },
+    ],
+  },
 } satisfies Record<string, TeamDef>;
 export type TeamKey = keyof typeof TEAMS;
 
@@ -217,6 +243,8 @@ export const SQUADS = {
   de_mortar81: { name: '8cm Mortar Team', side: 'de', teams: ['de_mortar81_team'] },
   de_schreck: { name: 'Panzerschreck Team', side: 'de', teams: ['de_schreck_team'] },
   de_sniper: { name: 'Sniper Team', side: 'de', teams: ['de_sniper_team'] },
+  us_at57: { name: '57mm AT Gun Crew', side: 'us', teams: ['us_at57_team'] },
+  de_pak40: { name: 'PaK 40 Crew', side: 'de', teams: ['de_pak40_team'] },
 } satisfies Record<string, SquadDef>;
 export type SquadKey = keyof typeof SQUADS;
 
@@ -240,6 +268,18 @@ export const EMPLACEMENTS = {
   pak40: { name: 'PaK 40 7.5cm', weapon: 'pak40_gun', setupTime: 60, packTime: 45, loads: [], wheeled: { speed: 0.8 }, towable: true, minCrew: 3 },
 } satisfies Record<string, EmplacementDef>;
 export type EmplacementKey = keyof typeof EMPLACEMENTS;
+
+// Which crew squad serves each emplacement (spec §4's vehicle-crew pattern:
+// emplacement entity + crew team bound by crewOf). Sim.addEmplacement spawns
+// this squad and binds its one team to the new Emplacement.
+export const EMPLACEMENT_CREW: Record<EmplacementKey, SquadKey> = {
+  m1919_tripod: 'us_m1919',
+  mg42_lafette: 'de_smg42',
+  mortar60: 'us_mortar60',
+  mortar81: 'de_mortar81',
+  at57: 'us_at57',
+  pak40: 'de_pak40',
+};
 
 export interface VehicleDef {
   name: string;

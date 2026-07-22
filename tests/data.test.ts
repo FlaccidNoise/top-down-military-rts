@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { EMPLACEMENTS, LOADS, SQUADS, TEAMS, WEAPONS, type AmmoKey, type LoadKey, type SoldierSlot, type WeaponDef } from '../src/sim/data';
+import { EMPLACEMENT_CREW, EMPLACEMENTS, LOADS, SQUADS, TEAMS, WEAPONS, type AmmoKey, type LoadKey, type SoldierSlot, type WeaponDef } from '../src/sim/data';
 
 describe('weapon data', () => {
   const entries: [string, WeaponDef][] = Object.entries(WEAPONS);
@@ -76,6 +76,14 @@ describe('unit data referential integrity', () => {
       SQUADS[squadKey].teams.reduce((n, teamKey) => n + TEAMS[teamKey].slots.length, 0);
     expect(slotCount('us_rifle')).toBe(12);
     expect(slotCount('de_gruppe')).toBe(9);
+  });
+
+  it('every EMPLACEMENT_CREW entry names a real, single-team crew squad matching its own side', () => {
+    for (const [empKey, squadKey] of Object.entries(EMPLACEMENT_CREW)) {
+      const sq = SQUADS[squadKey];
+      expect(sq, `${empKey} -> ${squadKey}`).toBeDefined();
+      expect(sq.teams.length, `${empKey} -> ${squadKey}`).toBe(1);
+    }
   });
 
   it('each squad has a consistent side (no team mixes nationalities)', () => {

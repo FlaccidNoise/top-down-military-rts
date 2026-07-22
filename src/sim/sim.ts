@@ -1,18 +1,26 @@
 import { applyHit, capacities, consciousness, freshBody, rollPart, woundLabel, type Wound } from './body';
 import {
   DE_NAMES,
+  EMPLACEMENT_CREW,
+  EMPLACEMENTS,
+  LOADS,
   SQUADS,
   TEAMS,
   US_NAMES,
   VEHICLES,
   WEAPONS,
   type AmmoKey,
+  type EmplacementDef,
+  type EmplacementKey,
+  type LoadKey,
   type Role,
+  type SoldierSlot,
   type SquadKey,
   type VehicleKey,
   type WeaponDef,
   type WeaponKey,
 } from './data';
+import { crewDegrade, crewHasLos, crewNear, friendlyHasLos, loadsReady, pickFirer, type Emplacement } from './emplacement';
 import { GameMap, los, type LosResult } from './map';
 import type { Building } from './mapgen';
 import { ambushThreshold, BALK_REASON, compliance, dangerScore, type OrderState, type TeamOrder } from './orders';
@@ -99,6 +107,8 @@ export interface Soldier {
   ammoRunnerId: number; // runner already en route to resupply this soldier, -1 none
   pickingUp: boolean; // mid weapon-pickup timer (rides `reloading`)
   inVehicle: number; // vehicle id crewing, -1 = on foot
+  inEmplacement: number; // emplacement id crewing, -1 = none
+  carries: LoadKey[]; // emplacement loads on his back (Task 4's speedCap/staminaMult factor)
 }
 
 export interface Vehicle {
@@ -117,6 +127,9 @@ export interface Vehicle {
   mgCooldown: number;
   targetVehicleId: number;
   targetSoldierId: number;
+  ammo: { ap: number; he: number };
+  passengerTeamIds: number[];
+  turning: boolean; // rotating a restricted-arc turret (StuG) toward a target instead of firing
 }
 
 // Which armor arc does a shot from (fx,fy) strike?
@@ -142,6 +155,7 @@ export interface MemberInit {
   pid?: number;
   ammo?: Partial<Record<AmmoKey, number>>;
   secondary?: WeaponKey;
+  carries?: LoadKey[];
 }
 
 export interface Squad {
@@ -221,6 +235,7 @@ export interface DroppedKit {
   weapon: WeaponKey;
   ammo: Partial<Record<AmmoKey, number>>;
   magLeft: number;
+  load?: LoadKey; // present for an emplacement load dropped by a downed/killed bearer
 }
 
 // Small-arms upgrade rank for casual battlefield pickup (spec: mg42/bar/m1919
@@ -277,6 +292,7 @@ export class Sim {
   squads: Squad[] = [];
   teams: Team[] = [];
   vehicles: Vehicle[] = [];
+  emplacements: Emplacement[] = [];
   winner: Side | null = null;
   barragesLeft: Record<Side, number> = { blue: 2, red: 1 };
   airstrikesLeft: Record<Side, number> = { blue: 1, red: 0 };
@@ -296,6 +312,10 @@ export class Sim {
   squadLastCasualty: number[] = [];
   teamLastCasualty: number[] = [];
   private sneakBaseline: number[] = []; // per-team wound count when a sneak order started
+  // Mortar rounds in flight: 3s from trigger to impact (spec: indirect fire).
+  private mortarShells: { tick: number; x: number; y: number; smoke: boolean }[] = [];
+  // Staggered dismount: one passenger every 0.5s (spec: "1 per 0.5s").
+  private dismountQueue: { vehicleId: number; soldierId: number; tick: number }[] = [];
 
   constructor(readonly map: GameMap, seed: number) {
     this.rng = mulberry32(seed);
@@ -348,6 +368,8 @@ export class Sim {
       ammoRunnerId: -1,
       pickingUp: false,
       inVehicle: -1,
+      inEmplacement: -1,
+      carries: m.carries ? [...m.carries] : [],
     };
     s.morale = 0.7 + s.courage * 0.3;
     this.soldiers.push(s);
@@ -411,7 +433,7 @@ export class Sim {
     def.teams.forEach((teamKey, ti) => {
       const teamDef = TEAMS[teamKey];
       const cy = y + (ti - (n - 1) / 2) * 8; // fan teams out so a multi-team squad doesn't stack
-      const entries = teamDef.slots.map((slot, si) => {
+      const entries = teamDef.slots.map((slot: SoldierSlot, si) => {
         const ov = roster?.[ti]?.[si];
         const member: MemberInit = {
           name: ov?.name ?? names[this.rng.int(names.length)],
@@ -424,6 +446,7 @@ export class Sim {
           pid: ov?.pid,
           ammo: ov?.ammo ?? { ...slot.ammo },
           secondary: ov?.secondary,
+          carries: ov?.carries ?? (slot.carries ? [...slot.carries] : []),
         };
         return { role: slot.role, member };
       });
@@ -470,6 +493,7 @@ export class Sim {
       if (order?.kind === 'fast') speed *= 1.6;
       else if (order?.kind === 'sneak') speed *= 0.35;
     }
+    if (s.carries.length > 0) speed = Math.min(speed, Math.min(...s.carries.map((l) => LOADS[l].speedCap)));
     return speed;
   }
 
@@ -533,6 +557,9 @@ export class Sim {
       mgCooldown: 0,
       targetVehicleId: -1,
       targetSoldierId: -1,
+      ammo: { ...def.ammo },
+      passengerTeamIds: [],
+      turning: false,
     };
     for (const sid of squad.soldierIds) this.soldiers[sid].inVehicle = v.id;
     this.vehicles.push(v);
@@ -565,6 +592,266 @@ export class Sim {
       }
     }
     return null;
+  }
+
+  // Crewed weapon (spec §4): spawns the matching crew squad (EMPLACEMENT_CREW)
+  // and binds its one team to a new Emplacement, same shape as addVehicle's
+  // crew binding. Crew are snapped onto tight (<=3m) formation offsets so
+  // they start well inside CREW_RADIUS instead of addSquadFromDef's wider scatter.
+  addEmplacement(side: Side, kind: EmplacementKey, x: number, y: number, facing = 0, initialState: 'packed' | 'deployed' = 'packed'): Emplacement {
+    const def: EmplacementDef = EMPLACEMENTS[kind];
+    const squad = this.addSquadFromDef(side, EMPLACEMENT_CREW[kind], x, y);
+    const crewTeamId = squad.teamIds[0];
+    const e: Emplacement = {
+      id: this.emplacements.length,
+      side,
+      kind,
+      x,
+      y,
+      facing,
+      state: initialState,
+      timer: 0,
+      crewTeamId,
+      loadsPresent: [...def.loads],
+      cooldown: 0,
+      heat: 0,
+      towedBy: -1,
+      targetX: x,
+      targetY: y,
+      hasTarget: false,
+      smokeRoundsLeft: 0,
+      moveTarget: null,
+    };
+    this.teams[crewTeamId].soldierIds.forEach((sid, i) => {
+      const [ox, oy] = OFFSETS[i % OFFSETS.length];
+      const s = this.soldiers[sid];
+      s.x = x + ox;
+      s.y = y + oy;
+      s.inEmplacement = e.id;
+    });
+    this.emplacements.push(e);
+    return e;
+  }
+
+  // Deploy requires all def.loads within CREW_RADIUS (carried or dropped
+  // there) and crew >= minCrew; runs setupTime. Towed guns can't deploy.
+  orderDeploy(empId: number): void {
+    const e = this.emplacements[empId];
+    if (!e || e.state !== 'packed' || e.towedBy >= 0) return;
+    const def: EmplacementDef = EMPLACEMENTS[e.kind];
+    if (crewNear(this, e).length < def.minCrew) return;
+    if (!loadsReady(this, e)) return;
+    e.state = 'deploying';
+    e.timer = def.setupTime;
+  }
+
+  orderPack(empId: number): void {
+    const e = this.emplacements[empId];
+    if (!e || e.state !== 'deployed' || crewNear(this, e).length === 0) return;
+    e.state = 'packing';
+    e.timer = EMPLACEMENTS[e.kind].packTime;
+  }
+
+  // Wheeled AT guns only: crew pushes the gun at wheeled.speed while packed
+  // (not hitched, not deployed).
+  orderWheel(empId: number, wx: number, wy: number): void {
+    const e = this.emplacements[empId];
+    if (!e || e.state !== 'packed' || e.towedBy >= 0) return;
+    const def: EmplacementDef = EMPLACEMENTS[e.kind];
+    if (!def.wheeled) return;
+    e.moveTarget = { x: wx, y: wy };
+  }
+
+  // Mortar-only (arc weapons): sets the indirect-fire HE point. Any point a
+  // friendly currently sees is a valid call (spec §4/§6's shared-vision rule) —
+  // range/spotter eligibility is re-checked every tick in updateEmplacement.
+  orderFire(empId: number, x: number, y: number): void {
+    const e = this.emplacements[empId];
+    if (!e) return;
+    const w: WeaponDef = WEAPONS[EMPLACEMENTS[e.kind].weapon];
+    if (!w.arc) return;
+    e.targetX = x;
+    e.targetY = y;
+    e.hasTarget = true;
+  }
+
+  // Mortar-only: a 4-round smoke screen at the point, consuming shells —
+  // sustained coverage the rifle-squad smoke grenades can't match.
+  orderSmoke(empId: number, x: number, y: number): void {
+    const e = this.emplacements[empId];
+    if (!e) return;
+    const w: WeaponDef = WEAPONS[EMPLACEMENTS[e.kind].weapon];
+    if (!w.arc) return;
+    e.targetX = x;
+    e.targetY = y;
+    e.hasTarget = true;
+    e.smokeRoundsLeft = 4;
+  }
+
+  private stepEmplacements(): void {
+    for (const e of this.emplacements) this.updateEmplacement(e);
+    if (this.mortarShells.length === 0) return;
+    this.mortarShells = this.mortarShells.filter((sh) => {
+      if (this.tick < sh.tick) return true;
+      if (sh.smoke) this.smoke.push({ x: sh.x, y: sh.y, ttl: 60 });
+      else this.explode(sh.x, sh.y, { suppRadius: 10, fragRadius: 5, frags: 2, dmg: [25, 75] });
+      return false;
+    });
+  }
+
+  private updateEmplacement(e: Emplacement): void {
+    const def: EmplacementDef = EMPLACEMENTS[e.kind];
+    if (e.towedBy >= 0) {
+      const v = this.vehicles[e.towedBy];
+      if (!v || !v.alive) {
+        e.towedBy = -1;
+      } else {
+        e.x = v.x - Math.cos(v.facing) * 3;
+        e.y = v.y - Math.sin(v.facing) * 3;
+        e.facing = v.facing;
+        for (const sid of this.teams[e.crewTeamId].soldierIds) {
+          const s = this.soldiers[sid];
+          if (s.alive) {
+            s.x = e.x;
+            s.y = e.y;
+            s.path = null;
+          }
+        }
+        return; // can't deploy or fire while hitched
+      }
+    }
+    if (e.moveTarget) {
+      const dx = e.moveTarget.x - e.x;
+      const dy = e.moveTarget.y - e.y;
+      const d = Math.hypot(dx, dy);
+      const step = (def.wheeled?.speed ?? 0) * DT;
+      if (d <= step || d < 0.05) {
+        e.x = e.moveTarget.x;
+        e.y = e.moveTarget.y;
+        e.moveTarget = null;
+      } else {
+        e.x += (dx / d) * step;
+        e.y += (dy / d) * step;
+        e.facing = Math.atan2(dy, dx);
+      }
+      for (const sid of this.teams[e.crewTeamId].soldierIds) {
+        const s = this.soldiers[sid];
+        if (s.alive) {
+          s.x = e.x;
+          s.y = e.y;
+          s.path = null;
+        }
+      }
+    }
+
+    if (e.state === 'deploying' || e.state === 'packing') {
+      if (crewNear(this, e).length > 0) e.timer -= DT; // paused with nobody on the gun
+      if (e.timer <= 0) {
+        e.state = e.state === 'deploying' ? 'deployed' : 'packed';
+        e.timer = 0;
+      }
+    }
+    e.loadsPresent = def.loads.filter((l) => crewNear(this, e).some((s) => s.carries.includes(l)));
+
+    if (e.state !== 'deployed') return;
+    if (e.cooldown > 0) e.cooldown -= DT;
+    const firer = pickFirer(this, e);
+    if (!firer || e.cooldown > 0) return;
+    const w: WeaponDef = WEAPONS[def.weapon];
+    const degrade = crewDegrade(this, e);
+
+    // Barrel heat (belt-fed only): forced swap, slower below minCrew — same
+    // served-weapon rule that gates every other emplacement fire rate.
+    if (w.heat && e.heat >= 1) {
+      e.cooldown = w.heat.swapTime * degrade;
+      e.heat = 0;
+      return;
+    }
+    if (w.arc) {
+      this.fireEmplacementIndirect(e, w, firer, degrade);
+      return;
+    }
+    if (w.pen !== undefined) {
+      this.fireEmplacementAt(e, w, firer, degrade);
+      return;
+    }
+    this.fireEmplacementSmallArms(e, def, w, firer, degrade);
+  }
+
+  // A crew-served gun draws on the whole crew's carried reserve, not just
+  // whichever soldier happens to be pickFirer's pick this tick — that's what
+  // ammo bearers are for. Tries the firer's own stock first, then the
+  // nearest other crewman's.
+  private consumeEmplacementAmmo(e: Emplacement, firer: Soldier, type: AmmoKey): boolean {
+    if ((firer.ammo[type] ?? 0) > 0) {
+      firer.ammo[type] = firer.ammo[type]! - 1;
+      return true;
+    }
+    for (const s of crewNear(this, e)) {
+      if (s.id === firer.id) continue;
+      if ((s.ammo[type] ?? 0) > 0) {
+        s.ammo[type] = s.ammo[type]! - 1;
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private fireEmplacementIndirect(e: Emplacement, w: WeaponDef, firer: Soldier, degrade: number): void {
+    if (!e.hasTarget) return;
+    const arc = w.arc!;
+    const d = Math.hypot(e.targetX - e.x, e.targetY - e.y);
+    if (d < arc.minRange || d > w.range) return;
+    if (!friendlyHasLos(this, e.side, e.targetX, e.targetY)) return;
+    const smoke = e.smokeRoundsLeft > 0;
+    if (!this.consumeEmplacementAmmo(e, firer, w.ammo.type)) return;
+    const scatter = crewHasLos(this, e, e.targetX, e.targetY) ? arc.scatter : arc.scatterNoLos;
+    const angle = this.rng.next() * Math.PI * 2;
+    const dist = this.rng.next() * scatter;
+    this.mortarShells.push({ tick: this.tick + 90, x: e.targetX + Math.cos(angle) * dist, y: e.targetY + Math.sin(angle) * dist, smoke });
+    e.cooldown = w.cooldown * degrade;
+    if (smoke) {
+      e.smokeRoundsLeft--;
+      if (e.smokeRoundsLeft <= 0) e.hasTarget = false;
+    }
+  }
+
+  private fireEmplacementAt(e: Emplacement, w: WeaponDef, firer: Soldier, degrade: number): void {
+    let best: Vehicle | null = null;
+    let bestD = Infinity;
+    for (const v of this.vehicles) {
+      if (!v.alive || v.side === e.side) continue;
+      const d = Math.hypot(v.x - e.x, v.y - e.y);
+      if (d <= w.range && d < bestD && sightBetween(this, e.x, e.y, v.x, v.y).visible) {
+        bestD = d;
+        best = v;
+      }
+    }
+    if (!best) return;
+    if (!this.consumeEmplacementAmmo(e, firer, w.ammo.type)) return;
+    this.fireApAt(e.x, e.y, w.pen!, w.accuracy * this.aimFactor(firer), w.range, best, false);
+    e.cooldown = w.cooldown * degrade;
+  }
+
+  private fireEmplacementSmallArms(e: Emplacement, def: EmplacementDef, w: WeaponDef, firer: Soldier, degrade: number): void {
+    const crewTeam = this.teams[e.crewTeamId];
+    const order = crewTeam.orderState.order;
+    const arc = order?.kind === 'defend' || order?.kind === 'ambush' ? order.arc : undefined;
+    const targetId = this.acquireSoldierTarget(e.x, e.y, e.side, w.range, arc);
+    if (targetId < 0) return;
+    const t = this.soldiers[targetId];
+    let aim = this.aimFactor(firer);
+    if (arc && this.inArc(e.x, e.y, t.x, t.y, arc)) aim *= 1.25;
+    if (order?.kind === 'defend' && crewTeam.ambushBonusTick === this.tick) aim *= 1.3;
+    const p = this.shotPreview(e.x, e.y, def.weapon, t, false, aim);
+    if (!p.visible) return;
+    if (!this.consumeEmplacementAmmo(e, firer, w.ammo.type)) return;
+    const hit = this.rng.next() < p.acc;
+    const kill = hit ? this.wound(t, this.rng.range(w.damage[0], w.damage[1])) : false;
+    this.suppressAround(t.x, t.y, t.side, w.suppression);
+    this.pendingEvents.push({ fx: e.x, fy: e.y, tx: t.x, ty: t.y, hit, kill });
+    if (w.heat) e.heat = Math.min(1.5, e.heat + w.heat.perShot);
+    e.cooldown = w.cooldown * degrade * (0.85 + this.rng.next() * 0.3);
   }
 
   // Direct order to one team: the opt-in fire-and-maneuver granularity (spec
@@ -858,6 +1145,7 @@ export class Sim {
     this.stepStrafes();
     this.stepSmoke();
     this.stepOrders();
+    this.stepEmplacements();
     for (const v of this.vehicles) {
       if (v.alive) this.updateVehicle(v);
     }
@@ -1288,6 +1576,7 @@ export class Sim {
       this.considerRescue(s);
       this.considerAmmoRunner(s);
       this.considerPickup(s);
+      this.considerLoadPickup(s);
     }
 
     // stamina: recovers when settled and not under heavy fire (drain lives in advance())
@@ -1309,7 +1598,7 @@ export class Sim {
           s.pickingUp = false;
           const myRank = weaponRank(s.weapon);
           const i = this.droppedKit.findIndex(
-            (k) => k.side === s.side && weaponRank(k.weapon) > myRank && Math.hypot(k.x - s.x, k.y - s.y) <= 2,
+            (k) => !k.load && k.side === s.side && weaponRank(k.weapon) > myRank && Math.hypot(k.x - s.x, k.y - s.y) <= 2,
           );
           if (i >= 0) {
             const kit = this.droppedKit[i];
@@ -1347,6 +1636,16 @@ export class Sim {
         s.magLeft = WEAPONS[s.weapon].ammo.perUnit;
       }
       return; // dry (no ammo, no secondary): holds fire — runner arrives Task 8
+    }
+
+    // Crew-served weapon: this soldier's personal `weapon` IS the emplaced
+    // gun (m1919/mg42/mortar60/mortar81 gunner slots) — firing is driven by
+    // Sim.updateEmplacement's fire loop against the same ammo/heat state, not
+    // by his own acquire+fire. AT-gun crews (at57/pak40) never hit this gate:
+    // their slot weapons are personal sidearms, never the served gun.
+    if (s.inEmplacement >= 0) {
+      const emp = this.emplacements[s.inEmplacement];
+      if (emp && s.weapon === EMPLACEMENTS[emp.kind].weapon) return;
     }
 
     // Order-level fire discipline: sneak and (untriggered) ambush hold fire
@@ -1428,10 +1727,12 @@ export class Sim {
   }
 
   private advance(s: Soldier, speed: number): void {
-    // walking (0.004/s) unless sprinting under a fast order (0.02/s); load
-    // multiplier arrives with Task 9
+    // walking (0.004/s) unless sprinting under a fast order (0.02/s),
+    // multiplied by the heaviest load he's carrying (Task 9's speedCap
+    // wiring counterpart).
     const order = this.teams[s.teamId].orderState.order;
-    const drainRate = order?.kind === 'fast' ? 0.02 : 0.004;
+    let drainRate = order?.kind === 'fast' ? 0.02 : 0.004;
+    if (s.carries.length > 0) drainRate *= Math.max(...s.carries.map((l) => LOADS[l].staminaMult));
     s.stamina = Math.max(0, s.stamina - drainRate * DT);
     const cost = this.map.terrainAt(Math.floor(s.x), Math.floor(s.y)).moveCost;
     let remaining = (speed / cost) * DT;
@@ -1636,7 +1937,7 @@ export class Sim {
     if (s.reloading > 0 || s.pickingUp || s.path) return;
     const myRank = weaponRank(s.weapon);
     for (const kit of this.droppedKit) {
-      if (kit.side !== s.side || weaponRank(kit.weapon) <= myRank) continue;
+      if (kit.load || kit.side !== s.side || weaponRank(kit.weapon) <= myRank) continue;
       if (Math.hypot(kit.x - s.x, kit.y - s.y) > 2) continue;
       s.pickingUp = true;
       s.reloading = 3;
@@ -1644,13 +1945,32 @@ export class Sim {
     }
   }
 
-  // On kill/downed: the weapon+ammo a soldier was carrying hits the ground,
-  // and both squad- and team-scoped "recent casualty" clocks reset (dangerScore,
-  // ambush trigger).
+  // On kill/downed: the weapon+ammo a soldier was carrying hits the ground
+  // (plus one entry per emplacement load he was humping — spec: "casualties
+  // drop loads at position; any soldier can pick one up"), and both squad-
+  // and team-scoped "recent casualty" clocks reset (dangerScore, ambush trigger).
   private dropKit(s: Soldier): void {
     this.droppedKit.push({ side: s.side, x: s.x, y: s.y, weapon: s.weapon, ammo: { ...s.ammo }, magLeft: s.magLeft });
+    for (const load of s.carries) {
+      this.droppedKit.push({ side: s.side, x: s.x, y: s.y, weapon: s.weapon, ammo: {}, magLeft: 0, load });
+    }
+    s.carries = [];
     this.squadLastCasualty[s.squadId] = this.tick;
     this.teamLastCasualty[s.teamId] = this.tick;
+  }
+
+  // Idle soldier within 2m of a same-side dropped load picks it up — no
+  // timer (unlike the 3s weapon swap; the plan doesn't call for one here).
+  private considerLoadPickup(s: Soldier): void {
+    if (s.reloading > 0 || s.pickingUp || s.path) return;
+    for (let i = 0; i < this.droppedKit.length; i++) {
+      const kit = this.droppedKit[i];
+      if (!kit.load || kit.side !== s.side) continue;
+      if (Math.hypot(kit.x - s.x, kit.y - s.y) > 2) continue;
+      s.carries.push(kit.load);
+      this.droppedKit.splice(i, 1);
+      return;
+    }
   }
 
   private dropTask(s: Soldier): void {
@@ -1846,6 +2166,19 @@ export class Sim {
         v.targetSoldierId,
       ]),
       teams: this.teams.map((t) => [t.id, t.orderState.phase, t.orderState.order?.kind ?? '', t.smokeLeft, t.ambushBonusTick]),
+      emplacements: this.emplacements.map((e) => [
+        e.id,
+        Math.round(e.x * 1e6),
+        Math.round(e.y * 1e6),
+        e.state,
+        Math.round(e.timer * 1e6),
+        Math.round(e.cooldown * 1e6),
+        Math.round(e.heat * 1e6),
+        e.towedBy,
+        e.loadsPresent.length,
+        e.hasTarget,
+        e.smokeRoundsLeft,
+      ]),
       smoke: this.smoke.map((p) => [Math.round(p.x * 1e6), Math.round(p.y * 1e6), Math.round(p.ttl * 1e6)]),
       droppedKit: this.droppedKit.map((k) => [
         k.side,

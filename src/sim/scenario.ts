@@ -36,13 +36,18 @@ export function makeScenario(seed: number): Sim {
   sim.addSquadFromDef('blue', 'us_rifle', west.x + 7, by(16));
   sim.addSquadFromDef('blue', 'us_bazooka', west.x + 3, by(0));
   sim.addSquadFromDef('blue', 'us_m1919', west.x + 11, by(0));
+  sim.addEmplacement('blue', 'mortar60', west.x + 1, by(-6)); // packed, west spawn
 
-  // German garrison: two Gruppen holding buildings, the sMG42 team in the east woods
+  // German garrison: two Gruppen holding buildings, the sMG42 team in the east
+  // woods, an MG42 dug in on the crossroads objective facing the west approach
   const [b0, , b2] = plan.buildings;
   const woods = plan.objectives[1];
+  const objective0 = plan.objectives[0];
   sim.addSquadFromDef('red', 'de_gruppe', center(b0).x, center(b0).y);
   sim.addSquadFromDef('red', 'de_gruppe', center(b2).x, center(b2).y);
   sim.addSquadFromDef('red', 'de_smg42', woods.x, woods.y);
+  const facingWest = Math.atan2(west.y - objective0.y, west.x - objective0.x);
+  sim.addEmplacement('red', 'mg42_lafette', objective0.x, objective0.y, facingWest, 'deployed');
 
   addVehicleOnRoad(sim, 'blue', 'sherman', west.x + 0.5, west.y + 0.5, 0);
   addVehicleOnRoad(sim, 'red', 'panzer4', east.x - 1.5, east.y + 0.5, Math.PI);
