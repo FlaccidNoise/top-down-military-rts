@@ -34,8 +34,8 @@ describe('mapgen', () => {
   });
 
   it('matches known snapshots (catches accidental generator drift)', () => {
-    expect(fingerprint(1)).toMatchInlineSnapshot(`"f055a163"`);
-    expect(fingerprint(2)).toMatchInlineSnapshot(`"b85246e1"`);
+    expect(fingerprint(1)).toMatchInlineSnapshot(`"452dd6c1"`);
+    expect(fingerprint(2)).toMatchInlineSnapshot(`"677801e9"`);
   });
 
   it('spawns reach objectives and buildings on foot; the road carries vehicles (seeds 1-30)', () => {
@@ -51,6 +51,16 @@ describe('mapgen', () => {
         expect(astar(p.map, west.x, west.y, b.x + (b.w >> 1), b.y + (b.h >> 1))).not.toBeNull();
       }
       expect(astar(p.map, west.x, west.y, east.x, east.y, 'vehicle')).not.toBeNull();
+    }
+  });
+
+  it('village buildings stay first; farms append after (seeds 1-15)', () => {
+    for (let seed = 1; seed <= 15; seed++) {
+      const p = generateMap(seed);
+      for (const b of p.buildings.slice(0, 3)) {
+        const d2 = (b.x - p.objectives[0].x) ** 2 + (b.y - p.objectives[0].y) ** 2;
+        expect(d2).toBeLessThan(30 * 30);
+      }
     }
   });
 

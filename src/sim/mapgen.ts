@@ -112,6 +112,30 @@ function tryGenerate(rng: Rng, w: number, h: number): MapPlan | null {
   }
   if (buildings.length < 4) return null;
 
+  // outlying farm compounds: house + barn joined to the arterial by a lane
+  for (let f = 0, n = 2 + rng.int(2); f < n; f++) {
+    for (let tries = 0; tries < 60; tries++) {
+      const fx = 8 + rng.int(w - 28);
+      const fy = 8 + rng.int(h - 26);
+      if ((fx - crossX) * (fx - crossX) + (fy - cy) * (fy - cy) < 35 * 35) continue;
+      const house: Building = { x: fx, y: fy, w: 6 + rng.int(3), h: 5 + rng.int(2) };
+      const barn: Building = { x: fx, y: fy + house.h + 3, w: 5 + rng.int(3), h: 4 + rng.int(2) };
+      if (barn.y + barn.h > h - 3 || fx + Math.max(house.w, barn.w) > w - 4) continue;
+      if (touchesRoad(house) || overlaps(house) || touchesRoad(barn) || overlaps(barn)) continue;
+      const lx = Math.min(w - 3, fx + Math.max(house.w, barn.w) + 1);
+      const target = roadY[lx];
+      const step = fy + house.h + 1 < target ? 1 : -1;
+      let laneBlocked = false;
+      for (let yy = fy + house.h + 1; yy !== target && !laneBlocked; yy += step)
+        laneBlocked = buildings.some((o) => lx >= o.x - 1 && lx < o.x + o.w + 1 && yy >= o.y - 1 && yy < o.y + o.h + 1);
+      if (laneBlocked) continue;
+      buildings.push(house, barn);
+      doorSides.push('s', 'n'); // both doors open onto the shared yard row
+      for (let yy = fy + house.h + 1; yy !== target; yy += step) road[yy * w + lx] = 1;
+      break;
+    }
+  }
+
   const nearVillage = (x: number, y: number) => (x - crossX) * (x - crossX) + (y - cy) * (y - cy) < 26 * 26;
   const nearBuilding = (x: number, y: number) =>
     buildings.some((b) => x >= b.x - 1 && x < b.x + b.w + 1 && y >= b.y - 1 && y < b.y + b.h + 1);
