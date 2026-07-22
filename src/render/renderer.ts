@@ -1,5 +1,4 @@
 import type { ShotEvent, Sim, Soldier, Vehicle } from '../sim/sim';
-import { VEHICLES } from '../sim/data';
 import type { Camera } from './camera';
 import { DecalLayer } from './decals';
 import { bandFor, getSprite, SPRITE_MIN_SCALE, SPRITE_SPAN, WALK_FRAMES, type Pose } from './dudes';
@@ -50,8 +49,6 @@ export class Renderer {
   private barrageMarks: { x: number; y: number; tick: number }[] = [];
   private strafeMarks: { x: number; y: number; tick: number }[] = [];
   private planes: Plane[] = [];
-  hudTitle = '';
-  modeLine = ''; // targeting-mode banner set by input layer
   selectedVehicle = -1;
 
   constructor(private sim: Sim) {
@@ -84,7 +81,7 @@ export class Renderer {
     for (const p of planes) this.planes.push({ ...p, at: now });
   }
 
-  draw(ctx: CanvasRenderingContext2D, cam: Camera, selectedSquad: number, paused: boolean, now: number): void {
+  draw(ctx: CanvasRenderingContext2D, cam: Camera, selectedSquad: number, now: number): void {
     const cw = ctx.canvas.width;
     const ch = ctx.canvas.height;
     const dt = Math.min(0.1, (now - this.lastNow) / 1000);
@@ -113,7 +110,6 @@ export class Renderer {
     this.roofs.drawTops(ctx, cam, cw, ch);
     this.drawPlanes(ctx, cam, now, cw, ch);
     this.drawBarrageMarks(ctx, cam, now, cw, ch);
-    this.drawHud(ctx, selectedSquad, paused);
   }
 
   // Pulsing dashed amber — shared style for call-in target markers.
@@ -455,54 +451,4 @@ export class Renderer {
     }
   }
 
-  private drawHud(ctx: CanvasRenderingContext2D, selectedSquad: number, paused: boolean): void {
-    const lines: string[] = [];
-    let blue = 0;
-    let red = 0;
-    for (const s of this.sim.soldiers) {
-      if (!s.alive) continue;
-      if (s.side === 'blue') blue++;
-      else red++;
-    }
-    const title = this.hudTitle ? `${this.hudTitle}  ` : '';
-    lines.push(`${title}T+${Math.floor((this.sim.tick / 30 / 60) | 0)}:${String(Math.floor(this.sim.tick / 30) % 60).padStart(2, '0')}  US ${blue} | GE ${red}`);
-    if (paused) lines.push('PAUSED — space to resume');
-    if (this.modeLine) lines.push(this.modeLine);
-    lines.push(
-      `click: select   right-click: move   B: barrage (${this.sim.barragesLeft.blue})   A: airstrike (${this.sim.airstrikesLeft.blue})   space: pause`,
-    );
-    const veh = this.sim.vehicles[this.selectedVehicle];
-    if (veh) {
-      lines.push(`— ${VEHICLES[veh.kind].name} —`);
-      for (const cid of veh.crewIds) {
-        const c = this.sim.soldiers[cid];
-        const st = !c.alive ? 'KIA ' : c.downed ? 'DOWN' : 'OK  ';
-        lines.push(`${st} ${c.name}`);
-      }
-    }
-    const squad = this.sim.squads[selectedSquad];
-    if (squad) {
-      lines.push(`— ${squad.name} —`);
-      for (const sid of squad.soldierIds) {
-        const s = this.sim.soldiers[sid];
-        const status = !s.alive ? 'KIA ' : s.downed ? 'DOWN' : s.mental.slice(0, 4).toUpperCase().padEnd(4);
-        const supp = s.alive && !s.downed ? ` s${Math.round(s.suppression * 100).toString().padStart(3)}%` : '     ';
-        const wounds = s.wounds.length > 0 ? `  ${this.sim.woundSummary(s)}` : '';
-        lines.push(`${status}${supp} ${s.name.padEnd(10)} ${s.weapon}${wounds}`);
-      }
-    }
-    ctx.font = '12px monospace';
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.55)';
-    ctx.fillRect(8, 8, 470, 18 * lines.length + 8);
-    ctx.fillStyle = '#e8e4d8';
-    lines.forEach((l, i) => ctx.fillText(l, 16, 26 + i * 18));
-
-    if (this.sim.winner) {
-      ctx.font = 'bold 36px monospace';
-      ctx.fillStyle = TEAM[this.sim.winner];
-      ctx.textAlign = 'center';
-      ctx.fillText(this.sim.winner === 'blue' ? 'US VICTORY' : 'GERMAN VICTORY', ctx.canvas.width / 2, 80);
-      ctx.textAlign = 'left';
-    }
-  }
 }
