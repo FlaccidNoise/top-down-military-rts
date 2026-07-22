@@ -1,50 +1,33 @@
-import { TERRAIN } from '../sim/data';
-import { EDGE } from '../sim/map';
-import type { ShotEvent, Sim } from '../sim/sim';
+import type { ShotEvent, Sim, Soldier } from '../sim/sim';
 import type { Camera } from './camera';
-
-const PPM = 8; // px per meter in the prerendered map image
+import { bandFor, getSprite, SPRITE_MIN_SCALE, SPRITE_SPAN, WALK_FRAMES, type Pose } from './dudes';
+import { RoofLayer } from './roofs';
+import { TerrainLayer } from './terrain';
 
 interface Tracer extends ShotEvent {
   at: number; // ms timestamp
 }
 
+// Render-only per-soldier state (facing, gait phase). The sim has no facing;
+// it is derived here from movement and target direction, then smoothed.
+interface RState {
+  facing: number;
+  phase: number; // gait cycles (1 per stride pair)
+  px: number;
+  py: number;
+}
+
+const TEAM = { blue: '#5b9bd5', red: '#d05c50' } as const;
+
 export class Renderer {
-  private mapImage: HTMLCanvasElement;
+  private terrain: TerrainLayer;
+  private roofs = new RoofLayer();
   private tracers: Tracer[] = [];
+  private rs = new Map<number, RState>();
+  private lastNow = 0;
 
   constructor(private sim: Sim) {
-    this.mapImage = this.prerenderMap();
-  }
-
-  private prerenderMap(): HTMLCanvasElement {
-    const { map } = this.sim;
-    const c = document.createElement('canvas');
-    c.width = map.w * PPM;
-    c.height = map.h * PPM;
-    const g = c.getContext('2d')!;
-    for (let y = 0; y < map.h; y++) {
-      for (let x = 0; x < map.w; x++) {
-        g.fillStyle = TERRAIN[map.terrainKeyAt(x, y)].color;
-        g.fillRect(x * PPM, y * PPM, PPM, PPM);
-      }
-    }
-    const drawEdge = (x0: number, y0: number, x1: number, y1: number, e: number) => {
-      if (e === EDGE.NONE) return;
-      g.strokeStyle = e === EDGE.WALL ? '#26221c' : e === EDGE.DOOR ? '#b5885a' : '#9ecfe0';
-      g.lineWidth = e === EDGE.WALL ? PPM * 0.28 : PPM * 0.18;
-      g.beginPath();
-      g.moveTo(x0 * PPM, y0 * PPM);
-      g.lineTo(x1 * PPM, y1 * PPM);
-      g.stroke();
-    };
-    for (let y = 0; y <= map.h; y++) {
-      for (let x = 0; x < map.w; x++) drawEdge(x, y, x + 1, y, map.hEdge(x, y));
-    }
-    for (let y = 0; y < map.h; y++) {
-      for (let x = 0; x <= map.w; x++) drawEdge(x, y, x, y + 1, map.vEdge(x, y));
-    }
-    return c;
+    this.terrain = new TerrainLayer(sim.map);
   }
 
   addEvents(events: ShotEvent[], now: number): void {
@@ -54,24 +37,203 @@ export class Renderer {
   draw(ctx: CanvasRenderingContext2D, cam: Camera, selectedSquad: number, paused: boolean, now: number): void {
     const cw = ctx.canvas.width;
     const ch = ctx.canvas.height;
-    ctx.fillStyle = '#1a1d1a';
+    const dt = Math.min(0.1, (now - this.lastNow) / 1000);
+    this.lastNow = now;
+    ctx.fillStyle = '#252b20';
     ctx.fillRect(0, 0, cw, ch);
+    ctx.imageSmoothingEnabled = true;
 
-    const [ox, oy] = cam.worldToScreen(0, 0, cw, ch);
-    const s = cam.scale / PPM;
-    ctx.imageSmoothingEnabled = cam.scale < PPM;
-    ctx.drawImage(this.mapImage, ox, oy, this.mapImage.width * s, this.mapImage.height * s);
+    this.terrain.draw(ctx, cam, cw, ch);
+    this.roofs.update(this.sim, cam, dt);
+    this.roofs.drawShadows(ctx, cam, cw, ch);
 
-    // tracers (last 150 ms)
-    this.tracers = this.tracers.filter((t) => now - t.at < 150);
-    for (const t of this.tracers) {
-      const a = 1 - (now - t.at) / 150;
-      const [x0, y0] = cam.worldToScreen(t.fx, t.fy, cw, ch);
-      const [x1, y1] = cam.worldToScreen(t.tx, t.ty, cw, ch);
-      ctx.strokeStyle = t.hit ? `rgba(255, 205, 90, ${a})` : `rgba(255, 255, 255, ${0.35 * a})`;
+    if (cam.scale < SPRITE_MIN_SCALE) {
+      for (const s of this.sim.soldiers) this.drawDot(ctx, cam, s, selectedSquad, cw, ch);
+    } else {
+      // dead below downed below the living
+      for (const s of this.sim.soldiers) if (!s.alive) this.drawSoldier(ctx, cam, s, selectedSquad, dt, cw, ch);
+      for (const s of this.sim.soldiers) if (s.alive && s.downed) this.drawSoldier(ctx, cam, s, selectedSquad, dt, cw, ch);
+      for (const s of this.sim.soldiers) if (s.alive && !s.downed) this.drawSoldier(ctx, cam, s, selectedSquad, dt, cw, ch);
+    }
+
+    this.drawFire(ctx, cam, now, cw, ch);
+    this.roofs.drawTops(ctx, cam, cw, ch);
+    this.drawHud(ctx, selectedSquad, paused);
+  }
+
+  private state(s: Soldier): RState {
+    let st = this.rs.get(s.id);
+    if (!st) {
+      st = { facing: s.side === 'blue' ? 0 : Math.PI, phase: 0, px: s.x, py: s.y };
+      this.rs.set(s.id, st);
+    }
+    return st;
+  }
+
+  private drawSoldier(ctx: CanvasRenderingContext2D, cam: Camera, s: Soldier, selectedSquad: number, dt: number, cw: number, ch: number): void {
+    const [x, y] = cam.worldToScreen(s.x, s.y, cw, ch);
+    const pad = SPRITE_SPAN * cam.scale;
+    if (x < -pad || y < -pad || x > cw + pad || y > ch + pad) return;
+
+    const st = this.state(s);
+    const dx = s.x - st.px;
+    const dy = s.y - st.py;
+    const moved = Math.hypot(dx, dy);
+    st.px = s.x;
+    st.py = s.y;
+
+    let pose: Pose;
+    let frame = 0;
+    if (!s.alive) pose = 'dead';
+    else if (s.downed) pose = 'downed';
+    else if (s.mental === 'pinned' || (s.mental === 'broken' && !s.path)) pose = 'prone';
+    else if (moved > 1e-4) {
+      pose = 'walk';
+      st.phase += moved * 1.4;
+      frame = Math.floor((st.phase % 1) * WALK_FRAMES);
+    } else pose = s.targetId >= 0 ? 'aim' : 'idle';
+
+    if (s.alive) {
+      let desired = st.facing;
+      if (s.targetId >= 0 && !s.downed) {
+        const t = this.sim.soldiers[s.targetId];
+        desired = Math.atan2(t.y - s.y, t.x - s.x);
+      } else if (moved > 1e-4) {
+        desired = Math.atan2(dy, dx);
+      }
+      let diff = desired - st.facing;
+      while (diff > Math.PI) diff -= Math.PI * 2;
+      while (diff < -Math.PI) diff += Math.PI * 2;
+      st.facing += Math.sign(diff) * Math.min(Math.abs(diff), 8 * dt);
+    }
+
+    // blood pool under the immobile wounded and the dead
+    const bl = s.alive ? s.bloodLoss : Math.max(s.bloodLoss, s.wounds.length ? 0.35 : 0.2);
+    if ((!s.alive || s.downed) && bl > 0.02) {
+      const r = (0.25 + Math.min(1, bl) * 0.5) * cam.scale;
+      ctx.fillStyle = 'rgba(92,15,12,0.5)';
+      ctx.beginPath();
+      ctx.ellipse(x + cam.scale * 0.1, y + cam.scale * 0.08, r, r * 0.8, st.facing, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    if (s.alive && s.squadId === selectedSquad && s.path) {
+      ctx.strokeStyle = 'rgba(255, 233, 160, 0.25)';
       ctx.lineWidth = 1;
       ctx.beginPath();
-      ctx.moveTo(x0, y0);
+      ctx.moveTo(x, y);
+      for (let i = s.pathI; i < s.path.length; i++) {
+        const [px, py] = cam.worldToScreen(s.path[i].x, s.path[i].y, cw, ch);
+        ctx.lineTo(px, py);
+      }
+      ctx.stroke();
+    }
+
+    const band = bandFor(cam.scale);
+    const spr = getSprite(s.side, s.weapon, pose, frame, band);
+    const facing = s.alive ? st.facing : st.facing + ((s.id * 2654435761) % 100) / 100 - 0.5;
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(facing);
+    ctx.drawImage(spr, -pad / 2, -pad / 2, pad, pad);
+    ctx.restore();
+
+    if (!s.alive) return;
+    if (s.squadId === selectedSquad) {
+      ctx.strokeStyle = '#ffe9a0';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(x, y, cam.scale * 0.6 + 2, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    if (!s.downed && s.suppression > 0.35) {
+      ctx.strokeStyle = `rgba(255, 180, 40, ${Math.min(0.9, s.suppression)})`;
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(x, y, cam.scale * 0.55 + 1.5, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+  }
+
+  // Far-zoom LOD: the placeholder dot language, which is the right read at 2 px/m.
+  private drawDot(ctx: CanvasRenderingContext2D, cam: Camera, s: Soldier, selectedSquad: number, cw: number, ch: number): void {
+    const [x, y] = cam.worldToScreen(s.x, s.y, cw, ch);
+    if (x < -20 || y < -20 || x > cw + 20 || y > ch + 20) return;
+    const r = Math.max(2.5, 0.35 * cam.scale);
+    if (!s.alive) {
+      ctx.strokeStyle = '#444';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(x - r * 0.7, y - r * 0.7);
+      ctx.lineTo(x + r * 0.7, y + r * 0.7);
+      ctx.moveTo(x + r * 0.7, y - r * 0.7);
+      ctx.lineTo(x - r * 0.7, y + r * 0.7);
+      ctx.stroke();
+      return;
+    }
+    if (s.downed) {
+      ctx.strokeStyle = TEAM[s.side];
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(x, y, r * 0.9, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.fillStyle = '#c03028';
+      ctx.beginPath();
+      ctx.arc(x, y, r * 0.35, 0, Math.PI * 2);
+      ctx.fill();
+      return;
+    }
+    if (s.squadId === selectedSquad) {
+      ctx.strokeStyle = '#ffe9a0';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(x, y, r + 2.5, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    const prone = s.mental === 'pinned' || s.mental === 'broken';
+    ctx.fillStyle = TEAM[s.side];
+    ctx.beginPath();
+    if (prone) ctx.ellipse(x, y, r * 1.15, r * 0.6, 0, 0, Math.PI * 2);
+    else ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fill();
+    if (s.suppression > 0.35) {
+      ctx.strokeStyle = `rgba(255, 180, 40, ${Math.min(0.9, s.suppression)})`;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.arc(x, y, r + 1.5, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+  }
+
+  private drawFire(ctx: CanvasRenderingContext2D, cam: Camera, now: number, cw: number, ch: number): void {
+    this.tracers = this.tracers.filter((t) => now - t.at < 150);
+    for (const t of this.tracers) {
+      const age = now - t.at;
+      const a = 1 - age / 150;
+      const [x0, y0] = cam.worldToScreen(t.fx, t.fy, cw, ch);
+      const [x1, y1] = cam.worldToScreen(t.tx, t.ty, cw, ch);
+      const d = Math.hypot(x1 - x0, y1 - y0) || 1;
+      const ux = (x1 - x0) / d;
+      const uy = (y1 - y0) / d;
+      // muzzle flash for the first 60 ms
+      if (age < 60) {
+        const fa = 1 - age / 60;
+        const mx = x0 + ux * cam.scale * 0.9;
+        const my = y0 + uy * cam.scale * 0.9;
+        const fr = Math.max(3, cam.scale * 0.35);
+        const grad = ctx.createRadialGradient(mx, my, 0, mx, my, fr);
+        grad.addColorStop(0, `rgba(255,245,200,${fa})`);
+        grad.addColorStop(0.5, `rgba(255,190,80,${fa * 0.7})`);
+        grad.addColorStop(1, 'rgba(255,150,40,0)');
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.arc(mx, my, fr, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.strokeStyle = t.hit ? `rgba(255, 205, 90, ${a})` : `rgba(255, 240, 210, ${0.3 * a})`;
+      ctx.lineWidth = t.hit ? 1.5 : 1;
+      ctx.beginPath();
+      ctx.moveTo(x0 + ux * cam.scale * 0.9, y0 + uy * cam.scale * 0.9);
       ctx.lineTo(x1, y1);
       ctx.stroke();
       if (t.kill) {
@@ -81,71 +243,6 @@ export class Renderer {
         ctx.fill();
       }
     }
-
-    // soldiers
-    const r = Math.max(2.5, 0.35 * cam.scale);
-    for (const sol of this.sim.soldiers) {
-      const [x, y] = cam.worldToScreen(sol.x, sol.y, cw, ch);
-      if (x < -20 || y < -20 || x > cw + 20 || y > ch + 20) continue;
-      if (!sol.alive) {
-        ctx.strokeStyle = '#444';
-        ctx.lineWidth = 1.5;
-        ctx.beginPath();
-        ctx.moveTo(x - r * 0.7, y - r * 0.7);
-        ctx.lineTo(x + r * 0.7, y + r * 0.7);
-        ctx.moveTo(x + r * 0.7, y - r * 0.7);
-        ctx.lineTo(x - r * 0.7, y + r * 0.7);
-        ctx.stroke();
-        continue;
-      }
-      if (sol.downed) {
-        // casualty: hollow team-colored circle with a red dot
-        ctx.strokeStyle = sol.side === 'blue' ? '#5b9bd5' : '#d05c50';
-        ctx.lineWidth = 1.5;
-        ctx.beginPath();
-        ctx.arc(x, y, r * 0.9, 0, Math.PI * 2);
-        ctx.stroke();
-        ctx.fillStyle = '#c03028';
-        ctx.beginPath();
-        ctx.arc(x, y, r * 0.35, 0, Math.PI * 2);
-        ctx.fill();
-        continue;
-      }
-      if (sol.squadId === selectedSquad) {
-        ctx.strokeStyle = '#ffe9a0';
-        ctx.lineWidth = 1.5;
-        ctx.beginPath();
-        ctx.arc(x, y, r + 2.5, 0, Math.PI * 2);
-        ctx.stroke();
-        if (sol.path) {
-          ctx.strokeStyle = 'rgba(255, 233, 160, 0.25)';
-          ctx.lineWidth = 1;
-          ctx.beginPath();
-          ctx.moveTo(x, y);
-          for (let i = sol.pathI; i < sol.path.length; i++) {
-            const [px, py] = cam.worldToScreen(sol.path[i].x, sol.path[i].y, cw, ch);
-            ctx.lineTo(px, py);
-          }
-          ctx.stroke();
-        }
-      }
-      const prone = sol.mental === 'pinned' || sol.mental === 'broken';
-      ctx.fillStyle = sol.side === 'blue' ? '#5b9bd5' : '#d05c50';
-      ctx.beginPath();
-      if (prone) ctx.ellipse(x, y, r * 1.15, r * 0.6, 0, 0, Math.PI * 2);
-      else ctx.arc(x, y, r, 0, Math.PI * 2);
-      ctx.fill();
-      // suppression halo: reads at a glance who is under fire
-      if (sol.suppression > 0.35) {
-        ctx.strokeStyle = `rgba(255, 180, 40, ${Math.min(0.9, sol.suppression)})`;
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.arc(x, y, r + 1.5, 0, Math.PI * 2);
-        ctx.stroke();
-      }
-    }
-
-    this.drawHud(ctx, selectedSquad, paused);
   }
 
   private drawHud(ctx: CanvasRenderingContext2D, selectedSquad: number, paused: boolean): void {
@@ -179,7 +276,7 @@ export class Renderer {
 
     if (this.sim.winner) {
       ctx.font = 'bold 36px monospace';
-      ctx.fillStyle = this.sim.winner === 'blue' ? '#5b9bd5' : '#d05c50';
+      ctx.fillStyle = TEAM[this.sim.winner];
       ctx.textAlign = 'center';
       ctx.fillText(this.sim.winner === 'blue' ? 'US VICTORY' : 'GERMAN VICTORY', ctx.canvas.width / 2, 80);
       ctx.textAlign = 'left';
