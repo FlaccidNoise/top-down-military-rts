@@ -98,6 +98,19 @@ export class Renderer {
         ctx.stroke();
         continue;
       }
+      if (sol.downed) {
+        // casualty: hollow team-colored circle with a red dot
+        ctx.strokeStyle = sol.side === 'blue' ? '#5b9bd5' : '#d05c50';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.arc(x, y, r * 0.9, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.fillStyle = '#c03028';
+        ctx.beginPath();
+        ctx.arc(x, y, r * 0.35, 0, Math.PI * 2);
+        ctx.fill();
+        continue;
+      }
       if (sol.squadId === selectedSquad) {
         ctx.strokeStyle = '#ffe9a0';
         ctx.lineWidth = 1.5;
@@ -116,10 +129,20 @@ export class Renderer {
           ctx.stroke();
         }
       }
+      const prone = sol.mental === 'pinned' || sol.mental === 'broken';
       ctx.fillStyle = sol.side === 'blue' ? '#5b9bd5' : '#d05c50';
       ctx.beginPath();
-      ctx.arc(x, y, r, 0, Math.PI * 2);
+      if (prone) ctx.ellipse(x, y, r * 1.15, r * 0.6, 0, 0, Math.PI * 2);
+      else ctx.arc(x, y, r, 0, Math.PI * 2);
       ctx.fill();
+      // suppression halo: reads at a glance who is under fire
+      if (sol.suppression > 0.35) {
+        ctx.strokeStyle = `rgba(255, 180, 40, ${Math.min(0.9, sol.suppression)})`;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.arc(x, y, r + 1.5, 0, Math.PI * 2);
+        ctx.stroke();
+      }
     }
 
     this.drawHud(ctx, selectedSquad, paused);
@@ -142,12 +165,15 @@ export class Renderer {
       lines.push(`— ${squad.name} —`);
       for (const sid of squad.soldierIds) {
         const s = this.sim.soldiers[sid];
-        lines.push(`${s.alive ? Math.ceil(s.hp).toString().padStart(3) : 'KIA'} ${s.name} (${s.weapon})`);
+        const status = !s.alive ? 'KIA ' : s.downed ? 'DOWN' : s.mental.slice(0, 4).toUpperCase().padEnd(4);
+        const supp = s.alive && !s.downed ? ` s${Math.round(s.suppression * 100).toString().padStart(3)}%` : '     ';
+        const wounds = s.wounds.length > 0 ? `  ${this.sim.woundSummary(s)}` : '';
+        lines.push(`${status}${supp} ${s.name.padEnd(10)} ${s.weapon}${wounds}`);
       }
     }
     ctx.font = '12px monospace';
     ctx.fillStyle = 'rgba(0, 0, 0, 0.55)';
-    ctx.fillRect(8, 8, 300, 18 * lines.length + 8);
+    ctx.fillRect(8, 8, 470, 18 * lines.length + 8);
     ctx.fillStyle = '#e8e4d8';
     lines.forEach((l, i) => ctx.fillText(l, 16, 26 + i * 18));
 

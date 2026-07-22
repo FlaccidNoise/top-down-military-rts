@@ -100,12 +100,15 @@ describe('simulation', () => {
       steps++;
       sim.takeEvents();
     }
-    const dead = sim.soldiers.filter((s) => !s.alive).length;
-    expect(dead).toBeGreaterThan(0);
+    const casualties = sim.soldiers.filter((s) => !s.alive || s.downed).length;
+    expect(casualties).toBeGreaterThan(0);
     for (const s of sim.soldiers) {
       expect(Number.isFinite(s.x)).toBe(true);
       expect(Number.isFinite(s.y)).toBe(true);
-      expect(Number.isFinite(s.hp)).toBe(true);
+      expect(Number.isFinite(s.pain)).toBe(true);
+      expect(Number.isFinite(s.bloodLoss)).toBe(true);
+      expect(Number.isFinite(s.suppression)).toBe(true);
+      expect(Number.isFinite(s.morale)).toBe(true);
     }
   });
 });

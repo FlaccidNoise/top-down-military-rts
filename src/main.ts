@@ -22,6 +22,7 @@ const cam = new Camera(60, 60);
   sim,
   cam,
   setPaused: (p: boolean) => (paused = p),
+  selectSquad: (i: number) => (selectedSquad = i),
 };
 
 let paused = true; // start paused, Close Combat style: read the map, then go

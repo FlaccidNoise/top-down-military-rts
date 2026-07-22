@@ -21,12 +21,13 @@ export interface WeaponDef {
   accuracy: number; // base hit chance at point blank
   damage: [number, number];
   cooldown: number; // seconds between attacks
+  suppression: number; // suppression applied near each shot's impact
 }
 
 export const WEAPONS = {
-  rifle: { name: 'Rifle', range: 100, accuracy: 0.35, damage: [35, 80], cooldown: 2.2 },
-  smg: { name: 'SMG', range: 50, accuracy: 0.5, damage: [25, 60], cooldown: 1.8 },
-  mg: { name: 'MG', range: 150, accuracy: 0.4, damage: [30, 70], cooldown: 2.8 },
+  rifle: { name: 'Rifle', range: 100, accuracy: 0.35, damage: [35, 80], cooldown: 2.2, suppression: 0.06 },
+  smg: { name: 'SMG', range: 50, accuracy: 0.5, damage: [25, 60], cooldown: 1.8, suppression: 0.05 },
+  mg: { name: 'MG', range: 150, accuracy: 0.4, damage: [30, 70], cooldown: 2.8, suppression: 0.16 },
 } satisfies Record<string, WeaponDef>;
 
 export type WeaponKey = keyof typeof WEAPONS;
