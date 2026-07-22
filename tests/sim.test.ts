@@ -244,3 +244,26 @@ describe('ammo, reload, heat, one-shot', () => {
     expect(sim.assistFactor(sim.soldiers[0])).toBe(1.75);
   });
 });
+
+describe('stamina', () => {
+  it('marching drains stamina; standing still recovers it', () => {
+    const sim = new Sim(new GameMap(60, 20), 50);
+    sim.addSquad('blue', 'a', [{ name: 'A', weapon: 'garand', x: 2.5, y: 10.5 }]);
+    const s = sim.soldiers[0];
+    sim.orderMove(0, 50, 10);
+    for (let i = 0; i < 30 * 60 && s.path; i++) sim.step();
+    expect(s.stamina).toBeLessThan(1);
+    const winded = s.stamina;
+    for (let i = 0; i < 30 * 60; i++) sim.step(); // standing still, no fire: recovers
+    expect(s.stamina).toBeGreaterThan(winded);
+  });
+
+  it('fatigued soldiers aim worse than rested ones', () => {
+    const sim = new Sim(new GameMap(10, 10), 51);
+    sim.addSquad('blue', 'a', [{ name: 'A', weapon: 'garand', x: 2.5, y: 2.5 }]);
+    const s = sim.soldiers[0];
+    const rested = sim.aimFactor(s);
+    s.stamina = 0.1;
+    expect(sim.aimFactor(s)).toBeLessThan(rested);
+  });
+});

@@ -50,6 +50,7 @@ export interface Soldier {
   magLeft: number; // rounds left in the current mag/belt/clip
   reloading: number; // seconds left on a reload or barrel-swap, 0 = not busy
   heat: number; // 0..1.5, belt-fed barrel model
+  stamina: number; // 1 = rested, drains on the move, recovers when settled
   // psyche
   suppression: number; // 0..1, fast decay
   morale: number; // 0..1, battle state
@@ -222,6 +223,7 @@ export class Sim {
         magLeft: w.ammo.perUnit,
         reloading: 0,
         heat: 0,
+        stamina: 1,
         suppression: 0,
         morale: 0,
         mental: 'steady',
@@ -266,6 +268,7 @@ export class Sim {
       { label: 'Suppressed', mult: 1 - s.suppression * 0.5 },
       { label: 'Veterancy', mult: 1 + Math.min(s.xp, 5) * 0.04 },
       { label: 'Nerves', mult: s.mental === 'shaken' ? 0.8 : s.mental === 'pinned' ? 0.6 : 1 },
+      { label: 'Stamina', mult: s.stamina < 0.3 ? 0.8 : s.stamina < 0.6 ? 0.92 : 1 },
     ];
   }
 
@@ -279,7 +282,10 @@ export class Sim {
   moveSpeed(s: Soldier): number {
     const cap = capacities(s.body);
     if (cap.moving < 0.15) return 0;
-    return BASE_SPEED * (0.3 + 0.7 * cap.moving);
+    let speed = BASE_SPEED * (0.3 + 0.7 * cap.moving);
+    if (s.stamina < 0.3) speed *= 0.6; // fatigued
+    else if (s.stamina < 0.6) speed *= 0.85; // winded
+    return speed;
   }
 
   // Served-weapon rule: a living assistant nearby speeds reloads and barrel
@@ -834,6 +840,9 @@ export class Sim {
     }
     if (s.mental !== 'broken' && (this.tick + s.id) % 60 === 0) this.considerRescue(s);
 
+    // stamina: recovers when settled and not under heavy fire (drain lives in advance())
+    if (!s.path && s.suppression < 0.3) s.stamina = Math.min(1, s.stamina + 0.008 * DT);
+
     // movement (pinned men hug the ground)
     if (s.path && s.mental !== 'pinned') this.advance(s, this.moveSpeed(s));
 
@@ -902,6 +911,8 @@ export class Sim {
   }
 
   private advance(s: Soldier, speed: number): void {
+    // walking; sprint (0.02) arrives with orders (Task 6), load multiplier with Task 9
+    s.stamina = Math.max(0, s.stamina - 0.004 * DT);
     const cost = this.map.terrainAt(Math.floor(s.x), Math.floor(s.y)).moveCost;
     let remaining = (speed / cost) * DT;
     while (remaining > 0 && s.path) {
@@ -1170,6 +1181,7 @@ export class Sim {
         s.reloading > 0,
         Math.round(s.heat * 1e6),
         Object.values(s.ammo).reduce((a: number, n) => a + (n ?? 0), 0),
+        Math.round(s.stamina * 1e6),
       ]),
       vehicles: this.vehicles.map((v) => [
         v.id,
