@@ -295,7 +295,7 @@ describe('teams and data-driven squads', () => {
   it('addSquadFromDef spawns a US rifle squad as 12 men in 2 teams with the roster weapons', () => {
     const sim = new Sim(new GameMap(40, 40), 60);
     const squad = sim.addSquadFromDef('blue', 'us_rifle', 20, 20);
-    expect(squad.soldierIds.length).toBe(12);
+    expect(squad.soldierIds.length).toBe(13); // 12 + aidman (Baker)
     expect(squad.teamIds.length).toBe(2);
     const [able, baker] = squad.teamIds.map((id) => sim.teams[id]);
     expect(able.soldierIds.map((id) => sim.soldiers[id].weapon)).toEqual(TEAMS.us_able.slots.map((sl) => sl.weapon));
@@ -306,7 +306,7 @@ describe('teams and data-driven squads', () => {
   it('addSquadFromDef spawns a German Gruppe as 9 men, MG-Trupp holding 3', () => {
     const sim = new Sim(new GameMap(40, 40), 61);
     const squad = sim.addSquadFromDef('red', 'de_gruppe', 20, 20);
-    expect(squad.soldierIds.length).toBe(9);
+    expect(squad.soldierIds.length).toBe(10); // 9 + aidman (Schützen)
     const mgTrupp = sim.teams[squad.teamIds[0]];
     expect(mgTrupp.soldierIds.length).toBe(3);
   });
@@ -351,5 +351,105 @@ describe('ammo runner + weapon pickup', () => {
     expect(rifle.weapon).toBe('bar');
     expect(rifle.ammo.mag_bar).toBe(5);
     expect(sim.droppedKit.length).toBe(0); // kit consumed
+  });
+});
+
+describe('casualty chain v2: succession, two-man carry, aidman', () => {
+  it('an MG42 gunner killed on an emplacement is served by the assistant within ~10s, with a worse-aim penalty during the interim', () => {
+    const sim = new Sim(new GameMap(60, 20), 46);
+    const e = sim.addEmplacement('blue', 'mg42_lafette', 10.5, 10.5, 0, 'deployed');
+    const crew = sim.teams[e.crewTeamId].soldierIds.map((id) => sim.soldiers[id]);
+    const gunner = crew.find((s) => s.role === 'gunner')!;
+    const assistant = crew.find((s) => s.role === 'assistant')!;
+
+    gunner.wounds.push({ part: 0, dmg: 100 });
+    gunner.bloodLoss = 1; // kills him on the next physiology tick
+    sim.step();
+    expect(gunner.alive).toBe(false);
+    // interim: pickFirer's instant fallback already has him serving the gun,
+    // but he isn't the formal gunner yet — worse aim
+    expect(assistant.task?.kind).toBe('takeOver');
+    expect(sim.crewAimMult(assistant, WEAPONS.mg42)).toBeLessThan(1);
+
+    for (let i = 0; i < 300 && assistant.role !== 'gunner'; i++) sim.step(); // ~10s budget
+    expect(assistant.role).toBe('gunner');
+    expect(assistant.weapon).toBe('mg42');
+    expect(sim.crewAimMult(assistant, WEAPONS.mg42)).toBe(1); // formally took over: penalty gone
+  });
+
+  it('regression: the substitute firer never fires his personal weapon while serving the emplacement gun', () => {
+    const sim = new Sim(new GameMap(60, 20), 50);
+    const e = sim.addEmplacement('blue', 'mg42_lafette', 10.5, 10.5, 0, 'deployed');
+    const crew = sim.teams[e.crewTeamId].soldierIds.map((id) => sim.soldiers[id]);
+    const gunner = crew.find((s) => s.role === 'gunner')!;
+    const assistant = crew.find((s) => s.role === 'assistant')!;
+    // a target within both the assistant's personal kar98k range and the mg42's
+    sim.addSquad('red', 'target', [{ name: 'T', weapon: 'kar98k', x: 40.5, y: 10.5, ammo: {} }]);
+    sim.soldiers[sim.soldiers.length - 1].magLeft = 0; // dry: no return fire
+
+    gunner.wounds.push({ part: 0, dmg: 100 });
+    gunner.bloodLoss = 1;
+    sim.step(); // kills the gunner this tick
+
+    let firedPersonally = false;
+    let prevMag = assistant.magLeft;
+    for (let i = 0; i < 300; i++) {
+      sim.step();
+      if (assistant.weapon === 'kar98k' && assistant.magLeft < prevMag) firedPersonally = true;
+      prevMag = assistant.magLeft;
+    }
+    expect(firedPersonally).toBe(false);
+    expect(assistant.role).toBe('gunner'); // succession completed within the window
+  });
+
+  it('a two-man carry drags a casualty faster than a solo drag over the same distance', () => {
+    const dragTicks = (helperPresent: boolean) => {
+      const sim = new Sim(new GameMap(60, 20), 48);
+      const members = [
+        { name: 'C', weapon: 'garand' as const, x: 10.5, y: 10.5 },
+        { name: 'R', weapon: 'garand' as const, x: 10.5, y: 10.5 },
+      ];
+      if (helperPresent) members.push({ name: 'H', weapon: 'garand' as const, x: 10.5, y: 10.5 });
+      const squad = sim.addSquad('blue', 'a', members);
+      const [c, r, h] = squad.soldierIds.map((id) => sim.soldiers[id]);
+      c.pain = 0.9; // shock: downed, drives the physiology 'downed' flag
+      r.task = { kind: 'rescue', casualtyId: c.id, phase: 'drag', timer: 0 };
+      c.carriedBy = r.id;
+      r.path = [{ x: 30.5, y: 10.5 }]; // fixed 20m leg
+      r.pathI = 0;
+      if (helperPresent) {
+        c.helperId = h.id;
+        h.task = { kind: 'rescue', casualtyId: c.id, phase: 'drag', timer: 0 };
+      }
+      let ticks = 0;
+      for (; r.path && ticks < 3000; ticks++) sim.step();
+      return ticks;
+    };
+    const solo = dragTicks(false);
+    const paired = dragTicks(true);
+    expect(paired).toBeLessThan(solo); // 0.8x speed cap vs 0.45x
+    expect(paired).toBeLessThan(solo * 0.75); // meaningfully faster, not a rounding artifact
+  });
+
+  it('a dedicated aidman stabilizes a casualty about 3x faster than an ordinary rescuer', () => {
+    const runAid = (aidman: boolean) => {
+      const sim = new Sim(new GameMap(20, 20), aidman ? 50 : 49);
+      sim.addSquad('blue', 'a', [
+        { name: 'C', weapon: 'garand', x: 10.5, y: 10.5 },
+        { name: 'R', weapon: 'garand', x: 10.5, y: 10.5 },
+      ]);
+      const [c, r] = sim.soldiers;
+      if (aidman) r.role = 'aidman';
+      r.bonds[c.id] = 1;
+      r.courage = 1;
+      c.pain = 0.9; // shock: downed
+      let ticks = 0;
+      for (; ticks < 30 * 60 && !c.stabilized; ticks++) sim.step();
+      return ticks;
+    };
+    const normal = runAid(false);
+    const aidman = runAid(true);
+    expect(aidman).toBeLessThan(normal);
+    expect(aidman / normal).toBeLessThan(0.5); // roughly 3x, generous bound against goto-phase overhead
   });
 });

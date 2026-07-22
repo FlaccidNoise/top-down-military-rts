@@ -61,6 +61,27 @@ export interface AmmoTask {
   returnY: number;
 }
 
+// Role succession (spec: casualty-chain.md "In-battle role succession"): a
+// crew weapon belongs to its slot, not the man. Trigger fills the gap
+// automatically — goto the weapon's position, a timed 3s swap, inherit
+// weapon + remaining ammo + role 'gunner'. Covers both a personally-held
+// squad MG (empId -1, weapon picked up from the dropped kit it left behind)
+// and an Emplacement crew slot (empId >= 0, the gun never moves — pickFirer
+// already keeps it firing meanwhile; this task is the formal hand-off).
+export interface TakeOverTask {
+  kind: 'takeOver';
+  empId: number;
+  weapon: WeaponKey;
+  ammo: Partial<Record<AmmoKey, number>>;
+  magLeft: number;
+  x: number;
+  y: number;
+  phase: 'goto' | 'swap';
+  timer: number;
+}
+
+export type CrewClass = 'mg' | 'mortar' | 'gun' | 'vehicle';
+
 export interface Soldier {
   id: number;
   pid: number; // campaign roster id, -1 for one-off battles
@@ -96,15 +117,17 @@ export interface Soldier {
   morale: number; // 0..1, battle state
   mental: Mental;
   bonds: Record<number, number>; // battle soldier id -> 0..1
+  crewSkill: Partial<Record<CrewClass, number>>; // 0..1, grows +0.0005/shot serving that weapon class
   // action
   path: { x: number; y: number }[] | null;
   pathI: number;
   cooldown: number;
   targetId: number; // -1 = none
   fleeing: boolean;
-  task: RescueTask | AmmoTask | null;
+  task: RescueTask | AmmoTask | TakeOverTask | null;
   rescuerId: number; // who claimed this casualty, -1 none
   carriedBy: number; // -1 = not being dragged
+  helperId: number; // second bearer on a two-man carry, -1 = solo/none
   ammoRunnerId: number; // runner already en route to resupply this soldier, -1 none
   pickingUp: boolean; // mid weapon-pickup timer (rides `reloading`)
   inVehicle: number; // vehicle id crewing, -1 = on foot
@@ -158,6 +181,7 @@ export interface MemberInit {
   ammo?: Partial<Record<AmmoKey, number>>;
   secondary?: WeaponKey;
   carries?: LoadKey[];
+  crewSkill?: Partial<Record<CrewClass, number>>;
 }
 
 export interface Squad {
@@ -253,6 +277,16 @@ function weaponRank(w: WeaponKey): number {
   return WEAPON_RANK[w] ?? 0;
 }
 
+// Which crewSkill class a weapon trains (spec: mg/mortar/gun/vehicle — the
+// 'vehicle' class is reserved for a future vehicle-crew succession pass and
+// never accrued/applied by this milestone).
+function crewClassOf(w: WeaponDef): CrewClass | null {
+  if (w.heat) return 'mg';
+  if (w.arc) return 'mortar';
+  if (w.pen !== undefined) return 'gun';
+  return null;
+}
+
 // Formation offsets around a squad destination, meters. Exported for the
 // move-order cover preview, which must show the real spots men will take.
 export const OFFSETS = [
@@ -319,6 +353,7 @@ export class Sim {
   squadLastCasualty: number[] = [];
   teamLastCasualty: number[] = [];
   private sneakBaseline: number[] = []; // per-team wound count when a sneak order started
+  private leaderVacantSince = new Map<number, number>(); // teamId -> tick its leader died, pending the 10s promotion
   // Mortar rounds in flight: 3s from trigger to impact (spec: indirect fire).
   private mortarShells: { tick: number; x: number; y: number; smoke: boolean }[] = [];
   // Staggered dismount: one passenger every 0.5s (spec: "1 per 0.5s").
@@ -364,6 +399,7 @@ export class Sim {
       morale: 0,
       mental: 'steady',
       bonds: {},
+      crewSkill: m.crewSkill ?? {},
       path: null,
       pathI: 0,
       cooldown: 0,
@@ -372,6 +408,7 @@ export class Sim {
       task: null,
       rescuerId: -1,
       carriedBy: -1,
+      helperId: -1,
       ammoRunnerId: -1,
       pickingUp: false,
       inVehicle: -1,
@@ -514,6 +551,17 @@ export class Sim {
       if (m.alive && !m.downed && m.role === 'assistant' && Math.hypot(m.x - s.x, m.y - s.y) <= 3) return 1;
     }
     return 1.75;
+  }
+
+  // Crew-served competency penalty (spec: "a rifleman on the MG42 suffers
+  // accuracy... penalties; an assistant who's served three battles is
+  // qualified"): whoever is NOT the weapon's designated 'gunner' aims worse,
+  // scaled back toward 1 as his crewSkill for that class grows from use.
+  // `w` is the weapon actually being served (soldier-held or emplaced), not
+  // necessarily `s.weapon` — callers pass the right one.
+  crewAimMult(s: Soldier, w: WeaponDef): number {
+    if (!w.heat || s.role === 'gunner') return 1;
+    return 0.7 + 0.3 * (s.crewSkill.mg ?? 0);
   }
 
   callBarrage(side: Side, x: number, y: number): boolean {
@@ -919,6 +967,7 @@ export class Sim {
     if (!friendlyHasLos(this, e.side, e.targetX, e.targetY)) return;
     const smoke = e.smokeRoundsLeft > 0;
     if (!this.consumeEmplacementAmmo(e, firer, w.ammo.type)) return;
+    firer.crewSkill.mortar = Math.min(1, (firer.crewSkill.mortar ?? 0) + 0.0005);
     const scatter = crewHasLos(this, e, e.targetX, e.targetY) ? arc.scatter : arc.scatterNoLos;
     const angle = this.rng.next() * Math.PI * 2;
     const dist = this.rng.next() * scatter;
@@ -943,6 +992,7 @@ export class Sim {
     }
     if (!best) return;
     if (!this.consumeEmplacementAmmo(e, firer, w.ammo.type)) return;
+    firer.crewSkill.gun = Math.min(1, (firer.crewSkill.gun ?? 0) + 0.0005);
     this.fireApAt(e.x, e.y, w.pen!, w.accuracy * this.aimFactor(firer), w.range, best, false);
     e.cooldown = w.cooldown * degrade;
   }
@@ -954,17 +1004,21 @@ export class Sim {
     const targetId = this.acquireSoldierTarget(e.x, e.y, e.side, w.range, arc);
     if (targetId < 0) return;
     const t = this.soldiers[targetId];
-    let aim = this.aimFactor(firer);
+    let aim = this.aimFactor(firer) * this.crewAimMult(firer, w);
     if (arc && this.inArc(e.x, e.y, t.x, t.y, arc)) aim *= 1.25;
     if (order?.kind === 'defend' && crewTeam.ambushBonusTick === this.tick) aim *= 1.3;
     const p = this.shotPreview(e.x, e.y, def.weapon, t, false, aim);
     if (!p.visible) return;
     if (!this.consumeEmplacementAmmo(e, firer, w.ammo.type)) return;
+    firer.crewSkill.mg = Math.min(1, (firer.crewSkill.mg ?? 0) + 0.0005);
     const hit = this.rng.next() < p.acc;
     const kill = hit ? this.wound(t, this.rng.range(w.damage[0], w.damage[1])) : false;
     this.suppressAround(t.x, t.y, t.side, w.suppression);
     this.pendingEvents.push({ fx: e.x, fy: e.y, tx: t.x, ty: t.y, hit, kill });
-    if (w.heat) e.heat = Math.min(1.5, e.heat + w.heat.perShot);
+    if (w.heat) {
+      const heatMult = firer.role !== 'gunner' ? 1.5 : 1;
+      e.heat = Math.min(1.5, e.heat + w.heat.perShot * heatMult);
+    }
     e.cooldown = w.cooldown * degrade * (0.85 + this.rng.next() * 0.3);
   }
 
@@ -1351,6 +1405,11 @@ export class Sim {
   // trigger/break this tick is reflected in this same tick's combat.
   private stepOrders(): void {
     for (const team of this.teams) {
+      const vacantSince = this.leaderVacantSince.get(team.id);
+      if (vacantSince !== undefined && this.tick - vacantSince >= 300) {
+        this.promoteLeader(team);
+        this.leaderVacantSince.delete(team.id);
+      }
       const order = team.orderState.order;
       if (!order) continue;
       const st = team.orderState;
@@ -1674,7 +1733,12 @@ export class Sim {
     if (!r.fired) return false;
     shooter.magLeft--;
     const w: WeaponDef = WEAPONS[shooter.weapon];
-    if (w.heat) shooter.heat = Math.min(1.5, shooter.heat + w.heat.perShot);
+    const cls = crewClassOf(w);
+    if (cls) shooter.crewSkill[cls] = Math.min(1, (shooter.crewSkill[cls] ?? 0) + 0.0005);
+    if (w.heat) {
+      const heatMult = shooter.role !== 'gunner' ? 1.5 : 1;
+      shooter.heat = Math.min(1.5, shooter.heat + w.heat.perShot * heatMult);
+    }
     return r.kill;
   }
 
@@ -1709,6 +1773,7 @@ export class Sim {
         s.path = null;
         s.targetId = -1;
         if (s.task) this.dropTask(s);
+        this.triggerSuccession(s);
       }
       return; // downed men don't act (still bleed; may be dragged)
     }
@@ -1750,11 +1815,13 @@ export class Sim {
       s.path = null;
     }
 
-    // rescue / ammo run: a bonded squadmate may pull a casualty out of the
-    // fight or ferry belts to a dry gunner
+    // rescue / ammo run / weapon succession: a bonded squadmate may pull a
+    // casualty out of the fight, ferry belts to a dry gunner, or take over a
+    // fallen crew slot
     if (s.task) {
       if (s.task.kind === 'rescue') this.updateRescue(s);
-      else this.updateAmmoTask(s);
+      else if (s.task.kind === 'ammo') this.updateAmmoTask(s);
+      else this.updateTakeOver(s);
       return;
     }
     if (s.mental !== 'broken' && (this.tick + s.id) % 60 === 0) {
@@ -1853,9 +1920,15 @@ export class Sim {
     // Sim.updateEmplacement's fire loop against the same ammo/heat state, not
     // by his own acquire+fire. AT-gun crews (at57/pak40) never hit this gate:
     // their slot weapons are personal sidearms, never the served gun.
+    // Also excludes whoever pickFirer is substituting onto the gun this tick
+    // after the gunner goes down — his own personal weapon differs from the
+    // served gun (that gate above wouldn't catch him), so without this he'd
+    // serve the emplacement AND fire his sidearm in the same tick. Formal
+    // succession (Sim.updateTakeOver) later folds him into the gate above by
+    // handing him the served weapon outright.
     if (s.inEmplacement >= 0) {
       const emp = this.emplacements[s.inEmplacement];
-      if (emp && s.weapon === EMPLACEMENTS[emp.kind].weapon) return;
+      if (emp && (s.weapon === EMPLACEMENTS[emp.kind].weapon || pickFirer(this, emp)?.id === s.id)) return;
     }
 
     // Order-level fire discipline: sneak and (untriggered) ambush hold fire
@@ -1877,6 +1950,7 @@ export class Sim {
       if (bestV) {
         this.fireApAt(s.x, s.y, w.pen, w.accuracy * this.aimFactor(s), w.range, bestV, s.path !== null);
         s.magLeft--;
+        s.crewSkill.gun = Math.min(1, (s.crewSkill.gun ?? 0) + 0.0005);
         s.cooldown = w.cooldown * (0.85 + this.rng.next() * 0.3);
         return;
       }
@@ -1899,6 +1973,7 @@ export class Sim {
       if (bestV) {
         this.fireApAt(s.x, s.y, faust.pen!, faust.accuracy * this.aimFactor(s), faust.range, bestV, s.path !== null);
         s.ammo.faust!--;
+        s.crewSkill.gun = Math.min(1, (s.crewSkill.gun ?? 0) + 0.0005);
         s.cooldown = faust.cooldown * (0.85 + this.rng.next() * 0.3);
         return;
       }
@@ -1975,6 +2050,27 @@ export class Sim {
     return this.bond(s, casualty) * 1.2 + s.courage * 0.5 - s.suppression * 0.8;
   }
 
+  // Dedicated aidmen triage 3x faster (spec: "better triage outcome roll" —
+  // this milestone models the speed half of that, not a separate roll).
+  private aidTimer(s: Soldier): number {
+    return s.role === 'aidman' ? AID_SECONDS / 3 : AID_SECONDS;
+  }
+
+  // Two-man carry (spec: "walking pace, weapons slung"): a second willing
+  // squadmate within 5m of the casualty when the drag starts attaches too,
+  // trading the solo drag's crouched crawl for a proper carry.
+  private findCarryHelper(primary: Soldier, c: Soldier): Soldier | null {
+    for (const sid of this.squads[c.squadId].soldierIds) {
+      const h = this.soldiers[sid];
+      if (h.id === primary.id || h.id === c.id || !h.alive || h.downed || h.task) continue;
+      if (h.mental === 'pinned' || h.mental === 'broken') continue;
+      if (Math.hypot(h.x - c.x, h.y - c.y) > 5) continue;
+      if (this.rescueWillingness(h, c) < 0.75) continue;
+      return h;
+    }
+    return null;
+  }
+
   private considerRescue(s: Soldier): void {
     for (const sid of this.squads[s.squadId].soldierIds) {
       const c = this.soldiers[sid];
@@ -2014,34 +2110,50 @@ export class Sim {
       s.path = null;
       if (s.suppression < 0.35 || this.inCover(c.x, c.y)) {
         task.phase = 'aid';
-        task.timer = AID_SECONDS;
+        task.timer = this.aidTimer(s);
       } else {
         const spot = this.findCoverSpot(s);
         if (!spot) {
           task.phase = 'aid';
-          task.timer = AID_SECONDS;
+          task.timer = this.aidTimer(s);
           return;
         }
         const path = astar(this.map, Math.floor(s.x), Math.floor(s.y), spot.x, spot.y);
         if (!path || path.length < 2) {
           task.phase = 'aid';
-          task.timer = AID_SECONDS;
+          task.timer = this.aidTimer(s);
           return;
         }
         s.path = path.slice(1).map((p) => ({ x: p.x + 0.5, y: p.y + 0.5 }));
         s.pathI = 0;
         task.phase = 'drag';
         c.carriedBy = s.id;
+        const helper = this.findCarryHelper(s, c);
+        if (helper) {
+          c.helperId = helper.id;
+          helper.task = { kind: 'rescue', casualtyId: c.id, phase: 'drag', timer: 0 };
+          helper.path = null;
+        }
       }
       return;
     }
     if (task.phase === 'drag') {
-      this.advance(s, this.moveSpeed(s) * 0.45);
+      if (c.carriedBy !== s.id) {
+        // the second bearer on a two-man carry: slaved to the casualty's
+        // position (the primary drives the path), released once he arrives
+        s.x = c.x;
+        s.y = c.y;
+        s.path = null;
+        if (c.carriedBy === -1) this.dropTask(s);
+        return;
+      }
+      const dragMult = c.helperId >= 0 ? 0.8 : 0.45;
+      this.advance(s, this.moveSpeed(s) * dragMult);
       c.x = s.x;
       c.y = s.y;
       if (!s.path) {
         task.phase = 'aid';
-        task.timer = AID_SECONDS;
+        task.timer = this.aidTimer(s);
         c.carriedBy = -1;
       }
       return;
@@ -2188,11 +2300,97 @@ export class Sim {
       const c = this.soldiers[s.task.casualtyId];
       if (c.rescuerId === s.id) c.rescuerId = -1;
       if (c.carriedBy === s.id) c.carriedBy = -1;
+      if (c.helperId === s.id) c.helperId = -1;
     } else if (s.task?.kind === 'ammo') {
       const g = this.soldiers[s.task.gunnerId];
       if (g.ammoRunnerId === s.id) g.ammoRunnerId = -1;
     }
     s.task = null;
+  }
+
+  // Role succession trigger (spec: "chains" — MG: gunner -> assistant ->
+  // ammo bearer -> any teammate; same rule for bazooka/schreck gunner ->
+  // loader). Fires once, the instant a gunner slot goes down or dies: picks
+  // the best-ranked eligible teammate within reach and vacates the slot
+  // immediately so a later recovery doesn't reclaim it out from under the
+  // successor. Team-scoped ("teammate"), not squad-scoped.
+  private triggerSuccession(g: Soldier): void {
+    if (g.role !== 'gunner') return;
+    const team = this.teams[g.teamId];
+    const rank = (r: Role) => (r === 'assistant' ? 0 : r === 'bearer' ? 1 : 2);
+    let best: Soldier | null = null;
+    for (const sid of team.soldierIds) {
+      const c = this.soldiers[sid];
+      if (c.id === g.id || !c.alive || c.downed || c.task) continue;
+      if (c.mental === 'pinned' || c.mental === 'broken') continue;
+      if (Math.hypot(c.x - g.x, c.y - g.y) > 8) continue;
+      if (!best || rank(c.role) < rank(best.role)) best = c;
+    }
+    if (!best) return;
+    g.role = 'rifleman'; // vacate the slot
+    const emp = g.inEmplacement >= 0 ? this.emplacements[g.inEmplacement] : null;
+    best.task = {
+      kind: 'takeOver',
+      empId: emp ? emp.id : -1,
+      weapon: g.weapon,
+      ammo: { ...g.ammo },
+      magLeft: g.magLeft,
+      x: emp ? emp.x : g.x,
+      y: emp ? emp.y : g.y,
+      phase: 'goto',
+      timer: 0,
+    };
+    best.path = null;
+  }
+
+  private updateTakeOver(s: Soldier): void {
+    const task = s.task as TakeOverTask;
+    if (task.phase === 'goto') {
+      const d = Math.hypot(task.x - s.x, task.y - s.y);
+      if (d > 1.5) {
+        if (!s.path) {
+          const path = astar(this.map, Math.floor(s.x), Math.floor(s.y), Math.floor(task.x), Math.floor(task.y));
+          if (!path || path.length < 2) {
+            this.dropTask(s);
+            return;
+          }
+          s.path = path.slice(1).map((p) => ({ x: p.x + 0.5, y: p.y + 0.5 }));
+          s.pathI = 0;
+        }
+        this.advance(s, this.moveSpeed(s));
+        return;
+      }
+      s.path = null;
+      task.phase = 'swap';
+      task.timer = 3;
+      return;
+    }
+    // swap: crawl to the gun, shoulder it — a timed, exposed action
+    task.timer -= DT;
+    if (task.timer > 0) return;
+    s.weapon = task.weapon;
+    s.secondary = undefined;
+    s.ammo = { ...task.ammo };
+    s.magLeft = task.magLeft;
+    s.heat = 0;
+    s.role = 'gunner';
+    // the predecessor's own dropped copy of this weapon (from dropKit) is
+    // now spoken for — clear it so nobody double-claims it via considerPickup
+    const i = this.droppedKit.findIndex((k) => !k.load && k.side === s.side && k.weapon === task.weapon && Math.hypot(k.x - task.x, k.y - task.y) <= 2);
+    if (i >= 0) this.droppedKit.splice(i, 1);
+    s.task = null;
+  }
+
+  // Leader succession (spec: "highest xp teammate becomes leader after
+  // 10s" — death only, no travel needed, so no takeOver task).
+  private promoteLeader(team: Team): void {
+    let best: Soldier | null = null;
+    for (const sid of team.soldierIds) {
+      const c = this.soldiers[sid];
+      if (!c.alive || c.downed || c.role === 'leader') continue;
+      if (!best || c.xp > best.xp) best = c;
+    }
+    if (best) best.role = 'leader';
   }
 
   // Public: the same cover predicate AI cover-seeking uses drives the UI's
@@ -2264,7 +2462,7 @@ export class Sim {
     const w = WEAPONS[s.weapon];
     const team = this.teams[s.teamId];
     const order = team.orderState.order;
-    let aim = this.aimFactor(s);
+    let aim = this.aimFactor(s) * this.crewAimMult(s, w);
     // pre-registered arc: +0.1 accuracy, approximated as a proportional aim
     // bump (shotPreview's public formula has no additive-accuracy hook)
     if (order && (order.kind === 'defend' || order.kind === 'ambush') && order.arc && this.inArc(s.x, s.y, t.x, t.y, order.arc)) {
@@ -2306,10 +2504,16 @@ export class Sim {
       const r = this.soldiers[t.rescuerId];
       if (r.task?.kind === 'rescue' && r.task.casualtyId === t.id) this.dropTask(r);
     }
+    if (t.helperId >= 0) {
+      const h = this.soldiers[t.helperId];
+      if (h.task?.kind === 'rescue' && h.task.casualtyId === t.id) this.dropTask(h);
+    }
     if (t.ammoRunnerId >= 0) {
       const r = this.soldiers[t.ammoRunnerId];
       if (r.task?.kind === 'ammo' && r.task.gunnerId === t.id) this.dropTask(r);
     }
+    this.triggerSuccession(t);
+    if (t.role === 'leader') this.leaderVacantSince.set(t.teamId, this.tick);
     this.moraleShock(t, 0.08);
   }
 
@@ -2355,7 +2559,13 @@ export class Sim {
         Math.round(s.morale * 1e6),
         s.body.join(','),
         s.targetId,
-        s.task ? (s.task.kind === 'rescue' ? `rescue:${s.task.phase}:${s.task.casualtyId}` : `ammo:${s.task.phase}:${s.task.gunnerId}`) : '',
+        s.task
+          ? s.task.kind === 'rescue'
+            ? `rescue:${s.task.phase}:${s.task.casualtyId}`
+            : s.task.kind === 'ammo'
+              ? `ammo:${s.task.phase}:${s.task.gunnerId}`
+              : `takeOver:${s.task.phase}:${s.task.empId}`
+          : '',
         s.stabilized,
         s.magLeft,
         s.reloading > 0,
@@ -2369,6 +2579,11 @@ export class Sim {
         s.inEmplacement,
         s.carries.join(','),
         s.mountTarget,
+        s.role,
+        s.helperId,
+        Math.round((s.crewSkill.mg ?? 0) * 1e6),
+        Math.round((s.crewSkill.mortar ?? 0) * 1e6),
+        Math.round((s.crewSkill.gun ?? 0) * 1e6),
       ]),
       vehicles: this.vehicles.map((v) => [
         v.id,

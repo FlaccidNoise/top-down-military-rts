@@ -103,6 +103,7 @@ export function makeStrategicBattle(
       xp: r.xp,
       bodyDamage: r.bodyDamage,
       pid: r.pid,
+      crewSkill: r.crewSkill,
     }));
     sim.addSquad('blue', c.squads[si].name, members);
   });

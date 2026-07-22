@@ -1,7 +1,7 @@
 import { PARTS } from '../sim/body';
 import { US_NAMES, type WeaponKey } from '../sim/data';
 import { mulberry32 } from '../sim/rng';
-import type { Sim } from '../sim/sim';
+import type { CrewClass, Sim } from '../sim/sim';
 
 // The campaign roster: named soldiers persisting across battles, carrying
 // wounds, experience, and bonds. Destroyed body parts never heal.
@@ -17,6 +17,7 @@ export interface CSoldier {
   recoveryDays: number;
   bonds: Record<number, number>; // pid -> 0..1
   battles: number;
+  crewSkill: Partial<Record<CrewClass, number>>;
 }
 
 export interface BattleRecord {
@@ -61,6 +62,7 @@ function newSoldier(c: Campaign, rng: { next(): number; int(n: number): number }
     recoveryDays: 0,
     bonds: {},
     battles: 0,
+    crewSkill: {},
   };
   c.soldiers[s.pid] = s;
   return s;
@@ -102,6 +104,7 @@ export function applyBattleResults(c: Campaign, sim: Sim, won: boolean): BattleR
     if (s.pid < 0 || s.side !== 'blue') continue;
     const cs = c.soldiers[s.pid];
     if (!cs) continue;
+    cs.crewSkill = { ...s.crewSkill }; // grown by use across battles (spec: casualty-chain.md)
     if (!s.alive) {
       cs.status = 'kia';
       record.kia.push(cs.name);
@@ -174,6 +177,7 @@ export interface RosterEntry {
   xp: number;
   bodyDamage: number[];
   bonds: Record<number, number>;
+  crewSkill: Partial<Record<CrewClass, number>>;
 }
 
 export function fitRoster(c: Campaign, squadIndex: number): RosterEntry[] {
@@ -189,5 +193,6 @@ export function fitRoster(c: Campaign, squadIndex: number): RosterEntry[] {
       xp: cs.xp,
       bodyDamage: cs.bodyDamage,
       bonds: cs.bonds,
+      crewSkill: cs.crewSkill,
     }));
 }
