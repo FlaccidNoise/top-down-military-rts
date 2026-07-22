@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
+import { newCampaign } from '../src/campaign/campaign';
 import { Front, findPath, operationStatus, OP_START_MIN, OP_DEADLINE_DAYS } from '../src/strategic/front';
 import { cellIndex, makeDefaultSector, parseSector } from '../src/strategic/sector';
+import { applyEngagementOutcome, makeStrategicBattle, newFront } from '../src/strategic/bridge';
+import { loadGame, saveGame } from '../src/strategic/save';
 
 describe('sector', () => {
   it('parses the default sector: 40×30, river neutral, bridges, objective town', () => {
@@ -98,5 +101,80 @@ describe('front', () => {
     expect(g.clockMin).toBe(f.clockMin);
     expect(g.chits).toEqual(f.chits);
     expect(g.sector.cells.map((c) => c.owner)).toEqual(f.sector.cells.map((c) => c.owner));
+  });
+});
+
+describe('bridge', () => {
+  const setup = () => {
+    const c = newCampaign(10);
+    const sector = makeDefaultSector();
+    const front = newFront(c, sector);
+    return { c, sector, front };
+  };
+
+  it('newFront fields 3 blue companies at strength 27 and 5 garrisons', () => {
+    const { front } = setup();
+    const blue = front.chits.filter((ch) => ch.side === 'blue');
+    expect(blue.length).toBe(3);
+    expect(blue.every((ch) => ch.strength === 27)).toBe(true);
+    expect(front.chits.filter((ch) => ch.side === 'red').length).toBe(5);
+  });
+
+  it('a strategic battle fields the company roster with pids and bonds against a sized garrison', () => {
+    const { c, front } = setup();
+    const able = front.chits.find((ch) => ch.side === 'blue')!;
+    const wache = front.chits.find((ch) => ch.name === 'Brückenwache Süd')!;
+    const { sim } = makeStrategicBattle(c, front, { attackerId: able.id, defenderId: wache.id, cell: wache.cell }, 5);
+    const blue = sim.soldiers.filter((s) => s.side === 'blue');
+    const red = sim.soldiers.filter((s) => s.side === 'red');
+    expect(blue.length).toBe(27);
+    expect(blue.every((s) => s.pid > 0)).toBe(true);
+    expect(red.length).toBe(18); // ceil(18/9) = 2 squads
+    const [a, b] = blue;
+    expect(a.bonds[b.id]).toBeCloseTo(0.3); // trained-together, wired from campaign
+  });
+
+  it('a won battle takes the cell, moves the attacker in, and attrits the garrison away', () => {
+    const { c, front } = setup();
+    const able = front.chits.find((ch) => ch.side === 'blue')!;
+    const wache = front.chits.find((ch) => ch.name === 'Brückenwache Süd')!;
+    const e = { attackerId: able.id, defenderId: wache.id, cell: wache.cell };
+    const { sim } = makeStrategicBattle(c, front, e, 6);
+    for (const s of sim.soldiers) if (s.side === 'red') s.alive = false;
+    sim.step();
+    expect(sim.winner).toBe('blue');
+    const out = applyEngagementOutcome(c, front, e, sim);
+    expect(out.cellTaken).toBe(true);
+    expect(out.redLosses).toBe(18);
+    expect(front.sector.cells[e.cell].owner).toBe('blue');
+    expect(able.cell).toBe(e.cell);
+    expect(front.chits.find((ch) => ch.name === 'Brückenwache Süd')).toBeUndefined();
+    expect(c.log.length).toBe(1);
+  });
+
+  it('a lost battle leaves the map unchanged and prunes a wiped company', () => {
+    const { c, front } = setup();
+    const able = front.chits.find((ch) => ch.side === 'blue')!;
+    const wache = front.chits.find((ch) => ch.name === 'Brückenwache Süd')!;
+    const e = { attackerId: able.id, defenderId: wache.id, cell: wache.cell };
+    const { sim } = makeStrategicBattle(c, front, e, 7);
+    for (const s of sim.soldiers) if (s.side === 'blue') s.alive = false;
+    sim.step();
+    expect(sim.winner).toBe('red');
+    const out = applyEngagementOutcome(c, front, e, sim);
+    expect(out.cellTaken).toBe(false);
+    expect(front.sector.cells[e.cell].owner).toBe('red');
+    expect(front.chits.filter((ch) => ch.side === 'blue').length).toBe(2); // Able wiped, pruned
+  });
+
+  it('saveGame/loadGame roundtrips campaign and front', () => {
+    const store = new Map<string, string>();
+    const storage = { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => void store.set(k, v) };
+    const { c, front } = setup();
+    saveGame(c, front, storage);
+    const loaded = loadGame(storage)!;
+    expect(loaded.campaign).toEqual(c);
+    expect(loaded.front.chits).toEqual(front.chits);
+    expect(loaded.front.clockMin).toBe(front.clockMin);
   });
 });
