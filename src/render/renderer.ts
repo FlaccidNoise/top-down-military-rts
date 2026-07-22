@@ -17,6 +17,12 @@ interface RState {
   py: number;
 }
 
+interface Boom {
+  x: number;
+  y: number;
+  at: number;
+}
+
 const TEAM = { blue: '#5b9bd5', red: '#d05c50' } as const;
 
 export class Renderer {
@@ -25,6 +31,9 @@ export class Renderer {
   private tracers: Tracer[] = [];
   private rs = new Map<number, RState>();
   private lastNow = 0;
+  private booms: Boom[] = [];
+  hudTitle = '';
+  barrageMode = false;
 
   constructor(private sim: Sim) {
     this.terrain = new TerrainLayer(sim.map);
@@ -32,6 +41,10 @@ export class Renderer {
 
   addEvents(events: ShotEvent[], now: number): void {
     for (const e of events) this.tracers.push({ ...e, at: now });
+  }
+
+  addBooms(booms: { x: number; y: number }[], now: number): void {
+    for (const b of booms) this.booms.push({ ...b, at: now });
   }
 
   draw(ctx: CanvasRenderingContext2D, cam: Camera, selectedSquad: number, paused: boolean, now: number): void {
@@ -139,6 +152,18 @@ export class Renderer {
     ctx.restore();
 
     if (!s.alive) return;
+    if (s.downed && s.stabilized) {
+      // bandaged: white cross so a treated casualty reads apart from one bleeding out
+      const c = cam.scale * 0.14;
+      ctx.strokeStyle = '#f2efe4';
+      ctx.lineWidth = Math.max(1.5, cam.scale * 0.08);
+      ctx.beginPath();
+      ctx.moveTo(x - c, y);
+      ctx.lineTo(x + c, y);
+      ctx.moveTo(x, y - c);
+      ctx.lineTo(x, y + c);
+      ctx.stroke();
+    }
     if (s.squadId === selectedSquad) {
       ctx.strokeStyle = '#ffe9a0';
       ctx.lineWidth = 1.5;
@@ -177,7 +202,7 @@ export class Renderer {
       ctx.beginPath();
       ctx.arc(x, y, r * 0.9, 0, Math.PI * 2);
       ctx.stroke();
-      ctx.fillStyle = '#c03028';
+      ctx.fillStyle = s.stabilized ? '#f2efe4' : '#c03028';
       ctx.beginPath();
       ctx.arc(x, y, r * 0.35, 0, Math.PI * 2);
       ctx.fill();
@@ -243,6 +268,25 @@ export class Renderer {
         ctx.fill();
       }
     }
+
+    // explosions (600 ms expanding ring + flash)
+    this.booms = this.booms.filter((b) => now - b.at < 600);
+    for (const b of this.booms) {
+      const t = (now - b.at) / 600;
+      const [x, y] = cam.worldToScreen(b.x, b.y, cw, ch);
+      const rad = (1 + t * 8) * cam.scale;
+      ctx.strokeStyle = `rgba(255, 160, 60, ${(1 - t) * 0.9})`;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(x, y, rad, 0, Math.PI * 2);
+      ctx.stroke();
+      if (t < 0.3) {
+        ctx.fillStyle = `rgba(255, 220, 120, ${(0.3 - t) * 2})`;
+        ctx.beginPath();
+        ctx.arc(x, y, rad * 0.6, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
   }
 
   private drawHud(ctx: CanvasRenderingContext2D, selectedSquad: number, paused: boolean): void {
@@ -254,9 +298,11 @@ export class Renderer {
       if (s.side === 'blue') blue++;
       else red++;
     }
-    lines.push(`T+${Math.floor((this.sim.tick / 30 / 60) | 0)}:${String(Math.floor(this.sim.tick / 30) % 60).padStart(2, '0')}  US ${blue} | GE ${red}`);
+    const title = this.hudTitle ? `${this.hudTitle}  ` : '';
+    lines.push(`${title}T+${Math.floor((this.sim.tick / 30 / 60) | 0)}:${String(Math.floor(this.sim.tick / 30) % 60).padStart(2, '0')}  US ${blue} | GE ${red}`);
     if (paused) lines.push('PAUSED — space to resume');
-    lines.push('click: select squad   right-click: move   wheel: zoom   drag: pan');
+    if (this.barrageMode) lines.push('>>> MORTAR BARRAGE: click the target <<<');
+    lines.push(`click: select   right-click: move   B: barrage (${this.sim.barragesLeft.blue} left)   space: pause`);
     const squad = this.sim.squads[selectedSquad];
     if (squad) {
       lines.push(`— ${squad.name} —`);

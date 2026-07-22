@@ -1,6 +1,9 @@
+import type { Campaign, RosterEntry } from '../campaign/campaign';
+import { fitRoster } from '../campaign/campaign';
+import { RedCommander } from './ai';
 import { DE_NAMES, US_NAMES, type WeaponKey } from './data';
 import { EDGE, GameMap } from './map';
-import { Sim, type Side } from './sim';
+import { Sim, type MemberInit, type Side } from './sim';
 import { mulberry32 } from './rng';
 
 export const MAP_W = 160;
@@ -98,21 +101,14 @@ function placeInBuilding(sim: Sim, b: Building, count: number): { x: number; y: 
   return spots;
 }
 
-export function makeScenario(seed: number): Sim {
-  const map = makeMap(seed);
-  const sim = new Sim(map, seed);
-
-  sim.addSquad('blue', '1st Squad', squadMembers(sim, 'blue', 10, 44, 3));
-  sim.addSquad('blue', '2nd Squad', squadMembers(sim, 'blue', 10, 76, 3));
-
-  // red defends: one squad split across two buildings, one in woods + third building
+function addRedDefenders(sim: Sim): Record<number, { x: number; y: number }> {
   const g1 = squadMembers(sim, 'red', 0, 0, 0);
   const spots1 = [...placeInBuilding(sim, BUILDINGS[0], 5), ...placeInBuilding(sim, BUILDINGS[1], 4)];
   g1.forEach((m, i) => {
     m.x = spots1[i].x;
     m.y = spots1[i].y;
   });
-  sim.addSquad('red', '1. Gruppe', g1);
+  const s1 = sim.addSquad('red', '1. Gruppe', g1);
 
   const g2 = squadMembers(sim, 'red', 0, 0, 0);
   const spots2 = [
@@ -126,7 +122,121 @@ export function makeScenario(seed: number): Sim {
     m.x = spots2[i].x;
     m.y = spots2[i].y;
   });
-  sim.addSquad('red', '2. Gruppe', g2);
+  const s2 = sim.addSquad('red', '2. Gruppe', g2);
 
+  return {
+    [s1.id]: { x: 97, y: 52 },
+    [s2.id]: { x: 98, y: 79 },
+  };
+}
+
+export function makeScenario(seed: number): Sim {
+  const map = makeMap(seed);
+  const sim = new Sim(map, seed);
+  sim.addSquad('blue', '1st Squad', squadMembers(sim, 'blue', 10, 44, 3));
+  sim.addSquad('blue', '2nd Squad', squadMembers(sim, 'blue', 10, 76, 3));
+  addRedDefenders(sim);
   return sim;
+}
+
+export const BATTLE_NAMES = ['Take the Village', 'Hold the Village', 'Clear the East Woods'];
+
+export interface CampaignBattle {
+  sim: Sim;
+  commander: RedCommander;
+  name: string;
+}
+
+function rosterMembers(roster: RosterEntry[], positions: { x: number; y: number }[]): MemberInit[] {
+  return roster.map((r, i) => ({
+    name: r.name,
+    weapon: r.weapon,
+    x: positions[i].x,
+    y: positions[i].y,
+    courage: r.courage,
+    xp: r.xp,
+    bodyDamage: r.bodyDamage,
+    pid: r.pid,
+  }));
+}
+
+// Wire campaign bonds (keyed by pid) onto battle soldiers (keyed by battle id).
+function wireBonds(sim: Sim, roster: RosterEntry[][]): void {
+  const byPid = new Map<number, number>();
+  for (const s of sim.soldiers) if (s.pid >= 0) byPid.set(s.pid, s.id);
+  for (const squad of roster) {
+    for (const r of squad) {
+      const sid = byPid.get(r.pid);
+      if (sid === undefined) continue;
+      for (const [otherPid, v] of Object.entries(r.bonds)) {
+        const oid = byPid.get(Number(otherPid));
+        if (oid !== undefined) sim.soldiers[sid].bonds[oid] = v;
+      }
+    }
+  }
+}
+
+export function makeCampaignBattle(campaign: Campaign, seed: number): CampaignBattle {
+  const battle = campaign.battleIndex;
+  const map = makeMap(seed);
+  const sim = new Sim(map, seed);
+  const rosters = [fitRoster(campaign, 0), fitRoster(campaign, 1)];
+
+  const spread = (cx: number, cy: number, n: number) =>
+    Array.from({ length: n }, () => ({ x: cx + sim.rng.range(-3, 3), y: cy + sim.rng.range(-3, 3) }));
+
+  let posts: Record<number, { x: number; y: number }>;
+  let stance: 'defend' | 'attack';
+
+  if (battle === 1) {
+    // player holds the village; red assaults from the east
+    sim.addSquad('blue', '1st Squad', rosterMembers(rosters[0], placeInBuilding(sim, BUILDINGS[0], rosters[0].length)));
+    sim.addSquad('blue', '2nd Squad', rosterMembers(rosters[1], placeInBuilding(sim, BUILDINGS[2], rosters[1].length)));
+    stance = 'attack';
+    posts = {};
+    const anchors = [
+      { x: 97, y: 52 },
+      { x: 98, y: 79 },
+      { x: 111, y: 68 },
+    ];
+    for (let i = 0; i < 3; i++) {
+      const g = squadMembers(sim, 'red', 0, 0, 0);
+      const sp = spread(150, 45 + i * 18, g.length);
+      g.forEach((m, j) => {
+        m.x = sp[j].x;
+        m.y = sp[j].y;
+      });
+      const sq = sim.addSquad('red', `${i + 1}. Gruppe`, g);
+      posts[sq.id] = anchors[i];
+    }
+  } else if (battle === 2) {
+    // push east: clear the woods beyond the village
+    sim.addSquad('blue', '1st Squad', rosterMembers(rosters[0], spread(96, 52, rosters[0].length)));
+    sim.addSquad('blue', '2nd Squad', rosterMembers(rosters[1], spread(98, 79, rosters[1].length)));
+    stance = 'defend';
+    posts = {};
+    const anchors = [
+      { x: 128, y: 45 },
+      { x: 135, y: 92 },
+    ];
+    for (let i = 0; i < 2; i++) {
+      const g = squadMembers(sim, 'red', 0, 0, 0);
+      const sp = spread(anchors[i].x, anchors[i].y, g.length);
+      g.forEach((m, j) => {
+        m.x = sp[j].x;
+        m.y = sp[j].y;
+      });
+      const sq = sim.addSquad('red', `${i + 1}. Gruppe`, g);
+      posts[sq.id] = anchors[i];
+    }
+  } else {
+    // battle 0: the original assault
+    sim.addSquad('blue', '1st Squad', rosterMembers(rosters[0], spread(10, 44, rosters[0].length)));
+    sim.addSquad('blue', '2nd Squad', rosterMembers(rosters[1], spread(10, 76, rosters[1].length)));
+    stance = 'defend';
+    posts = addRedDefenders(sim);
+  }
+
+  wireBonds(sim, rosters);
+  return { sim, commander: new RedCommander({ stance, posts }), name: BATTLE_NAMES[battle] };
 }
