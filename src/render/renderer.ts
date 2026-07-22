@@ -47,8 +47,8 @@ export class Renderer {
   private lastNow = 0;
   private booms: Boom[] = [];
   private decals: DecalLayer;
-  private barrageMarks: { x: number; y: number; at: number }[] = [];
-  private strafeMarks: { x: number; y: number; at: number }[] = [];
+  private barrageMarks: { x: number; y: number; tick: number }[] = [];
+  private strafeMarks: { x: number; y: number; tick: number }[] = [];
   private planes: Plane[] = [];
   hudTitle = '';
   modeLine = ''; // targeting-mode banner set by input layer
@@ -70,14 +70,14 @@ export class Renderer {
     }
   }
 
-  // Call-in feedback: rounds take 20 s (barrage) / 25 s (strafe) to arrive;
-  // mark the target meanwhile.
-  markBarrage(x: number, y: number, now: number): void {
-    this.barrageMarks.push({ x, y, at: now });
+  // Call-in feedback: rounds take 20 s (barrage) / 25 s (strafe) of SIM time
+  // to arrive — markers expire on sim ticks so pausing doesn't strand them.
+  markBarrage(x: number, y: number): void {
+    this.barrageMarks.push({ x, y, tick: this.sim.tick });
   }
 
-  markStrafe(x: number, y: number, now: number): void {
-    this.strafeMarks.push({ x, y, at: now });
+  markStrafe(x: number, y: number): void {
+    this.strafeMarks.push({ x, y, tick: this.sim.tick });
   }
 
   addPlanes(planes: { x0: number; y: number; x1: number }[], now: number): void {
@@ -117,7 +117,7 @@ export class Renderer {
   }
 
   private drawBarrageMarks(ctx: CanvasRenderingContext2D, cam: Camera, now: number, cw: number, ch: number): void {
-    this.barrageMarks = this.barrageMarks.filter((m) => now - m.at < 20000);
+    this.barrageMarks = this.barrageMarks.filter((m) => this.sim.tick - m.tick < 20 * 30);
     for (const m of this.barrageMarks) {
       const [x, y] = cam.worldToScreen(m.x, m.y, cw, ch);
       const a = 0.45 + 0.25 * Math.sin(now / 160);
@@ -136,7 +136,7 @@ export class Renderer {
       ctx.lineTo(x, y + c);
       ctx.stroke();
     }
-    this.strafeMarks = this.strafeMarks.filter((m) => now - m.at < 25000);
+    this.strafeMarks = this.strafeMarks.filter((m) => this.sim.tick - m.tick < 25 * 30);
     for (const m of this.strafeMarks) {
       const [x0, y] = cam.worldToScreen(m.x - 20, m.y, cw, ch);
       const [x1] = cam.worldToScreen(m.x + 20, m.y, cw, ch);

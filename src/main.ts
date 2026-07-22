@@ -142,12 +142,12 @@ canvas.addEventListener('mouseup', (e) => {
     if (targetMode === 'barrage') {
       if (sim.callBarrage('blue', wx, wy)) {
         setTargetMode('');
-        renderer.markBarrage(wx, wy, performance.now());
+        renderer.markBarrage(wx, wy);
       }
     } else if (targetMode === 'air') {
       if (sim.callAirstrike('blue', wx, wy)) {
         setTargetMode('');
-        renderer.markStrafe(wx, wy, performance.now());
+        renderer.markStrafe(wx, wy);
       }
     } else {
       // vehicles first, then squads
