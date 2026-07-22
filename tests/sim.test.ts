@@ -75,8 +75,8 @@ describe('simulation', () => {
   it('is deterministic: same seed and orders produce identical state', () => {
     const run = () => {
       const sim = makeScenario(42);
-      sim.orderSquadMove(0, 80, 55);
-      sim.orderSquadMove(1, 80, 70);
+      sim.orderSquad(0, { kind: 'move', x: 80, y: 55 });
+      sim.orderSquad(1, { kind: 'move', x: 80, y: 70 });
       for (let i = 0; i < 3000; i++) sim.step();
       return sim.snapshot();
     };
@@ -86,7 +86,7 @@ describe('simulation', () => {
   it('different seeds diverge', () => {
     const run = (seed: number) => {
       const sim = makeScenario(seed);
-      sim.orderSquadMove(0, 80, 55);
+      sim.orderSquad(0, { kind: 'move', x: 80, y: 55 });
       for (let i = 0; i < 3000; i++) sim.step();
       return sim.snapshot();
     };
@@ -164,15 +164,15 @@ describe('simulation', () => {
 
     sim.queueMove(0, 20, 10);
     sim.queueMove(0, 2, 10);
-    sim.orderSquadMove(0, 50, 10); // direct order wipes the queue
+    sim.orderSquad(0, { kind: 'move', x: 50, y: 10 }); // direct order wipes the queue
     expect(sim.squadWaypoints[0]).toEqual([]);
   });
 
   it('an assault produces a resolved firefight with no NaN state', () => {
     const sim = makeScenario(7);
     const [b0, b2] = [sim.buildings[0], sim.buildings[2]];
-    sim.orderSquadMove(0, b0.x + b0.w / 2, b0.y + b0.h / 2);
-    sim.orderSquadMove(1, b2.x + b2.w / 2, b2.y + b2.h / 2);
+    sim.orderSquad(0, { kind: 'move', x: b0.x + b0.w / 2, y: b0.y + b0.h / 2 });
+    sim.orderSquad(1, { kind: 'move', x: b2.x + b2.w / 2, y: b2.y + b2.h / 2 });
     let steps = 0;
     while (sim.winner === null && steps < 30 * 60 * 10) {
       sim.step();
@@ -288,11 +288,45 @@ describe('teams and data-driven squads', () => {
     expect(mgTrupp.soldierIds.length).toBe(3);
   });
 
-  it('orderSquadMove moves both teams of a multi-team squad', () => {
+  it('orderSquad moves both teams of a multi-team squad', () => {
     const sim = new Sim(new GameMap(60, 40), 62);
     const squad = sim.addSquadFromDef('blue', 'us_rifle', 5, 20);
-    sim.orderSquadMove(squad.id, 50, 20);
+    sim.orderSquad(squad.id, { kind: 'move', x: 50, y: 20 });
     const moving = (teamId: number) => sim.teams[teamId].soldierIds.some((id) => sim.soldiers[id].path !== null);
     expect(squad.teamIds.every(moving)).toBe(true);
+  });
+});
+
+describe('ammo runner + weapon pickup', () => {
+  it('a dry MG42 gunner gets resupplied by a bonded bearer', () => {
+    const sim = new Sim(new GameMap(20, 20), 70);
+    sim.addSquad('blue', 'g', [
+      { name: 'Gunner', weapon: 'mg42', x: 5.5, y: 5.5, ammo: { belt_792: 1 } },
+      { name: 'Bearer', weapon: 'kar98k', x: 6.5, y: 5.5, ammo: { belt_792: 4 } },
+    ]);
+    const [gunner, bearer] = sim.soldiers;
+    bearer.bonds[gunner.id] = 1;
+    bearer.courage = 0.8;
+    for (let i = 0; i < 300 && bearer.task === null; i++) sim.step();
+    expect(bearer.task?.kind).toBe('ammo');
+    for (let i = 0; i < 300 && bearer.task !== null; i++) sim.step();
+    expect(bearer.task).toBeNull();
+    expect(gunner.ammo.belt_792).toBeGreaterThan(1);
+    expect(bearer.ammo.belt_792).toBeLessThan(4);
+  });
+
+  it('a rifleman adjacent to a dead BAR man upgrades weapons', () => {
+    const sim = new Sim(new GameMap(20, 20), 71);
+    sim.addSquad('blue', 's', [
+      { name: 'Dead', weapon: 'bar', x: 5.5, y: 5.5, ammo: { mag_bar: 5 } },
+      { name: 'Rifle', weapon: 'garand', x: 6.0, y: 5.5, ammo: { clip_3006: 8 } },
+    ]);
+    const [dead, rifle] = sim.soldiers;
+    dead.wounds.push({ part: 0, dmg: 100 });
+    dead.bloodLoss = 1; // kills on the next physiology tick
+    for (let i = 0; i < 250 && rifle.weapon !== 'bar'; i++) sim.step();
+    expect(rifle.weapon).toBe('bar');
+    expect(rifle.ammo.mag_bar).toBe(5);
+    expect(sim.droppedKit.length).toBe(0); // kit consumed
   });
 });

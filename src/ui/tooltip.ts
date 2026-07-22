@@ -1,8 +1,7 @@
 import type { Camera } from '../render/camera';
 import { woundLabel } from '../sim/body';
 import { TERRAIN, VEHICLES, WEAPONS, type TerrainKey, type WeaponDef } from '../sim/data';
-import { los } from '../sim/map';
-import type { Sim, Soldier, Vehicle } from '../sim/sim';
+import { sightBetween, type Sim, type Soldier, type Vehicle } from '../sim/sim';
 import { STATE_COLOR } from './hud';
 
 export type Pick =
@@ -118,7 +117,7 @@ export function computeShot(sim: Sim, squadId: number, vehicleId: number, pick: 
 
 function apSolution(sim: Sim, fx: number, fy: number, pen: number, accuracy: number, range: number, target: Vehicle, moving: boolean, title: string): ShotSolution {
   const base = { fx, fy, tx: target.x, ty: target.y, title };
-  if (!los(sim.map, fx, fy, target.x, target.y).visible) return { ...base, ok: false, acc: 0, lines: ['no line of sight'] };
+  if (!sightBetween(sim, fx, fy, target.x, target.y).visible) return { ...base, ok: false, acc: 0, lines: ['no line of sight'] };
   const p = sim.apShotPreview(fx, fy, pen, accuracy, range, target, moving);
   if (p.dist > range) return { ...base, ok: false, acc: 0, lines: [`out of range — ${range} m weapon, target ${Math.round(p.dist)} m`] };
   return {

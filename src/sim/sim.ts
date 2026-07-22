@@ -13,8 +13,9 @@ import {
   type WeaponDef,
   type WeaponKey,
 } from './data';
-import { GameMap, los } from './map';
+import { GameMap, los, type LosResult } from './map';
 import type { Building } from './mapgen';
+import { ambushThreshold, BALK_REASON, compliance, dangerScore, type OrderState, type TeamOrder } from './orders';
 import { astar } from './path';
 import { mulberry32, type Rng } from './rng';
 
@@ -27,14 +28,28 @@ const SUPP_DECAY = 0.03; // per second
 const AID_SECONDS = 8;
 const BARRAGE_DELAY_TICKS = 20 * 30;
 const BARRAGE_ROUNDS = 12;
+const BOUND_LEG = 15; // meters per bounding rush (spec's "15m legs")
 
 export type Side = 'blue' | 'red';
 export type Mental = 'steady' | 'shaken' | 'pinned' | 'broken';
 
 export interface RescueTask {
+  kind: 'rescue';
   casualtyId: number;
   phase: 'goto' | 'drag' | 'aid';
   timer: number;
+}
+
+// Ammo runner: a bonded squadmate ferries reserve belts to a dry MG gunner
+// (spec's casualty-chain-adjacent capability hook), reusing the RescueTask
+// state-machine shape rather than a parallel scheduler.
+export interface AmmoTask {
+  kind: 'ammo';
+  gunnerId: number;
+  phase: 'goto' | 'transfer' | 'return';
+  timer: number;
+  returnX: number;
+  returnY: number;
 }
 
 export interface Soldier {
@@ -62,8 +77,9 @@ export interface Soldier {
   downed: boolean; // unconscious, in shock, or can't walk
   // ammo/weapon service
   ammo: Partial<Record<AmmoKey, number>>; // discrete reload-worths carried
+  ammoStart: number; // total reserve units carried at spawn (ammo-discipline baseline)
   magLeft: number; // rounds left in the current mag/belt/clip
-  reloading: number; // seconds left on a reload or barrel-swap, 0 = not busy
+  reloading: number; // seconds left on a reload, barrel-swap, or weapon pickup, 0 = not busy
   heat: number; // 0..1.5, belt-fed barrel model
   stamina: number; // 1 = rested, drains on the move, recovers when settled
   // psyche
@@ -77,9 +93,11 @@ export interface Soldier {
   cooldown: number;
   targetId: number; // -1 = none
   fleeing: boolean;
-  task: RescueTask | null;
+  task: RescueTask | AmmoTask | null;
   rescuerId: number; // who claimed this casualty, -1 none
   carriedBy: number; // -1 = not being dragged
+  ammoRunnerId: number; // runner already en route to resupply this soldier, -1 none
+  pickingUp: boolean; // mid weapon-pickup timer (rides `reloading`)
   inVehicle: number; // vehicle id crewing, -1 = on foot
 }
 
@@ -142,6 +160,9 @@ export interface Team {
   squadId: number;
   name: string;
   soldierIds: number[];
+  orderState: OrderState;
+  smokeLeft: number; // rifle-team smoke budget, 2/battle
+  ambushBonusTick: number; // tick the ambush trigger fired on, -1 = none/consumed
 }
 
 export interface ShotEvent {
@@ -187,12 +208,66 @@ interface Barrage {
   nextTick: number;
 }
 
+export interface Smoke {
+  x: number;
+  y: number;
+  ttl: number; // seconds left
+}
+
+export interface DroppedKit {
+  side: Side;
+  x: number;
+  y: number;
+  weapon: WeaponKey;
+  ammo: Partial<Record<AmmoKey, number>>;
+  magLeft: number;
+}
+
+// Small-arms upgrade rank for casual battlefield pickup (spec: mg42/bar/m1919
+// > smg > rifle > carbine). Weapons outside this table (AT, mortars) rank 0 —
+// never picked up this way, only ever their own team's kit.
+const WEAPON_RANK: Partial<Record<WeaponKey, number>> = {
+  mg42: 4, bar: 4, m1919: 4,
+  thompson: 3, mp40: 3,
+  garand: 2, kar98k: 2, kar98k_scoped: 2, springfield: 2,
+  carbine: 1,
+};
+function weaponRank(w: WeaponKey): number {
+  return WEAPON_RANK[w] ?? 0;
+}
+
 // Formation offsets around a squad destination, meters. Exported for the
 // move-order cover preview, which must show the real spots men will take.
 export const OFFSETS = [
   [0, 0], [1.5, 0], [-1.5, 0], [0, 1.5], [0, -1.5],
   [2.2, 1.5], [-2.2, 1.5], [2.2, -1.5], [-2.2, -1.5], [0, 3],
 ];
+
+// Squared distance from a point to a segment — used to test whether a smoke
+// puff sits close enough to a sightline to obscure it.
+function distToSegment(px: number, py: number, x0: number, y0: number, x1: number, y1: number): number {
+  const dx = x1 - x0;
+  const dy = y1 - y0;
+  const len2 = dx * dx + dy * dy;
+  const t = len2 > 0 ? Math.max(0, Math.min(1, ((px - x0) * dx + (py - y0) * dy) / len2)) : 0;
+  return Math.hypot(px - (x0 + t * dx), py - (y0 + t * dy));
+}
+
+// The one LOS wrapper every soldier-vision (and vehicle-sight) call site must
+// route through: same as map.ts's los(), plus smoke. map.ts's signature stays
+// untouched — this only adds smoke's contribution on top of its result. Each
+// puff within 1.5m of the ray adds 0.5 opacity; >=1 blocks same as terrain.
+export function sightBetween(sim: Sim, x0: number, y0: number, x1: number, y1: number): LosResult {
+  const base = los(sim.map, x0, y0, x1, y1);
+  if (!base.visible || sim.smoke.length === 0) return base;
+  let opacity = 0;
+  for (const p of sim.smoke) {
+    if (distToSegment(p.x, p.y, x0, y0, x1, y1) <= 1.5) opacity += 0.5;
+  }
+  if (opacity >= 1) return { visible: false, cover: 0 };
+  if (opacity > 0) return { visible: true, cover: Math.min(0.95, base.cover + opacity * 0.4) };
+  return base;
+}
 
 export class Sim {
   tick = 0;
@@ -215,6 +290,12 @@ export class Sim {
   // Per-squad move state, indexed by squad id. Read-only for the UI (route preview).
   squadDest: ({ x: number; y: number } | null)[] = [];
   squadWaypoints: { x: number; y: number }[][] = [];
+  smoke: Smoke[] = [];
+  droppedKit: DroppedKit[] = [];
+  // Recent-casualty flags for dangerScore/ambush triggers, indexed by squad/team id.
+  squadLastCasualty: number[] = [];
+  teamLastCasualty: number[] = [];
+  private sneakBaseline: number[] = []; // per-team wound count when a sneak order started
 
   constructor(readonly map: GameMap, seed: number) {
     this.rng = mulberry32(seed);
@@ -247,6 +328,7 @@ export class Sim {
       stabilized: false,
       downed: false,
       ammo: m.ammo ?? { [w.ammo.type]: 6 }, // fallback for legacy callers
+      ammoStart: Object.values(m.ammo ?? { [w.ammo.type]: 6 }).reduce((a: number, n) => a + (n ?? 0), 0),
       magLeft: w.ammo.perUnit,
       reloading: 0,
       heat: 0,
@@ -263,6 +345,8 @@ export class Sim {
       task: null,
       rescuerId: -1,
       carriedBy: -1,
+      ammoRunnerId: -1,
+      pickingUp: false,
       inVehicle: -1,
     };
     s.morale = 0.7 + s.courage * 0.3;
@@ -272,7 +356,15 @@ export class Sim {
 
   // Spawns one team's soldiers onto a squad already pushed into this.squads.
   private spawnTeam(squad: Squad, name: string, entries: { role: Role; member: MemberInit }[]): Team {
-    const team: Team = { id: this.teams.length, squadId: squad.id, name, soldierIds: [] };
+    const team: Team = {
+      id: this.teams.length,
+      squadId: squad.id,
+      name,
+      soldierIds: [],
+      orderState: { order: null, phase: 'idle', reason: '' },
+      smokeLeft: 2,
+      ambushBonusTick: -1,
+    };
     this.teams.push(team);
     squad.teamIds.push(team.id);
     for (const { role, member } of entries) {
@@ -373,6 +465,11 @@ export class Sim {
     let speed = BASE_SPEED * (0.3 + 0.7 * cap.moving);
     if (s.stamina < 0.3) speed *= 0.6; // fatigued
     else if (s.stamina < 0.6) speed *= 0.85; // winded
+    if (s.path) {
+      const order = this.teams[s.teamId].orderState.order;
+      if (order?.kind === 'fast') speed *= 1.6;
+      else if (order?.kind === 'sneak') speed *= 0.35;
+    }
     return speed;
   }
 
@@ -472,14 +569,21 @@ export class Sim {
 
   // Direct order to one team: the opt-in fire-and-maneuver granularity (spec
   // §1). Paths every eligible member to a formation spot around (wx, wy).
+  // Low-level primitive — no compliance, no order-kind behavior. Used by the
+  // waypoint queue (dispatchSquadTo) and as the executor's "just walk there"
+  // building block for move/fast/sneak/bounding legs.
   orderMove(teamId: number, wx: number, wy: number): void {
     const team = this.teams[teamId];
     if (!team) return;
+    this.moveSoldiersTo(team.soldierIds, wx, wy);
+  }
+
+  private moveSoldiersTo(soldierIds: number[], wx: number, wy: number): void {
     const used = new Set<number>();
     let slot = 0;
-    for (const sid of team.soldierIds) {
+    for (const sid of soldierIds) {
       const s = this.soldiers[sid];
-      if (!s.alive || s.downed || s.mental === 'broken') continue; // broken men ignore orders
+      if (!this.eligible(s)) continue;
       const [ox, oy] = OFFSETS[slot % OFFSETS.length];
       slot++;
       const spot = this.findSpot(Math.floor(wx + ox), Math.floor(wy + oy), used);
@@ -487,7 +591,7 @@ export class Sim {
       used.add(spot.y * this.map.w + spot.x);
       const path = astar(this.map, Math.floor(s.x), Math.floor(s.y), spot.x, spot.y);
       if (path && path.length > 1) {
-        if (s.task) this.dropTask(s); // direct orders override a rescue
+        if (s.task) this.dropTask(s); // direct orders override a rescue/ammo run
         s.path = path.slice(1).map((p) => ({ x: p.x + 0.5, y: p.y + 0.5 }));
         s.pathI = 0;
         s.fleeing = false;
@@ -495,10 +599,176 @@ export class Sim {
     }
   }
 
-  // A direct order overrides any queued route.
-  orderSquadMove(squadId: number, wx: number, wy: number): void {
+  private eligible(s: Soldier): boolean {
+    return s.alive && !s.downed && s.mental !== 'broken';
+  }
+
+  // The order vocabulary's entry point (spec's "interpret + refuse"): runs
+  // compliance, stores the legibility state, and kicks off execution.
+  orderTeam(teamId: number, order: TeamOrder): void {
+    const team = this.teams[teamId];
+    if (!team) return;
+    const eligibleIds = team.soldierIds.filter((id) => this.eligible(this.soldiers[id]));
+    if (eligibleIds.length === 0) return;
+
+    const danger = dangerScore(this, team, { x: order.x, y: order.y });
+    const verdict = compliance(this, team, danger);
+    if (verdict === 'balk') {
+      team.orderState = { order, phase: 'balked', reason: BALK_REASON };
+      return;
+    }
+    const cautious = verdict === 'cautious';
+    const effective: TeamOrder = cautious && order.kind === 'fast' ? { ...order, kind: 'move' } : order;
+    const reason = cautious ? 'moving cautiously' : '';
+
+    if (effective.kind === 'move' && (cautious || this.teamUnderFire(team))) {
+      team.orderState = { order: effective, phase: 'bounding_a', reason };
+      const [a, b] = this.teamHalves(team);
+      for (const id of b) this.soldiers[id].path = null;
+      this.dispatchLeg(a, effective);
+    } else if (effective.kind === 'move' || effective.kind === 'fast' || effective.kind === 'sneak') {
+      team.orderState = { order: effective, phase: 'executing', reason };
+      if (effective.kind === 'sneak') this.sneakBaseline[team.id] = this.woundCount(team);
+      this.moveSoldiersTo(team.soldierIds, effective.x, effective.y);
+    } else if (effective.kind === 'smoke') {
+      team.orderState = { order: effective, phase: 'executing', reason };
+      this.deploySmoke(team, effective);
+    } else if (effective.kind === 'defend' || effective.kind === 'ambush') {
+      team.orderState = { order: effective, phase: 'executing', reason };
+      this.moveSoldiersTo(team.soldierIds, effective.x, effective.y);
+    } else {
+      // fire: no movement, members engage per updateSoldier's combat section
+      team.orderState = { order: effective, phase: 'executing', reason };
+    }
+  }
+
+  // Squad click broadcasts to teams (spec §1), offsetting each team's
+  // destination by team index x 8m so a multi-team squad doesn't stack.
+  // A direct order overrides any queued waypoint route.
+  orderSquad(squadId: number, order: TeamOrder): void {
+    const squad = this.squads[squadId];
+    if (!squad) return;
     this.squadWaypoints[squadId] = [];
-    this.dispatchSquadTo(squadId, wx, wy);
+    const isMoveKind = order.kind === 'move' || order.kind === 'fast' || order.kind === 'sneak';
+    this.squadDest[squadId] = isMoveKind ? { x: order.x, y: order.y } : null;
+    const n = squad.teamIds.length;
+    squad.teamIds.forEach((teamId, ti) => {
+      const oy = (ti - (n - 1) / 2) * 8;
+      this.orderTeam(teamId, { ...order, y: order.y + oy });
+    });
+  }
+
+  private teamUnderFire(team: Team): boolean {
+    return team.soldierIds.some((id) => {
+      const s = this.soldiers[id];
+      return s.alive && !s.downed && s.suppression > 0.35;
+    });
+  }
+
+  // Stable index split — first half is element A, second is B. Deterministic
+  // across ticks since soldierIds never reorders.
+  private teamHalves(team: Team): [number[], number[]] {
+    const mid = Math.ceil(team.soldierIds.length / 2);
+    return [team.soldierIds.slice(0, mid), team.soldierIds.slice(mid)];
+  }
+
+  private centroidOf(soldierIds: number[]): { x: number; y: number } | null {
+    const alive = soldierIds.map((id) => this.soldiers[id]).filter((s) => this.eligible(s));
+    if (alive.length === 0) return null;
+    return {
+      x: alive.reduce((a, s) => a + s.x, 0) / alive.length,
+      y: alive.reduce((a, s) => a + s.y, 0) / alive.length,
+    };
+  }
+
+  // Bounding rush: dispatches `ids` toward `order` at most BOUND_LEG meters
+  // this leg, from their own centroid.
+  private dispatchLeg(ids: number[], order: TeamOrder): void {
+    const centroid = this.centroidOf(ids);
+    if (!centroid) return;
+    const dx = order.x - centroid.x;
+    const dy = order.y - centroid.y;
+    const d = Math.hypot(dx, dy);
+    const leg = Math.min(BOUND_LEG, d);
+    const target = d < 0.01 ? { x: order.x, y: order.y } : { x: centroid.x + (dx / d) * leg, y: centroid.y + (dy / d) * leg };
+    this.moveSoldiersTo(ids, target.x, target.y);
+  }
+
+  // Alternates the active (rushing) half once its leg completes; the other
+  // half holds and fires. Clears the order once arrived.
+  private continueBounding(team: Team, order: TeamOrder, st: OrderState): void {
+    const [a, b] = this.teamHalves(team);
+    const activeIds = st.phase === 'bounding_a' ? a : b;
+    const otherIds = st.phase === 'bounding_a' ? b : a;
+    const activeAlive = activeIds.filter((id) => this.eligible(this.soldiers[id]));
+    if (activeAlive.some((id) => this.soldiers[id].path)) return; // mid-leg
+    const centroid = this.centroidOf(team.soldierIds);
+    if (!centroid || Math.hypot(centroid.x - order.x, centroid.y - order.y) < 3) {
+      st.order = null;
+      st.phase = 'idle';
+      st.reason = '';
+      return;
+    }
+    st.phase = st.phase === 'bounding_a' ? 'bounding_b' : 'bounding_a';
+    this.dispatchLeg(otherIds, order);
+  }
+
+  private woundCount(team: Team): number {
+    return team.soldierIds.reduce((a, id) => a + this.soldiers[id].wounds.length, 0);
+  }
+
+  // Sneak breaks to move the instant any teammate takes a wound (spec: "holds
+  // fire until fired on").
+  private checkSneakBreak(team: Team): void {
+    const order = team.orderState.order;
+    if (!order || order.kind !== 'sneak') return;
+    if (this.woundCount(team) > (this.sneakBaseline[team.id] ?? 0)) order.kind = 'move';
+  }
+
+  // Rifle-team smoke: 2 puffs at the point (<=30m from the team), 60s ttl,
+  // 2/battle budget. Mortar smoke arrives with emplacements (Task 9).
+  private deploySmoke(team: Team, order: TeamOrder): void {
+    if (team.smokeLeft <= 0) return;
+    const centroid = this.centroidOf(team.soldierIds);
+    if (!centroid || Math.hypot(order.x - centroid.x, order.y - centroid.y) > 30) return;
+    team.smokeLeft--;
+    this.smoke.push({ x: order.x - 1, y: order.y, ttl: 60 });
+    this.smoke.push({ x: order.x + 1, y: order.y, ttl: 60 });
+  }
+
+  private inArc(fx: number, fy: number, tx: number, ty: number, arc: [number, number]): boolean {
+    const twoPi = 2 * Math.PI;
+    const norm = (a: number) => ((a % twoPi) + twoPi) % twoPi;
+    const angle = norm(Math.atan2(ty - fy, tx - fx));
+    const a0 = norm(arc[0]);
+    const a1 = norm(arc[1]);
+    return a0 <= a1 ? angle >= a0 && angle <= a1 : angle >= a0 || angle <= a1;
+  }
+
+  // Enemy within per-weapon-class range (or a team casualty) converts an
+  // ambush order to defend and marks this tick for the first-volley bonus.
+  private checkAmbushTrigger(team: Team, order: TeamOrder): void {
+    const side = this.squads[team.squadId].side;
+    const enemySide: Side = side === 'blue' ? 'red' : 'blue';
+    let triggered = this.tick - (this.teamLastCasualty[team.id] ?? -Infinity) <= 30;
+    outer: for (const sid of team.soldierIds) {
+      const s = this.soldiers[sid];
+      if (!this.eligible(s)) continue;
+      const thresh = ambushThreshold(WEAPONS[s.weapon]);
+      for (const e of this.soldiers) {
+        if (!e.alive || e.downed || e.side !== enemySide) continue;
+        if (order.arc && !this.inArc(s.x, s.y, e.x, e.y, order.arc)) continue;
+        const d = Math.hypot(e.x - s.x, e.y - s.y);
+        if (d <= thresh && sightBetween(this, s.x, s.y, e.x, e.y).visible) {
+          triggered = true;
+          break outer;
+        }
+      }
+    }
+    if (triggered) {
+      order.kind = 'defend';
+      team.ambushBonusTick = this.tick;
+    }
   }
 
   // Shift-click: append a waypoint; dispatches immediately if the squad is idle.
@@ -569,6 +839,8 @@ export class Sim {
     this.stepWaypoints();
     this.stepBarrages();
     this.stepStrafes();
+    this.stepSmoke();
+    this.stepOrders();
     for (const v of this.vehicles) {
       if (v.alive) this.updateVehicle(v);
     }
@@ -643,6 +915,36 @@ export class Sim {
     this.barrages = this.barrages.filter((b) => b.roundsLeft > 0);
   }
 
+  private stepSmoke(): void {
+    if (this.smoke.length === 0) return;
+    for (const p of this.smoke) p.ttl -= DT;
+    this.smoke = this.smoke.filter((p) => p.ttl > 0);
+  }
+
+  // Continues in-flight team orders: bounding leg alternation, sneak-break,
+  // and ambush trigger detection. Runs before soldiers act this tick so a
+  // trigger/break this tick is reflected in this same tick's combat.
+  private stepOrders(): void {
+    for (const team of this.teams) {
+      const order = team.orderState.order;
+      if (!order) continue;
+      const st = team.orderState;
+      if (st.phase === 'balked') continue;
+      if (order.kind === 'move' && (st.phase === 'bounding_a' || st.phase === 'bounding_b')) {
+        this.continueBounding(team, order, st);
+      } else if ((order.kind === 'move' || order.kind === 'fast' || order.kind === 'sneak') && st.phase === 'executing') {
+        const eligibleIds = team.soldierIds.filter((id) => this.eligible(this.soldiers[id]));
+        if (eligibleIds.length > 0 && eligibleIds.every((id) => !this.soldiers[id].path)) {
+          st.order = null;
+          st.phase = 'idle';
+          st.reason = '';
+        }
+      }
+      if (order.kind === 'sneak') this.checkSneakBreak(team);
+      else if (order.kind === 'ambush') this.checkAmbushTrigger(team, order);
+    }
+  }
+
   private explode(
     x: number,
     y: number,
@@ -701,7 +1003,7 @@ export class Sim {
       for (const s of this.soldiers) {
         if (!s.alive || s.downed || s.side === v.side || s.inVehicle >= 0) continue;
         const d = Math.hypot(s.x - v.x, s.y - v.y);
-        if (d < 30 && los(this.map, v.x, v.y, s.x, s.y).visible) {
+        if (d < 30 && sightBetween(this, v.x, v.y, s.x, s.y).visible) {
           s.suppression = Math.min(1, s.suppression + 0.05 * (1.3 - s.courage * 0.6));
         }
       }
@@ -717,7 +1019,7 @@ export class Sim {
       for (const e of this.vehicles) {
         if (!e.alive || e.side === v.side) continue;
         const d = Math.hypot(e.x - v.x, e.y - v.y);
-        if (d <= def.gunRange && d < bestD && los(this.map, v.x, v.y, e.x, e.y).visible) {
+        if (d <= def.gunRange && d < bestD && sightBetween(this, v.x, v.y, e.x, e.y).visible) {
           bestD = d;
           v.targetVehicleId = e.id;
         }
@@ -725,7 +1027,7 @@ export class Sim {
     }
     if (v.targetVehicleId >= 0 && v.gunCooldown <= 0) {
       const e = this.vehicles[v.targetVehicleId];
-      if (e.alive && los(this.map, v.x, v.y, e.x, e.y).visible) {
+      if (e.alive && sightBetween(this, v.x, v.y, e.x, e.y).visible) {
         this.fireApAt(v.x, v.y, def.gunPen, def.gunAccuracy, def.gunRange, e, v.path !== null);
         v.gunCooldown = def.gunCooldown * (0.85 + this.rng.next() * 0.3);
       } else {
@@ -744,7 +1046,7 @@ export class Sim {
       return;
     }
     if (t) {
-      if (!los(this.map, v.x, v.y, t.x, t.y).visible) {
+      if (!sightBetween(this, v.x, v.y, t.x, t.y).visible) {
         v.targetSoldierId = -1;
         return;
       }
@@ -761,7 +1063,9 @@ export class Sim {
     }
   }
 
-  private acquireSoldierTarget(x: number, y: number, side: Side, range: number): number {
+  // `arc` restricts candidates to a facing sector (defend/ambush: spec's
+  // "members only acquire targets inside arc").
+  private acquireSoldierTarget(x: number, y: number, side: Side, range: number, arc?: [number, number]): number {
     const candidates: { id: number; d: number }[] = [];
     for (const e of this.soldiers) {
       if (!e.alive || e.downed || e.side === side || e.inVehicle >= 0) continue;
@@ -771,7 +1075,8 @@ export class Sim {
     candidates.sort((a, b) => a.d - b.d || a.id - b.id);
     for (const c of candidates) {
       const e = this.soldiers[c.id];
-      if (los(this.map, x, y, e.x, e.y).visible) return c.id;
+      if (arc && !this.inArc(x, y, e.x, e.y, arc)) continue;
+      if (sightBetween(this, x, y, e.x, e.y).visible) return c.id;
     }
     return -1;
   }
@@ -820,7 +1125,7 @@ export class Sim {
   // The exact accuracy math live fire uses, exposed for hit-chance previews —
   // the UI must never re-derive (and drift from) this formula.
   shotPreview(fx: number, fy: number, weapon: WeaponKey, t: Soldier, shooterMoving: boolean, aim: number): ShotPreview {
-    const sight = los(this.map, fx, fy, t.x, t.y);
+    const sight = sightBetween(this, fx, fy, t.x, t.y);
     const d = Math.hypot(t.x - fx, t.y - fy);
     if (!sight.visible) return { visible: false, dist: d, cover: 0, acc: 0 };
     const w = WEAPONS[weapon];
@@ -885,6 +1190,7 @@ export class Sim {
       }
       return;
     }
+    const order = this.teams[s.teamId].orderState.order;
     // physiology
     if (s.wounds.length > 0) {
       s.bloodLoss = Math.min(1, s.bloodLoss + s.bleedRate * DT);
@@ -900,6 +1206,7 @@ export class Sim {
     if (s.downed) {
       if (!wasDowned) {
         this.pendingUnitEvents.push({ kind: 'downed', x: s.x, y: s.y, side: s.side, name: s.name });
+        this.dropKit(s);
         s.path = null;
         s.targetId = -1;
         if (s.task) this.dropTask(s);
@@ -908,7 +1215,7 @@ export class Sim {
     }
     if (wasDowned && s.rescuerId >= 0) {
       const r = this.soldiers[s.rescuerId];
-      if (r.task?.casualtyId === s.id) this.dropTask(r); // he's back up
+      if (r.task?.kind === 'rescue' && r.task.casualtyId === s.id) this.dropTask(r); // he's back up
     }
 
     // psyche: bonded mates nearby steady the nerves
@@ -918,7 +1225,9 @@ export class Sim {
       if (m.id === s.id || !m.alive || m.downed) continue;
       if (Math.hypot(m.x - s.x, m.y - s.y) < 8) steadying += this.bond(s, m);
     }
-    s.suppression = Math.max(0, s.suppression - SUPP_DECAY * (1 + Math.min(steadying, 1.5) * 0.6) * DT);
+    // defend/ambush: suppression bleeds off faster once settled in (not moving)
+    const settledDefending = (order?.kind === 'defend' || order?.kind === 'ambush') && !s.path;
+    s.suppression = Math.max(0, s.suppression - SUPP_DECAY * (settledDefending ? 1.2 : 1) * (1 + Math.min(steadying, 1.5) * 0.6) * DT);
     if (s.suppression > 0.6) s.morale = Math.max(0, s.morale - 0.005 * DT);
     else if (s.suppression < 0.2) s.morale = Math.min(1, s.morale + 0.004 * DT);
     const pinThreshold = 0.7 - (0.5 - s.courage) * 0.2;
@@ -942,12 +1251,18 @@ export class Sim {
       s.path = null;
     }
 
-    // rescue: a downed squadmate may pull a bonded buddy out of the fight
+    // rescue / ammo run: a bonded squadmate may pull a casualty out of the
+    // fight or ferry belts to a dry gunner
     if (s.task) {
-      this.updateRescue(s);
+      if (s.task.kind === 'rescue') this.updateRescue(s);
+      else this.updateAmmoTask(s);
       return;
     }
-    if (s.mental !== 'broken' && (this.tick + s.id) % 60 === 0) this.considerRescue(s);
+    if (s.mental !== 'broken' && (this.tick + s.id) % 60 === 0) {
+      this.considerRescue(s);
+      this.considerAmmoRunner(s);
+      this.considerPickup(s);
+    }
 
     // stamina: recovers when settled and not under heavy fire (drain lives in advance())
     if (!s.path && s.suppression < 0.3) s.stamina = Math.min(1, s.stamina + 0.008 * DT);
@@ -959,12 +1274,31 @@ export class Sim {
     if (s.cooldown > 0) s.cooldown -= DT;
     if (s.mental === 'broken') return;
 
-    // reload / barrel-swap: soldier services the weapon before firing again
+    // reload / barrel-swap / weapon pickup: soldier services the weapon (or
+    // finishes swapping to a dropped one) before firing again
     if (s.reloading > 0) {
       s.reloading = Math.max(0, s.reloading - DT);
       if (s.reloading === 0) {
-        if (s.heat >= 1) s.heat = 0;
-        if (s.magLeft <= 0) s.magLeft = WEAPONS[s.weapon].ammo.perUnit;
+        if (s.pickingUp) {
+          s.pickingUp = false;
+          const myRank = weaponRank(s.weapon);
+          const i = this.droppedKit.findIndex(
+            (k) => k.side === s.side && weaponRank(k.weapon) > myRank && Math.hypot(k.x - s.x, k.y - s.y) <= 2,
+          );
+          if (i >= 0) {
+            const kit = this.droppedKit[i];
+            s.weapon = kit.weapon;
+            s.secondary = undefined;
+            s.ammo = { ...kit.ammo };
+            s.ammoStart = Object.values(kit.ammo).reduce((a: number, n) => a + (n ?? 0), 0);
+            s.magLeft = kit.magLeft;
+            s.heat = 0;
+            this.droppedKit.splice(i, 1);
+          }
+        } else {
+          if (s.heat >= 1) s.heat = 0;
+          if (s.magLeft <= 0) s.magLeft = WEAPONS[s.weapon].ammo.perUnit;
+        }
       }
       return;
     }
@@ -989,6 +1323,10 @@ export class Sim {
       return; // dry (no ammo, no secondary): holds fire — runner arrives Task 8
     }
 
+    // Order-level fire discipline: sneak and (untriggered) ambush hold fire
+    // entirely; fast holds fire only while actually sprinting.
+    if (order?.kind === 'sneak' || order?.kind === 'ambush' || (order?.kind === 'fast' && s.path)) return;
+
     // AT men engage armor first
     if (w.pen !== undefined && s.cooldown <= 0) {
       let bestV: Vehicle | null = null;
@@ -996,7 +1334,7 @@ export class Sim {
       for (const v of this.vehicles) {
         if (!v.alive || v.side === s.side) continue;
         const d = Math.hypot(v.x - s.x, v.y - s.y);
-        if (d <= w.range && d < bestD && los(this.map, s.x, s.y, v.x, v.y).visible) {
+        if (d <= w.range && d < bestD && sightBetween(this, s.x, s.y, v.x, v.y).visible) {
           bestD = d;
           bestV = v;
         }
@@ -1018,7 +1356,7 @@ export class Sim {
       for (const v of this.vehicles) {
         if (!v.alive || v.side === s.side) continue;
         const d = Math.hypot(v.x - s.x, v.y - s.y);
-        if (d <= faust.range && d < bestD && los(this.map, s.x, s.y, v.x, v.y).visible) {
+        if (d <= faust.range && d < bestD && sightBetween(this, s.x, s.y, v.x, v.y).visible) {
           bestD = d;
           bestV = v;
         }
@@ -1031,6 +1369,10 @@ export class Sim {
       }
     }
 
+    if (order?.kind === 'fire' && order.targetId !== undefined) {
+      const forced = this.soldiers[order.targetId];
+      if (forced.alive && !forced.downed && Math.hypot(forced.x - s.x, forced.y - s.y) <= w.range) s.targetId = order.targetId;
+    }
     const t = s.targetId >= 0 ? this.soldiers[s.targetId] : null;
     const targetInvalid = !t || !t.alive || t.downed || Math.hypot(t.x - s.x, t.y - s.y) > w.range;
     if (targetInvalid || (this.tick + s.id) % RETARGET_TICKS === 0) {
@@ -1038,12 +1380,33 @@ export class Sim {
     }
     if (s.targetId >= 0 && s.cooldown <= 0) {
       this.fire(s, this.soldiers[s.targetId]);
+    } else if (order?.kind === 'fire' && w.heat && s.cooldown <= 0) {
+      // MGs take area suppression at the order's point when no visible target
+      this.areaFire(s, order);
     }
   }
 
+  // MG area suppression at a point (no visible individual target): costs
+  // ammo/heat like an aimed shot but rolls no hit. Ammo discipline: holds the
+  // last belt below 30% of starting reserve.
+  private areaFire(s: Soldier, order: TeamOrder): void {
+    const w: WeaponDef = WEAPONS[s.weapon];
+    const currentUnits = Object.values(s.ammo).reduce((a: number, n) => a + (n ?? 0), 0);
+    if (s.ammoStart > 0 && currentUnits / s.ammoStart < 0.3) return;
+    const enemySide: Side = s.side === 'blue' ? 'red' : 'blue';
+    this.suppressAround(order.x, order.y, enemySide, w.suppression);
+    this.pendingEvents.push({ fx: s.x, fy: s.y, tx: order.x, ty: order.y, hit: false, kill: false });
+    s.magLeft--;
+    if (w.heat) s.heat = Math.min(1.5, s.heat + w.heat.perShot);
+    s.cooldown = w.cooldown * (0.85 + this.rng.next() * 0.3);
+  }
+
   private advance(s: Soldier, speed: number): void {
-    // walking; sprint (0.02) arrives with orders (Task 6), load multiplier with Task 9
-    s.stamina = Math.max(0, s.stamina - 0.004 * DT);
+    // walking (0.004/s) unless sprinting under a fast order (0.02/s); load
+    // multiplier arrives with Task 9
+    const order = this.teams[s.teamId].orderState.order;
+    const drainRate = order?.kind === 'fast' ? 0.02 : 0.004;
+    s.stamina = Math.max(0, s.stamina - drainRate * DT);
     const cost = this.map.terrainAt(Math.floor(s.x), Math.floor(s.y)).moveCost;
     let remaining = (speed / cost) * DT;
     while (remaining > 0 && s.path) {
@@ -1081,7 +1444,7 @@ export class Sim {
       if (!c.alive || !c.downed || c.stabilized || c.rescuerId >= 0) continue;
       if (Math.hypot(c.x - s.x, c.y - s.y) > 30) continue;
       if (this.rescueWillingness(s, c) < 0.75) continue;
-      s.task = { casualtyId: c.id, phase: 'goto', timer: 0 };
+      s.task = { kind: 'rescue', casualtyId: c.id, phase: 'goto', timer: 0 };
       s.path = null;
       s.targetId = -1;
       c.rescuerId = s.id;
@@ -1090,7 +1453,7 @@ export class Sim {
   }
 
   private updateRescue(s: Soldier): void {
-    const task = s.task!;
+    const task = s.task as RescueTask;
     const c = this.soldiers[task.casualtyId];
     if (!c.alive || !c.downed) {
       this.dropTask(s);
@@ -1155,11 +1518,122 @@ export class Sim {
     }
   }
 
+  // A dry MG gunner (<=1 belt left) flags need; the nearest willing
+  // same-squad bearer carrying that ammo type runs it over. Reuses
+  // rescueWillingness's bond/courage/suppression formula (same trade-off,
+  // different threshold).
+  private considerAmmoRunner(s: Soldier): void {
+    const w: WeaponDef = WEAPONS[s.weapon];
+    if (!w.heat) return; // MG-class only
+    if (s.ammoRunnerId >= 0) return; // already coming
+    const total = Object.values(s.ammo).reduce((a: number, n) => a + (n ?? 0), 0);
+    if (total > 1) return;
+    const type = w.ammo.type;
+    let best: Soldier | null = null;
+    let bestD = Infinity;
+    for (const sid of this.squads[s.squadId].soldierIds) {
+      const c = this.soldiers[sid];
+      if (c.id === s.id || !c.alive || c.downed || c.task) continue;
+      if ((c.ammo[type] ?? 0) < 2) continue;
+      if (this.rescueWillingness(c, s) < 0.6) continue;
+      const d = Math.hypot(c.x - s.x, c.y - s.y);
+      if (d < bestD) {
+        bestD = d;
+        best = c;
+      }
+    }
+    if (!best) return;
+    best.task = { kind: 'ammo', gunnerId: s.id, phase: 'goto', timer: 0, returnX: best.x, returnY: best.y };
+    best.path = null;
+    s.ammoRunnerId = best.id;
+  }
+
+  private updateAmmoTask(s: Soldier): void {
+    const task = s.task as AmmoTask;
+    const gunner = this.soldiers[task.gunnerId];
+    if (!gunner.alive || gunner.downed) {
+      this.dropTask(s);
+      return;
+    }
+    if (task.phase === 'goto') {
+      const d = Math.hypot(gunner.x - s.x, gunner.y - s.y);
+      if (d > 1.5) {
+        if (!s.path) {
+          const path = astar(this.map, Math.floor(s.x), Math.floor(s.y), Math.floor(gunner.x), Math.floor(gunner.y));
+          if (!path || path.length < 2) {
+            this.dropTask(s);
+            return;
+          }
+          s.path = path.slice(1).map((p) => ({ x: p.x + 0.5, y: p.y + 0.5 }));
+          s.pathI = 0;
+        }
+        this.advance(s, this.moveSpeed(s));
+        return;
+      }
+      s.path = null;
+      task.phase = 'transfer';
+      task.timer = 3;
+      return;
+    }
+    if (task.phase === 'transfer') {
+      task.timer -= DT;
+      if (task.timer > 0) return;
+      const type = WEAPONS[gunner.weapon].ammo.type;
+      const have = s.ammo[type] ?? 0;
+      const give = Math.floor(have / 2);
+      if (give > 0) {
+        s.ammo[type] = have - give;
+        gunner.ammo[type] = (gunner.ammo[type] ?? 0) + give;
+      }
+      gunner.ammoRunnerId = -1;
+      task.phase = 'return';
+      const path = astar(this.map, Math.floor(s.x), Math.floor(s.y), Math.floor(task.returnX), Math.floor(task.returnY));
+      if (path && path.length > 1) {
+        s.path = path.slice(1).map((p) => ({ x: p.x + 0.5, y: p.y + 0.5 }));
+        s.pathI = 0;
+      }
+      return;
+    }
+    // return
+    if (s.path) {
+      this.advance(s, this.moveSpeed(s));
+      return;
+    }
+    s.task = null;
+  }
+
+  // Idle soldier within 2m of a same-side dropped kit that outranks his
+  // current weapon (mg42/bar/m1919 > smg > rifle > carbine) swaps to it —
+  // timed 3s riding the reloading busy-timer, inherits remaining ammo.
+  private considerPickup(s: Soldier): void {
+    if (s.reloading > 0 || s.pickingUp || s.path) return;
+    const myRank = weaponRank(s.weapon);
+    for (const kit of this.droppedKit) {
+      if (kit.side !== s.side || weaponRank(kit.weapon) <= myRank) continue;
+      if (Math.hypot(kit.x - s.x, kit.y - s.y) > 2) continue;
+      s.pickingUp = true;
+      s.reloading = 3;
+      return;
+    }
+  }
+
+  // On kill/downed: the weapon+ammo a soldier was carrying hits the ground,
+  // and both squad- and team-scoped "recent casualty" clocks reset (dangerScore,
+  // ambush trigger).
+  private dropKit(s: Soldier): void {
+    this.droppedKit.push({ side: s.side, x: s.x, y: s.y, weapon: s.weapon, ammo: { ...s.ammo }, magLeft: s.magLeft });
+    this.squadLastCasualty[s.squadId] = this.tick;
+    this.teamLastCasualty[s.teamId] = this.tick;
+  }
+
   private dropTask(s: Soldier): void {
-    if (s.task) {
+    if (s.task?.kind === 'rescue') {
       const c = this.soldiers[s.task.casualtyId];
       if (c.rescuerId === s.id) c.rescuerId = -1;
       if (c.carriedBy === s.id) c.carriedBy = -1;
+    } else if (s.task?.kind === 'ammo') {
+      const g = this.soldiers[s.task.gunnerId];
+      if (g.ammoRunnerId === s.id) g.ammoRunnerId = -1;
     }
     s.task = null;
   }
@@ -1220,16 +1694,27 @@ export class Sim {
   }
 
   private acquire(s: Soldier): number {
-    return this.acquireSoldierTarget(s.x, s.y, s.side, WEAPONS[s.weapon].range);
+    const order = this.teams[s.teamId].orderState.order;
+    const arc = (order?.kind === 'defend' || order?.kind === 'ambush') ? order.arc : undefined;
+    return this.acquireSoldierTarget(s.x, s.y, s.side, WEAPONS[s.weapon].range, arc);
   }
 
   private fire(s: Soldier, t: Soldier): void {
-    if (!los(this.map, s.x, s.y, t.x, t.y).visible) {
+    if (!sightBetween(this, s.x, s.y, t.x, t.y).visible) {
       s.targetId = -1;
       return;
     }
     const w = WEAPONS[s.weapon];
-    const kill = this.fireSmallArms(s, t, s.path !== null, this.aimFactor(s));
+    const team = this.teams[s.teamId];
+    const order = team.orderState.order;
+    let aim = this.aimFactor(s);
+    // pre-registered arc: +0.1 accuracy, approximated as a proportional aim
+    // bump (shotPreview's public formula has no additive-accuracy hook)
+    if (order && (order.kind === 'defend' || order.kind === 'ambush') && order.arc && this.inArc(s.x, s.y, t.x, t.y, order.arc)) {
+      aim *= 1.25;
+    }
+    if (order?.kind === 'defend' && team.ambushBonusTick === this.tick) aim *= 1.3; // ambush's first-volley bonus
+    const kill = this.fireSmallArms(s, t, s.path !== null, aim);
     const rate = s.mental === 'pinned' ? 2 : 1; // cowering: slower fire
     s.cooldown = w.cooldown * rate * (0.85 + this.rng.next() * 0.3);
     if (kill || t.downed) s.targetId = -1;
@@ -1252,14 +1737,21 @@ export class Sim {
   }
 
   private kill(t: Soldier): void {
-    if (t.inVehicle < 0) this.pendingUnitEvents.push({ kind: 'kia', x: t.x, y: t.y, side: t.side, name: t.name });
+    if (t.inVehicle < 0) {
+      this.pendingUnitEvents.push({ kind: 'kia', x: t.x, y: t.y, side: t.side, name: t.name });
+      this.dropKit(t);
+    }
     t.alive = false;
     t.path = null;
     t.downed = false;
     if (t.task) this.dropTask(t);
     if (t.rescuerId >= 0) {
       const r = this.soldiers[t.rescuerId];
-      if (r.task?.casualtyId === t.id) this.dropTask(r);
+      if (r.task?.kind === 'rescue' && r.task.casualtyId === t.id) this.dropTask(r);
+    }
+    if (t.ammoRunnerId >= 0) {
+      const r = this.soldiers[t.ammoRunnerId];
+      if (r.task?.kind === 'ammo' && r.task.gunnerId === t.id) this.dropTask(r);
     }
     this.moraleShock(t, 0.08);
   }
@@ -1306,13 +1798,16 @@ export class Sim {
         Math.round(s.morale * 1e6),
         s.body.join(','),
         s.targetId,
-        s.task ? `${s.task.phase}:${s.task.casualtyId}` : '',
+        s.task ? (s.task.kind === 'rescue' ? `rescue:${s.task.phase}:${s.task.casualtyId}` : `ammo:${s.task.phase}:${s.task.gunnerId}`) : '',
         s.stabilized,
         s.magLeft,
         s.reloading > 0,
         Math.round(s.heat * 1e6),
         Object.values(s.ammo).reduce((a: number, n) => a + (n ?? 0), 0),
         Math.round(s.stamina * 1e6),
+        s.ammoRunnerId,
+        s.pickingUp,
+        s.weapon,
       ]),
       vehicles: this.vehicles.map((v) => [
         v.id,
@@ -1322,6 +1817,16 @@ export class Sim {
         Math.round(v.facing * 1e6),
         v.targetVehicleId,
         v.targetSoldierId,
+      ]),
+      teams: this.teams.map((t) => [t.id, t.orderState.phase, t.orderState.order?.kind ?? '', t.smokeLeft, t.ambushBonusTick]),
+      smoke: this.smoke.map((p) => [Math.round(p.x * 1e6), Math.round(p.y * 1e6), Math.round(p.ttl * 1e6)]),
+      droppedKit: this.droppedKit.map((k) => [
+        k.side,
+        Math.round(k.x * 1e6),
+        Math.round(k.y * 1e6),
+        k.weapon,
+        Object.values(k.ammo).reduce((a: number, n) => a + (n ?? 0), 0),
+        k.magLeft,
       ]),
     });
   }

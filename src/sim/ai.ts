@@ -38,10 +38,10 @@ export class RedCommander {
 
       if (this.cfg.stance === 'attack') {
         // press toward the objective whenever the squad has gone idle
-        if (!moving && distToPost > 10) sim.orderSquadMove(squad.id, post.x, post.y);
+        if (!moving && distToPost > 10) sim.orderSquad(squad.id, { kind: 'move', x: post.x, y: post.y });
       } else {
         // defend: hold in place; move only to counterattack a lost post
-        if (enemiesAtPost > 0 && distToPost > 8 && !moving) sim.orderSquadMove(squad.id, post.x, post.y);
+        if (enemiesAtPost > 0 && distToPost > 8 && !moving) sim.orderSquad(squad.id, { kind: 'move', x: post.x, y: post.y });
       }
     }
 
