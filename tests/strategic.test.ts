@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
+import { newCampaign } from '../src/campaign/campaign';
+import { Front, findPath, operationStatus, OP_START_MIN, OP_DEADLINE_DAYS } from '../src/strategic/front';
 import { cellIndex, makeDefaultSector, parseSector } from '../src/strategic/sector';
+import { applyEngagementOutcome, makeStrategicBattle, newFront } from '../src/strategic/bridge';
+import { loadGame, saveGame } from '../src/strategic/save';
 
 describe('sector', () => {
   it('parses the default sector: 40×30, river neutral, bridges, objective town', () => {
@@ -20,5 +24,157 @@ describe('sector', () => {
   it('rejects malformed input', () => {
     expect(() => parseSector(['..', '.'], 1, 'bad')).toThrow(/length/);
     expect(() => parseSector(['.x'], 1, 'bad')).toThrow(/unknown sector char/);
+  });
+});
+
+describe('front', () => {
+  const miniSector = () => parseSector(['rrrr'], 2, 'mini'); // 4×1 road; x<2 blue
+
+  it('paths cross the river only at bridges', () => {
+    const s = makeDefaultSector();
+    const path = findPath(s, cellIndex(s, 4, 15), cellIndex(s, 25, 15))!;
+    expect(path).toContain(cellIndex(s, 20, 15));
+    expect(path.some((i) => s.cells[i].terrain === 'river')).toBe(false);
+  });
+
+  it('moves at terrain speed and captures entered cells', () => {
+    const s = miniSector();
+    const f = new Front(s);
+    const chit = f.addChit({ side: 'blue', name: 'Able', cell: 0, strength: 27, companyIndex: 0 });
+    expect(f.orderMove(chit.id, 3)).toBe(true);
+    for (let i = 0; i < 10; i++) expect(f.step()).toBeNull(); // road = 10 min/cell
+    expect(chit.cell).toBe(1);
+    for (let i = 0; i < 20; i++) f.step();
+    expect(chit.cell).toBe(3);
+    expect(chit.path.length).toBe(0);
+    expect(s.cells[2].owner).toBe('blue'); // was red, captured in passing
+    expect(s.cells[3].owner).toBe('blue');
+  });
+
+  it('contact: reaching an enemy-held cell halts the mover and returns an engagement', () => {
+    const s = miniSector();
+    const f = new Front(s);
+    const blue = f.addChit({ side: 'blue', name: 'Able', cell: 0, strength: 27, companyIndex: 0 });
+    const red = f.addChit({ side: 'red', name: 'Gruppe', cell: 2, strength: 18, companyIndex: -1 });
+    f.orderMove(blue.id, 3);
+    let e = null;
+    for (let i = 0; i < 200 && !e; i++) e = f.step();
+    expect(e).toEqual({ attackerId: blue.id, defenderId: red.id, cell: 2 });
+    expect(blue.cell).toBe(1); // halted short of the contested cell
+    expect(blue.path.length).toBe(0);
+    expect(s.cells[2].owner).toBe('red'); // not captured
+  });
+
+  it('clock: day rolls at midnight, hhmm formats', () => {
+    const f = new Front(miniSector());
+    expect(f.clockMin).toBe(OP_START_MIN);
+    expect(f.day).toBe(1);
+    expect(f.hhmm).toBe('0600');
+    for (let i = 0; i < 18 * 60; i++) f.step(); // 06:00 + 18 h = midnight
+    expect(f.day).toBe(2);
+    expect(f.hhmm).toBe('0000');
+  });
+
+  it('operationStatus: objectives won, deadline and annihilation lost', () => {
+    const s = parseSector(['.T'], 1, 'tiny');
+    const f = new Front(s);
+    f.addChit({ side: 'blue', name: 'Able', cell: 0, strength: 27, companyIndex: 0 });
+    expect(operationStatus(f)).toBe('ongoing');
+    s.cells[1].owner = 'blue';
+    expect(operationStatus(f)).toBe('won');
+    s.cells[1].owner = 'red';
+    f.clockMin = OP_DEADLINE_DAYS * 1440 + 1;
+    expect(operationStatus(f)).toBe('lost');
+    f.clockMin = OP_START_MIN;
+    f.chits[0].strength = 0;
+    expect(operationStatus(f)).toBe('lost');
+  });
+
+  it('save/restore roundtrips through JSON', () => {
+    const s = makeDefaultSector();
+    const f = new Front(s);
+    const chit = f.addChit({ side: 'blue', name: 'Able', cell: cellIndex(s, 4, 15), strength: 27, companyIndex: 0 });
+    f.orderMove(chit.id, cellIndex(s, 10, 15));
+    for (let i = 0; i < 25; i++) f.step();
+    const raw = JSON.parse(JSON.stringify(f.save()));
+    const g = Front.restore(makeDefaultSector(), raw);
+    expect(g.clockMin).toBe(f.clockMin);
+    expect(g.chits).toEqual(f.chits);
+    expect(g.sector.cells.map((c) => c.owner)).toEqual(f.sector.cells.map((c) => c.owner));
+  });
+});
+
+describe('bridge', () => {
+  const setup = () => {
+    const c = newCampaign(10);
+    const sector = makeDefaultSector();
+    const front = newFront(c, sector);
+    return { c, sector, front };
+  };
+
+  it('newFront fields 3 blue companies at strength 27 and 5 garrisons', () => {
+    const { front } = setup();
+    const blue = front.chits.filter((ch) => ch.side === 'blue');
+    expect(blue.length).toBe(3);
+    expect(blue.every((ch) => ch.strength === 27)).toBe(true);
+    expect(front.chits.filter((ch) => ch.side === 'red').length).toBe(5);
+  });
+
+  it('a strategic battle fields the company roster with pids and bonds against a sized garrison', () => {
+    const { c, front } = setup();
+    const able = front.chits.find((ch) => ch.side === 'blue')!;
+    const wache = front.chits.find((ch) => ch.name === 'Brückenwache Süd')!;
+    const { sim } = makeStrategicBattle(c, front, { attackerId: able.id, defenderId: wache.id, cell: wache.cell }, 5);
+    const blue = sim.soldiers.filter((s) => s.side === 'blue');
+    const red = sim.soldiers.filter((s) => s.side === 'red');
+    expect(blue.length).toBe(27);
+    expect(blue.every((s) => s.pid > 0)).toBe(true);
+    expect(red.length).toBe(18); // ceil(18/9) = 2 squads
+    const [a, b] = blue;
+    expect(a.bonds[b.id]).toBeCloseTo(0.3); // trained-together, wired from campaign
+  });
+
+  it('a won battle takes the cell, moves the attacker in, and attrits the garrison away', () => {
+    const { c, front } = setup();
+    const able = front.chits.find((ch) => ch.side === 'blue')!;
+    const wache = front.chits.find((ch) => ch.name === 'Brückenwache Süd')!;
+    const e = { attackerId: able.id, defenderId: wache.id, cell: wache.cell };
+    const { sim } = makeStrategicBattle(c, front, e, 6);
+    for (const s of sim.soldiers) if (s.side === 'red') s.alive = false;
+    sim.step();
+    expect(sim.winner).toBe('blue');
+    const out = applyEngagementOutcome(c, front, e, sim);
+    expect(out.cellTaken).toBe(true);
+    expect(out.redLosses).toBe(18);
+    expect(front.sector.cells[e.cell].owner).toBe('blue');
+    expect(able.cell).toBe(e.cell);
+    expect(front.chits.find((ch) => ch.name === 'Brückenwache Süd')).toBeUndefined();
+    expect(c.log.length).toBe(1);
+  });
+
+  it('a lost battle leaves the map unchanged and prunes a wiped company', () => {
+    const { c, front } = setup();
+    const able = front.chits.find((ch) => ch.side === 'blue')!;
+    const wache = front.chits.find((ch) => ch.name === 'Brückenwache Süd')!;
+    const e = { attackerId: able.id, defenderId: wache.id, cell: wache.cell };
+    const { sim } = makeStrategicBattle(c, front, e, 7);
+    for (const s of sim.soldiers) if (s.side === 'blue') s.alive = false;
+    sim.step();
+    expect(sim.winner).toBe('red');
+    const out = applyEngagementOutcome(c, front, e, sim);
+    expect(out.cellTaken).toBe(false);
+    expect(front.sector.cells[e.cell].owner).toBe('red');
+    expect(front.chits.filter((ch) => ch.side === 'blue').length).toBe(2); // Able wiped, pruned
+  });
+
+  it('saveGame/loadGame roundtrips campaign and front', () => {
+    const store = new Map<string, string>();
+    const storage = { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => void store.set(k, v) };
+    const { c, front } = setup();
+    saveGame(c, front, storage);
+    const loaded = loadGame(storage)!;
+    expect(loaded.campaign).toEqual(c);
+    expect(loaded.front.chits).toEqual(front.chits);
+    expect(loaded.front.clockMin).toBe(front.clockMin);
   });
 });

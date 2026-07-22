@@ -121,7 +121,7 @@ function rosterMembers(roster: RosterEntry[], positions: { x: number; y: number 
 }
 
 // Wire campaign bonds (keyed by pid) onto battle soldiers (keyed by battle id).
-function wireBonds(sim: Sim, roster: RosterEntry[][]): void {
+export function wireBonds(sim: Sim, roster: RosterEntry[][]): void {
   const byPid = new Map<number, number>();
   for (const s of sim.soldiers) if (s.pid >= 0) byPid.set(s.pid, s.id);
   for (const squad of roster) {

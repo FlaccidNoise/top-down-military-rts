@@ -21,7 +21,7 @@ export function drawOverlays(ctx: CanvasRenderingContext2D, cam: Camera, sim: Si
       const tx = Math.floor(st.pick.x + ox);
       const ty = Math.floor(st.pick.y + oy);
       if (!sim.map.inBounds(tx, ty)) continue;
-      const covered = sim.map.terrainAt(tx, ty).cover >= 0.2 || sim.map.terrainKeyAt(tx, ty) === 'floor';
+      const covered = sim.inCover(tx + 0.5, ty + 0.5);
       const [sx, sy] = cam.worldToScreen(tx + 0.5, ty + 0.5, cw, ch);
       ctx.fillStyle = covered ? 'rgba(127,191,106,0.9)' : 'rgba(232,228,216,0.5)';
       ctx.beginPath();

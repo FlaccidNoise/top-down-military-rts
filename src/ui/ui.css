@@ -186,7 +186,7 @@ button.hbtn.active { background: #4b4326; border-color: #ffca6a; color: #ffe9a0;
   display: none;
   overflow: auto;
   z-index: 10;
-  background: rgba(10, 12, 9, 0.94);
+  background: #0d0f0b;
   font: 13px/1.5 ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
   color: #d8d4c4;
 }

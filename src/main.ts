@@ -12,6 +12,7 @@ import {
 import { Camera } from './render/camera';
 import { Renderer } from './render/renderer';
 import type { RedCommander } from './sim/ai';
+import { WEAPONS } from './sim/data';
 import { makeCampaignBattle } from './sim/scenario';
 import { DT, type Sim } from './sim/sim';
 import { Hud, infantrySquads } from './ui/hud';
@@ -123,7 +124,7 @@ function showDebrief(): void {
           const scars = cs.bodyDamage.some((d) => d > 0) && cs.status === 'fit' ? ' <span class="scar">permanent injury</span>' : '';
           const st = cs.status === 'kia' ? 'KIA' : cs.status === 'recovering' ? `recovering (${cs.recoveryDays}d)` : 'fit';
           const cls = cs.status === 'kia' ? ' class="kia"' : cs.status === 'recovering' ? ' class="rec"' : '';
-          return `<tr${cls}><td>${cs.name}</td><td>${cs.weapon}</td><td>${cs.battles}</td><td>${st}${scars}</td></tr>`;
+          return `<tr${cls}><td>${cs.name}</td><td>${WEAPONS[cs.weapon].name}</td><td>${cs.battles}</td><td>${st}${scars}</td></tr>`;
         })
         .join('');
       return `<h3>${sq.name}</h3><table><tr><th>NAME</th><th>WEAPON</th><th>BATTLES</th><th>STATUS</th></tr>${men}</table>`;

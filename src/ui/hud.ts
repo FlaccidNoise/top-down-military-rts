@@ -58,7 +58,7 @@ export class Hud {
     this.q('#squads').addEventListener('click', (e) => {
       const t = e.target as HTMLElement;
       const row = t.closest<HTMLElement>('[data-soldier]');
-      if (row) cb.panToSoldier(Number(row.dataset.soldier));
+      if (row) return cb.panToSoldier(Number(row.dataset.soldier));
       const veh = t.closest<HTMLElement>('[data-vehicle]');
       if (veh) return cb.selectVehicle(Number(veh.dataset.vehicle));
       const card = t.closest<HTMLElement>('[data-squad]');
