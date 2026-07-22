@@ -56,21 +56,26 @@ function tryGenerate(rng: Rng, w: number, h: number): MapPlan | null {
   }
   for (let x = 0; x < w; x++) for (let dy = -1; dy <= 1; dy++) road[(roadY[x] + dy) * w + x] = 1;
 
-  // cross lane north→south through the crossroads, 2 tiles wide
+  // cross lane north→south through a junction on the arterial, 2 tiles wide
+  const carveCrossLane = (jx: number): Int32Array => {
+    const laneX = new Int32Array(h);
+    const jy = roadY[jx];
+    let rx = jx;
+    for (let y = jy; y < h; y++) {
+      laneX[y] = rx;
+      if (rng.next() < 0.18) rx = clamp(rx + (rng.next() < 0.5 ? -1 : 1), 6, w - 8);
+    }
+    rx = jx;
+    for (let y = jy - 1; y >= 0; y--) {
+      laneX[y] = rx;
+      if (rng.next() < 0.18) rx = clamp(rx + (rng.next() < 0.5 ? -1 : 1), 6, w - 8);
+    }
+    for (let y = 0; y < h; y++) for (let dx = 0; dx <= 1; dx++) road[y * w + laneX[y] + dx] = 1;
+    return laneX;
+  };
   const crossX = Math.round(w * rng.range(0.45, 0.62));
   const cy = roadY[crossX];
-  const roadX = new Int32Array(h);
-  let rx = crossX;
-  for (let y = cy; y < h; y++) {
-    roadX[y] = rx;
-    if (rng.next() < 0.18) rx = clamp(rx + (rng.next() < 0.5 ? -1 : 1), 6, w - 8);
-  }
-  rx = crossX;
-  for (let y = cy - 1; y >= 0; y--) {
-    roadX[y] = rx;
-    if (rng.next() < 0.18) rx = clamp(rx + (rng.next() < 0.5 ? -1 : 1), 6, w - 8);
-  }
-  for (let y = 0; y < h; y++) for (let dx = 0; dx <= 1; dx++) road[y * w + roadX[y] + dx] = 1;
+  const roadX = carveCrossLane(crossX);
 
   // village: buildings snapped to road frontage near the crossroads
   const buildings: Building[] = [];
@@ -120,18 +125,7 @@ function tryGenerate(rng: Rng, w: number, h: number): MapPlan | null {
   if (w >= 240) {
     const crossX2 = Math.round(w * (0.15 + rng.range(0, 0.08)));
     const cy2 = roadY[crossX2];
-    const roadX2 = new Int32Array(h);
-    let rx2 = crossX2;
-    for (let y = cy2; y < h; y++) {
-      roadX2[y] = rx2;
-      if (rng.next() < 0.18) rx2 = clamp(rx2 + (rng.next() < 0.5 ? -1 : 1), 6, w - 8);
-    }
-    rx2 = crossX2;
-    for (let y = cy2 - 1; y >= 0; y--) {
-      roadX2[y] = rx2;
-      if (rng.next() < 0.18) rx2 = clamp(rx2 + (rng.next() < 0.5 ? -1 : 1), 6, w - 8);
-    }
-    for (let y = 0; y < h; y++) for (let dx = 0; dx <= 1; dx++) road[y * w + roadX2[y] + dx] = 1;
+    const roadX2 = carveCrossLane(crossX2);
     placeCluster(crossX2, cy2, roadX2, buildings.length + 3 + rng.int(2), 14);
     settlements.push({ x: crossX2, y: cy2, r: 16 });
   }
@@ -142,21 +136,22 @@ function tryGenerate(rng: Rng, w: number, h: number): MapPlan | null {
     for (let tries = 0; tries < 60; tries++) {
       const fx = 8 + rng.int(w - 28);
       const fy = 8 + rng.int(h - 26);
-      if ((fx - crossX) * (fx - crossX) + (fy - cy) * (fy - cy) < 35 * 35) continue;
+      // stay outside every settlement's clearing plus a margin (village: 26+9=35)
+      if (settlements.some((s) => (fx - s.x) * (fx - s.x) + (fy - s.y) * (fy - s.y) < (s.r + 9) * (s.r + 9))) continue;
       const house: Building = { x: fx, y: fy, w: 6 + rng.int(3), h: 5 + rng.int(2) };
       const barn: Building = { x: fx, y: fy + house.h + 3, w: 5 + rng.int(3), h: 4 + rng.int(2) };
       if (barn.y + barn.h > h - 3 || fx + Math.max(house.w, barn.w) > w - 4) continue;
       if (touchesRoad(house) || overlaps(house) || touchesRoad(barn) || overlaps(barn)) continue;
       const lx = Math.min(w - 3, fx + Math.max(house.w, barn.w) + 1);
-      const target = roadY[lx];
-      const step = fy + house.h + 1 < target ? 1 : -1;
+      const laneTargetY = roadY[lx];
+      const step = fy + house.h + 1 < laneTargetY ? 1 : -1;
       let laneBlocked = false;
-      for (let yy = fy + house.h + 1; yy !== target && !laneBlocked; yy += step)
+      for (let yy = fy + house.h + 1; yy !== laneTargetY && !laneBlocked; yy += step)
         laneBlocked = buildings.some((o) => lx >= o.x - 1 && lx < o.x + o.w + 1 && yy >= o.y - 1 && yy < o.y + o.h + 1);
       if (laneBlocked) continue;
       buildings.push(house, barn);
       doorSides.push('s', 'n'); // both doors open onto the shared yard row
-      for (let yy = fy + house.h + 1; yy !== target; yy += step) road[yy * w + lx] = 1;
+      for (let yy = fy + house.h + 1; yy !== laneTargetY; yy += step) road[yy * w + lx] = 1;
       break;
     }
   }
