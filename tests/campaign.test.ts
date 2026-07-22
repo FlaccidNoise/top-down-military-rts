@@ -80,7 +80,13 @@ describe('red commander', () => {
     const sim = new Sim(map, 23);
     // blue squad sits on red's post; red squad is far off it
     sim.addSquad('blue', 'A', [0, 1, 2].map((i) => ({ name: `b${i}`, weapon: 'garand', x: 10.5 + i, y: 10.5 })));
-    sim.addSquad('red', '1. Gruppe', [0, 1, 2, 3].map((i) => ({ name: `r${i}`, weapon: 'garand', x: 30.5 + i, y: 30.5 })));
+    // Counterattacking across ground the enemy already holds is exactly what
+    // the order-vocabulary's refusal model (orderSquad -> orderTeam ->
+    // compliance) is supposed to flag as dangerous — veteran/led/high-morale
+    // troops so the counterattack is actually issued instead of balking.
+    sim.addSquad('red', '1. Gruppe', [0, 1, 2, 3].map((i) => ({ name: `r${i}`, weapon: 'garand', x: 30.5 + i, y: 30.5, xp: 30 })));
+    sim.soldiers[3].role = 'leader';
+    for (const s of sim.squads[1].soldierIds) sim.soldiers[s].morale = 1;
     const commander = new RedCommander({ stance: 'defend', posts: { 1: { x: 10, y: 10 } } });
     commander.update(sim);
     const ordered = sim.squads[1].soldierIds.map((i) => sim.soldiers[i]).filter((s) => s.path !== null);

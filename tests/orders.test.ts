@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { EDGE, GameMap } from '../src/sim/map';
+import { dangerScore } from '../src/sim/orders';
 import { Sim, sightBetween } from '../src/sim/sim';
 
 describe('order vocabulary: move/fast/sneak executor', () => {
@@ -52,7 +53,7 @@ describe('order vocabulary: move/fast/sneak executor', () => {
       { name: 'M4', weapon: 'kar98k', x: 40.5, y: 9.5 },
       { name: 'M5', weapon: 'kar98k', x: 40.5, y: 8.5 },
     ]);
-    sim.teamLastCasualty[0] = sim.tick; // recent squad casualty flat contribution
+    sim.squadLastCasualty[0] = sim.tick; // recent squad casualty flat contribution
     sim.orderTeam(0, { kind: 'move', x: 50, y: 10 });
     const st = sim.teams[0].orderState;
     expect(st.phase).toBe('balked');
@@ -62,17 +63,16 @@ describe('order vocabulary: move/fast/sneak executor', () => {
 
   it('a cautious verdict downgrades fast to move', () => {
     const sim = new Sim(new GameMap(80, 20), 4);
+    // A veteran, well-led, high-morale team (raises the compliance threshold
+    // per the plan's formula) so a fully-covered 20m path lands in the
+    // cautious band instead of comply or balk.
     sim.addSquad('blue', 'a', [
-      { name: 'A', weapon: 'garand', x: 10.5, y: 10.5 },
-      { name: 'B', weapon: 'garand', x: 10.5, y: 11.5 },
+      { name: 'A', weapon: 'garand', x: 10.5, y: 10.5, xp: 30 },
+      { name: 'B', weapon: 'garand', x: 10.5, y: 11.5, xp: 30 },
     ]);
-    for (const s of sim.soldiers) s.morale = 0.4; // no leader, lower morale -> lower threshold
-    sim.addSquad('red', 'r', [
-      { name: 'R1', weapon: 'kar98k', x: 25.5, y: 10.5 },
-      { name: 'R2', weapon: 'kar98k', x: 25.5, y: 11.5 },
-      { name: 'R3', weapon: 'kar98k', x: 25.5, y: 9.5 },
-    ]);
-    sim.teamLastCasualty[0] = sim.tick;
+    sim.soldiers[0].role = 'leader';
+    for (const s of sim.soldiers) s.morale = 1;
+    sim.addSquad('red', 'r', [{ name: 'R1', weapon: 'mg42', x: 30.5, y: 10.5 }]); // covers the whole path, well within its 150m range
     sim.orderTeam(0, { kind: 'fast', x: 50, y: 10 });
     const st = sim.teams[0].orderState;
     expect(st.phase).not.toBe('balked');
@@ -81,19 +81,103 @@ describe('order vocabulary: move/fast/sneak executor', () => {
   });
 
   it('a sneaking team does not acquire or fire on a visible enemy', () => {
-    const sim = new Sim(new GameMap(60, 20), 5);
+    const sim = new Sim(new GameMap(120, 20), 5);
     sim.addSquad('blue', 'a', [
       { name: 'A', weapon: 'garand', x: 10.5, y: 10.5 },
       { name: 'B', weapon: 'garand', x: 10.5, y: 11.5 },
     ]);
-    sim.addSquad('red', 'r', [{ name: 'R1', weapon: 'kar98k', x: 20.5, y: 10.5, ammo: {} }]);
-    sim.soldiers[2].magLeft = 0; // enemy is dry: can't fire back and mask the assertion
+    // 90m out with a short-range weapon (mp40, 50m): can't reach blue at all
+    // (its own acquire range excludes them) and doesn't "cover" the short
+    // sneak path either (dangerScore uses the enemy's own weapon range), so
+    // this stays comply — but the enemy sits well within the blue soldiers'
+    // own garand range (100m), so acquire() would normally find it were it
+    // not held by the sneak gate.
+    sim.addSquad('red', 'r', [{ name: 'R1', weapon: 'mp40', x: 100.5, y: 10.5 }]);
     sim.orderTeam(0, { kind: 'sneak', x: 15, y: 10 });
     expect(sim.teams[0].orderState.phase).not.toBe('balked');
     for (let i = 0; i < 90; i++) sim.step();
     expect(sim.soldiers[0].targetId).toBe(-1);
     expect(sim.soldiers[1].targetId).toBe(-1);
     expect(sim.takeEvents().length).toBe(0);
+  });
+
+  it('a sneaking mover is hit as accurately as a stationary target (negates the mover discount)', () => {
+    const sim = new Sim(new GameMap(40, 10), 8);
+    sim.addSquad('blue', 'shooter', [{ name: 'S', weapon: 'garand', x: 5.5, y: 5.5 }]);
+    sim.addSquad('red', 'stationary', [{ name: 'T1', weapon: 'kar98k', x: 25.5, y: 5.5 }]);
+    sim.addSquad('red', 'mover', [{ name: 'T2', weapon: 'kar98k', x: 25.5, y: 5.5 }]);
+    sim.addSquad('red', 'sneaker', [{ name: 'T3', weapon: 'kar98k', x: 25.5, y: 5.5 }]);
+    const shooter = sim.soldiers[0];
+    const [stationary, mover, sneaker] = [sim.soldiers[1], sim.soldiers[2], sim.soldiers[3]];
+    mover.path = [{ x: 26, y: 5.5 }]; // "moving" for accuracy purposes, no sneak order
+    sneaker.path = [{ x: 26, y: 5.5 }];
+    sim.orderTeam(sneaker.teamId, { kind: 'sneak', x: 26, y: 5.5 });
+
+    const accStationary = sim.shotPreview(shooter.x, shooter.y, 'garand', stationary, false, 1).acc;
+    const accMover = sim.shotPreview(shooter.x, shooter.y, 'garand', mover, false, 1).acc;
+    const accSneaker = sim.shotPreview(shooter.x, shooter.y, 'garand', sneaker, false, 1).acc;
+
+    expect(accMover).toBeCloseTo(accStationary * 0.75, 10); // ordinary movers keep the discount
+    expect(accSneaker).toBeCloseTo(accStationary, 10); // sneaking movers don't
+  });
+
+  it('a bounding team that balks mid-route holds cleanly instead of oscillating (refusal deadlock)', () => {
+    const sim = new Sim(new GameMap(80, 20), 6);
+    sim.addSquad('blue', 'a', [
+      { name: 'A', weapon: 'garand', x: 10.5, y: 10.5 },
+      { name: 'B', weapon: 'garand', x: 10.5, y: 11.5 },
+      { name: 'C', weapon: 'garand', x: 10.5, y: 12.5 },
+      { name: 'D', weapon: 'garand', x: 10.5, y: 13.5 },
+    ]);
+    for (const s of sim.soldiers) s.morale = 0.5; // no leader, modest morale: a reachable balk threshold
+    sim.soldiers[0].suppression = 0.5; // under fire at issuance -> bounds immediately
+    sim.orderTeam(0, { kind: 'move', x: 50, y: 11.5 }); // 40m: needs multiple 15m legs
+    expect(sim.teams[0].orderState.phase).toBe('bounding_a');
+
+    // The threat develops mid-route, after the order was issued (so the
+    // initial dispatch complied, and only the leg-alternation recheck balks).
+    sim.addSquad('red', 'mg', [
+      { name: 'M1', weapon: 'mg42', x: 40.5, y: 11.5 },
+      { name: 'M2', weapon: 'kar98k', x: 40.5, y: 10.5 },
+      { name: 'M3', weapon: 'kar98k', x: 40.5, y: 12.5 },
+      { name: 'M4', weapon: 'kar98k', x: 40.5, y: 9.5 },
+    ]);
+
+    let sawBalk = false;
+    const phasesAfterBalk: string[] = [];
+    for (let i = 0; i < 3000; i++) {
+      sim.step();
+      const phase = sim.teams[0].orderState.phase;
+      if (phase === 'balked') sawBalk = true;
+      if (sawBalk) phasesAfterBalk.push(phase);
+    }
+    expect(sawBalk).toBe(true);
+    expect(phasesAfterBalk.every((p) => p === 'balked')).toBe(true); // latches — no oscillation back to bounding
+    expect(sim.teams[0].orderState.reason.length).toBeGreaterThan(0);
+  });
+});
+
+describe('dangerScore: squad-scoped recent casualty', () => {
+  it("a sister team's recent casualty raises this team's danger by exactly the flat term", () => {
+    const sim = new Sim(new GameMap(40, 20), 20);
+    const squad = sim.addSquadFromDef('blue', 'us_rifle', 10, 10);
+    const able = sim.teams[squad.teamIds[0]];
+    const dest = { x: 30, y: 10 };
+    const before = dangerScore(sim, able, dest);
+    sim.squadLastCasualty[squad.id] = sim.tick; // e.g. Baker (the sister team) just took a hit
+    const after = dangerScore(sim, able, dest);
+    expect(after).toBeCloseTo(before + 0.2, 10);
+  });
+
+  it("a same-team casualty timestamp alone (teamLastCasualty) does not affect dangerScore", () => {
+    const sim = new Sim(new GameMap(40, 20), 21);
+    const squad = sim.addSquadFromDef('blue', 'us_rifle', 10, 10);
+    const able = sim.teams[squad.teamIds[0]];
+    const dest = { x: 30, y: 10 };
+    const before = dangerScore(sim, able, dest);
+    sim.teamLastCasualty[able.id] = sim.tick; // ambush-trigger clock only, not dangerScore's
+    const after = dangerScore(sim, able, dest);
+    expect(after).toBeCloseTo(before, 10);
   });
 });
 
@@ -139,11 +223,18 @@ describe('order vocabulary: fire/smoke/defend/ambush', () => {
 
   it('ambush holds fire at 70m and opens (with the first-volley bonus) once the enemy closes to 40m', () => {
     const sim = new Sim(new GameMap(120, 20), 13);
-    sim.addSquad('blue', 'a', [{ name: 'A', weapon: 'garand', x: 10.5, y: 10.5 }]);
+    // Veteran/led/high-morale (raises the compliance threshold) so holding
+    // an ambush position already "covered" by a known kar98k at 70m or 40m
+    // (both well within its 110m range) doesn't balk before the trigger can
+    // even be evaluated.
+    sim.addSquad('blue', 'a', [{ name: 'A', weapon: 'garand', x: 10.5, y: 10.5, xp: 30 }]);
+    sim.soldiers[0].role = 'leader';
+    sim.soldiers[0].morale = 1;
     sim.addSquad('red', 'r', [{ name: 'R', weapon: 'kar98k', x: 80.5, y: 10.5, ammo: {} }]); // 70m out, dry
     sim.soldiers[1].magLeft = 0; // won't take a shot at blue and cause an incidental casualty trigger
     const enemy = sim.soldiers[1];
     sim.orderTeam(0, { kind: 'ambush', x: 10.5, y: 10.5 });
+    expect(sim.teams[0].orderState.phase).not.toBe('balked');
     for (let i = 0; i < 60; i++) sim.step();
     expect(sim.teams[0].orderState.order?.kind).toBe('ambush');
     expect(sim.soldiers[0].targetId).toBe(-1);

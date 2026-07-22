@@ -46,9 +46,11 @@ export function visibleEnemies(sim: Sim, side: Side): Soldier[] {
 }
 
 // Danger score for a team moving toward `dest`: samples 8 points along the
-// straight line from the team's current centroid to dest. Deterministic, no
-// RNG — the same evaluation backs soldier refusal, firing-position choice,
-// and (Task 12) the AI's own risk assessment (spec's coherence rule).
+// straight line from the team's current centroid to dest and SUMS their
+// per-point contributions (no averaging — the plan's formula is a sum).
+// Deterministic, no RNG — the same evaluation backs soldier refusal,
+// firing-position choice, and (Task 12) the AI's own risk assessment (spec's
+// coherence rule).
 export function dangerScore(sim: Sim, team: Team, dest: { x: number; y: number }): number {
   const eligible = team.soldierIds.map((id) => sim.soldiers[id]).filter((s) => s.alive && !s.downed && s.mental !== 'broken');
   if (eligible.length === 0) return 0;
@@ -66,14 +68,18 @@ export function dangerScore(sim: Sim, team: Team, dest: { x: number; y: number }
     if (sim.map.terrainAt(Math.floor(px), Math.floor(py)).cover < 0.1) point += 0.05;
     for (const e of known) {
       const w = WEAPONS[e.weapon];
-      if (Math.hypot(e.x - px, e.y - py) <= w.range && sightBetween(sim, e.x, e.y, px, py).visible) point += 0.15;
+      if (Math.hypot(e.x - px, e.y - py) <= w.range && sightBetween(sim, e.x, e.y, px, py).visible) {
+        point += 0.15;
+        break; // one covering enemy is enough to flag the point; not per-enemy
+      }
     }
     total += point;
   }
-  let score = total / 8;
-  const lastCasualty = sim.teamLastCasualty[team.id] ?? -Infinity;
-  if (sim.tick - lastCasualty < RECENT_CASUALTY_TICKS) score += 0.2;
-  return score;
+  // Recent casualty is squad-scoped (a sister team's loss raises this team's
+  // danger too); the ambush trigger's own casualty check stays team-scoped.
+  const lastCasualty = sim.squadLastCasualty[team.squadId] ?? -Infinity;
+  if (sim.tick - lastCasualty < RECENT_CASUALTY_TICKS) total += 0.2;
+  return total;
 }
 
 export function compliance(sim: Sim, team: Team, danger: number): 'comply' | 'cautious' | 'balk' {

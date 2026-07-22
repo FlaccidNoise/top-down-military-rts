@@ -695,7 +695,10 @@ export class Sim {
   }
 
   // Alternates the active (rushing) half once its leg completes; the other
-  // half holds and fires. Clears the order once arrived.
+  // half holds and fires. Clears the order once arrived. Re-runs the refusal
+  // model at each leg alternation (spec: "at each bound/leg") — a fresh balk
+  // latches the team in place; it does not oscillate back to comply next
+  // tick, matching the top-level order-issuance balk behavior.
   private continueBounding(team: Team, order: TeamOrder, st: OrderState): void {
     const [a, b] = this.teamHalves(team);
     const activeIds = st.phase === 'bounding_a' ? a : b;
@@ -707,6 +710,12 @@ export class Sim {
       st.order = null;
       st.phase = 'idle';
       st.reason = '';
+      return;
+    }
+    const danger = dangerScore(this, team, { x: order.x, y: order.y });
+    if (compliance(this, team, danger) === 'balk') {
+      st.phase = 'balked';
+      st.reason = BALK_REASON;
       return;
     }
     st.phase = st.phase === 'bounding_a' ? 'bounding_b' : 'bounding_a';
@@ -783,6 +792,10 @@ export class Sim {
 
   // Squad-level broadcast: fans out to each member team, offsetting
   // destinations by team index x 8m so a multi-team squad doesn't stack.
+  // Routes each leg through orderTeam (not the raw orderMove) so the refusal
+  // model re-runs at every waypoint leg dispatch (spec: "at each bound/leg")
+  // — but, unlike orderSquad, never touches squadWaypoints/squadDest, so a
+  // queued route's remaining legs survive a leg that balks or advances.
   private dispatchSquadTo(squadId: number, wx: number, wy: number): void {
     const squad = this.squads[squadId];
     if (!squad) return;
@@ -790,8 +803,12 @@ export class Sim {
     const n = squad.teamIds.length;
     squad.teamIds.forEach((teamId, ti) => {
       const oy = (ti - (n - 1) / 2) * 8;
-      this.orderMove(teamId, wx, wy + oy);
+      this.orderTeam(teamId, { kind: 'move', x: wx, y: wy + oy });
     });
+  }
+
+  private squadHasBalkedTeam(squad: Squad): boolean {
+    return squad.teamIds.some((tid) => this.teams[tid].orderState.phase === 'balked');
   }
 
   private findSpot(x: number, y: number, used: Set<number>): { x: number; y: number } | null {
@@ -883,6 +900,9 @@ export class Sim {
         continue;
       }
       if (moving > 0) continue;
+      // A balked leg holds in place (spec: no oscillation) until a fresh
+      // order — don't pop the next waypoint out from under it.
+      if (this.squadHasBalkedTeam(sq)) continue;
       const next = q?.shift();
       if (next) this.dispatchSquadTo(sq.id, next.x, next.y);
       else this.squadDest[sq.id] = null; // arrived, route done
@@ -1133,7 +1153,11 @@ export class Sim {
     if (t.mental === 'pinned' || t.downed) cover = Math.min(0.9, cover + 0.3);
     let acc = w.accuracy * (1 - 0.75 * (d / w.range)) * (1 - cover) * aim;
     if (shooterMoving) acc *= 0.5;
-    if (t.path) acc *= 0.75;
+    // Movers are harder to hit — except a sneaking target: once spotted, a
+    // slow crouched mover is as easy to hit as if he'd stood still. That's
+    // sneak's trade-off for its stealth (spec: the mover discount doesn't
+    // apply to sneak). Live fire and this preview share this one formula.
+    if (t.path && this.teams[t.teamId].orderState.order?.kind !== 'sneak') acc *= 0.75;
     acc = Math.min(0.95, Math.max(0.02, acc));
     return { visible: true, dist: d, cover, acc };
   }
@@ -1535,8 +1559,9 @@ export class Sim {
       const c = this.soldiers[sid];
       if (c.id === s.id || !c.alive || c.downed || c.task) continue;
       if ((c.ammo[type] ?? 0) < 2) continue;
-      if (this.rescueWillingness(c, s) < 0.6) continue;
       const d = Math.hypot(c.x - s.x, c.y - s.y);
+      if (d > 30) continue; // same 30m cap as considerRescue
+      if (this.rescueWillingness(c, s) < 0.6) continue;
       if (d < bestD) {
         bestD = d;
         best = c;
@@ -1828,6 +1853,8 @@ export class Sim {
         Object.values(k.ammo).reduce((a: number, n) => a + (n ?? 0), 0),
         k.magLeft,
       ]),
+      squadLastCasualty: this.squadLastCasualty,
+      teamLastCasualty: this.teamLastCasualty,
     });
   }
 }
