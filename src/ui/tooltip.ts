@@ -242,7 +242,7 @@ function vehicleCard(sim: Sim, v: Vehicle, shot: ShotSolution | null): string {
   return html;
 }
 
-const TERRAIN_NAME: Record<TerrainKey, string> = { grass: 'Open ground', road: 'Road', woods: 'Woods', floor: 'Building interior' };
+const TERRAIN_NAME: Record<TerrainKey, string> = { grass: 'Open ground', road: 'Road', woods: 'Woods', floor: 'Building interior', hedge: 'Hedgerow', field: 'Plowed field' };
 
 function terrainCard(sim: Sim, wx: number, wy: number, moveHint: boolean): string {
   const k = sim.map.terrainKeyAt(Math.floor(wx), Math.floor(wy));

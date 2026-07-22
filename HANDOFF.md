@@ -1,76 +1,84 @@
-# Handoff — Execute M-A Strategic Skeleton (subagent-driven)
+# Handoff — Execute Mapgen v2 (Bocage Believability + Scale)
 
 **Date:** 2026-07-22
 **Project:** top-down-military-rts
 
 ## Current Task
-Execute the approved M-A milestone plan: replace the linear 3-battle campaign with a playable strategic layer (cell-grid sector, company chits, continuous clock, contact → tactical battle → ownership feedback). The plan is fully written with complete code; this session architects and runs its subagent-driven execution.
+Execute the mapgen v2 plan: hedge/field terrain types, farm compounds with lanes, orchards, and a second hamlet at 320×240 — building on the roads-first generator that shipped today.
 
 ## Completed
-- Strategic campaign design approved: `docs/specs/2026-07-22-strategic-campaign.md` (tiers T1–T3, decision log entry in `docs/decisions/architecture.md`)
-- M-A implementation plan written: `docs/plans/2026-07-22-strategic-skeleton.md` — 6 tasks, full code, tests, dependency batches
-- All design docs committed (`dd455ac`)
+- Roads-first Normandy generator shipped and merged to main: `src/sim/mapgen.ts`, `MapPlan {map, buildings, spawns, objectives}` contract, deterministic + A*-validated, 59+ tests green (session commits de634ee…af326c2)
+- Verified in-browser at 6 seeds × 3 zooms plus a debrief → battle-1 transition (`.screenshots/`)
+- Decision logged in `docs/decisions/INDEX.md` (roads-first chosen over BSP/Voronoi; hedges = woods-line tiles, not a new edge type)
+- Mapgen v2 plan written with exact code per task: `docs/plans/2026-07-22-mapgen-v2-bocage.md`
 
 ## Key Decisions
-- Front commander on a 40×30 × 500 m cell grid; universal both-sides soldier persistence; continuous clock + pause; battles carved from cells (M-B — M-A still uses today's whole-map generator: `makeMap` was replaced 2026-07-22 by `generateMap` in `src/sim/mapgen.ts`, consumed via `makeCampaignBattle`)
-- M-A plan is written against TODAY's code (9-man squads). The parallel unit-system + TOE designs (`docs/specs/2026-07-22-unit-system.md`, `docs/specs/2026-07-22-toe-attachments.md` — the latter supersedes the spec's `CompanyChit` sketch for later tiers) land AFTER M-A, never interleaved. M-A's minimal `Chit` is a deliberate subset and stays valid
+- Hedgerows get a dedicated `hedge` terrain key in v2 (Task 1) — visual distinction from woods; vehicle-blocking moves from "woods" membership to an explicit `canStep` rule
+- Tasks 1–4 all edit `src/sim/mapgen.ts` → builders run SEQUENTIALLY (one builder + one validator per task), never in parallel
+- Task 4's refactor must NOT change 160×120 geometry — the seed-1/seed-2 fingerprint snapshots are the gate (run vitest WITHOUT `-u` first)
 
 ## Relevant Files
 | File | Notes |
 |------|-------|
-| `docs/plans/2026-07-22-strategic-skeleton.md` | THE PLAN — execute this |
-| `docs/specs/2026-07-22-strategic-campaign.md` | Design the plan implements (M-A section) |
-| `src/campaign/campaign.ts` | Modified by Tasks 3 & 5 |
-| `src/sim/scenario.ts` | Modified by Tasks 4 & 5 |
-| `src/main.ts` | Rewritten by Task 5 |
+| `docs/plans/2026-07-22-mapgen-v2-bocage.md` | THE PLAN — execute this; exact code, tests, commands per task |
+| `src/sim/mapgen.ts` | The generator all tasks modify |
+| `src/sim/data.ts`, `src/sim/map.ts`, `src/render/terrain.ts` | Task 1/3 touchpoints (terrain defs, canStep, art) |
+| `tests/mapgen.test.ts` | Determinism/snapshot/connectivity tests; grows per task |
+| `docs/decisions/INDEX.md` | Generator architecture decision + rejected alternatives |
 
 ## Context & Warnings
-- **Worktree conflict:** `git branch -vv` shows live worktrees; `worktree-structured-drifting-lollipop` contains a full UI pass that also rewrites `src/main.ts`. Reconcile (merge or discard) BEFORE Task 5, or execute Tasks 1–4 first and re-plan Task 5 against the merged main.
-- No git remote — commits are local; `git push` is a no-op.
-- A repo hook blocks commits containing the `Co-Authored-By` trailer — omit it.
-- `npm run check` and `npm run test` must pass after every task; commit per task.
+- Branch `worktree-purrfect-herding-stearns` contains all of main plus the plan/handoff commits, but was NOT fast-forwarded into main at handoff: the M-A session had uncommitted edits in the root checkout. First action next session: `git merge main` in the worktree (M-A will have advanced), test, then `git -C <root> merge --ff-only worktree-purrfect-herding-stearns` once root is clean
+- No git remote (push is a no-op); a hook blocks the `Co-Authored-By` trailer — omit it
+- M-A's bridge landed: battles now come from `makeStrategicBattle` (`src/strategic/bridge.ts`), which consumes `generateMap` — the MapPlan contract held through that transition without changes
+- Parallel session is executing the M-A strategic plan on main (main moved 4× today). MERGE MAIN INTO YOUR BRANCH FIRST, test, then start; merge back via `git -C <root> merge --ff-only <branch>` (memory: design-sequencing-2026-07)
+- Do not touch `src/main.ts`, `src/campaign/**`, `src/strategic/**`, `src/ui/**`, `src/sim/scenario.ts` — M-A owns them
+- Custom agent types (coder/auditor/etc.) pin unreachable models — always pass an explicit `model:` when spawning (memory: agent-model-pins)
+- Browser verification: `?seed=N` URL param pins the map; dev server port 5199/5197 may be taken by parallel sessions — pick a free one
 
 ## Suggested Next Steps
-1. Architect the subagent execution: reconcile the UI-pass worktree, then batch the plan's tasks by its dependency graph (Batch 1: Tasks 1+3 parallel; then 2; then 4; then 5 alone; then 6) and spawn a builder agent per task with a validator pass per batch.
-2. After Task 6, run the plan's Task 5 manual smoke checklist in the browser.
+1. Architect the subagent-driven execution: read the plan, then run Tasks 1→2→3→4 sequentially, each as one builder subagent (explicit model, task text as brief, its tests + `npm run check` as success criteria) followed by a separate validator subagent in fresh context
+2. Task 5 (browser screenshots + art acceptance checklist) inline, then merge to main
 
 ## Copy-paste prompt for the fresh session
 
 ```
-You are a senior TypeScript game developer orchestrating subagent-driven execution
-of a fully-written implementation plan for a Close Combat-style WW2 tactical sim
-(TS + Canvas, deterministic headless sim in src/sim/, renderer in src/render/).
+You are a procedural-generation engineer for tactical wargames orchestrating
+subagent-driven execution of a fully-written implementation plan (WW2 top-down
+RTS, TypeScript + Canvas, deterministic headless sim in src/sim/).
 
 ## Context
-The linear 3-battle campaign is being replaced by milestone M-A: a strategic layer
-(40×30 cell sector, company chits, continuous clock, contact → tactical battle →
-cell ownership feedback). The plan is complete — exact code, tests, and commands
-for 6 tasks. Your job is orchestration and verification, not design.
+Yesterday's session shipped a roads-first Normandy map generator
+(src/sim/mapgen.ts — arterial+cross roads, crossroads village, hedgerow
+parcels, woods stands; MapPlan {map, buildings, spawns, objectives};
+deterministic, A*-validated). Mapgen v2 upgrades believability (hedge/field
+terrain, farm compounds with lanes, orchards) and proves 320×240 scale with a
+second hamlet.
 
 ## What's Been Done
-- Plan: docs/plans/2026-07-22-strategic-skeleton.md (execute this, it is the spec)
-- Design it implements: docs/specs/2026-07-22-strategic-campaign.md
-- All docs committed at dd455ac; working tree was clean at handoff
+- Plan with exact code per task: docs/plans/2026-07-22-mapgen-v2-bocage.md —
+  execute this, it is the spec
+- Generator + tests merged to main; ~59 tests green at handoff
 
 ## Key Discoveries / Warnings
-- Live worktree `worktree-structured-drifting-lollipop` also rewrites src/main.ts
-  (UI pass). Reconcile it BEFORE the plan's Task 5, or do Tasks 1-4 first and
-  adapt Task 5's main.ts rewrite to the merged file.
-- The unit-system spec (docs/specs/2026-07-22-unit-system.md) is approved but
-  lands AFTER M-A — do not interleave it.
-- No git remote (push is a no-op). A hook blocks the Co-Authored-By trailer in
-  commit messages — omit it.
-- npm run check + npm run test must be green after every task; commit per task.
+- A parallel session executes the M-A strategic plan on main (it moved 4×
+  in one day). Merge main into your worktree branch FIRST, run
+  npx vitest run + npm run check, then start. Merge back with
+  git -C <repo-root> merge --ff-only <branch>. Never touch src/main.ts,
+  src/campaign/**, src/strategic/**, src/ui/**, src/sim/scenario.ts.
+- TERRAIN keys are append-only (tile bytes index Object.keys order).
+- mapgen.ts must stay seeded-rng-only: no Math.random/Date/Math.hypot.
+- Tasks 1-4 all edit src/sim/mapgen.ts — run builders SEQUENTIALLY, one per
+  task, each followed by a separate validator agent in fresh context. Custom
+  agent types pin broken models — always pass model: "sonnet" (or valid tier).
+- Task 4 must not change 160×120 geometry: run vitest WITHOUT -u first; the
+  seed-1/seed-2 inline fingerprints must pass untouched.
+- No git remote; omit the Co-Authored-By trailer (a hook rejects it).
 
 ## What I Need You to Do
-1. Read HANDOFF.md, then the plan end-to-end.
-2. Reconcile the UI-pass worktree with main (inspect its diff; merge or park it —
-   ask the user only if the diff shows real feature work that M-A would clobber).
-3. Map the plan's dependency graph into batches (it's in the plan: 1+3 parallel,
-   then 2, then 4, then 5 alone, then 6). Spawn one builder subagent per task with
-   the plan's task text as its brief and explicit success criteria (its tests +
-   npm run check green); validate each batch with a separate reviewer agent in
-   fresh context before starting the next.
-4. After Task 6, run the plan's manual smoke checklist (plan, Task 5) in the
-   browser and report results.
+1. Read HANDOFF.md, then docs/plans/2026-07-22-mapgen-v2-bocage.md end-to-end.
+2. Merge main into the worktree branch; verify tests green before any task.
+3. Execute Tasks 1→2→3→4 sequentially, builder+validator per task, commit per
+   task with the plan's commit messages.
+4. Run Task 5 (browser screenshots at seeds 1/2/7, acceptance checklist,
+   .screenshots/) inline, fix art in terrain.ts only, then merge to main.
 ```

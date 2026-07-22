@@ -37,6 +37,7 @@ const GRASS: [number, number, number] = [78, 107, 63];
 const ROAD: [number, number, number] = [138, 129, 114];
 const WOODS_GROUND: [number, number, number] = [56, 76, 48];
 const FLOOR: [number, number, number] = [160, 145, 122];
+const FIELD: [number, number, number] = [106, 114, 69];
 
 type Ctx = CanvasRenderingContext2D;
 
@@ -68,6 +69,24 @@ function drawTileBase(g: Ctx, map: GameMap, x: number, y: number): void {
   } else if (t === 'woods') {
     g.fillStyle = shade(WOODS_GROUND, v);
     g.fillRect(x, y, 1, 1);
+  } else if (t === 'hedge') {
+    g.fillStyle = shade(WOODS_GROUND, v * 0.92);
+    g.fillRect(x, y, 1, 1);
+    for (let i = 0; i < 3; i++) {
+      const cx = x + 0.2 + hash(x, y, 50 + i) * 0.6;
+      const cy = y + 0.2 + hash(x, y, 55 + i) * 0.6;
+      const r = 0.28 + hash(x, y, 60 + i) * 0.2;
+      g.fillStyle = shade([52, 82, 44], 0.8 + hash(x, y, 65 + i) * 0.4);
+      g.beginPath();
+      g.arc(cx, cy, r, 0, Math.PI * 2);
+      g.fill();
+    }
+  } else if (t === 'field') {
+    g.fillStyle = shade(FIELD, v);
+    g.fillRect(x, y, 1, 1);
+    g.fillStyle = 'rgba(0,0,0,0.10)';
+    g.fillRect(x, y + 0.15, 1, 0.12);
+    g.fillRect(x, y + 0.65, 1, 0.12);
   } else {
     // floor: plank shading per row, seams between rows, staggered butt joints
     g.fillStyle = shade(FLOOR, 0.92 + hash(0, y, 7) * 0.14);
@@ -78,8 +97,10 @@ function drawTileBase(g: Ctx, map: GameMap, x: number, y: number): void {
   }
 }
 
-function drawTree(g: Ctx, x: number, y: number): void {
-  if (hash(x, y, 40) >= 0.55) return;
+function drawTree(g: Ctx, map: GameMap, x: number, y: number): void {
+  const wooded = (tx: number, ty: number) => map.inBounds(tx, ty) && map.terrainKeyAt(tx, ty) === 'woods';
+  const isolated = !wooded(x - 1, y) && !wooded(x + 1, y) && !wooded(x, y - 1) && !wooded(x, y + 1);
+  if (!isolated && hash(x, y, 40) >= 0.55) return;
   const cx = x + 0.3 + hash(x, y, 41) * 0.4;
   const cy = y + 0.3 + hash(x, y, 42) * 0.4;
   const r = 0.55 + hash(x, y, 43) * 0.4;
@@ -156,7 +177,7 @@ export class TerrainLayer {
     }
     for (let y = ty0; y < ty1; y++) {
       for (let x = tx0; x < tx1; x++) {
-        if (this.map.terrainKeyAt(x, y) === 'woods') drawTree(g, x, y);
+        if (this.map.terrainKeyAt(x, y) === 'woods') drawTree(g, this.map, x, y);
       }
     }
     for (let y = ty0; y <= ty1; y++) {
