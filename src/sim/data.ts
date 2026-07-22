@@ -131,7 +131,7 @@ export const TEAMS = {
     name: 'Bazooka Team',
     slots: [
       { role: 'gunner', weapon: 'bazooka', ammo: { rocket_bazooka: 4 } },
-      { role: 'bearer', weapon: 'carbine', ammo: { rocket_bazooka: 4, mag_carbine: 6 } },
+      { role: 'bearer', weapon: 'carbine', ammo: { mag_carbine: 6 } },
     ],
   },
   us_sniper_team: {
@@ -144,8 +144,8 @@ export const TEAMS = {
   de_mg_trupp: {
     name: 'MG-Trupp',
     slots: [
-      { role: 'gunner', weapon: 'mg42', ammo: { belt_792: 2 }, carries: ['mg_gun'] },
-      { role: 'assistant', weapon: 'kar98k', ammo: { belt_792: 2 }, carries: ['tripod_m1919'] }, // spare-barrel abstraction rides heat.swapTime
+      { role: 'gunner', weapon: 'mg42', ammo: { belt_792: 2 } },
+      { role: 'assistant', weapon: 'kar98k', ammo: { belt_792: 2 }, carries: ['mg_gun'] }, // spare-barrel abstraction rides heat.swapTime
       { role: 'bearer', weapon: 'kar98k', ammo: { belt_792: 3 }, carries: ['ammo_cans'] },
     ],
   },
@@ -185,7 +185,7 @@ export const TEAMS = {
     name: 'Panzerschreck Team',
     slots: [
       { role: 'gunner', weapon: 'schreck', ammo: { rocket_schreck: 4 } },
-      { role: 'bearer', weapon: 'kar98k', ammo: { rocket_schreck: 4, clip_792: 8 } },
+      { role: 'bearer', weapon: 'kar98k', ammo: { clip_792: 8 } },
     ],
   },
   de_sniper_team: {
