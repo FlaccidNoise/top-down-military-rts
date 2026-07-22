@@ -118,6 +118,17 @@ export interface ShotEvent {
   kill: boolean;
 }
 
+// Discrete casualty/morale transitions, emitted the tick they happen so the
+// UI never has to diff sim state (a DOWN followed by KIA in one frame batch
+// would otherwise drop the DOWN).
+export interface UnitEvent {
+  kind: 'downed' | 'kia' | 'broken' | 'vehicle-destroyed';
+  x: number;
+  y: number;
+  side: Side;
+  name: string;
+}
+
 export interface ShotPreview {
   visible: boolean;
   dist: number;
@@ -164,6 +175,10 @@ export class Sim {
   private pendingEvents: ShotEvent[] = [];
   private pendingBooms: { x: number; y: number }[] = [];
   private pendingPlanes: { x0: number; y: number; x1: number }[] = [];
+  private pendingUnitEvents: UnitEvent[] = [];
+  // Per-squad move state, indexed by squad id. Read-only for the UI (route preview).
+  squadDest: ({ x: number; y: number } | null)[] = [];
+  squadWaypoints: { x: number; y: number }[][] = [];
 
   constructor(readonly map: GameMap, seed: number) {
     this.rng = mulberry32(seed);
@@ -333,9 +348,26 @@ export class Sim {
     return null;
   }
 
+  // A direct order overrides any queued route.
   orderMove(squadId: number, wx: number, wy: number): void {
+    this.squadWaypoints[squadId] = [];
+    this.moveSquadTo(squadId, wx, wy);
+  }
+
+  // Shift-click: append a waypoint; dispatches immediately if the squad is idle.
+  queueMove(squadId: number, wx: number, wy: number): void {
+    if (!this.squads[squadId]) return;
+    if (!this.squadDest[squadId] && (this.squadWaypoints[squadId] ?? []).length === 0) {
+      this.moveSquadTo(squadId, wx, wy);
+      return;
+    }
+    (this.squadWaypoints[squadId] ??= []).push({ x: wx, y: wy });
+  }
+
+  private moveSquadTo(squadId: number, wx: number, wy: number): void {
     const squad = this.squads[squadId];
     if (!squad) return;
+    this.squadDest[squadId] = { x: wx, y: wy };
     const used = new Set<number>();
     let slot = 0;
     for (const sid of squad.soldierIds) {
@@ -390,8 +422,15 @@ export class Sim {
     return p;
   }
 
+  takeUnitEvents(): UnitEvent[] {
+    const e = this.pendingUnitEvents;
+    this.pendingUnitEvents = [];
+    return e;
+  }
+
   step(): void {
     this.tick++;
+    this.stepWaypoints();
     this.stepBarrages();
     this.stepStrafes();
     for (const v of this.vehicles) {
@@ -414,6 +453,31 @@ export class Sim {
       else if (red < floorOf('red') && blue >= floorOf('blue')) this.winner = 'blue';
       else if (blue === 0 && red > 0) this.winner = 'red';
       else if (red === 0 && blue > 0) this.winner = 'blue';
+    }
+  }
+
+  // When every eligible member of a squad has arrived, dispatch its next waypoint.
+  private stepWaypoints(): void {
+    for (const sq of this.squads) {
+      const q = this.squadWaypoints[sq.id];
+      if (!this.squadDest[sq.id] && (!q || q.length === 0)) continue;
+      let eligible = 0;
+      let moving = 0;
+      for (const sid of sq.soldierIds) {
+        const s = this.soldiers[sid];
+        if (!s.alive || s.downed || s.mental === 'broken') continue;
+        eligible++;
+        if (s.path) moving++;
+      }
+      if (eligible === 0) {
+        this.squadWaypoints[sq.id] = [];
+        this.squadDest[sq.id] = null;
+        continue;
+      }
+      if (moving > 0) continue;
+      const next = q?.shift();
+      if (next) this.moveSquadTo(sq.id, next.x, next.y);
+      else this.squadDest[sq.id] = null; // arrived, route done
     }
   }
 
@@ -594,6 +658,7 @@ export class Sim {
   }
 
   private destroyVehicle(v: Vehicle): void {
+    this.pendingUnitEvents.push({ kind: 'vehicle-destroyed', x: v.x, y: v.y, side: v.side, name: VEHICLES[v.kind].name });
     v.alive = false;
     v.burning = true;
     v.path = null;
@@ -682,6 +747,7 @@ export class Sim {
     s.downed = cons < 0.3 || s.pain >= 0.8 || capacities(s.body).moving < 0.15;
     if (s.downed) {
       if (!wasDowned) {
+        this.pendingUnitEvents.push({ kind: 'downed', x: s.x, y: s.y, side: s.side, name: s.name });
         s.path = null;
         s.targetId = -1;
         if (s.task) this.dropTask(s);
@@ -704,11 +770,15 @@ export class Sim {
     if (s.suppression > 0.6) s.morale = Math.max(0, s.morale - 0.005 * DT);
     else if (s.suppression < 0.2) s.morale = Math.min(1, s.morale + 0.004 * DT);
     const pinThreshold = 0.7 - (0.5 - s.courage) * 0.2;
+    const wasMental = s.mental;
     s.mental =
       s.morale < 0.25 ? 'broken'
       : s.suppression > pinThreshold || (s.suppression > 0.5 && s.morale < 0.5) ? 'pinned'
       : s.suppression > 0.35 || s.morale < 0.55 ? 'shaken'
       : 'steady';
+    if (s.mental === 'broken' && wasMental !== 'broken') {
+      this.pendingUnitEvents.push({ kind: 'broken', x: s.x, y: s.y, side: s.side, name: s.name });
+    }
 
     // broken men flee away from the nearest enemy
     if (s.mental === 'broken') {
@@ -973,6 +1043,7 @@ export class Sim {
   }
 
   private kill(t: Soldier): void {
+    if (t.inVehicle < 0) this.pendingUnitEvents.push({ kind: 'kia', x: t.x, y: t.y, side: t.side, name: t.name });
     t.alive = false;
     t.path = null;
     t.downed = false;
