@@ -1,5 +1,17 @@
 # Unit System Decisions
 
+### [APPROVED] Company TO&E + requisition attachments; casualty chain + role succession
+**Date:** 2026-07-22
+**Context:** Coherence pass stitching unit system ↔ strategic campaign surfaced five seams (chit schema, supply→ammo mapping, missing TO&E, resolver weights, role succession). Specs: [toe-attachments](../specs/2026-07-22-toe-attachments.md), [casualty-chain](../specs/2026-07-22-casualty-chain.md).
+**Decision:**
+1. Company core is fixed historical TO&E (US rifle co '44: 18 squads/~138 men — exactly the design target; German Grenadier co: 16 squads/~109, smaller + MG-heavier). Battalion assets (StuG/Sherman sections, PaK/57mm, halftrack lift, extra HMGs) attach per operation via requisition points; AI spends the same catalog. Free point-buy rejected.
+2. Supply→ammo: full/low/out = 100/50/25% of def loadouts, scaled per-soldier so MG-belt distribution (ammo runners) survives scarcity. VehicleDef gains ap/he ammo counts.
+3. CompanyChit schema superseded: chits carry SquadInstances (team structure), attachments, emplacements. Coarse-resolver weights derive from weapon defs; Outcome gains equipment results incl. gun capture.
+4. Medicine: stabilize + drag only — buddy aid (slow, exposed), aidmen 3× faster, two-man carry, bond-gated rescue volunteering; no return-to-fight mid-battle. Unstabilized downed roll survival at battle end.
+5. Role succession: team weapons belong to slots; automatic doctrine-driven chains (MG gunner→assistant→bearer; leader→ASL/senior) gated by morale; per-class crewSkill grown by use; replacements arrive as riflemen, crew slots fill from within the squad.
+**Alternatives considered:** fully templated forces (no requisition loop); treat-and-return medicine (rejected: arcade vs capacity model); ordered-only succession (rejected: it's doctrine, not a decision).
+---
+
 ### [APPROVED] Unit system: team command atom, national asymmetry, crewed weapons, transports
 **Date:** 2026-07-22
 **Context:** Brainstorm on squad archetypes, crewed weapons, vehicle roster, capability hooks, data schema. Full design: [docs/specs/2026-07-22-unit-system.md](../specs/2026-07-22-unit-system.md).

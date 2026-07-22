@@ -147,6 +147,7 @@ interface VehicleDef {            // existing fields stay
   armor: { front: number; side: number; rear: number };
   gunPen: number; gunAccuracy: number; gunRange: number; gunCooldown: number;
   mgRange: number;
+  ammo: { ap: number; he: number }; // added 2026-07-22 (toe-attachments spec): scaled by supply state
   turret: 'full' | number;        // number = traverse degrees (StuG: 12)
   crew: SoldierSlot[];            // replaces hardcoded crew
   seats?: number;                 // transport capacity

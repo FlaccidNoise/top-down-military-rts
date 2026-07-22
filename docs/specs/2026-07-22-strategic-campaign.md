@@ -47,6 +47,12 @@ is emergent — it's whichever ones you fight with most — not hardcoded.
 
 ## Data model (sketch)
 
+> **Amended 2026-07-22:** `CompanyChit` below is superseded by
+> [2026-07-22-toe-attachments.md](2026-07-22-toe-attachments.md) — chits now
+> carry team-structured `SquadInstance`s, attachments, and emplacements, and
+> the supply→ammo mapping + resolver weights + Outcome equipment results are
+> specified there.
+
 ```ts
 interface Cell {
   terrain: { open: number; woods: number; bocage: number; buildings: number }; // fractions
