@@ -104,6 +104,7 @@ function startBattle(): void {
   winnerAt = -1;
   debriefShown = false;
   debriefEl.style.display = 'none';
+  pings.reset();
 }
 
 function showDebrief(): void {
@@ -279,7 +280,7 @@ function frame(now: number): void {
   renderer.addEvents(sim.takeEvents(), now);
   renderer.addBooms(sim.takeBooms(), now);
   renderer.addPlanes(sim.takePlanes(), now);
-  pings.watch(sim);
+  pings.add(sim.takeUnitEvents(), sim.tick);
 
   const pick = mouse.onCanvas && !targetMode ? pickAt(sim, cam, mouse.x, mouse.y, canvas.width, canvas.height) : null;
   const shot = computeShot(sim, selectedSquad, selectedVehicle, pick);

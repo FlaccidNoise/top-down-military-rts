@@ -1,6 +1,5 @@
 import type { Camera } from '../render/camera';
-import { VEHICLES } from '../sim/data';
-import { OFFSETS, type Mental, type Sim } from '../sim/sim';
+import { OFFSETS, type Sim, type UnitEvent } from '../sim/sim';
 import type { Pick, ShotSolution } from './tooltip';
 
 export interface OverlayState {
@@ -77,52 +76,27 @@ interface Ping {
 
 const PING_TICKS = 8 * 30;
 
-// Watches sim state transitions and pings events the player must not miss —
-// with edge arrows when they happen off-screen. Sim-tick expiry: pause-safe.
+// Pings sim-emitted unit events the player must not miss — with edge arrows
+// when they happen off-screen. Sim-tick expiry: pause-safe.
 export class EventPings {
-  private sim: Sim | null = null;
-  private lastTick = 0;
-  private alive: boolean[] = [];
-  private downed: boolean[] = [];
-  private mental: Mental[] = [];
-  private vAlive: boolean[] = [];
   private pings: Ping[] = [];
 
-  watch(sim: Sim): void {
-    if (sim !== this.sim || sim.tick < this.lastTick) {
-      this.sim = sim;
-      this.pings = [];
-      this.lastTick = sim.tick;
-      this.snap(sim);
-      return;
-    }
-    if (sim.tick === this.lastTick) return;
-    this.lastTick = sim.tick;
-    for (const s of sim.soldiers) {
-      if (s.side === 'blue' && s.inVehicle < 0) {
-        if (!s.alive && this.alive[s.id]) this.add(s.x, s.y, `${s.name} KIA`, '#d05c50', sim.tick);
-        else if (s.alive && s.downed && !this.downed[s.id]) this.add(s.x, s.y, `${s.name} DOWN`, '#e08a3c', sim.tick);
-        else if (s.alive && !s.downed && s.mental === 'broken' && this.mental[s.id] !== 'broken') this.add(s.x, s.y, `${s.name} BROKE`, '#d05c50', sim.tick);
+  add(events: UnitEvent[], tick: number): void {
+    for (const e of events) {
+      if (e.kind === 'vehicle-destroyed') {
+        this.push(e.x, e.y, `${e.name} DESTROYED`, e.side === 'blue' ? '#d05c50' : '#ffca6a', tick);
+      } else if (e.side === 'blue') {
+        const label = e.kind === 'kia' ? 'KIA' : e.kind === 'downed' ? 'DOWN' : 'BROKE';
+        this.push(e.x, e.y, `${e.name} ${label}`, e.kind === 'downed' ? '#e08a3c' : '#d05c50', tick);
       }
     }
-    for (const v of sim.vehicles) {
-      if (!v.alive && this.vAlive[v.id]) {
-        this.add(v.x, v.y, `${VEHICLES[v.kind].name} DESTROYED`, v.side === 'blue' ? '#d05c50' : '#ffca6a', sim.tick);
-      }
-    }
-    this.snap(sim);
   }
 
-  private snap(sim: Sim): void {
-    for (const s of sim.soldiers) {
-      this.alive[s.id] = s.alive;
-      this.downed[s.id] = s.downed;
-      this.mental[s.id] = s.mental;
-    }
-    for (const v of sim.vehicles) this.vAlive[v.id] = v.alive;
+  reset(): void {
+    this.pings = [];
   }
 
-  private add(x: number, y: number, label: string, color: string, tick: number): void {
+  private push(x: number, y: number, label: string, color: string, tick: number): void {
     this.pings.push({ x, y, label, color, tick });
     if (this.pings.length > 12) this.pings.shift();
   }

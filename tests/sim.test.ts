@@ -132,6 +132,20 @@ describe('simulation', () => {
     expect(rear.penChance).toBe(1); // 25mm plate vs 90+ effective pen
   });
 
+  it('queues unit events so DOWN then KIA across one frame batch keeps both', () => {
+    const sim = new Sim(new GameMap(10, 10), 1);
+    sim.addSquad('blue', 'a', [{ name: 'A', weapon: 'rifle', x: 2.5, y: 2.5 }]);
+    const s = sim.soldiers[0];
+    s.pain = 1; // >= 0.8 → downed
+    sim.step();
+    s.wounds.push({ part: 0, dmg: 10 });
+    s.bloodLoss = 1; // → kill on next physiology tick
+    sim.step();
+    const kinds = sim.takeUnitEvents().map((e) => e.kind);
+    expect(kinds).toEqual(['downed', 'kia']);
+    expect(sim.takeUnitEvents()).toEqual([]); // queue drains
+  });
+
   it('an assault produces a resolved firefight with no NaN state', () => {
     const sim = makeScenario(7);
     const [b0, b2] = [sim.buildings[0], sim.buildings[2]];
