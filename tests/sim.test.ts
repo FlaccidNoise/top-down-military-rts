@@ -168,6 +168,29 @@ describe('simulation', () => {
     expect(sim.squadWaypoints[0]).toEqual([]);
   });
 
+  it('a queued waypoint does not cancel a squadmate rescue in progress', () => {
+    const sim = new Sim(new GameMap(80, 20), 1);
+    sim.addSquad('blue', 'a', [
+      { name: 'A', weapon: 'rifle', x: 5.5, y: 10.5 },
+      { name: 'B', weapon: 'rifle', x: 6.5, y: 10.5 },
+    ]);
+    const [a, b] = sim.soldiers;
+    a.bonds[b.id] = 1;
+    b.bonds[a.id] = 1;
+    sim.queueMove(0, 30, 10);
+    sim.queueMove(0, 60, 10); // queue holds one pending leg
+    b.pain = 1; // B goes down next tick
+    let taskAt = -1;
+    for (let i = 0; i < 30 * 10 && taskAt < 0; i++) {
+      sim.step();
+      if (a.task) taskAt = sim.tick;
+    }
+    expect(taskAt).toBeGreaterThan(0);
+    for (let i = 0; i < 10; i++) sim.step();
+    expect(a.task).not.toBeNull(); // previously dropped one tick after pickup
+    expect(sim.squadWaypoints[0].length).toBe(1); // queue held, no auto-dispatch mid-rescue
+  });
+
   it('an assault produces a resolved firefight with no NaN state', () => {
     const sim = makeScenario(7);
     const [b0, b2] = [sim.buildings[0], sim.buildings[2]];
