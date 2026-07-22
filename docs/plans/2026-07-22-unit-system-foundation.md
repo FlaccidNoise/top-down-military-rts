@@ -10,7 +10,13 @@
 
 **Excluded from this plan (depends on unbuilt strategic layer):** CompanyDef/AttachmentDef/requisition, supply→ammo scaling, coarse-resolver weights, chit schemas (`docs/specs/2026-07-22-toe-attachments.md` waits for campaign milestone M-A+).
 
-**⚠️ Parallel-session coordination:** A separate session is actively implementing the strategic campaign (M-A commits: `src/strategic/`, `src/sim/mapgen.ts`, campaign companies) and has already changed `scenario.ts` (now builds from `generateMap(seed) → MapPlan {map, buildings, spawns, objectives}`) and `campaign.ts` (companies structure). **Execute this plan on a feature branch** (`git checkout -b m5-unit-system`), rebase on main between batches, and treat file references below as symbol names to grep, not line numbers — the files are hot.
+**Post-M-A re-verification (2026-07-22, against `e12e4e4` + wrap-up commits):** M-A tasks 1–6 landed. Touchpoints verified; four moves since the plan was written:
+- `makeCampaignBattle` no longer exists. Battles build via `makeStrategicBattle` in `src/strategic/bridge.ts`, whose `redMembers()` carries old weapon keys — an extra Task 1 call site. Commander wiring (`new RedCommander({stance, posts})`) also lives there, not scenario.ts.
+- Campaign saves moved: key `'ccg-save-v2'` in `src/strategic/save.ts` (whole state incl. front), not `'ccg-campaign-v1'`. `LEGACY_WEAPONS` applies in `loadGame` — debrief/HUD read `WEAPONS[cs.weapon]` directly off campaign soldiers, so mapping only in `fitRoster` still crashes old saves.
+- UI split out of main.ts: buttons/panels in `src/ui/hud.ts`, world-anchored canvas feedback in `src/ui/overlays.ts`, inspect/tooltips in `src/ui/tooltip.ts`. Renderer split into `src/render/{dudes,vehicles,decals,terrain,roofs}.ts`.
+- `scenario.ts` gained `placedSquad` + `roadSpot`/`addVehicleOnRoad`; a campaign.test.ts invariant asserts vehicles spawn on road — Task 5's rewrite must keep it.
+
+Work on branch `m5-unit-system`, rebase on main between batches, grep symbols not line numbers.
 
 **Global constraints:**
 - Determinism is sacred: seeded RNG only, no `Date.now`/`Math.random`; iterate entities by index order; the `snapshot()` determinism test in `tests/sim.test.ts` must keep passing (extend it with new state, never remove fields from it).
@@ -30,8 +36,12 @@
 | `src/sim/scenario.ts` (M) | Builds forces from SquadDef keys; new starter scenario |
 | `src/sim/ai.ts` (M) | Commander v2: threat map, task groups, order-API-only |
 | `src/campaign/campaign.ts` (M) | RosterEntry weapon-key migration only |
-| `src/main.ts` (M) | Order buttons, context actions, reason chips |
-| `src/render/renderer.ts` (M) | Emplacement drawing, chip text, minimal |
+| `src/strategic/bridge.ts` (M) | `redMembers` weapon keys; `makeStrategicBattle` stays the battle builder |
+| `src/strategic/save.ts` (M) | `LEGACY_WEAPONS` mapping in `loadGame` |
+| `src/main.ts` (M) | Order-mode input state, right-click issue |
+| `src/ui/hud.ts` (M) | Order buttons, context-action buttons, ammo readout |
+| `src/ui/overlays.ts` (M) | Reason chips, danger preview |
+| `src/render/renderer.ts` (M) | Emplacement drawing (follow `src/render/vehicles.ts` pattern), minimal |
 | `tests/data.test.ts` (C) | Schema referential integrity |
 | `tests/orders.test.ts` (C) | Executor + refusal behavior |
 | `tests/emplacement.test.ts` (C) | Crewed weapon lifecycle |
@@ -99,7 +109,7 @@ export type WeaponKey = keyof typeof WEAPONS;
 ```
 
 - [ ] Write `tests/data.test.ts`: every weapon's `ammo.type` is a valid AmmoKey (compile-time) plus runtime checks — `damage[0] <= damage[1]`, `cooldown > 0`, belt-fed (`perUnit >= 50`) implies `heat` present, `arc` implies `pen` absent. Run `npm test` — expect PASS.
-- [ ] `npm run check` will FAIL at call sites using old keys (`'rifle'`, `'smg'`, `'mg'`). Fix now with side-mapped substitutes so the build stays green: in `scenario.ts` `squadMembers()` use `i === 0 ? (side === 'blue' ? 'thompson' : 'mp40') : i === 1 ? (side === 'blue' ? 'bar' : 'mg42') : i === 2 ? at : (side === 'blue' ? 'garand' : 'kar98k')` (full restructure lands in Task 5); in `sim.ts` `addVehicle()` crew weapons → `'carbine'`/`'mp40'` by side; in `updateVehicle()` hull-MG fallback `WEAPONS.mg` → `'m1919'`; in `campaign/campaign.ts` update the new-soldier literals (`newSoldier()` `weapon: 'rifle'` → `'garand'`; `newCampaign()` `'smg'` → `'thompson'`, `'mg'` → `'bar'`) AND map old keys in saved campaigns through a `LEGACY_WEAPONS: Record<string, WeaponKey>` table (`rifle→garand, smg→thompson, mg→bar`) applied in `fitRoster` (saves live in localStorage `'ccg-campaign-v1'`).
+- [ ] `npm run check` will FAIL at call sites using old keys (`'rifle'`, `'smg'`, `'mg'`). Fix now with side-mapped substitutes so the build stays green: in `scenario.ts` `squadMembers()` use `i === 0 ? (side === 'blue' ? 'thompson' : 'mp40') : i === 1 ? (side === 'blue' ? 'bar' : 'mg42') : i === 2 ? at : (side === 'blue' ? 'garand' : 'kar98k')` (full restructure lands in Task 5); in `src/strategic/bridge.ts` `redMembers()` → `'mp40'`/`'mg42'`/`'panzerfaust'`/`'kar98k'`; in `sim.ts` `addVehicle()` crew weapons → `'carbine'`/`'mp40'` by side; in `updateVehicle()` the hull-MG `fireSmallArms(…, 'mg', …)` literal → side-mapped `'m1919'`/`'mg42'`; in `campaign/campaign.ts` update the new-soldier literals (`newSoldier()` `weapon: 'rifle'` → `'garand'`; `newCampaign()` `'smg'` → `'thompson'`, `'mg'` → `'bar'`) AND map old keys in saved campaigns through a `LEGACY_WEAPONS: Record<string, WeaponKey>` table (`rifle→garand, smg→thompson, mg→bar`) applied to every `campaign.soldiers[*].weapon` in `loadGame` (`src/strategic/save.ts`, localStorage key `'ccg-save-v2'`) — the boundary where old saves enter; debrief/HUD read `WEAPONS[cs.weapon]` directly, so `fitRoster`-only mapping crashes them.
 - [ ] `npm run check && npm test` — expect PASS. Commit.
 
 ### Task 2: Team/Squad/Load/Emplacement/Vehicle defs
@@ -173,7 +183,7 @@ export interface VehicleDef { /* existing fields plus: */
 - [ ] Implement `addSquadFromDef`: for each TeamKey, spawn soldiers from slots (names from side pool via existing rng pattern; ammo from slot; `role` from slot; secondary for faust carriers = their `weapon` with faust as… faust carriers: slot weapon `kar98k`, plus `ammo.faust ≥ 1` — implement "has faust" as: when an enemy vehicle is in 35m and LOS, soldier with `ammo.faust > 0` fires faust ballistics (use WEAPONS.panzerfaust, decrement faust count) — replaces the old dedicated-AT-man branch in `updateSoldier` (sim.ts:695-711 keeps working for `pen` weapons like bazooka).
 - [ ] Rework `addSquad` internals to create one implicit team per legacy call (keeps old tests/campaign compiling); `assistFactor` from Task 3 now checks real team roles.
 - [ ] Rewrite `scenario.ts` force building on top of the mapgen MapPlan (positions from `plan.spawns.west/east` and `plan.objectives`, NOT hardcoded coords): `makeScenario` fields blue = 2× `us_rifle` + 1× `us_bazooka_team` + 1× `us_m1919_team` at west spawn, red = 2× `de_gruppe` + 1× `de_smg42_team` in `plan.buildings`/east woods, same vehicles (emplacement teams spawn as squads now; emplacement *objects* arrive in Task 9 — until then their crews fight as infantry).
-- [ ] Campaign compatibility, NOT restructure: `makeCampaignBattle`/`fitRoster` keep their 9-man legacy squads flowing through the implicit-team path in `addSquad` (+ `LEGACY_WEAPONS`). Do NOT rebuild `campaign.ts` around the new TO&E — the strategic layer (parallel session, M-C) replaces that module; `SQUAD_SIZE = 9` stays until then.
+- [ ] Campaign compatibility, NOT restructure: `makeStrategicBattle`/`redMembers` (`src/strategic/bridge.ts`) and `fitRoster` keep their 9-man legacy squads flowing through the implicit-team path in `addSquad` (+ `LEGACY_WEAPONS`). Vehicles keep spawning via `roadSpot` (campaign.test.ts invariant). Do NOT rebuild `campaign.ts` around the new TO&E — the strategic layer (M-C) replaces that module; `SQUAD_SIZE = 9` stays until then.
 - [ ] Update `moraleShock`/steadying loops to iterate squad (unchanged — bonds stay squad-scoped per spec).
 - [ ] Tests: US squad spawns 12 with 2 teams and correct weapons; Gruppe spawns 9, MG-Trupp has 3; `orderSquadMove` moves both teams; determinism holds. Run all suites — PASS. Commit.
 
@@ -222,7 +232,7 @@ export function compliance(sim: Sim, team: Team, danger: number): 'comply' | 'ca
 
 ### Task 9: Emplacements (crewed weapons)
 
-**Files:** Create: `src/sim/emplacement.ts`, `tests/emplacement.test.ts` · Modify: `src/sim/sim.ts`, `src/sim/scenario.ts`, `src/render/renderer.ts` (draw a simple gun glyph — reuse vehicle drawing pattern at 40% scale)
+**Files:** Create: `src/sim/emplacement.ts`, `tests/emplacement.test.ts` · Modify: `src/sim/sim.ts`, `src/sim/scenario.ts`, `src/render/renderer.ts` (draw a simple gun glyph — reuse the `src/render/vehicles.ts` drawing pattern at 40% scale)
 
 **Interfaces:**
 
@@ -271,18 +281,18 @@ export interface Emplacement {
 
 **Files:** Modify: `src/sim/ai.ts`, `tests/doctrine.test.ts` (create) 
 
-- [ ] Replace `RedCommander` internals (keep constructor config shape + `update(sim)` signature so scenario.ts wiring stands): belief state `threat: { x, y, conf, tick }[]` built ONLY from red units' current LOS contacts (reuse `dangerScore`'s knowledge primitive — export a `visibleEnemies(sim, side)` helper from orders.ts) + decay (conf ×0.95 per eval when not re-sighted); briefing = `cfg.posts`.
+- [ ] Replace `RedCommander` internals (keep constructor config shape + `update(sim)` signature so `src/strategic/bridge.ts` wiring stands — `makeStrategicBattle` constructs `new RedCommander({ stance, posts })`): belief state `threat: { x, y, conf, tick }[]` built ONLY from red units' current LOS contacts (reuse `dangerScore`'s knowledge primitive — export a `visibleEnemies(sim, side)` helper from orders.ts) + decay (conf ×0.95 per eval when not re-sighted); briefing = `cfg.posts`.
 - [ ] Task groups: partition squads at construction — MG/emplacement squads = base-of-fire, rifle squads = maneuver (2) + reserve (rest). Attack loop per eval: base-of-fire → `defend`/`fire` orders on positions with LOS toward next post; maneuver → bounded `move` on the flank axis (pick left/right by lower summed dangerScore); when threat conf at post < 0.3 or suppression established (base-of-fire firing ≥ 10s) → `fast` assault; reserve commits when a maneuver squad drops below 50%. Defend stance: posts get `ambush` (AT/MG) and `defend` arcs toward likely approach (nearest map edge held by enemy), reserve counterattacks any post with enemies (existing logic, now via `orderSquad`).
 - [ ] Commander uses ONLY: `sim.orderSquad/orderTeam/orderVehicleMove/orderMount/orderDeploy/callBarrage` + `visibleEnemies` + own-side state. Add the honesty audit as a test: wrap sim in a Proxy in `tests/doctrine.test.ts` asserting no reads of blue soldier positions except through `visibleEnemies` (pragmatic version: assert commander module has no direct `soldiers.filter` over enemy side — code-review-level check documented in test comments, plus behavioral test below).
 - [ ] Behavioral tests (doctrine.test.ts, headless, seeded): (a) aggression — attack-stance red gains ≥ 40m ground toward post by tick 6000 vs a passive blue; (b) ambush honesty — hidden blue MG (no LOS from red ever) is never targeted by red orders; (c) suppression-before-assault — red rifle squads receive `fast` only after red MG fire events near the post exceed threshold; (d) existing campaign battles still produce a winner within 20k ticks. Run — PASS. Commit.
 
 ### Task 13: UI wiring (minimal, legibility pillar)
 
-**Files:** Modify: `src/main.ts`, `src/render/renderer.ts`
+**Files:** Modify: `src/main.ts`, `src/ui/hud.ts`, `src/ui/overlays.ts`, `src/ui/tooltip.ts`
 
-- [ ] Order buttons (existing command input pattern in main.ts): keys 1–7 select order kind for selected team/squad; right-click issues. Selected team shows OrderState: order kind + `reason` chip text drawn above the team (renderer text, existing name-label pattern). Balked teams flash the chip.
-- [ ] Context-action buttons appear by selection: emplacement (deploy/pack/wheel/smoke for mortars), vehicle (mount/dismount/hitch/unhitch). Ammo readout in the soldier inspect panel: `magLeft + units` (existing per-soldier panel).
-- [ ] Danger preview: while an order is pending placement, draw the 8 sample points of `dangerScore` colored green→red (exported from orders.ts — the legibility contract from the spec).
+- [ ] Order buttons (Hud callback pattern in `src/ui/hud.ts`; keydown handling in main.ts battle branch — note `Digit` keys currently select squads, so order keys need a mode or modifier): keys 1–7 select order kind for selected team/squad; right-click issues. Selected team shows OrderState: order kind + `reason` chip text drawn above the team (`drawOverlays` in `src/ui/overlays.ts`, existing world-anchored pattern). Balked teams flash the chip.
+- [ ] Context-action buttons appear by selection (hud.ts): emplacement (deploy/pack/wheel/smoke for mortars), vehicle (mount/dismount/hitch/unhitch). Ammo readout in the soldier inspect rows (hud.ts) / tooltip panel: `magLeft + units`.
+- [ ] Danger preview: while an order is pending placement, draw the 8 sample points of `dangerScore` colored green→red in `overlays.ts` (exported from orders.ts — the legibility contract from the spec).
 - [ ] Manual verify in browser (`npm run dev`): issue each of the 7 orders; provoke a balk and read the reason chip; mount/dismount; deploy the mortar and fire smoke. Commit.
 
 ### Task 14: Doctrine/balance harness assertions
