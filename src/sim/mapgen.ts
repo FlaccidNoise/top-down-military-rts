@@ -32,6 +32,9 @@ export interface MapPlan {
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 
 export function generateMap(seed: number, w = 160, h = 120): MapPlan {
+  // village clearing radius + road margins need real space; below this the
+  // clamp bounds invert and the layout degenerates
+  if (w < 60 || h < 40) throw new Error(`mapgen: map ${w}x${h} too small (min 60x40)`);
   for (let attempt = 0; attempt < 8; attempt++) {
     const rng = mulberry32((seed ^ 0x51ab3fc7) + attempt * 0x9e3779b9);
     const plan = tryGenerate(rng, w, h);

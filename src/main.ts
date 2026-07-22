@@ -67,6 +67,7 @@ function setTargetMode(m: '' | 'barrage' | 'air'): void {
 }
 
 const urlSeed = new URLSearchParams(location.search).get('seed'); // debug: ?seed=N pins the map
+if (urlSeed !== null && !Number.isFinite(Number(urlSeed))) console.warn(`?seed=${urlSeed} is not a number; using 0`);
 
 const hud = new Hud({
   selectSquad,
