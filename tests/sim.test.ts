@@ -171,8 +171,8 @@ describe('simulation', () => {
   it('a queued waypoint does not cancel a squadmate rescue in progress', () => {
     const sim = new Sim(new GameMap(80, 20), 1);
     sim.addSquad('blue', 'a', [
-      { name: 'A', weapon: 'rifle', x: 5.5, y: 10.5 },
-      { name: 'B', weapon: 'rifle', x: 6.5, y: 10.5 },
+      { name: 'A', weapon: 'garand', x: 5.5, y: 10.5 },
+      { name: 'B', weapon: 'garand', x: 6.5, y: 10.5 },
     ]);
     const [a, b] = sim.soldiers;
     a.bonds[b.id] = 1;
