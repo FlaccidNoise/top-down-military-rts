@@ -196,7 +196,8 @@ function startEngagementBattle(e: Engagement): void {
 
 function showDebrief(): void {
   debriefShown = true;
-  const e = pendingEngagement!;
+  const e = pendingEngagement;
+  if (!e) throw new Error('showDebrief: pendingEngagement is null — startEngagementBattle must set it');
   const out = applyEngagementOutcome(campaign, front, e, sim);
   pendingEngagement = null;
   saveGame(campaign, front);
