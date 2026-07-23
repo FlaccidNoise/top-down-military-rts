@@ -39,6 +39,7 @@ export const AI_MEMORY_TICKS = CONTACT_TTL;
 const EVAL_TICKS = 150; // every 5s
 const SUPPRESSION_SECONDS = 10; // a base-of-fire team firing this long counts as suppression established
 const CLEAR_CONF = 0.3; // threat confidence at the post below which maneuver goes ahead regardless
+const ASSAULT_RANGE = 30; // m from the post at which a suppressed-in maneuver team charges instead of running
 const FLANK_OFFSET = 20; // meters either side of the direct axis to the post
 const BOF_SETTLE_RADIUS = 5; // close enough to the scored firing spot to stop moving and start firing
 
@@ -149,7 +150,8 @@ export class RedCommander {
 
   // ---- attack stance: shape (base of fire scores a position, moves there
   // once, then suppresses) -> maneuver (bound the covered flank) -> assault
-  // (fast, once suppression's established) -> reserve commits on a maneuver
+  // (fast once suppression's established; the real 'assault' charge once
+  // within ASSAULT_RANGE of a post with live threat) -> reserve commits on a maneuver
   // team's losses (spec's attack template; the assault gate uses BOTH
   // suppression-established and a cleared threat reading so the commander
   // doesn't stall forever against an unseen post).
@@ -180,9 +182,18 @@ export class RedCommander {
       if (!post) continue;
       const alive = team.soldierIds.filter((id) => sim.soldiers[id].alive);
       if (alive.length === 0) continue;
+      // an executing charge owns its team until the position is clear —
+      // reissuing would re-roll compliance mid-charge and restart the run-in
+      if (team.orderState.order?.kind === 'assault' && team.orderState.phase === 'executing') continue;
       const suppressed = this.suppressionEstablished(sim);
       const confAtPost = this.threatConfNear(post.x, post.y, 15);
-      if (suppressed || confAtPost < CLEAR_CONF) {
+      const c = this.centroid(sim, team.soldierIds);
+      if (suppressed && confAtPost >= CLEAR_CONF && Math.hypot(c.x - post.x, c.y - post.y) <= ASSAULT_RANGE) {
+        // suppression established, live threat on the post, close enough to
+        // charge home: the 8th order, through the same API the player uses —
+        // its compliance ladder still applies (a cautious team advances instead)
+        sim.orderTeam(teamId, { kind: 'assault', x: post.x, y: post.y });
+      } else if (suppressed || confAtPost < CLEAR_CONF) {
         sim.orderTeam(teamId, { kind: 'fast', x: post.x, y: post.y });
       } else {
         const flank = this.pickFlank(sim, team, post);

@@ -137,7 +137,8 @@ describe('AI commander doctrine', () => {
         if (Math.hypot(ev.fx - 60.5, ev.fy - 30.5) < 3 && Math.hypot(ev.tx - post.x, ev.ty - post.y) < 30) mgShotsBeforeFast++;
       }
       const rifleOrder = sim.teams[rifle.teamIds[0]].orderState.order;
-      if (rifleOrder?.kind === 'fast') {
+      // the go-signal in either form: the run-in ('fast') or the charge itself
+      if (rifleOrder?.kind === 'fast' || rifleOrder?.kind === 'assault') {
         fastAtTick = sim.tick;
         if (sim.tick <= 150) firstEvalHadFast = true;
       }
@@ -145,6 +146,52 @@ describe('AI commander doctrine', () => {
     expect(fastAtTick).toBeGreaterThan(0); // the assault does eventually happen
     expect(firstEvalHadFast).toBe(false); // not an immediate, unsupported rush
     expect(mgShotsBeforeFast).toBeGreaterThan(0); // the base of fire actually shot near the post first
+  });
+
+  it('assault adoption: a maneuver team already close to a live post charges (assault order) only after the base of fire has been shooting', () => {
+    const map = new GameMap(140, 60);
+    const sim = new Sim(map, 102);
+    const post = { x: 120, y: 30 };
+    const mg = sim.addSquad('red', 'MG', [
+      { name: 'G', weapon: 'mg42', x: 60.5, y: 30.5 },
+      { name: 'A1', weapon: 'kar98k', x: 61.5, y: 29.5 },
+    ]);
+    // rifle team starts ~24m from the post — inside the AI's charge range,
+    // so the ONLY thing standing between it and an assault order is the
+    // suppression gate. Ammo zeroed: at this range a live rifle team shoots
+    // the garrison dead before 10s of suppression can even accrue, and a dead
+    // garrison means no live threat to charge (the gate correctly picks
+    // plain 'fast' for empty ground).
+    const rifle = sim.addSquad(
+      'red',
+      'Rifle',
+      Array.from({ length: 6 }, (_, i) => ({ name: `R${i}`, weapon: 'kar98k' as const, x: 96.5, y: 27.5 + i, xp: 20 })),
+    );
+    rifle.soldierIds.forEach((id) => {
+      sim.soldiers[id].morale = 1;
+      sim.soldiers[id].ammo = {};
+      sim.soldiers[id].magLeft = 0;
+    });
+    sim.soldiers[rifle.soldierIds[0]].role = 'leader';
+    sim.addSquad('blue', 'Garrison', [
+      { name: 'B1', weapon: 'kar98k', x: 122.5, y: 30.5 },
+      { name: 'B2', weapon: 'kar98k', x: 122.5, y: 31.5 },
+      { name: 'B3', weapon: 'kar98k', x: 122.5, y: 32.5 },
+    ]);
+    const commander = new RedCommander({ stance: 'attack', posts: { [mg.id]: post, [rifle.id]: post } });
+
+    let mgShotsBeforeAssault = 0;
+    let assaultAtTick = -1;
+    for (let i = 0; i < 12000 && assaultAtTick < 0; i++) {
+      commander.update(sim);
+      sim.step();
+      for (const ev of sim.takeEvents()) {
+        if (Math.hypot(ev.fx - 60.5, ev.fy - 30.5) < 3 && Math.hypot(ev.tx - post.x, ev.ty - post.y) < 30) mgShotsBeforeAssault++;
+      }
+      if (sim.teams[rifle.teamIds[0]].orderState.order?.kind === 'assault') assaultAtTick = sim.tick;
+    }
+    expect(assaultAtTick).toBeGreaterThan(300); // never before 10s of suppressive fire could even exist
+    expect(mgShotsBeforeAssault).toBeGreaterThan(0); // and the base of fire really was shooting first
   });
 
   it('a real Gruppe (addSquadFromDef) keeps its MG-Trupp on fire/move orders while the Schützen team maneuvers, over a sustained window', () => {
