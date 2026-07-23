@@ -159,6 +159,23 @@ describe('melee × fog of war', () => {
     expect(sim.soldierVisibleTo(killer.side, victim)).toBe(true); // corpse found at arm's length, despite the smoke
   });
 
+  it('melee events always pair opposite sides — the invariant that makes the renderer FX gate a safe no-op', () => {
+    // soldierVisibleTo is unconditionally true for own-side men, so the FX
+    // gate in addMeleeEvents can only bite if a melee ever pairs two
+    // non-player sides. Pin the pairing invariant: if this fails, the gate
+    // just became load-bearing and needs real tests.
+    const { sim, a, b } = pair();
+    let events = 0;
+    for (let i = 0; i < 1800 && a.alive && b.alive && !a.downed && !b.downed; i++) {
+      sim.step();
+      for (const e of sim.takeMeleeEvents()) {
+        events++;
+        expect(sim.soldiers[e.attackerId].side).not.toBe(sim.soldiers[e.victimId].side);
+      }
+    }
+    expect(events).toBeGreaterThan(0);
+  });
+
   it('a sneaking man hidden even from the sweep is revealed by melee contact; his team order survives', () => {
     const { sim, a, b } = pair({ dist: 4 }); // beyond the 2m lock range
     sim.orderTeam(b.teamId, { kind: 'sneak', x: b.x, y: b.y }); // sneak in place
