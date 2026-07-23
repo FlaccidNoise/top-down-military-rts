@@ -14,7 +14,7 @@
 //   node scripts/shot.mjs --seed 7 --dump                    # JSON state → stdout
 //   node scripts/shot.mjs --list                             # presets + effects
 import { mkdirSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname } from 'node:path';
 import { arg, launch, gotoStaged, deriveTargets, place, burst } from './lib/stage.mjs';
 
 const has = (name) => process.argv.includes(`--${name}`);
@@ -69,7 +69,7 @@ if (has('dump')) {
 }
 
 const targets = await deriveTargets(page, { seed: SEED, kind });
-mkdirSync(OUT.slice(0, OUT.lastIndexOf('/')) || '.', { recursive: true });
+mkdirSync(dirname(OUT), { recursive: true });
 
 if (has('effect')) {
   const name = arg('effect', 'boom');
