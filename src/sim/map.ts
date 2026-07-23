@@ -75,18 +75,23 @@ export class GameMap {
 export interface LosResult {
   visible: boolean;
   cover: number;
+  conceal: number; // 0..1 accumulated opacity along the ray (1 when blocked)
+  concealed?: boolean; // invisible due to a sneaking target's concealment, not blocked LOS (set by sightToSoldier)
 }
 
 // Grid traversal (Amanatides & Woo). Walls block sight; doors and windows pass.
 // Terrain opacity accumulates; a window crossed within 2m of the target grants
 // window cover (the target is "at the window", exposed only through it).
+// Terrain with coverBehind (hedgerows) works the same way directionally: a
+// shot crossing it within 2m of the target grants that cover — hugging the far
+// side of a hedgerow bank; shots that don't cross the hedge get none.
 export function los(map: GameMap, x0: number, y0: number, x1: number, y1: number): LosResult {
   let tx = Math.floor(x0);
   let ty = Math.floor(y0);
   const tx1 = Math.floor(x1);
   const ty1 = Math.floor(y1);
   let cover = map.terrainAt(tx1, ty1).cover;
-  if (tx === tx1 && ty === ty1) return { visible: true, cover };
+  if (tx === tx1 && ty === ty1) return { visible: true, cover, conceal: 0 };
 
   const dx = x1 - x0;
   const dy = y1 - y0;
@@ -100,28 +105,39 @@ export function los(map: GameMap, x0: number, y0: number, x1: number, y1: number
 
   let opacity = 0;
   let lastWindowT = -1;
+  let lastLip = 0;
+  let lastLipT = -1;
   let guard = map.w + map.h + 4;
 
   while ((tx !== tx1 || ty !== ty1) && guard-- > 0) {
+    let tEntry: number;
     if (tMaxX < tMaxY) {
       const e = map.vEdge(stepX > 0 ? tx + 1 : tx, ty);
-      if (e === EDGE.WALL) return { visible: false, cover: 0 };
+      if (e === EDGE.WALL) return { visible: false, cover: 0, conceal: 1 };
       if (e === EDGE.WINDOW) lastWindowT = tMaxX;
+      tEntry = tMaxX;
       tx += stepX;
       tMaxX += tDeltaX;
     } else {
       const e = map.hEdge(tx, stepY > 0 ? ty + 1 : ty);
-      if (e === EDGE.WALL) return { visible: false, cover: 0 };
+      if (e === EDGE.WALL) return { visible: false, cover: 0, conceal: 1 };
       if (e === EDGE.WINDOW) lastWindowT = tMaxY;
+      tEntry = tMaxY;
       ty += stepY;
       tMaxY += tDeltaY;
     }
     if (tx !== tx1 || ty !== ty1) {
-      opacity += map.terrainAt(tx, ty).opacity;
-      if (opacity >= 1) return { visible: false, cover: 0 };
+      const t = map.terrainAt(tx, ty);
+      opacity += t.opacity;
+      if (opacity >= 1) return { visible: false, cover: 0, conceal: 1 };
+      if (t.coverBehind !== undefined) {
+        lastLip = t.coverBehind;
+        lastLipT = tEntry;
+      }
     }
   }
 
   if (lastWindowT >= 0 && (1 - lastWindowT) * len <= 2) cover = Math.max(cover, 0.5);
-  return { visible: true, cover };
+  if (lastLipT >= 0 && (1 - lastLipT) * len <= 2) cover = Math.max(cover, lastLip);
+  return { visible: true, cover, conceal: Math.min(1, opacity) };
 }

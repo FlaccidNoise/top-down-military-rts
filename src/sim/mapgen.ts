@@ -27,6 +27,7 @@ export interface MapPlan {
   buildings: Building[];
   spawns: { west: Vec; east: Vec }; // arterial road entry points, vehicle-reachable
   objectives: Vec[]; // [0] village crossroads, [1] east woods anchor, [2] second hamlet (w >= 240 only)
+  woodsStands: Vec[]; // center of every placed woods stand (guaranteed east stand + extras)
 }
 
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
@@ -192,13 +193,16 @@ function tryGenerate(rng: Rng, w: number, h: number): MapPlan | null {
         }
       }
   };
+  const woodsStands: Vec[] = [];
   const eastWoods = { x: clamp(crossX + 38 + rng.int(20), 20, w - 14), y: clamp(cy - 18 + rng.int(37), 12, h - 12) };
   stand(eastWoods.x, eastWoods.y, 9 + rng.int(4));
+  woodsStands.push({ x: eastWoods.x, y: eastWoods.y });
   for (let i = 0, n = 2 + rng.int(3) + Math.max(0, Math.round((w * h) / 19200) - 1); i < n; i++) {
     const sx = 10 + rng.int(w - 20);
     const sy = 8 + rng.int(h - 16);
     if ((sx - crossX) * (sx - crossX) + (sy - cy) * (sy - cy) < 34 * 34) continue;
     stand(sx, sy, 6 + rng.int(5));
+    woodsStands.push({ x: sx, y: sy });
   }
 
   // orchards: staggered tree rows near the village
@@ -235,6 +239,7 @@ function tryGenerate(rng: Rng, w: number, h: number): MapPlan | null {
     buildings,
     spawns: { west: { x: 3, y: roadY[3] }, east: { x: w - 4, y: roadY[w - 4] } },
     objectives,
+    woodsStands,
   };
 }
 

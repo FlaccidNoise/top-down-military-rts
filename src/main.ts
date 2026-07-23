@@ -1,4 +1,4 @@
-import { advanceDays, fillReplacements, newCampaign, type Campaign } from './campaign/campaign';
+import { advanceDays, fillReplacements, newCampaign, squadMembers, type Campaign } from './campaign/campaign';
 import { Camera } from './render/camera';
 import { Renderer } from './render/renderer';
 import { StrategicView, TERRAIN_LABELS } from './render/strategic';
@@ -7,7 +7,7 @@ import { WEAPONS } from './sim/data';
 import type { OrderKind, TeamOrder } from './sim/orders';
 import { DT, type Sim, type Soldier } from './sim/sim';
 import { applyEngagementOutcome, makeStrategicBattle, newFront, syncStrengths } from './strategic/bridge';
-import { operationStatus, type Engagement, type Front } from './strategic/front';
+import { operationStatus, REINFORCE_CYCLE_DAYS, REINFORCE_PER_COMPANY, type Engagement, type Front } from './strategic/front';
 import { loadGame, saveGame } from './strategic/save';
 import { makeDefaultSector } from './strategic/sector';
 import { emplacementOf, Hud, infantrySquads } from './ui/hud';
@@ -96,6 +96,7 @@ function setTargetMode(m: '' | 'barrage' | 'air' | 'wheel' | 'empfire' | 'empsmo
 
 const urlSeed = new URLSearchParams(location.search).get('seed'); // debug: ?seed=N pins the map
 if (urlSeed !== null && !Number.isFinite(Number(urlSeed))) console.warn(`?seed=${urlSeed} is not a number; ignoring`);
+const fowOff = new URLSearchParams(location.search).get('fow') === '0'; // debug: ?fow=0 disables fog of war (render-only; never touches sim outcomes)
 
 const hud = new Hud({
   selectSquad,
@@ -175,6 +176,7 @@ function startEngagementBattle(e: Engagement): void {
   const seed = urlSeed !== null && Number.isFinite(Number(urlSeed)) ? Number(urlSeed) : front.clockMin * 7919 + e.cell;
   const battle = makeStrategicBattle(campaign, front, e, seed);
   sim = battle.sim;
+  sim.fowDisabled = fowOff;
   commander = battle.commander;
   battleCompany = battle.companyIndex;
   renderer = new Renderer(sim);
@@ -206,7 +208,7 @@ function showDebrief(): void {
   const rows = campaign.companies[battleCompany].squads
     .map((si) => campaign.squads[si])
     .map((sq) => {
-      const men = sq.members
+      const men = squadMembers(sq)
         .map((pid) => campaign.soldiers[pid])
         .map((cs) => {
           const scars = cs.bodyDamage.some((d) => d > 0) && cs.status === 'fit' ? ' <span class="scar">permanent injury</span>' : '';
@@ -444,6 +446,9 @@ window.addEventListener('keydown', (e) => {
   getCampaign: () => campaign,
   startEngagementBattle,
   showDebrief,
+  setFow: (on: boolean) => {
+    sim.fowDisabled = !on;
+  },
 };
 
 let last = performance.now();
@@ -462,7 +467,10 @@ function frame(now: number): void {
         const e = front.step();
         if (front.day > prevDay) {
           advanceDays(campaign, front.day - prevDay);
-          fillReplacements(campaign, front.day * 31 + 7);
+          if (front.day % REINFORCE_CYCLE_DAYS === 0) {
+            const arrived = fillReplacements(campaign, front.day * 31 + 7, REINFORCE_PER_COMPANY);
+            if (arrived > 0) stratView.flash(`+${arrived} replacements arrived`);
+          }
           syncStrengths(campaign, front);
           prevDay = front.day;
           saveGame(campaign, front);
@@ -489,9 +497,11 @@ function frame(now: number): void {
       acc = 0;
     }
     renderer.addEvents(sim.takeEvents(), now);
+    renderer.addMeleeEvents(sim.takeMeleeEvents(), now);
     renderer.addBooms(sim.takeBooms(), now);
     renderer.addPlanes(sim.takePlanes(), now);
-    pings.add(sim.takeUnitEvents(), sim.tick);
+    // fog of war: enemy unit events only ping where a friendly can see
+    pings.add(sim.takeUnitEvents().filter((e) => e.side === 'blue' || sim.fowDisabled || sim.sideSeesPoint('blue', e.x, e.y)), sim.tick);
 
     const pick = mouse.onCanvas && !targetMode ? pickAt(sim, cam, mouse.x, mouse.y, canvas.width, canvas.height) : null;
     const shot = computeShot(sim, selectedSquad, selectedVehicle, pick);

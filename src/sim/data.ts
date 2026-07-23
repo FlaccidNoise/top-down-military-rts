@@ -3,6 +3,7 @@ export interface TerrainDef {
   moveCost: number; // speed divisor
   cover: number; // 0..1 hit-chance reduction for a target standing in it
   opacity: number; // LOS accumulates this per tile crossed; >= 1 blocks
+  coverBehind?: number; // directional: cover granted when a shot crosses this tile within 2m of the target (hedgerow lip)
   passable: boolean;
 }
 
@@ -11,7 +12,7 @@ export const TERRAIN = {
   road: { color: '#8a8172', moveCost: 0.85, cover: 0, opacity: 0, passable: true },
   woods: { color: '#31482b', moveCost: 1.6, cover: 0.3, opacity: 0.35, passable: true },
   floor: { color: '#a0917a', moveCost: 1, cover: 0, opacity: 0, passable: true },
-  hedge: { color: '#2f4a28', moveCost: 1.8, cover: 0.35, opacity: 0.5, passable: true },
+  hedge: { color: '#2f4a28', moveCost: 1.8, cover: 0.35, opacity: 0.5, coverBehind: 0.5, passable: true },
   field: { color: '#6a7245', moveCost: 1.1, cover: 0.05, opacity: 0, passable: true },
 } satisfies Record<string, TerrainDef>;
 

@@ -1,4 +1,4 @@
-import { chitEtaMinutes, formatClock, type Chit, type Front } from '../strategic/front';
+import { chitEtaMinutes, formatClock, minutesToReinforcement, type Chit, type Front } from '../strategic/front';
 import { cellIndex, cellXY, type CellTerrain, type SectorMap } from '../strategic/sector';
 
 const TERRAIN_COLORS: Record<CellTerrain, string> = {
@@ -55,7 +55,16 @@ const FOOTER_H = 24;
 const HINT_TEXT = 'SPACE pause  ·  1/2/3 speed  ·  click select  ·  right-click move  ·  ESC deselect';
 
 export class StrategicView {
+  private flashMsg: string | null = null;
+  private flashUntil = 0;
+
   constructor(readonly sector: SectorMap) {}
+
+  // Transient banner (e.g. reinforcement arrivals); replaces any flash in progress.
+  flash(msg: string): void {
+    this.flashMsg = msg;
+    this.flashUntil = performance.now() + 6000;
+  }
 
   layout(canvasW: number, canvasH: number): { size: number; ox: number; oy: number } {
     const size = Math.max(4, Math.floor(Math.min(canvasW / this.sector.w, (canvasH - HEADER_H - FOOTER_H) / this.sector.h)));
@@ -134,6 +143,7 @@ export class StrategicView {
     this.drawHintBar(ctx, canvasW, canvasH);
     this.drawLegend(ctx, canvasW, canvasH);
     if (selected) this.drawSelectedPanel(ctx, front, selected, canvasW);
+    this.drawFlash(ctx, canvasW);
   }
 
   // Cheap per-cell stipple from the deterministic hash — a few fills/strokes
@@ -339,7 +349,35 @@ export class StrategicView {
 
     ctx.textAlign = 'right';
     ctx.fillStyle = paused ? AMBER : MUTED;
-    ctx.fillText(paused ? 'PAUSED' : `×${speed} MIN/S`, canvasW - 12, HEADER_H / 2);
+    const speedText = paused ? 'PAUSED' : `×${speed} MIN/S`;
+    ctx.fillText(speedText, canvasW - 12, HEADER_H / 2);
+    const speedW = ctx.measureText(speedText).width;
+
+    const hours = minutesToReinforcement(front) / 60;
+    const reinforceText = hours < 1 ? 'Reinforcements <1h' : `Reinforcements in ${Math.round(hours)}h`;
+    ctx.fillStyle = MUTED;
+    ctx.fillText(reinforceText, canvasW - 12 - speedW - 24, HEADER_H / 2);
+  }
+
+  private drawFlash(ctx: CanvasRenderingContext2D, canvasW: number): void {
+    if (!this.flashMsg || performance.now() >= this.flashUntil) {
+      this.flashMsg = null;
+      return;
+    }
+    ctx.font = '14px monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    const w = ctx.measureText(this.flashMsg).width + 32;
+    const h = 30;
+    const x = (canvasW - w) / 2;
+    const y = HEADER_H + 10;
+    ctx.fillStyle = PANEL_BG;
+    ctx.fillRect(x, y, w, h);
+    ctx.strokeStyle = AMBER;
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+    ctx.fillStyle = AMBER_BRIGHT;
+    ctx.fillText(this.flashMsg, canvasW / 2, y + h / 2 + 1);
   }
 
   private drawHintBar(ctx: CanvasRenderingContext2D, canvasW: number, canvasH: number): void {

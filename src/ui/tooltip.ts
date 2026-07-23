@@ -1,6 +1,6 @@
 import type { Camera } from '../render/camera';
 import { woundLabel } from '../sim/body';
-import { TERRAIN, VEHICLES, WEAPONS, type TerrainKey, type WeaponDef } from '../sim/data';
+import { TERRAIN, VEHICLES, WEAPONS, type TerrainDef, type TerrainKey, type WeaponDef } from '../sim/data';
 import { sightBetween, type Sim, type Soldier, type Vehicle } from '../sim/sim';
 import { STATE_COLOR } from './hud';
 
@@ -19,7 +19,7 @@ export function pickAt(sim: Sim, cam: Camera, sx: number, sy: number, cw: number
   let da = r;
   let dd = r;
   for (const s of sim.soldiers) {
-    if (s.inVehicle >= 0) continue;
+    if (s.inVehicle >= 0 || !sim.soldierVisibleTo('blue', s)) continue; // fog of war: can't probe what isn't seen
     const d = Math.hypot(s.x - wx, s.y - wy);
     if (s.alive) {
       if (d < da) {
@@ -33,6 +33,7 @@ export function pickAt(sim: Sim, cam: Camera, sx: number, sy: number, cw: number
   }
   if (bestAlive) return { kind: 'soldier', s: bestAlive };
   for (const v of sim.vehicles) {
+    if (!sim.vehicleVisibleTo('blue', v)) continue;
     if (Math.hypot(v.x - wx, v.y - wy) < 2.8) return { kind: 'vehicle', v };
   }
   if (bestDead) return { kind: 'soldier', s: bestDead };
@@ -49,7 +50,7 @@ export interface ShotSolution {
   acc: number;
   title: string;
   lines: string[];
-  reason?: 'no-los' | 'out-of-range' | 'mixed'; // set when !ok — overlays branch on this, never on prose
+  reason?: 'no-los' | 'concealed' | 'out-of-range' | 'mixed'; // set when !ok — overlays branch on this, never on prose
 }
 
 const pct = (v: number) => `${Math.round(v * 100)}%`;
@@ -92,6 +93,7 @@ export function computeShot(sim: Sim, squadId: number, vehicleId: number, pick: 
     let nd = Infinity;
     let anyLos = false;
     let anyRange = false;
+    let anyConcealed = false;
     for (const s of shooters) {
       const p = sim.shotPreview(s.x, s.y, s.weapon, t, s.path !== null, sim.aimFactor(s));
       if (p.dist < nd) {
@@ -99,13 +101,15 @@ export function computeShot(sim: Sim, squadId: number, vehicleId: number, pick: 
         nearest = s;
       }
       if (p.visible) anyLos = true;
+      if (p.concealed) anyConcealed = true;
       if (p.dist <= WEAPONS[s.weapon].range) anyRange = true;
       if (!p.visible || p.dist > WEAPONS[s.weapon].range) continue;
       if (!best || p.acc > best.acc) best = { s, acc: p.acc, dist: p.dist, cover: p.cover };
     }
     if (!best) {
-      const reason = anyRange && !anyLos ? 'no-los' : anyLos && !anyRange ? 'out-of-range' : 'mixed';
-      const text = reason === 'no-los' ? 'no line of sight' : reason === 'out-of-range' ? 'out of range' : 'no line of sight or out of range';
+      const reason = anyRange && !anyLos ? (anyConcealed ? 'concealed' : 'no-los') : anyLos && !anyRange ? 'out-of-range' : 'mixed';
+      const text =
+        reason === 'concealed' ? 'target concealed' : reason === 'no-los' ? 'no line of sight' : reason === 'out-of-range' ? 'out of range' : 'no line of sight or out of range';
       return { fx: nearest.x, fy: nearest.y, tx: t.x, ty: t.y, ok: false, acc: 0, reason, title: 'NO SHOT', lines: [`${squad.name}: ${text}`] };
     }
     return {
@@ -256,8 +260,13 @@ const TERRAIN_NAME: Record<TerrainKey, string> = { grass: 'Open ground', road: '
 
 function terrainCard(sim: Sim, wx: number, wy: number, moveHint: boolean): string {
   const k = sim.map.terrainKeyAt(Math.floor(wx), Math.floor(wy));
-  const t = TERRAIN[k];
-  const cover = k === 'floor' ? 'cover 0% in the open — 50% at windows' : `cover ${pct(t.cover)}`;
+  const t: TerrainDef = TERRAIN[k];
+  const cover =
+    k === 'floor'
+      ? 'cover 0% in the open — 50% at windows'
+      : t.coverBehind !== undefined
+        ? `cover ${pct(t.cover)} inside — ${pct(t.coverBehind)} hugging the far side`
+        : `cover ${pct(t.cover)}`;
   const conceal = t.opacity > 0 ? `blocks sight ${pct(t.opacity)} per tile` : 'no concealment';
   const speed = `move speed ×${(1 / t.moveCost).toFixed(2)}`;
   let html = `<div class="tt-head"><b>${TERRAIN_NAME[k]}</b></div><div class="tt-rows"><div><span>${cover}</span></div><div><span>${conceal}</span></div><div><span>${speed}</span></div></div>`;

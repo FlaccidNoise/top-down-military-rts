@@ -38,6 +38,155 @@ describe('line of sight', () => {
   });
 });
 
+describe('hedgerow cover and concealment', () => {
+  // vertical hedge line at x=10
+  const hedgeMap = () => {
+    const m = new GameMap(20, 5);
+    for (let y = 0; y < 5; y++) m.setTerrain(10, y, 'hedge');
+    return m;
+  };
+
+  it('a shot crossing a hedge within 2m of the target grants lip cover (0.5)', () => {
+    const r = los(hedgeMap(), 2.5, 2.5, 11.5, 2.5);
+    expect(r.visible).toBe(true);
+    expect(r.cover).toBeCloseTo(0.5, 10);
+  });
+
+  it('lip cover is directional — no cover from the hedgeless side', () => {
+    const r = los(hedgeMap(), 18.5, 2.5, 11.5, 2.5);
+    expect(r.visible).toBe(true);
+    expect(r.cover).toBe(0);
+    expect(r.conceal).toBe(0);
+  });
+
+  it('standing in the hedge itself keeps the tile cover (0.35)', () => {
+    expect(los(hedgeMap(), 2.5, 2.5, 10.5, 2.5).cover).toBeCloseTo(0.35, 10);
+  });
+
+  it('a hedge crossed far from the target conceals but grants no cover', () => {
+    const r = los(hedgeMap(), 2.5, 2.5, 15.5, 2.5);
+    expect(r.visible).toBe(true);
+    expect(r.cover).toBe(0);
+    expect(r.conceal).toBeCloseTo(0.5, 10);
+  });
+
+  it('two hedges still block sight', () => {
+    const m = hedgeMap();
+    for (let y = 0; y < 5; y++) m.setTerrain(13, y, 'hedge');
+    expect(los(m, 2.5, 2.5, 16.5, 2.5).visible).toBe(false);
+  });
+
+  it('coverAt/inCover treat hedge-adjacent tiles as cover to hug', () => {
+    const sim = new Sim(hedgeMap(), 1);
+    expect(sim.coverAt(11.5, 2.5)).toBeCloseTo(0.5, 10);
+    expect(sim.inCover(11.5, 2.5)).toBe(true);
+    expect(sim.coverAt(2.5, 2.5)).toBe(0);
+    expect(sim.inCover(2.5, 2.5)).toBe(false);
+  });
+});
+
+describe('fog of war', () => {
+  // dry everyone so the scene stays static (shared-RNG rule: zero ammo, never toggle alive in A/B tests)
+  const dry = (sim: Sim) => {
+    for (const s of sim.soldiers) {
+      s.magLeft = 0;
+      s.ammo = {};
+    }
+  };
+  // vertical double-hedge wall: accumulated opacity 1.0 blocks LOS entirely
+  const walledMap = () => {
+    const m = new GameMap(80, 20);
+    for (let y = 0; y < 20; y++) {
+      m.setTerrain(30, y, 'hedge');
+      m.setTerrain(33, y, 'hedge');
+    }
+    return m;
+  };
+
+  it('knows nothing at battle start; spots an enemy in the open after one sweep', () => {
+    const sim = new Sim(new GameMap(80, 20), 11);
+    sim.addSquad('blue', 'a', [{ name: 'A', weapon: 'garand', x: 5.5, y: 10.5 }]);
+    sim.addSquad('red', 'r', [{ name: 'R', weapon: 'kar98k', x: 55.5, y: 10.5 }]);
+    dry(sim);
+    const [blue, red] = sim.soldiers;
+    expect(sim.soldierVisibleTo('blue', red)).toBe(false); // tick 0: no intel yet
+    expect(sim.soldierVisibleTo('blue', blue)).toBe(true); // friendlies always
+    for (let i = 0; i < 15; i++) sim.step();
+    expect(sim.soldierVisibleTo('blue', red)).toBe(true);
+    expect(sim.spotted.red.has(blue.id)).toBe(true); // intel is symmetric
+  });
+
+  it('a spotted enemy who breaks LOS ghosts at his last-SEEN spot; the ghost expires', () => {
+    const sim = new Sim(walledMap(), 12);
+    sim.addSquad('blue', 'a', [{ name: 'A', weapon: 'garand', x: 5.5, y: 10.5 }]);
+    sim.addSquad('red', 'r', [{ name: 'R', weapon: 'kar98k', x: 20.5, y: 10.5 }]);
+    dry(sim);
+    const red = sim.soldiers[1];
+    for (let i = 0; i < 15; i++) sim.step();
+    expect(sim.soldierVisibleTo('blue', red)).toBe(true);
+    red.x = 45.5; // staged: slips behind the wall between sweeps
+    for (let i = 0; i < 15; i++) sim.step();
+    expect(sim.soldierVisibleTo('blue', red)).toBe(false);
+    const ghost = sim.contacts.blue.get(`s${red.id}`);
+    expect(ghost?.kind).toBe('infantry');
+    expect(ghost!.x).toBeCloseTo(20.5, 5); // where we last SAW him, not where he hides
+    for (let i = 0; i <= 45 * 30 + 15; i++) sim.step();
+    expect(sim.contacts.blue.has(`s${red.id}`)).toBe(false); // expired
+  });
+
+  it('an untriggered ambush behind a hedge is off the intel picture; defend reveals it', () => {
+    const m = new GameMap(80, 20);
+    for (let y = 0; y < 20; y++) m.setTerrain(30, y, 'hedge');
+    const sim = new Sim(m, 13);
+    sim.addSquad('blue', 'obs', [{ name: 'A', weapon: 'garand', x: 5.5, y: 10.5 }]);
+    sim.addSquad('red', 'amb', [{ name: 'R', weapon: 'kar98k', x: 60.5, y: 10.5 }]); // 55m: beyond the 40m kar98k ambush trigger
+    dry(sim);
+    const amb = sim.soldiers[1];
+    sim.orderTeam(amb.teamId, { kind: 'ambush', x: 60.5, y: 10.5 });
+    for (let i = 0; i < 15; i++) sim.step();
+    expect(sim.teams[amb.teamId].orderState.order?.kind).toBe('ambush'); // guard: untriggered
+    expect(sim.soldierVisibleTo('blue', amb)).toBe(false); // conceal 0.5, holding fire
+    sim.orderTeam(amb.teamId, { kind: 'defend', x: 60.5, y: 10.5 });
+    for (let i = 0; i < 15; i++) sim.step();
+    expect(sim.soldierVisibleTo('blue', amb)).toBe(true);
+  });
+
+  it('a tracked enemy who dies out of sight leaves a ghost until the corpse is found', () => {
+    const sim = new Sim(walledMap(), 15);
+    sim.addSquad('blue', 'a', [{ name: 'A', weapon: 'garand', x: 5.5, y: 10.5 }]);
+    sim.addSquad('red', 'r', [{ name: 'R', weapon: 'kar98k', x: 20.5, y: 10.5 }]);
+    dry(sim);
+    const [blue, red] = sim.soldiers;
+    for (let i = 0; i < 15; i++) sim.step(); // tracked in the open
+    red.x = 45.5; // staged: behind the wall...
+    red.alive = false; // ...and dead before the next sweep
+    for (let i = 0; i < 15; i++) sim.step();
+    expect(sim.soldierVisibleTo('blue', red)).toBe(false);
+    expect(sim.contacts.blue.get(`s${red.id}`)?.x).toBeCloseTo(20.5, 5); // ghost at last-seen, not silently dropped
+    blue.x = 40.5; // walks past the wall and finds the corpse
+    for (let i = 0; i < 15; i++) sim.step();
+    expect(sim.contacts.blue.has(`s${red.id}`)).toBe(false); // resolved
+    expect(sim.soldierVisibleTo('blue', red)).toBe(true); // permanent corpse marker
+  });
+
+  it('an unseen corpse stays hidden until a friendly gains LOS, then is known for good', () => {
+    const sim = new Sim(walledMap(), 14);
+    sim.addSquad('blue', 'a', [{ name: 'A', weapon: 'garand', x: 5.5, y: 10.5 }]);
+    sim.addSquad('red', 'r', [{ name: 'R', weapon: 'kar98k', x: 45.5, y: 10.5 }]);
+    dry(sim);
+    const [blue, red] = sim.soldiers;
+    red.alive = false; // staged death behind the wall (single scenario, not an RNG A/B)
+    for (let i = 0; i < 15; i++) sim.step();
+    expect(sim.soldierVisibleTo('blue', red)).toBe(false);
+    blue.x = 40.5; // walks past the wall: corpse in plain sight
+    for (let i = 0; i < 15; i++) sim.step();
+    expect(sim.soldierVisibleTo('blue', red)).toBe(true);
+    blue.x = 5.5; // leaves again — the find is permanent
+    for (let i = 0; i < 15; i++) sim.step();
+    expect(sim.soldierVisibleTo('blue', red)).toBe(true);
+  });
+});
+
 describe('pathfinding', () => {
   it('routes through the door, not through walls or windows', () => {
     const plan = generateMap(1);
@@ -191,7 +340,8 @@ describe('simulation', () => {
     expect(sim.squadWaypoints[0].length).toBe(1); // queue held, no auto-dispatch mid-rescue
   });
 
-  it('an assault produces a resolved firefight with no NaN state', () => {
+  // 15s: passes in ~2.5s alone but the design-scale perf/strategic suites now contend for CPU
+  it('an assault produces a resolved firefight with no NaN state', { timeout: 15_000 }, () => {
     const sim = makeScenario(7);
     const [b0, b2] = [sim.buildings[0], sim.buildings[2]];
     sim.orderSquad(0, { kind: 'move', x: b0.x + b0.w / 2, y: b0.y + b0.h / 2 });
@@ -317,6 +467,19 @@ describe('teams and data-driven squads', () => {
     sim.orderSquad(squad.id, { kind: 'move', x: 50, y: 20 });
     const moving = (teamId: number) => sim.teams[teamId].soldierIds.some((id) => sim.soldiers[id].path !== null);
     expect(squad.teamIds.every(moving)).toBe(true);
+  });
+
+  it('addSquadFromDef with a roster shorter than the team spawns only the roster, not the full establishment', () => {
+    const sim = new Sim(new GameMap(40, 40), 63);
+    const roster = [[{ pid: 901 }, { pid: 902, crewSkill: { mg: 0.4 } }, { pid: 903 }]];
+    const squad = sim.addSquadFromDef('blue', 'us_m1919', 20, 20, roster);
+    expect(squad.soldierIds.length).toBe(3); // 5-slot team, 3-entry roster: no phantom fill
+    const team = sim.teams[squad.teamIds[0]];
+    expect(team.soldierIds.map((id) => sim.soldiers[id].pid)).toEqual([901, 902, 903]); // no -1 padding
+    expect(sim.soldiers[team.soldierIds[1]].crewSkill).toEqual({ mg: 0.4 });
+    expect(team.soldierIds.map((id) => sim.soldiers[id].weapon)).toEqual(
+      TEAMS.us_m1919_team.slots.slice(0, 3).map((sl) => sl.weapon),
+    );
   });
 });
 

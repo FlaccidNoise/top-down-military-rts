@@ -28,6 +28,11 @@ export interface FrontSave {
 export const OP_START_MIN = 6 * 60; // day 1, 06:00
 export const OP_DEADLINE_DAYS = 14;
 
+// Replacements arrive in batches rather than a silent daily top-up: every
+// REINFORCE_CYCLE_DAYS, each company receives up to REINFORCE_PER_COMPANY men.
+export const REINFORCE_CYCLE_DAYS = 2;
+export const REINFORCE_PER_COMPANY = 12;
+
 export function formatClock(min: number): { day: number; hhmm: string } {
   const day = Math.floor(min / 1440) + 1;
   const m = min % 1440;
@@ -45,6 +50,15 @@ export function chitEtaMinutes(front: Front, chit: Chit): number {
     total += CELL_MINUTES[front.sector.cells[chit.path[i]].terrain];
   }
   return Math.max(0, total);
+}
+
+// Minutes until the next reinforcement cycle boundary (midnight starting the
+// next day divisible by REINFORCE_CYCLE_DAYS). Reinforcements for the current
+// day, if it's a cycle day, have already arrived at the moment it began.
+export function minutesToReinforcement(front: Front): number {
+  const day = front.day;
+  const nextDay = day + (REINFORCE_CYCLE_DAYS - (day % REINFORCE_CYCLE_DAYS));
+  return (nextDay - 1) * 1440 - front.clockMin;
 }
 
 export class Front {

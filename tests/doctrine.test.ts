@@ -174,21 +174,32 @@ describe('AI commander doctrine', () => {
     expect(sawSchuetzenManeuver).toBe(true); // and the rifle team maneuvered instead of also firing in place
   });
 
-  it('existing campaign battles still produce a winner within 20k ticks', () => {
+  // 60s budget: a design-scale 138v36 battle steps ~1-2ms/tick headless
+  it('existing campaign battles still produce a winner within 20k ticks', { timeout: 60_000 }, () => {
     const c = newCampaign(1);
     const front = newFront(c, makeDefaultSector());
     const able = front.chits.find((ch) => ch.side === 'blue')!;
     const wache = front.chits.find((ch) => ch.name === 'Brückenwache Süd')!;
     const { sim, commander } = makeStrategicBattle(c, front, { attackerId: able.id, defenderId: wache.id, cell: wache.cell }, 5);
 
-    const redCentroid = () => {
-      const red = sim.soldiers.filter((s) => s.side === 'red' && s.alive);
-      if (red.length === 0) return null;
-      return { x: red.reduce((a, s) => a + s.x, 0) / red.length, y: red.reduce((a, s) => a + s.y, 0) / red.length };
-    };
+    // Press toward the red survivor nearest blue's mass — the multi-sector
+    // garrison means the red *centroid* can be an empty midpoint between
+    // objective clusters; a player clears sectors sequentially, so must this.
     const pressBlue = () => {
-      const target = redCentroid();
-      if (!target) return;
+      const blue = sim.soldiers.filter((s) => s.side === 'blue' && s.alive);
+      const red = sim.soldiers.filter((s) => s.side === 'red' && s.alive);
+      if (blue.length === 0 || red.length === 0) return;
+      const bx = blue.reduce((a, s) => a + s.x, 0) / blue.length;
+      const by = blue.reduce((a, s) => a + s.y, 0) / blue.length;
+      let target = red[0];
+      let bestD = Infinity;
+      for (const s of red) {
+        const d = (s.x - bx) * (s.x - bx) + (s.y - by) * (s.y - by);
+        if (d < bestD) {
+          bestD = d;
+          target = s;
+        }
+      }
       for (const squad of sim.squads.filter((sq) => sq.side === 'blue')) {
         sim.orderSquad(squad.id, { kind: 'move', x: target.x, y: target.y });
       }
@@ -290,7 +301,11 @@ describe('Balance harness (Task 14)', () => {
       return sim.soldiers.filter((s) => s.side === 'red' && !s.alive).length;
     }
 
-    it('no single one of the 12 rifle-squad slots causes a >35% output cliff vs full strength', () => {
+    // 13x25 seeded battles: heaviest test in the suite. The 15s budget (vs the
+    // 5s default it outgrew when fog-of-war spotting sweeps + melee landed
+    // 2026-07-23) buys headroom for legitimate per-tick feature cost — if it
+    // trips again, profile the sim before raising it further.
+    it('no single one of the 12 rifle-squad slots causes a >35% output cliff vs full strength', { timeout: 15000 }, () => {
       const baseline = SEEDS.map((s) => killsOnRed(s, null, null));
       const baseMean = mean(baseline);
       // us_able: leader/thompson, gunner/bar, assistant/garand, 3x rifleman/garand

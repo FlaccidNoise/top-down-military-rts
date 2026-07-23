@@ -7,8 +7,9 @@ import { SHADOW_SOFT_ALPHA } from './light';
 // one rotated drawImage per soldier; rotation is free because top-down art has
 // a single valid view angle.
 
-export type Pose = 'idle' | 'walk' | 'aim' | 'kneel' | 'prone' | 'downed' | 'dead' | 'drag' | 'aid' | 'dragged';
+export type Pose = 'idle' | 'walk' | 'aim' | 'kneel' | 'prone' | 'downed' | 'dead' | 'drag' | 'aid' | 'dragged' | 'melee';
 export const WALK_FRAMES = 6;
+export const MELEE_FRAMES = 4; // 0 guard, 1 windup, 2 thrust, 3 recover
 export const SPRITE_SPAN = 3.6; // meters covered by the (square) sprite canvas
 const DUDE_SCALE = 1.35; // genre-standard oversize so figures read at tactical zoom
 export const SPRITE_MIN_SCALE = 5; // px/m; below this the renderer uses dot LOD
@@ -344,6 +345,41 @@ function dragged(g: Ctx, k: Kit, band: number): void {
   helmet(g, k, 0.32, 0);
 }
 
+// Close combat: braced lunge stance, both hands working the weapon as a
+// bayonet/club (SMGs read as hip-fire — the muzzle flash sells the shot).
+// The enemy is at +X. Frames: 0 guard, 1 windup (coiled back), 2 thrust, 3 recover.
+function melee(g: Ctx, k: Kit, w: WeaponKey, frame: number, band: number): void {
+  const p = [
+    { gx: 0.08, ga: -0.5, lean: 0.02, lunge: 0.3 },
+    { gx: -0.1, ga: -0.75, lean: -0.05, lunge: 0.18 },
+    { gx: 0.32, ga: 0.05, lean: 0.16, lunge: 0.58 },
+    { gx: 0.16, ga: -0.3, lean: 0.07, lunge: 0.42 },
+  ][frame];
+  // front foot toward the enemy, rear foot planted
+  cap(g, 0.05, 0.13, p.lunge, 0.17, 0.13, k.trousers);
+  dot(g, p.lunge, 0.17, 0.07, '#3a3128');
+  cap(g, -0.05, -0.13, -0.28 - p.lunge * 0.4, -0.18, 0.13, k.trousers);
+  dot(g, -0.28 - p.lunge * 0.4, -0.18, 0.07, '#3a3128');
+  torso(g, k, 0.22, 0.31, band, w);
+  const gy = 0.12;
+  const fore = gunClass(w) === 'smg' ? 0.24 : 0.38;
+  const fx = p.gx + Math.cos(p.ga) * fore;
+  const fy = gy + Math.sin(p.ga) * fore;
+  cap(g, 0.02, 0.24, p.gx, gy, 0.12, k.sleeve);
+  cap(g, 0.02, -0.24, fx, fy, 0.12, k.sleeve);
+  gun(g, w, p.gx, gy, p.ga);
+  if (gunClass(w) === 'rifle') {
+    // fixed bayonet — the melee read at a glance
+    const len = 1.05 - 0.32;
+    const mx = p.gx + Math.cos(p.ga) * len;
+    const my = gy + Math.sin(p.ga) * len;
+    cap(g, mx, my, mx + Math.cos(p.ga) * 0.22, my + Math.sin(p.ga) * 0.22, 0.045, '#cfd2d6');
+  }
+  dot(g, p.gx, gy, 0.055, k.skin);
+  dot(g, fx, fy, 0.055, k.skin);
+  helmet(g, k, 0.05 + p.lean, 0);
+}
+
 function drawDude(g: Ctx, side: Side, weapon: WeaponKey, pose: Pose, frame: number, band: number): void {
   const k = KITS[side];
   const elongated = pose === 'prone' || pose === 'downed' || pose === 'dead' || pose === 'dragged';
@@ -380,6 +416,9 @@ function drawDude(g: Ctx, side: Side, weapon: WeaponKey, pose: Pose, frame: numb
       break;
     case 'dragged':
       dragged(g, k, band);
+      break;
+    case 'melee':
+      melee(g, k, weapon, frame, band);
       break;
   }
 }

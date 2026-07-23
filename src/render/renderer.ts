@@ -1,5 +1,5 @@
 import type { Emplacement } from '../sim/emplacement';
-import type { ShotEvent, Sim, Soldier, Vehicle } from '../sim/sim';
+import { MELEE_STRIKE_RANGE, type MeleeEvent, type ShotEvent, type Side, type Sim, type Soldier, type Vehicle } from '../sim/sim';
 import type { Camera } from './camera';
 import { DecalLayer } from './decals';
 import { bandFor, getSprite, SPRITE_MIN_SCALE, SPRITE_SPAN, WALK_FRAMES, type Pose } from './dudes';
@@ -50,10 +50,15 @@ function hash(x: number, y: number, salt = 0): number {
   return (h >>> 0) / 4294967296;
 }
 
+// The human player is always US/blue (same convention as hud.ts and
+// tooltip.ts); fog of war is rendered from this side's knowledge.
+const PLAYER_SIDE: Side = 'blue';
+
 export class Renderer {
   private terrain: TerrainLayer;
   private roofs = new RoofLayer();
   private tracers: Tracer[] = [];
+  private meleeFx: (MeleeEvent & { at: number })[] = [];
   private rs = new Map<number, RState>();
   private deadVehicles = new Set<number>(); // scorch stamped once, on first dead frame
   private lastNow = 0;
@@ -72,6 +77,13 @@ export class Renderer {
 
   addEvents(events: ShotEvent[], now: number): void {
     for (const e of events) this.tracers.push({ ...e, at: now });
+  }
+
+  addMeleeEvents(events: MeleeEvent[], now: number): void {
+    for (const e of events) {
+      this.meleeFx.push({ ...e, at: now });
+      if (e.hit) this.decals.smear(e.x, e.y, Math.random() * Math.PI * 2);
+    }
   }
 
   addBooms(booms: { x: number; y: number }[], now: number): void {
@@ -114,21 +126,26 @@ export class Renderer {
     this.roofs.update(this.sim, cam, dt);
     this.roofs.drawShadows(ctx, cam, cw, ch);
 
-    for (const v of this.sim.vehicles) if (!v.alive) this.drawVehicle(ctx, cam, v, now, cw, ch);
+    // Fog of war: everything below asks the sim's *VisibleTo helpers from the
+    // player's side — the renderer never re-derives vision.
+    const vis = (s: Soldier) => this.sim.soldierVisibleTo(PLAYER_SIDE, s);
+    const visV = (v: Vehicle) => this.sim.vehicleVisibleTo(PLAYER_SIDE, v);
+    for (const v of this.sim.vehicles) if (!v.alive && visV(v)) this.drawVehicle(ctx, cam, v, now, cw, ch);
     if (cam.scale < SPRITE_MIN_SCALE) {
-      for (const s of this.sim.soldiers) if (s.inVehicle < 0) this.drawDot(ctx, cam, s, selectedSquad, cw, ch);
+      for (const s of this.sim.soldiers) if (s.inVehicle < 0 && vis(s)) this.drawDot(ctx, cam, s, selectedSquad, cw, ch);
     } else {
       // dead below downed below the living
-      for (const s of this.sim.soldiers) if (!s.alive && s.inVehicle < 0) this.drawSoldier(ctx, cam, s, selectedSquad, dt, cw, ch);
-      for (const s of this.sim.soldiers) if (s.alive && s.downed && s.inVehicle < 0) this.drawSoldier(ctx, cam, s, selectedSquad, dt, cw, ch);
-      for (const s of this.sim.soldiers) if (s.alive && !s.downed && s.inVehicle < 0) this.drawSoldier(ctx, cam, s, selectedSquad, dt, cw, ch);
+      for (const s of this.sim.soldiers) if (!s.alive && s.inVehicle < 0 && vis(s)) this.drawSoldier(ctx, cam, s, selectedSquad, dt, cw, ch);
+      for (const s of this.sim.soldiers) if (s.alive && s.downed && s.inVehicle < 0 && vis(s)) this.drawSoldier(ctx, cam, s, selectedSquad, dt, cw, ch);
+      for (const s of this.sim.soldiers) if (s.alive && !s.downed && s.inVehicle < 0 && vis(s)) this.drawSoldier(ctx, cam, s, selectedSquad, dt, cw, ch);
     }
-    for (const v of this.sim.vehicles) if (v.alive) this.drawVehicle(ctx, cam, v, now, cw, ch);
-    for (const e of this.sim.emplacements) this.drawEmplacement(ctx, cam, e, selectedSquad, cw, ch);
+    for (const v of this.sim.vehicles) if (v.alive && visV(v)) this.drawVehicle(ctx, cam, v, now, cw, ch);
+    for (const e of this.sim.emplacements) if (this.sim.emplacementVisibleTo(PLAYER_SIDE, e)) this.drawEmplacement(ctx, cam, e, selectedSquad, cw, ch);
 
     this.drawFire(ctx, cam, now, cw, ch);
     this.roofs.drawTops(ctx, cam, cw, ch);
     this.drawSmoke(ctx, cam, cw, ch);
+    this.drawContacts(ctx, cam, cw, ch);
     this.drawPlanes(ctx, cam, now, cw, ch);
     this.drawBarrageMarks(ctx, cam, now, cw, ch);
   }
@@ -186,6 +203,32 @@ export class Renderer {
       }
     }
     for (const key of this.smokeMaxTtl.keys()) if (!seen.has(key)) this.smokeMaxTtl.delete(key);
+  }
+
+  // Last-known ghosts: intel markers, not world objects — drawn above roofs,
+  // fading with age until the contact expires or is resolved.
+  private drawContacts(ctx: CanvasRenderingContext2D, cam: Camera, cw: number, ch: number): void {
+    if (this.sim.fowDisabled) return; // ?fow=0 shows real units — stale ghosts would just overdraw them
+    for (const c of this.sim.contacts[PLAYER_SIDE].values()) {
+      const age = (this.sim.tick - c.tick) / (45 * 30);
+      const alpha = 0.55 * (1 - age);
+      if (alpha <= 0) continue;
+      const [x, y] = cam.worldToScreen(c.x, c.y, cw, ch);
+      if (x < -20 || y < -20 || x > cw + 20 || y > ch + 20) continue;
+      const r = (c.kind === 'vehicle' ? 2.4 : 1.1) * cam.scale;
+      ctx.strokeStyle = `rgba(208, 92, 80, ${alpha})`;
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = `rgba(208, 92, 80, ${alpha})`;
+      ctx.font = `${Math.max(9, cam.scale * 0.9)}px system-ui, sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('?', x, y);
+    }
   }
 
   // Pulsing dashed amber — shared style for call-in target markers.
@@ -328,6 +371,13 @@ export class Renderer {
     }
   }
 
+  // Melee pose only while actually trading blows; a closer/pursuer out of
+  // strike range falls through to the walk animation instead.
+  private inStrikeRange(s: Soldier): boolean {
+    const o = this.sim.soldiers[s.meleeId];
+    return Math.hypot(o.x - s.x, o.y - s.y) <= MELEE_STRIKE_RANGE + 0.1;
+  }
+
   private state(s: Soldier): RState {
     let st = this.rs.get(s.id);
     if (!st) {
@@ -371,7 +421,12 @@ export class Renderer {
     else if (s.downed) pose = carried ? 'dragged' : 'downed';
     else if (s.task?.phase === 'drag') pose = 'drag';
     else if (s.task?.phase === 'aid') pose = 'aid';
-    else if (s.mental === 'pinned' || (s.mental === 'broken' && !s.path)) pose = 'prone';
+    else if (s.meleeId >= 0 && this.inStrikeRange(s)) {
+      // sim-driven strike cycle (freezes on pause, like walk): the thrust
+      // frame shows right after the phase wrap, when the MeleeEvent lands
+      pose = 'melee';
+      frame = s.meleePhase < 0.18 ? 2 : s.meleePhase < 0.42 ? 3 : s.meleePhase < 0.78 ? 0 : 1;
+    } else if (s.mental === 'pinned' || (s.mental === 'broken' && !s.path)) pose = 'prone';
     else if (moved > 1e-4) {
       pose = 'walk';
       st.phase += moved * 1.4;
@@ -381,7 +436,10 @@ export class Renderer {
 
     if (s.alive) {
       let desired = st.facing;
-      if (s.task?.phase === 'aid') {
+      if (s.meleeId >= 0) {
+        const o = this.sim.soldiers[s.meleeId];
+        desired = Math.atan2(o.y - s.y, o.x - s.x);
+      } else if (s.task?.phase === 'aid') {
         const c = this.sim.soldiers[s.task.casualtyId];
         desired = Math.atan2(c.y - s.y, c.x - s.x);
       } else if (s.targetId >= 0 && !s.downed) {
@@ -523,6 +581,27 @@ export class Renderer {
     const FADE_MS = 150; // faint line + kill dot lifetime (unchanged from before)
     const TRAVEL_MS = 90; // muzzle->target travel time for the bright segment (E3)
     const IMPACT_MS = 250; // impact dust lifetime, starts at TRAVEL_MS (E5)
+
+    // melee impacts: red fleck on a hit (bigger on a kill), white swish on a miss
+    this.meleeFx = this.meleeFx.filter((m) => now - m.at < 250);
+    for (const m of this.meleeFx) {
+      const t = (now - m.at) / 250;
+      const [x, y] = cam.worldToScreen(m.x, m.y, cw, ch);
+      if (m.hit) {
+        ctx.fillStyle = `rgba(200, 40, 30, ${(1 - t) * 0.85})`;
+        ctx.beginPath();
+        ctx.arc(x, y, (m.kill ? 0.45 : 0.28) * (0.7 + t) * cam.scale, 0, Math.PI * 2);
+        ctx.fill();
+      } else {
+        const a0 = ((m.x * 7 + m.y * 13) % 6.28) + t * 1.5; // stable per-event swish angle
+        ctx.strokeStyle = `rgba(235, 235, 225, ${(1 - t) * 0.7})`;
+        ctx.lineWidth = Math.max(1.5, cam.scale * 0.07);
+        ctx.beginPath();
+        ctx.arc(x, y, 0.55 * cam.scale, a0, a0 + 1.1);
+        ctx.stroke();
+      }
+    }
+
     // entries must survive past FADE_MS so the dust (which starts at TRAVEL_MS) can finish
     this.tracers = this.tracers.filter((t) => now - t.at < TRAVEL_MS + IMPACT_MS);
     for (const t of this.tracers) {
