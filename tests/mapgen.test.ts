@@ -101,6 +101,54 @@ describe('mapgen', () => {
     expect(isolatedTrees).toBeGreaterThan(150);
   });
 
+  it('bridge maps: water river, road bridge objective, spawns connected across it (320x240)', () => {
+    for (const seed of [1, 5, 9]) {
+      const p = generateMap(seed, 320, 240, 'bridge');
+      let water = 0;
+      for (let y = 0; y < p.map.h; y++)
+        for (let x = 0; x < p.map.w; x++) if (p.map.terrainKeyAt(x, y) === 'water') water++;
+      expect(water).toBeGreaterThan(500); // 3-wide band over 240 rows, minus road crossings
+      const bridge = p.objectives[p.objectives.length - 1];
+      expect(p.map.terrainKeyAt(bridge.x, bridge.y)).toBe('road');
+      const { west, east } = p.spawns;
+      for (const o of p.objectives) {
+        expect(astar(p.map, west.x, west.y, o.x, o.y)).not.toBeNull();
+        expect(astar(p.map, east.x, east.y, o.x, o.y)).not.toBeNull();
+      }
+      expect(astar(p.map, west.x, west.y, east.x, east.y, 'vehicle')).not.toBeNull();
+    }
+  });
+
+  it('bridge maps are deterministic per seed', () => {
+    const a = generateMap(5, 320, 240, 'bridge');
+    const b = generateMap(5, 320, 240, 'bridge');
+    expect(a.map.tiles).toEqual(b.map.tiles);
+    expect(a.objectives).toEqual(b.objectives);
+    expect(a.spawns).toEqual(b.spawns);
+  });
+
+  it('water blocks foot and vehicle movement', () => {
+    const p = generateMap(1, 320, 240, 'bridge');
+    let wx = -1, wy = -1;
+    for (let y = 1; y < p.map.h - 1 && wx < 0; y++)
+      for (let x = 1; x < p.map.w - 1 && wx < 0; x++)
+        if (p.map.terrainKeyAt(x, y) === 'water' && p.map.terrainAt(x - 1, y).passable) { wx = x; wy = y; }
+    expect(wx).toBeGreaterThanOrEqual(0);
+    expect(p.map.canStep(wx - 1, wy, wx, wy)).toBe(false);
+    expect(p.map.canStep(wx - 1, wy, wx, wy, 'vehicle')).toBe(false);
+  });
+
+  it('river maps carve a wider band than bridge maps', () => {
+    const count = (kind: 'bridge' | 'river') => {
+      const p = generateMap(2, 320, 240, kind);
+      let n = 0;
+      for (let y = 0; y < p.map.h; y++)
+        for (let x = 0; x < p.map.w; x++) if (p.map.terrainKeyAt(x, y) === 'water') n++;
+      return n;
+    };
+    expect(count('river')).toBeGreaterThan(count('bridge'));
+  });
+
   it('large maps grow a second hamlet and stay connected (320x240)', () => {
     for (const seed of [1, 5, 9]) {
       const a = generateMap(seed, 320, 240);

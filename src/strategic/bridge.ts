@@ -124,7 +124,7 @@ export function makeStrategicBattle(
   e: Engagement,
   seed: number,
 ): { sim: Sim; commander: RedCommander; name: string; companyIndex: number } {
-  const plan = generateMap(seed, 320, 240);
+  const plan = generateMap(seed, 320, 240, front.sector.cells[e.cell].terrain);
   const sim = new Sim(plan.map, seed);
   sim.buildings = plan.buildings;
   const attacker = front.chits.find((ch) => ch.id === e.attackerId)!;

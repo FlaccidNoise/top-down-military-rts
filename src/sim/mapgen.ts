@@ -26,25 +26,30 @@ export interface MapPlan {
   map: GameMap;
   buildings: Building[];
   spawns: { west: Vec; east: Vec }; // arterial road entry points, vehicle-reachable
-  objectives: Vec[]; // [0] village crossroads, [1] east woods anchor, [2] second hamlet (w >= 240 only)
+  objectives: Vec[]; // [0] village crossroads, [1] east woods anchor, [2] second hamlet (w >= 240 only); bridge/river maps append the bridge crossing last
   woodsStands: Vec[]; // center of every placed woods stand (guaranteed east stand + extras)
 }
 
+// Battle-map archetype, mirroring the strategic cell terrain. 'bridge'/'river'
+// carve a N→S water band crossed by the arterial on a bridge; 'woods'/'town'
+// bias stand and building counts; 'open'/'road' are the base layout.
+export type MapKind = 'open' | 'woods' | 'town' | 'river' | 'bridge' | 'road';
+
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 
-export function generateMap(seed: number, w = 160, h = 120): MapPlan {
+export function generateMap(seed: number, w = 160, h = 120, kind: MapKind = 'open'): MapPlan {
   // village clearing radius + road margins need real space; below this the
   // clamp bounds invert and the layout degenerates
   if (w < 60 || h < 40) throw new Error(`mapgen: map ${w}x${h} too small (min 60x40)`);
   for (let attempt = 0; attempt < 8; attempt++) {
     const rng = mulberry32((seed ^ 0x51ab3fc7) + attempt * 0x9e3779b9);
-    const plan = tryGenerate(rng, w, h);
+    const plan = tryGenerate(rng, w, h, kind);
     if (plan && validate(plan)) return plan;
   }
   throw new Error(`mapgen: no valid layout for seed ${seed}`);
 }
 
-function tryGenerate(rng: Rng, w: number, h: number): MapPlan | null {
+function tryGenerate(rng: Rng, w: number, h: number, kind: MapKind): MapPlan | null {
   const map = new GameMap(w, h);
   const road = new Uint8Array(w * h);
 
@@ -78,15 +83,34 @@ function tryGenerate(rng: Rng, w: number, h: number): MapPlan | null {
   const cy = roadY[crossX];
   const roadX = carveCrossLane(crossX);
 
+  // river ('bridge'/'river' cells): N→S water band west of the village
+  // clearing (and east of the second hamlet's, by the crossX bounds). Roads
+  // are carved last and win over water, so the arterial crossing becomes the
+  // bridge — a chokepoint appended to objectives.
+  const water = new Uint8Array(w * h);
+  let bridgePt: Vec | null = null;
+  if (kind === 'bridge' || kind === 'river') {
+    const width = kind === 'river' ? 5 : 3;
+    const base = clamp(crossX - 38 - rng.int(8), 6, w - width - 6);
+    let rx = base;
+    for (let y = 0; y < h; y++) {
+      for (let dx = 0; dx < width; dx++) water[y * w + rx + dx] = 1;
+      if (rng.next() < 0.15) rx = clamp(rx + (rng.next() < 0.5 ? -1 : 1), base - 3, base + 3);
+    }
+    for (let i = 0; i < water.length; i++) if (water[i]) map.setTerrain(i % w, (i / w) | 0, 'water');
+    const bx = base + (width >> 1);
+    bridgePt = { x: bx, y: roadY[bx] };
+  }
+
   // village: buildings snapped to road frontage near the crossroads
   const buildings: Building[] = [];
   const doorSides: ('n' | 's' | 'e' | 'w')[] = [];
-  const target = 5 + rng.int(3);
+  const target = 5 + rng.int(3) + (kind === 'town' ? 4 : 0);
   const overlaps = (b: Building) =>
     buildings.some((o) => b.x - 2 < o.x + o.w && b.x + b.w + 2 > o.x && b.y - 2 < o.y + o.h && b.y + b.h + 2 > o.y);
-  const touchesRoad = (b: Building): boolean => {
+  const touchesRoadOrWater = (b: Building): boolean => {
     for (let y = b.y - 1; y < b.y + b.h + 1; y++)
-      for (let x = b.x - 1; x < b.x + b.w + 1; x++) if (road[y * w + x]) return true;
+      for (let x = b.x - 1; x < b.x + b.w + 1; x++) if (road[y * w + x] || water[y * w + x]) return true;
     return false;
   };
   const placeCluster = (jx: number, jy: number, laneX: Int32Array, count: number, span: number): void => {
@@ -113,7 +137,7 @@ function tryGenerate(rng: Rng, w: number, h: number): MapPlan | null {
         door = west ? 'e' : 'w';
       }
       if (b.x < 2 || b.y < 2 || b.x + b.w > w - 2 || b.y + b.h > h - 2) continue;
-      if (touchesRoad(b) || overlaps(b)) continue;
+      if (touchesRoadOrWater(b) || overlaps(b)) continue;
       buildings.push(b);
       doorSides.push(door);
     }
@@ -142,13 +166,15 @@ function tryGenerate(rng: Rng, w: number, h: number): MapPlan | null {
       const house: Building = { x: fx, y: fy, w: 6 + rng.int(3), h: 5 + rng.int(2) };
       const barn: Building = { x: fx, y: fy + house.h + 3, w: 5 + rng.int(3), h: 4 + rng.int(2) };
       if (barn.y + barn.h > h - 3 || fx + Math.max(house.w, barn.w) > w - 4) continue;
-      if (touchesRoad(house) || overlaps(house) || touchesRoad(barn) || overlaps(barn)) continue;
+      if (touchesRoadOrWater(house) || overlaps(house) || touchesRoadOrWater(barn) || overlaps(barn)) continue;
       const lx = Math.min(w - 3, fx + Math.max(house.w, barn.w) + 1);
       const laneTargetY = roadY[lx];
       const step = fy + house.h + 1 < laneTargetY ? 1 : -1;
       let laneBlocked = false;
       for (let yy = fy + house.h + 1; yy !== laneTargetY && !laneBlocked; yy += step)
-        laneBlocked = buildings.some((o) => lx >= o.x - 1 && lx < o.x + o.w + 1 && yy >= o.y - 1 && yy < o.y + o.h + 1);
+        laneBlocked =
+          water[yy * w + lx] !== 0 ||
+          buildings.some((o) => lx >= o.x - 1 && lx < o.x + o.w + 1 && yy >= o.y - 1 && yy < o.y + o.h + 1);
       if (laneBlocked) continue;
       buildings.push(house, barn);
       doorSides.push('s', 'n'); // both doors open onto the shared yard row
@@ -197,11 +223,11 @@ function tryGenerate(rng: Rng, w: number, h: number): MapPlan | null {
   const eastWoods = { x: clamp(crossX + 38 + rng.int(20), 20, w - 14), y: clamp(cy - 18 + rng.int(37), 12, h - 12) };
   stand(eastWoods.x, eastWoods.y, 9 + rng.int(4));
   woodsStands.push({ x: eastWoods.x, y: eastWoods.y });
-  for (let i = 0, n = 2 + rng.int(3) + Math.max(0, Math.round((w * h) / 19200) - 1); i < n; i++) {
+  for (let i = 0, n = 2 + rng.int(3) + Math.max(0, Math.round((w * h) / 19200) - 1) + (kind === 'woods' ? 4 : 0); i < n; i++) {
     const sx = 10 + rng.int(w - 20);
     const sy = 8 + rng.int(h - 16);
     if ((sx - crossX) * (sx - crossX) + (sy - cy) * (sy - cy) < 34 * 34) continue;
-    stand(sx, sy, 6 + rng.int(5));
+    stand(sx, sy, 6 + rng.int(5) + (kind === 'woods' ? 3 : 0));
     woodsStands.push({ x: sx, y: sy });
   }
 
@@ -233,6 +259,7 @@ function tryGenerate(rng: Rng, w: number, h: number): MapPlan | null {
 
   const objectives: Vec[] = [{ x: crossX, y: cy }, eastWoods];
   if (settlements.length > 1) objectives.push({ x: settlements[1].x, y: settlements[1].y });
+  if (bridgePt) objectives.push(bridgePt);
 
   return {
     map,

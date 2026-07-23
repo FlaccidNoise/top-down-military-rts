@@ -63,6 +63,7 @@ const CANOPY_A: [number, number, number] = [52, 78, 42];
 const CANOPY_B: [number, number, number] = [44, 68, 46];
 const FLOOR: [number, number, number] = [160, 145, 122];
 const FLOOR_DARK: [number, number, number] = [141, 120, 95];
+const WATER: [number, number, number] = [70, 90, 99]; // desaturated slate, muted-Normandy — not postcard blue
 const FIELD_VARIANTS: [number, number, number][] = [
   [96, 84, 58], // turned earth
   [142, 124, 71], // wheat
@@ -233,6 +234,22 @@ function drawTileBase(g: Ctx, map: GameMap, x: number, y: number): void {
     if (!fieldAt(x, y + 1)) g.fillRect(x, y + 0.92, 1, 0.08);
     if (!fieldAt(x - 1, y)) g.fillRect(x, y, 0.08, 1);
     if (!fieldAt(x + 1, y)) g.fillRect(x + 0.92, y, 0.08, 1);
+  } else if (t === 'water') {
+    g.fillStyle = shade(WATER, 0.9 + coarse(x, y) * 0.12 + hash(x, y, 91) * 0.05);
+    g.fillRect(x, y, 1, 1);
+    // faint N→S drift streaks with the current
+    g.fillStyle = 'rgba(255,255,255,0.05)';
+    for (let i = 0; i < 2; i++) {
+      if (hash(x, y, 92 + i) < 0.35)
+        g.fillRect(x + hash(x, y, 94 + i) * 0.9, y + hash(x, y, 96 + i) * 0.6, 0.06, 0.3 + hash(x, y, 98 + i) * 0.3);
+    }
+    // dark bank line where water meets land
+    const waterAt = (tx: number, ty: number) => map.inBounds(tx, ty) && map.terrainKeyAt(tx, ty) === 'water';
+    g.fillStyle = 'rgba(30,38,32,0.35)';
+    if (!waterAt(x, y - 1)) g.fillRect(x, y, 1, 0.12);
+    if (!waterAt(x, y + 1)) g.fillRect(x, y + 0.88, 1, 0.12);
+    if (!waterAt(x - 1, y)) g.fillRect(x, y, 0.12, 1);
+    if (!waterAt(x + 1, y)) g.fillRect(x + 0.88, y, 0.12, 1);
   } else {
     // floor: plank rows every 0.33m, two wood tones, staggered butt joints.
     // rowIdx is world-space (y*3+r) so joints don't repeat identically tile to tile.

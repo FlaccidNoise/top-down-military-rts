@@ -573,11 +573,17 @@ export class Sim {
       const slots = teamRoster ? teamDef.slots.slice(0, teamRoster.length) : teamDef.slots;
       const entries = slots.map((slot: SoldierSlot, si) => {
         const ov = teamRoster?.[si];
+        // rng draws keep their original order (name, x, y) and stay conditional
+        // on each override (?? short-circuit) — determinism depends on both
+        const name = ov?.name ?? names[this.rng.int(names.length)];
+        const sx = ov?.x ?? x + this.rng.range(-3, 3);
+        const sy = ov?.y ?? cy + this.rng.range(-3, 3);
+        const pos = this.nudgeSpawn(sx, sy);
         const member: MemberInit = {
-          name: ov?.name ?? names[this.rng.int(names.length)],
+          name,
           weapon: ov?.weapon ?? slot.weapon,
-          x: ov?.x ?? x + this.rng.range(-3, 3),
-          y: ov?.y ?? cy + this.rng.range(-3, 3),
+          x: pos.x,
+          y: pos.y,
           courage: ov?.courage,
           xp: ov?.xp,
           bodyDamage: ov?.bodyDamage,
@@ -593,6 +599,24 @@ export class Sim {
     });
     this.bondSquad(squad);
     return squad;
+  }
+
+  // Spawn safety: expanding-ring walk (no rng) to the nearest passable tile,
+  // so squads anchored beside water (bridge posts) never start in the river.
+  // Keeps the fractional part of the position; no-op on fully passable ground.
+  private nudgeSpawn(x: number, y: number): { x: number; y: number } {
+    const tx = Math.round(x);
+    const ty = Math.round(y);
+    if (this.map.terrainAt(tx, ty).passable) return { x, y };
+    for (let r = 1; r <= 12; r++)
+      for (let dy = -r; dy <= r; dy++)
+        for (let dx = -r; dx <= r; dx++) {
+          if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+          // inBounds first: terrainAt returns passable grass for OOB coords
+          if (this.map.inBounds(tx + dx, ty + dy) && this.map.terrainAt(tx + dx, ty + dy).passable)
+            return { x: x + dx, y: y + dy };
+        }
+    return { x, y };
   }
 
   bond(a: Soldier, b: Soldier): number {

@@ -14,6 +14,7 @@ export const TERRAIN = {
   floor: { color: '#a0917a', moveCost: 1, cover: 0, opacity: 0, passable: true },
   hedge: { color: '#2f4a28', moveCost: 1.8, cover: 0.35, opacity: 0.5, coverBehind: 0.5, passable: true },
   field: { color: '#6a7245', moveCost: 1.1, cover: 0.05, opacity: 0, passable: true },
+  water: { color: '#465a63', moveCost: 1, cover: 0, opacity: 0, passable: false },
 } satisfies Record<string, TerrainDef>;
 
 export type TerrainKey = keyof typeof TERRAIN;
