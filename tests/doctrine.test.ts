@@ -290,7 +290,11 @@ describe('Balance harness (Task 14)', () => {
       return sim.soldiers.filter((s) => s.side === 'red' && !s.alive).length;
     }
 
-    it('no single one of the 12 rifle-squad slots causes a >35% output cliff vs full strength', () => {
+    // 13x25 seeded battles: heaviest test in the suite. The 15s budget (vs the
+    // 5s default it outgrew when fog-of-war spotting sweeps + melee landed
+    // 2026-07-23) buys headroom for legitimate per-tick feature cost — if it
+    // trips again, profile the sim before raising it further.
+    it('no single one of the 12 rifle-squad slots causes a >35% output cliff vs full strength', { timeout: 15000 }, () => {
       const baseline = SEEDS.map((s) => killsOnRed(s, null, null));
       const baseMean = mean(baseline);
       // us_able: leader/thompson, gunner/bar, assistant/garand, 3x rifleman/garand
