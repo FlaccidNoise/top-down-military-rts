@@ -242,7 +242,10 @@ export interface UnitEvent {
 
 // One melee swing landing (or whiffing) at the victim — drives the
 // renderer's impact feedback, same consume-queue shape as ShotEvent.
+// Fighter ids let the renderer gate FX/decals through the *VisibleTo helpers.
 export interface MeleeEvent {
+  attackerId: number;
+  victimId: number;
   x: number;
   y: number;
   hit: boolean;
@@ -2534,6 +2537,14 @@ export class Sim {
     const seen = this.seenStatic[side];
     const contacts = this.contacts[side];
 
+    // melee is a physical-contact sense: a locked fighter stays spotted for
+    // his opponent's side even when smoke or concealment blanks the raycast
+    const meleeContact = new Set<number>();
+    for (const m of this.soldiers) {
+      if (!m.alive || m.meleeId < 0) continue;
+      meleeContact.add(m.side === side ? m.meleeId : m.id);
+    }
+
     for (const t of this.soldiers) {
       if (t.side !== enemySide) continue;
       const key = `s${t.id}`;
@@ -2541,7 +2552,8 @@ export class Sim {
         spotted.delete(t.id); // aboard: covered by his vehicle's visibility
         contacts.delete(key); // and any foot-position ghost is moot
       } else if (t.alive) {
-        const now = spotters.some((p) => Math.hypot(t.x - p.x, t.y - p.y) <= SPOT_RANGE && sightToSoldier(this, p.x, p.y, t).visible);
+        const now = meleeContact.has(t.id) ||
+          spotters.some((p) => Math.hypot(t.x - p.x, t.y - p.y) <= SPOT_RANGE && sightToSoldier(this, p.x, p.y, t).visible);
         if (now) {
           spotted.set(t.id, { x: t.x, y: t.y });
           contacts.delete(key);
@@ -2709,6 +2721,15 @@ export class Sim {
     return tx === tx1 && ty === ty1;
   }
 
+  // Melee acquisition is a physical-contact sense: no sight check, so smoke
+  // and concealment never stop a lock — at 2m you bump into a man whether or
+  // not you can see him, and a smoke-covered assault is supposed to end at
+  // bayonet point. The tradeoff is honest intel: entering melee force-spots
+  // both fighters to both sides (enterMelee + the meleeContact override in
+  // updateSpotting), and a melee kill marks the corpse found for the killer's
+  // side. A sneaking/ambushing man bumped into melee is thus revealed — his
+  // team's order is untouched (one compromised man doesn't blow the ambush),
+  // so when the fight ends he can melt back, leaving the usual ghost.
   private considerMelee(s: Soldier): void {
     let best: Soldier | null = null;
     let bestD = Infinity;
@@ -2734,6 +2755,13 @@ export class Sim {
     m.mountTarget = -1;
     if (m.task) this.dropTask(m);
     m.suppression = Math.min(1, m.suppression + 0.15); // steel at arm's length
+    // physical contact is intel: both fighters spot each other instantly, not
+    // on the next sweep — the lock pose must never point at an unseen man
+    const opp = this.soldiers[oppId];
+    this.spotted[m.side].set(oppId, { x: opp.x, y: opp.y });
+    this.spotted[opp.side].set(m.id, { x: m.x, y: m.y });
+    this.contacts[m.side].delete(`s${oppId}`);
+    this.contacts[opp.side].delete(`s${m.id}`);
   }
 
   // One tick of an ongoing melee. Returns true while the fight holds this
@@ -2801,7 +2829,8 @@ export class Sim {
       s.magLeft--;
       this.pendingEvents.push({ fx: s.x, fy: s.y, tx: t.x, ty: t.y, hit, kill }); // hip-fire muzzle flash
     }
-    this.pendingMeleeEvents.push({ x: t.x, y: t.y, hit, kill });
+    this.pendingMeleeEvents.push({ attackerId: s.id, victimId: t.id, x: t.x, y: t.y, hit, kill });
+    if (kill) this.seenStatic[s.side].add(`s${t.id}`); // killed at arm's length: the corpse is found, not a ghost
     if (kill || t.downed) s.meleeId = -1;
   }
 
