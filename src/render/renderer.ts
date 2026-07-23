@@ -40,6 +40,16 @@ const PLANE_MS = 2600;
 
 const TEAM = { blue: '#5b9bd5', red: '#d05c50' } as const;
 
+// Deterministic hash, 0..1 — same algorithm as terrain.ts's, kept local since
+// it isn't exported. Used for per-entry/per-shot offsets so repeated effects
+// (smoke puffs, ejecta streaks) never touch the sim RNG or Math.random.
+function hash(x: number, y: number, salt = 0): number {
+  let h = (x * 374761393 + y * 668265263 + salt * 1274126177) | 0;
+  h = Math.imul(h ^ (h >>> 13), 1103515245) ^ 0;
+  h ^= h >>> 16;
+  return (h >>> 0) / 4294967296;
+}
+
 export class Renderer {
   private terrain: TerrainLayer;
   private roofs = new RoofLayer();
@@ -52,6 +62,7 @@ export class Renderer {
   private barrageMarks: { x: number; y: number; tick: number }[] = [];
   private strafeMarks: { x: number; y: number; tick: number }[] = [];
   private planes: Plane[] = [];
+  private smokeMaxTtl = new Map<number, number>(); // per-entry spawn ttl, keyed by its (stable) x,y — lets alpha envelope derive from sim time alone
   selectedVehicle = -1;
 
   constructor(private sim: Sim) {
@@ -117,8 +128,64 @@ export class Renderer {
 
     this.drawFire(ctx, cam, now, cw, ch);
     this.roofs.drawTops(ctx, cam, cw, ch);
+    this.drawSmoke(ctx, cam, cw, ch);
     this.drawPlanes(ctx, cam, now, cw, ch);
     this.drawBarrageMarks(ctx, cam, now, cw, ch);
+  }
+
+  // sim.smoke (E1): entries carry only {x, y, ttl}, x/y fixed for the entry's
+  // life, ttl counting seconds left — sim-owned and sim-tick-driven, so every
+  // bit of animation here derives from ttl alone. Never read `now`: that is
+  // what keeps this frozen exactly in place while paused.
+  private drawSmoke(ctx: CanvasRenderingContext2D, cam: Camera, cw: number, ch: number): void {
+    const seen = new Set<number>();
+    for (const p of this.sim.smoke) {
+      const key = p.x * 100000 + p.y; // stable for the entry's lifetime (x,y never change)
+      seen.add(key);
+      let maxTtl = this.smokeMaxTtl.get(key);
+      if (maxTtl === undefined || p.ttl > maxTtl) {
+        maxTtl = p.ttl;
+        this.smokeMaxTtl.set(key, maxTtl);
+      }
+      const elapsed = maxTtl - p.ttl;
+      const life = maxTtl > 0 ? elapsed / maxTtl : 1;
+      let envelope = 1;
+      if (life < 0.1) envelope = life / 0.1; // fade in
+      else if (life > 0.7) envelope = Math.max(0, (1 - life) / 0.3); // fade out
+
+      const [ox, oy] = cam.worldToScreen(p.x, p.y, cw, ch);
+      const pad = 5 * cam.scale;
+      if (ox < -pad || oy < -pad || ox > cw + pad || oy > ch + pad) continue;
+
+      const n = 3 + Math.floor(hash(p.x, p.y, 9) * 3); // 3-5 puffs
+      for (let i = 0; i < n; i++) {
+        const angle0 = hash(p.x, p.y, 10 + i) * Math.PI * 2;
+        const dist0 = 0.2 + hash(p.x, p.y, 20 + i) * 0.35;
+        const drift = 0.015 + hash(p.x, p.y, 30 + i) * 0.025; // slow outward drift, m/s of sim time
+        const spin = (hash(p.x, p.y, 40 + i) - 0.5) * 0.15; // slow rotation, rad/s
+        const baseR = 1.0 + hash(p.x, p.y, 50 + i) * 0.6;
+        const angle = angle0 + elapsed * spin;
+        const dist = dist0 + elapsed * drift;
+        const r = Math.min(baseR * 1.8, baseR + elapsed * 0.012);
+        const wx = p.x + Math.cos(angle) * dist;
+        const wy = p.y + Math.sin(angle) * dist;
+        const [sx, sy] = cam.worldToScreen(wx, wy, cw, ch);
+        const sr = r * cam.scale;
+        const cool = hash(p.x, p.y, 60 + i);
+        const grey = Math.round(150 + cool * 20);
+        const blue = grey + 10 + Math.round(cool * 6); // slight cool cast per rule 4
+        const a = envelope * (0.28 + cool * 0.08);
+        const grad = ctx.createRadialGradient(sx, sy, 0, sx, sy, sr);
+        grad.addColorStop(0, `rgba(${grey},${grey + 2},${blue},${a})`);
+        grad.addColorStop(0.6, `rgba(${grey},${grey + 2},${blue},${a * 0.6})`);
+        grad.addColorStop(1, `rgba(${grey},${grey + 2},${blue},0)`);
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.arc(sx, sy, sr, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+    for (const key of this.smokeMaxTtl.keys()) if (!seen.has(key)) this.smokeMaxTtl.delete(key);
   }
 
   // Pulsing dashed amber — shared style for call-in target markers.
@@ -453,21 +520,32 @@ export class Renderer {
   }
 
   private drawFire(ctx: CanvasRenderingContext2D, cam: Camera, now: number, cw: number, ch: number): void {
-    this.tracers = this.tracers.filter((t) => now - t.at < 150);
+    const FADE_MS = 150; // faint line + kill dot lifetime (unchanged from before)
+    const TRAVEL_MS = 90; // muzzle->target travel time for the bright segment (E3)
+    const IMPACT_MS = 250; // impact dust lifetime, starts at TRAVEL_MS (E5)
+    // entries must survive past FADE_MS so the dust (which starts at TRAVEL_MS) can finish
+    this.tracers = this.tracers.filter((t) => now - t.at < TRAVEL_MS + IMPACT_MS);
     for (const t of this.tracers) {
       const age = now - t.at;
-      const a = 1 - age / 150;
+      const a = Math.max(0, 1 - age / FADE_MS);
       const [x0, y0] = cam.worldToScreen(t.fx, t.fy, cw, ch);
       const [x1, y1] = cam.worldToScreen(t.tx, t.ty, cw, ch);
       const d = Math.hypot(x1 - x0, y1 - y0) || 1;
       const ux = (x1 - x0) / d;
       const uy = (y1 - y0) / d;
-      // muzzle flash for the first 60 ms
+      const mx = x0 + ux * cam.scale * 0.9;
+      const my = y0 + uy * cam.scale * 0.9;
+      // ShotEvent carries no weapon field (sim is read-only here), so there is
+      // no real MG-vs-rifle signal to key off — a per-shot hash stands in
+      // purely for size/brightness variety, not a weapon-class classifier.
+      const shotHash = hash(Math.round(t.tx * 100), Math.round(t.ty * 100), Math.round(t.fx * 37 + t.fy * 53));
+
+      // oriented muzzle flash for the first 60 ms: glow + 3-spike star along
+      // the shot direction (E4)
       if (age < 60) {
         const fa = 1 - age / 60;
-        const mx = x0 + ux * cam.scale * 0.9;
-        const my = y0 + uy * cam.scale * 0.9;
-        const fr = Math.max(3, cam.scale * 0.35);
+        const scale = 0.85 + shotHash * 0.3;
+        const fr = Math.max(3, cam.scale * 0.35) * scale;
         const grad = ctx.createRadialGradient(mx, my, 0, mx, my, fr);
         grad.addColorStop(0, `rgba(255,245,200,${fa})`);
         grad.addColorStop(0.5, `rgba(255,190,80,${fa * 0.7})`);
@@ -476,39 +554,159 @@ export class Renderer {
         ctx.beginPath();
         ctx.arc(mx, my, fr, 0, Math.PI * 2);
         ctx.fill();
+        ctx.strokeStyle = `rgba(255,235,190,${fa * 0.85})`;
+        ctx.lineWidth = Math.max(1, cam.scale * 0.1) * scale;
+        const spikeLen = fr * 1.6;
+        for (const spread of [0, 0.55, -0.55]) {
+          const sa = Math.atan2(uy, ux) + spread;
+          ctx.beginPath();
+          ctx.moveTo(mx, my);
+          ctx.lineTo(mx + Math.cos(sa) * spikeLen, my + Math.sin(sa) * spikeLen);
+          ctx.stroke();
+        }
       }
-      ctx.strokeStyle = t.hit ? `rgba(255, 205, 90, ${a})` : `rgba(255, 240, 210, ${0.3 * a})`;
-      ctx.lineWidth = t.hit ? 1.5 : 1;
-      ctx.beginPath();
-      ctx.moveTo(x0 + ux * cam.scale * 0.9, y0 + uy * cam.scale * 0.9);
-      ctx.lineTo(x1, y1);
-      ctx.stroke();
-      if (t.kill) {
-        ctx.fillStyle = `rgba(220, 60, 40, ${a * 0.6})`;
+
+      // faint full-length line, fades out over FADE_MS (E3)
+      if (age < FADE_MS) {
+        ctx.strokeStyle = t.hit ? `rgba(255, 205, 90, ${0.18 * a})` : `rgba(255, 240, 210, ${0.12 * a})`;
+        ctx.lineWidth = 1;
         ctx.beginPath();
-        ctx.arc(x1, y1, 5, 0, Math.PI * 2);
-        ctx.fill();
+        ctx.moveTo(mx, my);
+        ctx.lineTo(x1, y1);
+        ctx.stroke();
+      }
+
+      // short bright segment traveling muzzle->target over TRAVEL_MS (E3)
+      if (age < TRAVEL_MS) {
+        const travelT = age / TRAVEL_MS;
+        const segStart = Math.max(0, travelT - 0.18);
+        const sx0 = mx + (x1 - mx) * segStart;
+        const sy0 = my + (y1 - my) * segStart;
+        const sx1 = mx + (x1 - mx) * travelT;
+        const sy1 = my + (y1 - my) * travelT;
+        ctx.strokeStyle = t.hit ? 'rgba(255, 205, 90, 0.95)' : 'rgba(210, 225, 235, 0.55)';
+        ctx.lineWidth = t.hit ? 1.5 : 1;
+        ctx.beginPath();
+        ctx.moveTo(sx0, sy0);
+        ctx.lineTo(sx1, sy1);
+        ctx.stroke();
+      } else {
+        // impact dust, per-tracer hash offsets, earth tone (E5)
+        const dAge = age - TRAVEL_MS;
+        if (dAge < IMPACT_MS) {
+          const dt = dAge / IMPACT_MS;
+          const da = (1 - dt) * 0.5;
+          for (let i = 0; i < 3; i++) {
+            const ang = hash(Math.round(t.tx * 100) + i, Math.round(t.ty * 100), 70) * Math.PI * 2;
+            const dist = (0.12 + dt * 0.3) * cam.scale;
+            const px = x1 + Math.cos(ang) * dist;
+            const py = y1 + Math.sin(ang) * dist;
+            const tone = hash(Math.round(t.tx * 100) + i, Math.round(t.ty * 100), 80);
+            const r = Math.round(120 + tone * 40);
+            const gc = Math.round(100 + tone * 30);
+            const bc = Math.round(75 + tone * 20);
+            ctx.fillStyle = `rgba(${r},${gc},${bc},${da})`;
+            ctx.beginPath();
+            ctx.arc(px, py, Math.max(1, cam.scale * 0.12), 0, Math.PI * 2);
+            ctx.fill();
+          }
+        }
+        if (t.kill) {
+          ctx.fillStyle = `rgba(220, 60, 40, ${a * 0.6})`;
+          ctx.beginPath();
+          ctx.arc(x1, y1, 5, 0, Math.PI * 2);
+          ctx.fill();
+        }
       }
     }
 
-    // explosions (600 ms expanding ring + flash)
-    this.booms = this.booms.filter((b) => now - b.at < 600);
+    // explosions: fireball + earth-toned ring + dirt ejecta + ground dust +
+    // rising smoke column, all wall-clock (transient VFX, not sim state) (E2)
+    const BOOM_MS = 2000; // longest sub-effect (smoke column) sets total lifetime
+    this.booms = this.booms.filter((b) => now - b.at < BOOM_MS);
     for (const b of this.booms) {
-      const t = (now - b.at) / 600;
+      const age = now - b.at;
       const [x, y] = cam.worldToScreen(b.x, b.y, cw, ch);
-      const rad = (1 + t * 8) * cam.scale;
-      ctx.strokeStyle = `rgba(255, 160, 60, ${(1 - t) * 0.9})`;
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.arc(x, y, rad, 0, Math.PI * 2);
-      ctx.stroke();
-      if (t < 0.3) {
-        ctx.fillStyle = `rgba(255, 220, 120, ${(0.3 - t) * 2})`;
+      const sx = Math.round(b.x * 100);
+      const sy = Math.round(b.y * 100);
+
+      // earth-toned shockwave ring (kept, retoned per rule 1 — hot color
+      // budget goes to the fireball core only)
+      if (age < 600) {
+        const t = age / 600;
+        const rad = (1 + t * 8) * cam.scale;
+        ctx.strokeStyle = `rgba(150, 112, 72, ${(1 - t) * 0.75})`;
+        ctx.lineWidth = 2;
         ctx.beginPath();
-        ctx.arc(x, y, rad * 0.6, 0, Math.PI * 2);
+        ctx.arc(x, y, rad, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+
+      // hot fireball core, 150 ms
+      if (age < 150) {
+        const t = age / 150;
+        const fr = (0.6 + t * 2.2) * cam.scale;
+        const fa = 1 - t;
+        const grad = ctx.createRadialGradient(x, y, 0, x, y, fr);
+        grad.addColorStop(0, `rgba(255,250,225,${fa})`);
+        grad.addColorStop(0.4, `rgba(255,190,90,${fa * 0.85})`);
+        grad.addColorStop(0.75, `rgba(210,110,50,${fa * 0.5})`);
+        grad.addColorStop(1, 'rgba(180,90,40,0)');
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.arc(x, y, fr, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // dirt ejecta streaks, earth browns, fade ~400 ms
+      if (age < 400) {
+        const t = age / 400;
+        const ea = 1 - t;
+        const n = 8 + Math.floor(hash(sx, sy, 5) * 5); // 8-12
+        ctx.lineWidth = Math.max(1, cam.scale * 0.06);
+        for (let i = 0; i < n; i++) {
+          const ang = hash(sx, sy, 10 + i) * Math.PI * 2;
+          const len = (1.5 + hash(sx, sy, 40 + i) * 2.5) * cam.scale * t;
+          const tone = hash(sx, sy, 70 + i);
+          const r = Math.round(90 + tone * 40);
+          const gc = Math.round(65 + tone * 30);
+          const bc = Math.round(45 + tone * 20);
+          ctx.strokeStyle = `rgba(${r},${gc},${bc},${ea * 0.7})`;
+          ctx.beginPath();
+          ctx.moveTo(x, y);
+          ctx.lineTo(x + Math.cos(ang) * len, y + Math.sin(ang) * len);
+          ctx.stroke();
+        }
+      }
+
+      // lingering ground dust: one soft expanding disc, ~1.5 s
+      if (age < 1500) {
+        const t = age / 1500;
+        const dr = (1.5 + t * 3.5) * cam.scale;
+        const da = (1 - t) * 0.28;
+        const grad = ctx.createRadialGradient(x, y, 0, x, y, dr);
+        grad.addColorStop(0, `rgba(150,130,100,${da})`);
+        grad.addColorStop(1, 'rgba(150,130,100,0)');
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.arc(x, y, dr, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // rising smoke column: 3 staggered puffs climbing over ~2 s, cool grey
+      for (let i = 0; i < 3; i++) {
+        const start = i * 200;
+        if (age < start) continue;
+        const pt = (age - start) / (BOOM_MS - start);
+        const climb = pt * 3.5 * cam.scale;
+        const drift = Math.sin(sx * 0.01 + i) * pt * 0.6 * cam.scale;
+        const pr = (0.8 + pt * 1.6) * cam.scale;
+        const pa = (1 - pt) * 0.4;
+        ctx.fillStyle = `rgba(150,152,150,${pa})`;
+        ctx.beginPath();
+        ctx.arc(x + drift, y - climb, pr, 0, Math.PI * 2);
         ctx.fill();
       }
     }
   }
-
 }
