@@ -170,6 +170,7 @@ function showContactModal(e: Engagement): void {
 }
 
 function startEngagementBattle(e: Engagement): void {
+  pendingEngagement = e;
   const seed = urlSeed !== null && Number.isFinite(Number(urlSeed)) ? Number(urlSeed) : front.clockMin * 7919 + e.cell;
   const battle = makeStrategicBattle(campaign, front, e, seed);
   sim = battle.sim;
