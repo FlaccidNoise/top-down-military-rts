@@ -403,7 +403,8 @@ canvas.addEventListener('contextmenu', (e) => {
   if (mode === 'strategic') {
     if (selectedChit >= 0) {
       const cell = stratView.cellAtScreen(e.clientX, e.clientY, canvas.width, canvas.height);
-      if (cell >= 0) front.orderMove(selectedChit, cell);
+      if (cell >= 0 && !front.orderMove(selectedChit, cell) && front.sector.cells[cell].terrain === 'river')
+        stratView.flash("Can't hold open water — ford across to the far bank");
     }
     return;
   }

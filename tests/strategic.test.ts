@@ -201,6 +201,34 @@ describe('bridge', () => {
     expect(water).toBeGreaterThan(800); // the 5-wide 'river' band, not bridge's 3
   });
 
+  it('a ford assault fights on the river map with a suppressed, fatigued attacker', () => {
+    const { c, front } = setup();
+    const able = front.chits.find((ch) => ch.side === 'blue')!;
+    const garrison = front.chits.find((ch) => ch.name === 'Garnison Vireux')!; // town cell, no water of its own
+    able.cell = cellIndex(front.sector, 20, 10); // halted mid-ford, assaulting out of the water
+    const { sim } = makeStrategicBattle(c, front, { attackerId: able.id, defenderId: garrison.id, cell: garrison.cell }, 5);
+    let water = 0;
+    for (let y = 0; y < sim.map.h; y++)
+      for (let x = 0; x < sim.map.w; x++) if (sim.map.terrainKeyAt(x, y) === 'water') water++;
+    expect(water).toBeGreaterThan(800); // river archetype, not the contested cell's town ground
+    const blue = sim.soldiers.filter((s) => s.side === 'blue');
+    expect(blue.length).toBe(138);
+    expect(blue.every((s) => s.suppression >= 0.45)).toBe(true);
+    expect(blue.every((s) => s.stamina <= 0.65)).toBe(true);
+    const red = sim.soldiers.filter((s) => s.side === 'red');
+    expect(red.every((s) => s.suppression === 0 && s.stamina === 1)).toBe(true); // defenders are settled
+  });
+
+  it('a land approach to the same garrison carries no ford penalty', () => {
+    const { c, front } = setup();
+    const able = front.chits.find((ch) => ch.side === 'blue')!;
+    const garrison = front.chits.find((ch) => ch.name === 'Garnison Vireux')!;
+    const { sim } = makeStrategicBattle(c, front, { attackerId: able.id, defenderId: garrison.id, cell: garrison.cell }, 5);
+    const blue = sim.soldiers.filter((s) => s.side === 'blue');
+    expect(blue.every((s) => s.suppression === 0)).toBe(true);
+    expect(blue.every((s) => s.stamina === 1)).toBe(true);
+  });
+
   it('a won battle takes the cell, moves the attacker in, and attrits the garrison away', () => {
     const { c, front } = setup();
     const able = front.chits.find((ch) => ch.side === 'blue')!;
