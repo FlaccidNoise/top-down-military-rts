@@ -48,10 +48,6 @@ const MELEE_INTERVAL = 1.4; // s between strikes, jittered per swing
 // defenders — the charge redirects onto them and completes when none remain visible.
 const ASSAULT_RADIUS = 20; // m
 const ASSAULT_REPATH_TICKS = 15; // per-soldier redirect cadence (0.5 s)
-// SMGs with rounds left fight melee by shooting from the hip — their CQC
-// edge over the bayonet, paid for in ammo. (Sim-side twin of dudes.ts's
-// SMG_CLASS silhouette bucket; data.ts has no weapon-class field.)
-const MELEE_SMG: ReadonlySet<WeaponKey> = new Set(['thompson', 'mp40']);
 
 export type Side = 'blue' | 'red';
 export type Mental = 'steady' | 'shaken' | 'pinned' | 'broken';
@@ -231,6 +227,7 @@ export interface ShotEvent {
   ty: number;
   hit: boolean;
   kill: boolean;
+  weapon?: WeaponKey; // render-only: lets the audio layer pick a per-weapon report. Undefined = vehicle cannon/AP (paired with a boom anyway).
 }
 
 // Discrete casualty/morale transitions, emitted the tick they happen so the
@@ -1133,7 +1130,7 @@ export class Sim {
     const hit = this.rng.next() < p.acc;
     const kill = hit ? this.wound(t, this.rng.range(w.damage[0], w.damage[1])) : false;
     this.suppressAround(t.x, t.y, t.side, w.suppression);
-    this.pendingEvents.push({ fx: e.x, fy: e.y, tx: t.x, ty: t.y, hit, kill });
+    this.pendingEvents.push({ fx: e.x, fy: e.y, tx: t.x, ty: t.y, hit, kill, weapon: def.weapon });
     if (w.heat) {
       const heatMult = firer.role !== 'gunner' ? 1.5 : 1;
       e.heat = Math.min(1.5, e.heat + w.heat.perShot * heatMult);
@@ -1881,7 +1878,7 @@ export class Sim {
     let kill = false;
     if (hit) kill = this.wound(t, this.rng.range(w.damage[0], w.damage[1]));
     this.suppressAround(t.x, t.y, t.side, w.suppression);
-    this.pendingEvents.push({ fx, fy, tx: t.x, ty: t.y, hit, kill });
+    this.pendingEvents.push({ fx, fy, tx: t.x, ty: t.y, hit, kill, weapon });
     return { fired: true, kill };
   }
 
@@ -2195,7 +2192,7 @@ export class Sim {
     if (s.ammoStart > 0 && currentUnits / s.ammoStart < 0.3) return;
     const enemySide: Side = s.side === 'blue' ? 'red' : 'blue';
     this.suppressAround(order.x, order.y, enemySide, w.suppression);
-    this.pendingEvents.push({ fx: s.x, fy: s.y, tx: order.x, ty: order.y, hit: false, kill: false });
+    this.pendingEvents.push({ fx: s.x, fy: s.y, tx: order.x, ty: order.y, hit: false, kill: false, weapon: s.weapon });
     s.magLeft--;
     if (w.heat) s.heat = Math.min(1.5, s.heat + w.heat.perShot);
     s.cooldown = w.cooldown * (0.85 + this.rng.next() * 0.3);
@@ -2948,7 +2945,7 @@ export class Sim {
   // pain, suppression, nerves, and stamina all degrade melee too.
   private meleeStrike(s: Soldier, t: Soldier): void {
     const w: WeaponDef = WEAPONS[s.weapon];
-    const isSmg = MELEE_SMG.has(s.weapon);
+    const isSmg = WEAPONS[s.weapon].class === 'smg'; // SMGs with rounds left fight melee from the hip — CQC edge over the bayonet, paid in ammo
     const smgFire = isSmg && s.magLeft > 0;
     const clumsy = !!w.heat || w.pen !== undefined || !!w.arc; // an MG42 makes a poor club
     const base = smgFire ? 0.7 : clumsy ? 0.35 : isSmg ? 0.45 : 0.55;
@@ -2959,7 +2956,7 @@ export class Sim {
     else t.suppression = Math.min(1, t.suppression + 0.1); // a blade past your face
     if (smgFire) {
       s.magLeft--;
-      this.pendingEvents.push({ fx: s.x, fy: s.y, tx: t.x, ty: t.y, hit, kill }); // hip-fire muzzle flash
+      this.pendingEvents.push({ fx: s.x, fy: s.y, tx: t.x, ty: t.y, hit, kill, weapon: s.weapon }); // hip-fire muzzle flash
     }
     this.pendingMeleeEvents.push({ attackerId: s.id, victimId: t.id, x: t.x, y: t.y, hit, kill });
     if (kill) this.seenStatic[s.side].add(`s${t.id}`); // killed at arm's length: the corpse is found, not a ghost

@@ -1,4 +1,5 @@
-import { WEAPONS, type WeaponDef } from './data';
+import { EMPLACEMENTS, WEAPONS, type WeaponDef } from './data';
+import { crewNear, type Emplacement } from './emplacement';
 import { dangerScore } from './orders';
 import { CONTACT_TTL, SPOT_INTERVAL, sightBetween, type Sim, type Team } from './sim';
 
@@ -40,6 +41,7 @@ const EVAL_TICKS = 150; // every 5s
 const SUPPRESSION_SECONDS = 10; // a base-of-fire team firing this long counts as suppression established
 const CLEAR_CONF = 0.3; // threat confidence at the post below which maneuver goes ahead regardless
 const ASSAULT_RANGE = 30; // m from the post at which a suppressed-in maneuver team charges instead of running
+const SMOKE_RANGE = 45; // m from the post at which the commander screens the objective with mortar smoke ahead of the charge
 const FLANK_OFFSET = 20; // meters either side of the direct axis to the post
 const BOF_SETTLE_RADIUS = 5; // close enough to the scored firing spot to stop moving and start firing
 
@@ -193,7 +195,14 @@ export class RedCommander {
       const suppressed = this.suppressionEstablished(sim);
       const cleared = this.threatConfNear(post.x, post.y, 15) < CLEAR_CONF;
       const c = this.centroid(sim, team.soldierIds);
-      if (suppressed && !cleared && Math.hypot(c.x - post.x, c.y - post.y) <= ASSAULT_RANGE) {
+      const dist = Math.hypot(c.x - post.x, c.y - post.y);
+      // Screen the objective as the maneuver team enters SMOKE_RANGE with a
+      // live post: laid a touch beyond ASSAULT_RANGE so the smoke's flight and
+      // a blinded position are up by the time the team is in charge range —
+      // that's what lets the final leg's charge clear compliance (a naked
+      // charge onto a covered post balks by construction).
+      if (suppressed && !cleared && dist <= SMOKE_RANGE) this.maybeSmokeObjective(sim, post);
+      if (suppressed && !cleared && dist <= ASSAULT_RANGE) {
         // suppression established, live threat on the post, close enough to
         // charge home: the 8th order, through the same API the player uses.
         // suppressionEstablished is a global attempt-gate; the real per-team
@@ -329,5 +338,33 @@ export class RedCommander {
         break;
       }
     }
+  }
+
+  // Screen an objective with mortar smoke ahead of the final-leg charge. The
+  // doctrine loop the player already runs: a naked charge onto a post with LOS
+  // over the approach balks by construction (defenders cover every
+  // dangerSample), so smoke ON the objective — puffs on the post, not
+  // mid-approach — blinds the position and drops the sightlines that make the
+  // charge suicidal, until the assault's compliance ladder clears. The balks
+  // before it lands are the point: the refusal ladder is what drives the AI
+  // into doctrine. One mission at a time; a mortar already smoking is left to
+  // finish (readyMortar skips smokeRoundsLeft > 0) rather than re-tasked.
+  private maybeSmokeObjective(sim: Sim, post: { x: number; y: number }): void {
+    const mortar = this.readyMortar(sim);
+    if (mortar) sim.orderSmoke(mortar.id, post.x, post.y);
+  }
+
+  // A deployed red mortar not mid-smoke-mission, with shells its crew can
+  // still feed — the commander's screen asset, scanned side-wide like the
+  // barrage: any mortar on the field can screen any objective, independent of
+  // task-group assignment.
+  private readyMortar(sim: Sim): Emplacement | null {
+    for (const e of sim.emplacements) {
+      if (e.side !== 'red' || e.state !== 'deployed' || e.smokeRoundsLeft > 0) continue;
+      const w: WeaponDef = WEAPONS[EMPLACEMENTS[e.kind].weapon];
+      if (!w.arc) continue;
+      if (crewNear(sim, e).some((s) => (s.ammo[w.ammo.type] ?? 0) > 0)) return e;
+    }
+    return null;
   }
 }

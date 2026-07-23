@@ -1,4 +1,5 @@
 import { advanceDays, fillReplacements, newCampaign, squadMembers, type Campaign } from './campaign/campaign';
+import { AudioEngine } from './render/audio';
 import { Camera } from './render/camera';
 import { Renderer } from './render/renderer';
 import { StrategicView, TERRAIN_LABELS } from './render/strategic';
@@ -69,6 +70,11 @@ let renderer: Renderer;
 let battleCompany = -1;
 let battleTitle = '';
 const cam = new Camera(60, 60);
+const audio = new AudioEngine();
+// WebAudio autoplay policy: the context can only start inside a user gesture.
+const unlockAudio = () => audio.unlock();
+window.addEventListener('pointerdown', unlockAudio);
+window.addEventListener('keydown', unlockAudio);
 let paused = true;
 let selectedSquad = -1;
 let selectedTeam = -1; // -1 = whole squad; narrowed to one team within selectedSquad
@@ -429,6 +435,7 @@ window.addEventListener('keydown', (e) => {
     if (mode === 'strategic') stratPaused = !stratPaused;
     else paused = !paused;
   }
+  if (e.code === 'KeyM') audio.toggleMute();
   if (mode === 'strategic') {
     if (e.code === 'Digit1') speedIdx = 0;
     if (e.code === 'Digit2') speedIdx = 1;
@@ -466,6 +473,7 @@ window.addEventListener('keydown', (e) => {
     return front;
   },
   cam,
+  audio,
   setPaused: (p: boolean) => {
     stratPaused = p;
     paused = p;
@@ -525,12 +533,22 @@ function frame(now: number): void {
     } else {
       acc = 0;
     }
-    renderer.addEvents(sim.takeEvents(), now);
-    renderer.addMeleeEvents(sim.takeMeleeEvents(), now);
-    renderer.addBooms(sim.takeBooms(), now);
+    const cw = canvas.width;
+    const chh = canvas.height;
+    const shots = sim.takeEvents();
+    const melee = sim.takeMeleeEvents();
+    const booms = sim.takeBooms();
+    renderer.addEvents(shots, now);
+    renderer.addMeleeEvents(melee, now);
+    renderer.addBooms(booms, now);
     renderer.addPlanes(sim.takePlanes(), now);
+    audio.addShots(shots, cam, cw, chh);
+    audio.addMelee(melee, cam, cw, chh);
+    audio.addBooms(booms, cam, cw, chh);
     // fog of war: enemy unit events only ping where a friendly can see
-    pings.add(sim.takeUnitEvents().filter((e) => e.side === 'blue' || sim.fowDisabled || sim.sideSeesPoint('blue', e.x, e.y)), sim.tick);
+    const unitEvents = sim.takeUnitEvents().filter((e) => e.side === 'blue' || sim.fowDisabled || sim.sideSeesPoint('blue', e.x, e.y));
+    pings.add(unitEvents, sim.tick);
+    audio.addUnitEvents(unitEvents);
 
     const pick = mouse.onCanvas && !targetMode ? pickAt(sim, cam, mouse.x, mouse.y, canvas.width, canvas.height) : null;
     const shot = computeShot(sim, selectedSquad, selectedVehicle, pick);

@@ -109,8 +109,15 @@ export class Renderer {
     const dt = Math.min(0.1, (now - this.lastNow) / 1000);
     this.lastNow = now;
     ctx.fillStyle = '#161510'; // darker desaturated earth tone off-map, replacing the flat void
-    ctx.fillRect(0, 0, cw, ch);
+    ctx.fillRect(0, 0, cw, ch); // backdrop stays unshaken so shake never opens a gap at the map edge
     ctx.imageSmoothingEnabled = true;
+
+    // Camera shake: world layers only (HUD/picking stay steady — worldToScreen
+    // is untouched). Stateless, derived from recent booms' screen proximity plus
+    // a faint tremor from fresh nearby fire. Wall-clock, so it decays under pause.
+    const [shx, shy] = this.worldShake(cam, now, cw, ch);
+    ctx.save();
+    ctx.translate(shx, shy);
 
     this.terrain.draw(ctx, cam, cw, ch);
     const [mx0, my0] = cam.worldToScreen(0, 0, cw, ch);
@@ -144,6 +151,34 @@ export class Renderer {
     this.drawContacts(ctx, cam, cw, ch);
     this.drawPlanes(ctx, cam, now, cw, ch);
     this.drawBarrageMarks(ctx, cam, now, cw, ch);
+    ctx.restore();
+  }
+
+  // Screen-shake offset in pixels. Booms dominate (near-full-screen impact →
+  // real jolt, off-screen → almost none); sustained nearby fire adds a capped
+  // low tremor so a firefight breathes without vibrating into arcade territory.
+  private worldShake(cam: Camera, now: number, cw: number, ch: number): [number, number] {
+    const half = Math.hypot(cw, ch) / 2;
+    const prox = (wx: number, wy: number): number => {
+      const [sx, sy] = cam.worldToScreen(wx, wy, cw, ch);
+      return Math.max(0, 1 - (Math.hypot(sx - cw / 2, sy - ch / 2) / half) * 0.8);
+    };
+    let trauma = 0;
+    for (const b of this.booms) {
+      const age = now - b.at;
+      if (age > 350) continue;
+      trauma = Math.max(trauma, (1 - age / 350) * prox(b.x, b.y));
+    }
+    let fire = 0;
+    for (const t of this.tracers) {
+      if (now - t.at > 45) continue;
+      fire += 0.02 * prox(t.fx, t.fy);
+      if (fire >= 0.12) break; // cap — never let volume of fire alone jolt the camera
+    }
+    trauma = Math.min(1, trauma + Math.min(0.12, fire));
+    if (trauma < 0.001) return [0, 0];
+    const mag = Math.pow(trauma, 1.5) * 7; // px; ^1.5 keeps small tremors gentle
+    return [mag * Math.sin(now * 0.09), mag * Math.sin(now * 0.13 + 1.7)];
   }
 
   // sim.smoke (E1): entries carry only {x, y, ttl}, x/y fixed for the entry's
@@ -687,11 +722,35 @@ export class Renderer {
             ctx.fill();
           }
         }
-        if (t.kill && age < FADE_MS) {
-          ctx.fillStyle = `rgba(220, 60, 40, ${a * 0.6})`;
-          ctx.beginPath();
-          ctx.arc(x1, y1, 5, 0, Math.PI * 2);
-          ctx.fill();
+        // outcome-keyed impact punch (replaces the flat red kill dot). dAge is
+        // ms since the round landed — same clock the impact dust above uses.
+        if (t.hit) {
+          if (t.kill && dAge < 200) {
+            // kill confirm: hot flash + expanding bone-toned ring
+            const kt = dAge / 200;
+            const fa = 1 - kt;
+            const fr = Math.max(2, (0.3 + kt * 0.9) * cam.scale);
+            const grad = ctx.createRadialGradient(x1, y1, 0, x1, y1, fr);
+            grad.addColorStop(0, `rgba(255,240,210,${fa})`);
+            grad.addColorStop(0.5, `rgba(255,150,90,${fa * 0.55})`);
+            grad.addColorStop(1, 'rgba(200,80,50,0)');
+            ctx.fillStyle = grad;
+            ctx.beginPath();
+            ctx.arc(x1, y1, fr, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = `rgba(214, 186, 150, ${fa * 0.7})`;
+            ctx.lineWidth = Math.max(1, cam.scale * 0.08);
+            ctx.beginPath();
+            ctx.arc(x1, y1, (0.4 + kt * 2.2) * cam.scale, 0, Math.PI * 2);
+            ctx.stroke();
+          } else if (!t.kill && dAge < 90) {
+            // a round finding flesh/cover: brief bright fleck, no lingering marker
+            const ft = dAge / 90;
+            ctx.fillStyle = `rgba(255,220,170,${(1 - ft) * 0.7})`;
+            ctx.beginPath();
+            ctx.arc(x1, y1, Math.max(1.2, cam.scale * 0.14), 0, Math.PI * 2);
+            ctx.fill();
+          }
         }
       }
     }

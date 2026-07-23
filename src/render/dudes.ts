@@ -1,4 +1,4 @@
-import type { WeaponKey } from '../sim/data';
+import { WEAPONS, type WeaponKey } from '../sim/data';
 import type { Side } from '../sim/sim';
 import { SHADOW_SOFT_ALPHA } from './light';
 
@@ -88,12 +88,8 @@ function dot(g: Ctx, x: number, y: number, r: number, color: string): void {
 }
 
 // Silhouette bucket per weapon: short SMG-length guns, bipod'd MGs, else rifle-length.
-const SMG_CLASS: ReadonlySet<WeaponKey> = new Set(['thompson', 'mp40']);
-const MG_CLASS: ReadonlySet<WeaponKey> = new Set(['m1919', 'mg42']);
 function gunClass(w: WeaponKey): 'rifle' | 'smg' | 'mg' {
-  if (SMG_CLASS.has(w)) return 'smg';
-  if (MG_CLASS.has(w)) return 'mg';
-  return 'rifle';
+  return WEAPONS[w].class;
 }
 
 // Weapon drawn with grip at (x, y), muzzle toward +X (before `angle`).
