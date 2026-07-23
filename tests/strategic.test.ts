@@ -66,6 +66,31 @@ describe('front', () => {
     expect(s.cells[2].owner).toBe('red'); // not captured
   });
 
+  it('river fords: transit at assault cost, never a destination, captured in passing', () => {
+    const s = makeDefaultSector();
+    const f = new Front(s);
+    const chit = f.addChit({ side: 'blue', name: 'Able', cell: cellIndex(s, 19, 10), strength: 27, companyIndex: 0 });
+    expect(f.orderMove(chit.id, cellIndex(s, 20, 10))).toBe(false); // can't stop in the water
+    expect(f.orderMove(chit.id, cellIndex(s, 21, 10))).toBe(true);
+    expect(chit.path).toEqual([cellIndex(s, 20, 10), cellIndex(s, 21, 10)]); // direct ford beats the 10-cell bridge detour
+    expect(chitEtaMinutes(f, chit)).toBe(75); // 60 wading + 15 open
+    for (let i = 0; i < 75; i++) expect(f.step()).toBeNull();
+    expect(chit.cell).toBe(cellIndex(s, 21, 10));
+    expect(s.cells[cellIndex(s, 20, 10)].owner).toBe('blue');
+  });
+
+  it('contact mid-ford: an enemy in the river cell yields a river-cell engagement', () => {
+    const s = makeDefaultSector();
+    const f = new Front(s);
+    const blue = f.addChit({ side: 'blue', name: 'Able', cell: cellIndex(s, 19, 10), strength: 27, companyIndex: 0 });
+    const red = f.addChit({ side: 'red', name: 'Gruppe', cell: cellIndex(s, 20, 10), strength: 18, companyIndex: -1 });
+    f.orderMove(blue.id, cellIndex(s, 21, 10));
+    let e = null;
+    for (let i = 0; i < 200 && !e; i++) e = f.step();
+    expect(e).toEqual({ attackerId: blue.id, defenderId: red.id, cell: cellIndex(s, 20, 10) });
+    expect(s.cells[e!.cell].terrain).toBe('river');
+  });
+
   it('clock: day rolls at midnight, hhmm formats', () => {
     const f = new Front(miniSector());
     expect(f.clockMin).toBe(OP_START_MIN);
@@ -162,6 +187,18 @@ describe('bridge', () => {
     expect(red.length).toBe(36); // prefix of de_grenadier_co TO&E by strength: 4x 9-man Gruppen
     const [a, b] = blue;
     expect(a.bonds[b.id]).toBeCloseTo(0.3); // trained-together, wired from campaign
+  });
+
+  it('an engagement on a river cell fights on the river battle map', () => {
+    const { c, front } = setup();
+    const able = front.chits.find((ch) => ch.side === 'blue')!;
+    const reserve = front.chits.find((ch) => ch.name === 'Reserve')!;
+    reserve.cell = cellIndex(front.sector, 20, 10); // caught mid-ford
+    const { sim } = makeStrategicBattle(c, front, { attackerId: able.id, defenderId: reserve.id, cell: reserve.cell }, 5);
+    let water = 0;
+    for (let y = 0; y < sim.map.h; y++)
+      for (let x = 0; x < sim.map.w; x++) if (sim.map.terrainKeyAt(x, y) === 'water') water++;
+    expect(water).toBeGreaterThan(800); // the 5-wide 'river' band, not bridge's 3
   });
 
   it('a won battle takes the cell, moves the attacker in, and attrits the garrison away', () => {

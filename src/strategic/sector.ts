@@ -7,7 +7,7 @@ export type CellTerrain = MapKind;
 
 export interface Cell {
   terrain: CellTerrain;
-  owner: Side | null; // null = neutral (river)
+  owner: Side | null; // null = neutral (rivers start neutral, captured when forded)
   objective: boolean;
 }
 
@@ -35,7 +35,7 @@ export const CELL_MINUTES: Record<CellTerrain, number> = {
   open: 15,
   town: 15,
   woods: 30,
-  river: Infinity,
+  river: 60, // opposed assault crossing: fordable transit, never worth it while a bridge stands
 };
 
 export function parseSector(rows: string[], frontX: number, name: string): SectorMap {

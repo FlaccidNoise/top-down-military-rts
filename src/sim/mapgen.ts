@@ -98,14 +98,18 @@ function tryGenerate(rng: Rng, w: number, h: number, kind: MapKind): MapPlan | n
       if (rng.next() < 0.15) rx = clamp(rx + (rng.next() < 0.5 ? -1 : 1), base - 3, base + 3);
     }
     for (let i = 0; i < water.length; i++) if (water[i]) map.setTerrain(i % w, (i / w) | 0, 'water');
-    const bx = base + (width >> 1);
+    // the band random-walks ±3 off its seed column, so derive the bridge from
+    // the actual arterial-centerline ∩ water overlap (middle column of it)
+    const xs: number[] = [];
+    for (let x = 0; x < w; x++) if (water[roadY[x] * w + x]) xs.push(x);
+    const bx = xs[xs.length >> 1];
     bridgePt = { x: bx, y: roadY[bx] };
   }
 
   // village: buildings snapped to road frontage near the crossroads
   const buildings: Building[] = [];
   const doorSides: ('n' | 's' | 'e' | 'w')[] = [];
-  const target = 5 + rng.int(3) + (kind === 'town' ? 4 : 0);
+  const target = 5 + rng.int(3) + (kind === 'town' ? 10 : 0);
   const overlaps = (b: Building) =>
     buildings.some((o) => b.x - 2 < o.x + o.w && b.x + b.w + 2 > o.x && b.y - 2 < o.y + o.h && b.y + b.h + 2 > o.y);
   const touchesRoadOrWater = (b: Building): boolean => {
@@ -142,7 +146,7 @@ function tryGenerate(rng: Rng, w: number, h: number, kind: MapKind): MapPlan | n
       doorSides.push(door);
     }
   };
-  placeCluster(crossX, cy, roadX, target, 24);
+  placeCluster(crossX, cy, roadX, target, kind === 'town' ? 32 : 24);
   if (buildings.length < 4) return null;
 
   // second hamlet crossroads on large maps, further west along the arterial
