@@ -238,6 +238,40 @@ function drawWaterBanks(g: Ctx, map: GameMap, tx0: number, ty0: number, tx1: num
   }
 }
 
+// Worn dirt trail out from each exterior building door — overlapping ellipses
+// shrinking and fading with distance, wobbled off the straight line. Trails
+// cross tile boundaries, so they run as a post-pass over the finished bases.
+function drawDoorTrails(g: Ctx, map: GameMap, tx0: number, ty0: number, tx1: number, ty1: number): void {
+  const floorAt = (tx: number, ty: number) => map.inBounds(tx, ty) && map.terrainKeyAt(tx, ty) === 'floor';
+  const trail = (px: number, py: number, dx: number, dy: number) => {
+    for (let i = 0; i < 7; i++) {
+      const t = 0.3 + i * 0.42;
+      const wob = (hash(Math.round(px * 4), Math.round(py * 4), 145 + i) - 0.5) * 0.6 * (i / 7);
+      const r = 0.36 - i * 0.028;
+      g.fillStyle = `rgba(139,116,84,${(0.36 - i * 0.045).toFixed(3)})`;
+      g.beginPath();
+      g.ellipse(px + dx * t - dy * wob, py + dy * t + dx * wob, r * (1 + Math.abs(dx) * 0.35), r * (1 + Math.abs(dy) * 0.35), 0, 0, Math.PI * 2);
+      g.fill();
+    }
+  };
+  for (let y = ty0; y <= ty1; y++) {
+    for (let x = tx0; x < tx1; x++) {
+      if (map.hEdge(x, y) !== EDGE.DOOR) continue;
+      const inSouth = floorAt(x, y); // hEdge(x,y) sits on the north side of tile (x,y)
+      if (inSouth === floorAt(x, y - 1)) continue; // internal door (or floating edge)
+      trail(x + 0.5, y, 0, inSouth ? -1 : 1);
+    }
+  }
+  for (let y = ty0; y < ty1; y++) {
+    for (let x = tx0; x <= tx1; x++) {
+      if (map.vEdge(x, y) !== EDGE.DOOR) continue;
+      const inEast = floorAt(x, y); // vEdge(x,y) sits on the west side of tile (x,y)
+      if (inEast === floorAt(x - 1, y)) continue;
+      trail(x, y + 0.5, inEast ? -1 : 1, 0);
+    }
+  }
+}
+
 function drawTileBase(g: Ctx, map: GameMap, x: number, y: number): void {
   const t = map.terrainKeyAt(x, y);
   const v = 0.93 + coarse(x, y) * 0.1 + hash(x, y) * 0.04;
@@ -261,6 +295,19 @@ function drawTileBase(g: Ctx, map: GameMap, x: number, y: number): void {
       const sz = 0.05 + hash(x, y, 35 + i) * 0.05;
       g.fillStyle = hash(x, y, 30 + i) > 0.7 ? shade(GRASS_DRY, 1.15) : shade(GRASS, h1 > 0.5 ? 1.18 : 0.78);
       g.fillRect(x + h1, y + h2, sz, sz);
+    }
+    // dusty verge where grass meets road: half-tile strips of jittered depth,
+    // so traffic wear bleeds past the road's own shoulder without a hard line
+    const roadAt = (tx: number, ty: number) => map.inBounds(tx, ty) && map.terrainKeyAt(tx, ty) === 'road';
+    for (let h = 0; h < 2; h++) {
+      const d = 0.14 + hash(x * 2 + h, y, 140) * 0.24;
+      g.fillStyle = `rgba(168,140,92,${0.1 + hash(x * 2 + h, y, 141) * 0.1})`;
+      if (roadAt(x, y - 1)) g.fillRect(x + h * 0.5, y, 0.5, d);
+      if (roadAt(x, y + 1)) g.fillRect(x + h * 0.5, y + 1 - d, 0.5, d);
+      const dv = 0.14 + hash(x, y * 2 + h, 142) * 0.24;
+      g.fillStyle = `rgba(168,140,92,${0.1 + hash(x, y * 2 + h, 143) * 0.1})`;
+      if (roadAt(x - 1, y)) g.fillRect(x, y + h * 0.5, dv, 0.5);
+      if (roadAt(x + 1, y)) g.fillRect(x + 1 - dv, y + h * 0.5, dv, 0.5);
     }
   } else if (t === 'road') {
     // road carved over the water band = the bridge (mapgen draws roads last);
@@ -456,6 +503,7 @@ export class TerrainLayer {
       for (let x = tx0; x < tx1; x++) drawTileBase(g, this.map, x, y);
     }
     drawWaterBanks(g, this.map, tx0, ty0, tx1, ty1);
+    drawDoorTrails(g, this.map, tx0, ty0, tx1, ty1);
     drawHedgeRun(g, this.map, tx0, ty0, tx1, ty1);
     for (let y = ty0; y < ty1; y++) {
       for (let x = tx0; x < tx1; x++) {
