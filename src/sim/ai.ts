@@ -111,6 +111,10 @@ export class RedCommander {
   // already carries its own MG) falls back to letting every team both fire
   // and maneuver rather than leaving maneuver empty.
   private assignGroups(sim: Sim): void {
+    // Legacy addSquad forces (bridge.ts redMembers) put MG + rifles in ONE
+    // team, so base/maneuver overlap and attack-stance fire orders would be
+    // clobbered by move orders. Safe today only because makeStrategicBattle
+    // always runs red in defend stance; fix redMembers before attack-stance use.
     const redTeams = sim.teams.filter((t) => sim.squads[t.squadId].side === 'red' && this.cfg.posts[t.squadId]);
     const isBaseOfFire = (team: Team) =>
       team.soldierIds.some((id) => {
