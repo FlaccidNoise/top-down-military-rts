@@ -48,6 +48,19 @@ export class DecalLayer {
     g.fill();
   }
 
+  // Permanent blood pool stamped once at death — earth-dark red, soft edge.
+  pool(x: number, y: number, r: number): void {
+    const g = this.g;
+    const grad = g.createRadialGradient(x, y, 0, x, y, r);
+    grad.addColorStop(0, 'rgba(58,10,8,0.55)');
+    grad.addColorStop(0.7, 'rgba(70,14,10,0.4)');
+    grad.addColorStop(1, 'rgba(70,14,10,0)');
+    g.fillStyle = grad;
+    g.beginPath();
+    g.arc(x, y, r, 0, Math.PI * 2);
+    g.fill();
+  }
+
   smear(x: number, y: number, angle: number): void {
     const g = this.g;
     g.save();

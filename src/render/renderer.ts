@@ -20,6 +20,7 @@ interface RState {
   py: number;
   smx: number; // last blood-smear deposit position (dragged casualties)
   smy: number;
+  wasAlive: boolean; // latches the permanent death blood-pool stamp to a single transition
 }
 
 interface Boom {
@@ -253,7 +254,7 @@ export class Renderer {
   private state(s: Soldier): RState {
     let st = this.rs.get(s.id);
     if (!st) {
-      st = { facing: s.side === 'blue' ? 0 : Math.PI, phase: 0, px: s.x, py: s.y, smx: s.x, smy: s.y };
+      st = { facing: s.side === 'blue' ? 0 : Math.PI, phase: 0, px: s.x, py: s.y, smx: s.x, smy: s.y, wasAlive: true };
       this.rs.set(s.id, st);
     }
     return st;
@@ -298,7 +299,8 @@ export class Renderer {
       pose = 'walk';
       st.phase += moved * 1.4;
       frame = Math.floor((st.phase % 1) * WALK_FRAMES);
-    } else pose = s.targetId >= 0 ? 'aim' : 'idle';
+    } else if (s.targetId >= 0) pose = s.suppression > 0.15 ? 'kneel' : 'aim';
+    else pose = 'idle';
 
     if (s.alive) {
       let desired = st.facing;
@@ -324,10 +326,16 @@ export class Renderer {
       st.smy = wy;
     }
 
-    // blood pool under the immobile wounded and the dead
-    const bl = s.alive ? s.bloodLoss : Math.max(s.bloodLoss, s.wounds.length ? 0.35 : 0.2);
-    if ((!s.alive || s.downed) && bl > 0.02) {
-      const r = (0.25 + Math.min(1, bl) * 0.5) * cam.scale;
+    // permanent blood pool, stamped once into decals the first frame death is observed
+    if (!s.alive && st.wasAlive) {
+      st.wasAlive = false;
+      const dbl = Math.max(s.bloodLoss, s.wounds.length ? 0.35 : 0.2);
+      this.decals.pool(wx, wy, 0.5 + Math.min(1, dbl) * 0.4);
+    }
+
+    // dynamic blood pool under the immobile wounded, still alive
+    if (s.alive && s.downed && s.bloodLoss > 0.02) {
+      const r = (0.25 + Math.min(1, s.bloodLoss) * 0.5) * cam.scale;
       ctx.fillStyle = 'rgba(92,15,12,0.5)';
       ctx.beginPath();
       ctx.ellipse(x + cam.scale * 0.1, y + cam.scale * 0.08, r, r * 0.8, st.facing, 0, Math.PI * 2);
@@ -368,14 +376,14 @@ export class Renderer {
       ctx.lineTo(x, y + c);
       ctx.stroke();
     }
+    // one-ring rule (S7): selection wins over suppression, never both
     if (s.squadId === selectedSquad) {
       ctx.strokeStyle = '#ffe9a0';
       ctx.lineWidth = 1.5;
       ctx.beginPath();
       ctx.arc(x, y, cam.scale * 0.6 + 2, 0, Math.PI * 2);
       ctx.stroke();
-    }
-    if (!s.downed && s.suppression > 0.35) {
+    } else if (!s.downed && s.suppression > 0.35) {
       ctx.strokeStyle = `rgba(255, 180, 40, ${Math.min(0.9, s.suppression)})`;
       ctx.lineWidth = 1.5;
       ctx.beginPath();
