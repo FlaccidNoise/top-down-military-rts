@@ -2547,7 +2547,13 @@ export class Sim {
           }
         }
       } else {
-        spotted.delete(t.id);
+        // died while tracked but out of sight: ghost at last-seen like a
+        // living contact would, until the corpse itself is found
+        const last = spotted.get(t.id);
+        if (last) {
+          spotted.delete(t.id);
+          contacts.set(key, { kind: 'infantry', x: last.x, y: last.y, tick: this.tick });
+        }
         if (!seen.has(key) && this.sideSeesPoint(side, t.x, t.y)) seen.add(key);
         if (seen.has(key)) contacts.delete(key); // corpse found resolves the ghost
       }
@@ -2729,7 +2735,9 @@ export class Sim {
   private updateMelee(s: Soldier): boolean {
     const t = this.soldiers[s.meleeId];
     const d = Math.hypot(t.x - s.x, t.y - s.y);
-    if (!t.alive || t.downed || t.inVehicle >= 0 || d > MELEE_BREAK) {
+    // A routing opponent already out of strike reach can't be caught (equal
+    // speeds) — break off and let the rifle take over, no futile jogging.
+    if (!t.alive || t.downed || t.inVehicle >= 0 || d > MELEE_BREAK || (t.mental === 'broken' && d > MELEE_STRIKE_RANGE)) {
       s.meleeId = -1;
       return false;
     }
