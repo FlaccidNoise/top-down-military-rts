@@ -1484,8 +1484,9 @@ export class Sim {
         if (!s.alive || s.downed || s.mental === 'broken') continue;
         eligible++;
         // a rescue task counts as busy: it holds path=null for a tick on pickup,
-        // and auto-dispatching the next leg would silently cancel the rescue
-        if (s.path || s.task) moving++;
+        // and auto-dispatching the next leg would silently cancel the rescue.
+        // A melee lock is busy too — pathless for seconds, but hardly "arrived".
+        if (s.path || s.task || s.meleeId >= 0) moving++;
       }
       if (eligible === 0) {
         this.squadWaypoints[sq.id] = [];
@@ -1496,6 +1497,11 @@ export class Sim {
       // A balked leg holds in place (spec: no oscillation) until a fresh
       // order — don't pop the next waypoint out from under it.
       if (this.squadHasBalkedTeam(sq)) continue;
+      // An executing assault owns its team until the position is clear —
+      // popping the next waypoint here would orderTeam(move) right over it
+      // (assault is the one order that idles pathless mid-execution while its
+      // throttled completion check still sees defenders).
+      if (sq.teamIds.some((tid) => this.teams[tid].orderState.order?.kind === 'assault' && this.teams[tid].orderState.phase === 'executing')) continue;
       const next = q?.shift();
       if (next) this.dispatchSquadTo(sq.id, next.x, next.y);
       else this.squadDest[sq.id] = null; // arrived, route done
@@ -1559,10 +1565,23 @@ export class Sim {
         }
       } else if (order.kind === 'assault' && st.phase === 'executing' && (this.tick + team.id) % ASSAULT_REPATH_TICKS === 0) {
         // position taken: everyone arrived, out of melee, and no member sees
-        // a defender left within the objective radius
+        // a defender he could still get at. A visible-but-unreachable holdout
+        // (sealed room behind a window, far bank of a river) is a fire
+        // problem, not an assault problem — he must not hang the order.
+        // astar here is cheap: only runs settled, on the cadence, and the
+        // defender list at that point is empty or tiny.
         const eligibleIds = team.soldierIds.filter((id) => this.eligible(this.soldiers[id]));
         const settled = eligibleIds.length > 0 && eligibleIds.every((id) => !this.soldiers[id].path && this.soldiers[id].meleeId < 0);
-        if (settled && !eligibleIds.some((id) => this.assaultDefenders(this.soldiers[id], order).length > 0)) {
+        const blocked =
+          settled &&
+          eligibleIds.some((id) => {
+            const m = this.soldiers[id];
+            return this.assaultDefenders(m, order).some((e) => {
+              const p = astar(this.map, Math.floor(m.x), Math.floor(m.y), Math.floor(e.x), Math.floor(e.y));
+              return p !== null && p.length > 1;
+            });
+          });
+        if (settled && !blocked) {
           st.order = null;
           st.phase = 'idle';
           st.reason = '';
@@ -2769,25 +2788,40 @@ export class Sim {
   // lock takes over inside 2m); with none in sight, close on the point itself.
   private assaultRepath(s: Soldier, order: TeamOrder): void {
     const defenders = this.assaultDefenders(s, order);
-    let goal: { x: number; y: number } | null = null;
-    if (defenders.length > 0) {
-      let bestD = Infinity;
-      for (const e of defenders) {
-        const d = Math.hypot(e.x - s.x, e.y - s.y);
-        if (d < bestD) {
-          bestD = d;
-          goal = e;
-        }
-      }
-      if (bestD <= MELEE_ENGAGE) return; // contact — the melee lock owns him now
-    } else if (!s.path && Math.hypot(order.x - s.x, order.y - s.y) > 4) {
-      goal = order; // nobody left in sight: take the ground itself
+    const candidates: { x: number; y: number }[] = defenders
+      .map((e) => ({ e, d: Math.hypot(e.x - s.x, e.y - s.y) }))
+      .sort((a, b) => a.d - b.d || a.e.id - b.e.id)
+      .map((c) => c.e);
+    if (
+      candidates.length > 0 &&
+      Math.hypot(candidates[0].x - s.x, candidates[0].y - s.y) <= MELEE_ENGAGE &&
+      this.meleeReachable(s.x, s.y, candidates[0].x, candidates[0].y)
+    ) {
+      return; // true contact — the melee lock owns him now (a man 1.5m away
+      // through a window is NOT contact; keep working the reachable ones)
     }
-    if (!goal) return;
-    const path = astar(this.map, Math.floor(s.x), Math.floor(s.y), Math.floor(goal.x), Math.floor(goal.y));
-    if (path && path.length > 1) {
-      s.path = path.slice(1).map((p) => ({ x: p.x + 0.5, y: p.y + 0.5 }));
-      s.pathI = 0;
+    // Nearest REACHABLE defender wins; a visible-but-unreachable one (window,
+    // water) must not stall the charge — fall through to the next man, then
+    // to the ground itself, rather than reselecting the same dead end forever.
+    if (candidates.length === 0) {
+      if (s.path || Math.hypot(order.x - s.x, order.y - s.y) <= 4) return;
+      candidates.push(order); // nobody left in sight: take the ground
+    }
+    for (const goal of candidates) {
+      const path = astar(this.map, Math.floor(s.x), Math.floor(s.y), Math.floor(goal.x), Math.floor(goal.y));
+      if (path && path.length > 1) {
+        s.path = path.slice(1).map((p) => ({ x: p.x + 0.5, y: p.y + 0.5 }));
+        s.pathI = 0;
+        return;
+      }
+    }
+    // every defender unreachable: at least stand on the objective
+    if (!s.path && Math.hypot(order.x - s.x, order.y - s.y) > 4) {
+      const path = astar(this.map, Math.floor(s.x), Math.floor(s.y), Math.floor(order.x), Math.floor(order.y));
+      if (path && path.length > 1) {
+        s.path = path.slice(1).map((p) => ({ x: p.x + 0.5, y: p.y + 0.5 }));
+        s.pathI = 0;
+      }
     }
   }
 
