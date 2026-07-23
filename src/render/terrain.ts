@@ -104,6 +104,52 @@ function hedgePath(g: Ctx, x: number, y: number, n: boolean, s: boolean, w: bool
   }
 }
 
+// Hedge capsule strokes for a tile range, one visual layer at a time across
+// ALL hedge tiles (AO → cast shadow → green mass → sun rim → foliage dabs).
+// Width/shade vary via the smooth 8m/28m noise fields, not per-tile hash, so
+// adjacent tiles never show a width or value step at the boundary.
+function drawHedgeRun(g: Ctx, map: GameMap, tx0: number, ty0: number, tx1: number, ty1: number): void {
+  const isHedge = (tx: number, ty: number) => map.inBounds(tx, ty) && map.terrainKeyAt(tx, ty) === 'hedge';
+  const tiles: { x: number; y: number; n: boolean; s: boolean; w: boolean; e: boolean; width: number }[] = [];
+  for (let y = ty0; y < ty1; y++) {
+    for (let x = tx0; x < tx1; x++) {
+      if (!isHedge(x, y)) continue;
+      tiles.push({ x, y, n: isHedge(x, y - 1), s: isHedge(x, y + 1), w: isHedge(x - 1, y), e: isHedge(x + 1, y), width: 0.58 + coarse(x, y) * 0.3 });
+    }
+  }
+  if (tiles.length === 0) return;
+  const [sdx, sdy] = shadowOffset(0.4);
+  const pass = (widthOf: (t: (typeof tiles)[0]) => number, styleOf: (t: (typeof tiles)[0]) => string, odx: number, ody: number) => {
+    for (const t of tiles) {
+      g.lineWidth = widthOf(t);
+      g.strokeStyle = styleOf(t);
+      hedgePath(g, t.x, t.y, t.n, t.s, t.w, t.e, odx, ody);
+      g.stroke();
+    }
+  };
+  // base AO: subtle all-around ground darkening at the hedge's foot
+  pass((t) => t.width * 1.3, () => `rgba(8,10,7,${AO_ALPHA * 0.6})`, 0, 0);
+  // soft two-layer SE cast shadow
+  pass((t) => t.width * 1.15, () => `rgba(10,14,8,${SHADOW_SOFT_ALPHA})`, sdx * 1.6, sdy * 1.6);
+  pass((t) => t.width * 1.1, () => `rgba(10,14,8,${SHADOW_ALPHA})`, sdx, sdy);
+  // hedge mass — yellower, denser green than woods
+  pass((t) => t.width, (t) => shade(HEDGE_GREEN, 0.82 + macro(t.x, t.y) * 0.3), 0, 0);
+  // NW rim catching the sun
+  pass((t) => t.width * 0.3, (t) => `rgba(190,215,150,${0.1 + coarse(t.x, t.y) * 0.12})`, -sdx * 0.3, -sdy * 0.3);
+  // foliage dabs: the per-tile lumpiness the old hash width/shade jitter gave,
+  // without the boundary steps — small blobs never cross a tile seam visibly
+  for (const t of tiles) {
+    for (let i = 0; i < 3; i++) {
+      const dx = t.x + 0.28 + hash(t.x, t.y, 54 + i) * 0.44;
+      const dy = t.y + 0.28 + hash(t.x, t.y, 57 + i) * 0.44;
+      g.fillStyle = hash(t.x, t.y, 60 + i) > 0.5 ? shade(HEDGE_GREEN, 0.64) : shade(HEDGE_GREEN, 1.22);
+      g.beginPath();
+      g.arc(dx, dy, 0.06 + hash(t.x, t.y, 63 + i) * 0.08, 0, Math.PI * 2);
+      g.fill();
+    }
+  }
+}
+
 function drawTileBase(g: Ctx, map: GameMap, x: number, y: number): void {
   const t = map.terrainKeyAt(x, y);
   const v = 0.93 + coarse(x, y) * 0.1 + hash(x, y) * 0.04;
@@ -175,39 +221,12 @@ function drawTileBase(g: Ctx, map: GameMap, x: number, y: number): void {
       g.fill();
     }
   } else if (t === 'hedge') {
-    const isHedge = (tx: number, ty: number) => map.inBounds(tx, ty) && map.terrainKeyAt(tx, ty) === 'hedge';
-    const n = isHedge(x, y - 1);
-    const s = isHedge(x, y + 1);
-    const w = isHedge(x - 1, y);
-    const e = isHedge(x + 1, y);
+    // ground under the hedge only — the capsule strokes are drawn by
+    // drawHedgeRun in whole-run passes (per-tile stroke stacks let a tile's
+    // dark AO/shadow overpaint the neighbor's green mass, which is what read
+    // as per-tile capsule segmentation at 24 px/m)
     g.fillStyle = shade(WOODS_GROUND, v * 0.88);
     g.fillRect(x, y, 1, 1);
-    const width = 0.58 + hash(x, y, 51) * 0.3;
-    const [sdx, sdy] = shadowOffset(0.4);
-    // base AO: subtle all-around ground darkening at the hedge's foot
-    g.lineWidth = width * 1.3;
-    g.strokeStyle = `rgba(8,10,7,${AO_ALPHA * 0.6})`;
-    hedgePath(g, x, y, n, s, w, e, 0, 0);
-    g.stroke();
-    // soft two-layer SE cast shadow
-    g.lineWidth = width * 1.15;
-    g.strokeStyle = `rgba(10,14,8,${SHADOW_SOFT_ALPHA})`;
-    hedgePath(g, x, y, n, s, w, e, sdx * 1.6, sdy * 1.6);
-    g.stroke();
-    g.lineWidth = width * 1.1;
-    g.strokeStyle = `rgba(10,14,8,${SHADOW_ALPHA})`;
-    hedgePath(g, x, y, n, s, w, e, sdx, sdy);
-    g.stroke();
-    // hedge mass — yellower, denser green than woods
-    g.lineWidth = width;
-    g.strokeStyle = shade(HEDGE_GREEN, 0.82 + hash(x, y, 52) * 0.3);
-    hedgePath(g, x, y, n, s, w, e, 0, 0);
-    g.stroke();
-    // NW rim catching the sun
-    g.lineWidth = width * 0.3;
-    g.strokeStyle = `rgba(190,215,150,${0.1 + hash(x, y, 53) * 0.12})`;
-    hedgePath(g, x, y, n, s, w, e, -sdx * 0.3, -sdy * 0.3);
-    g.stroke();
   } else if (t === 'field') {
     const bx = x >> 3; // 8m parcel block — furrow geometry only, color stays smooth
     const by = y >> 3;
@@ -345,6 +364,7 @@ export class TerrainLayer {
     for (let y = ty0; y < ty1; y++) {
       for (let x = tx0; x < tx1; x++) drawTileBase(g, this.map, x, y);
     }
+    drawHedgeRun(g, this.map, tx0, ty0, tx1, ty1);
     for (let y = ty0; y < ty1; y++) {
       for (let x = tx0; x < tx1; x++) {
         if (this.map.terrainKeyAt(x, y) === 'woods') drawTree(g, this.map, x, y);
