@@ -2072,7 +2072,7 @@ export class Sim {
 
     // broken men flee away from the nearest enemy — breaking is the one way
     // out of a melee lock: he drops his guard and runs (and can be run down)
-    if (s.mental === 'broken') {
+    if (s.mental === 'broken' && !s.captured) {
       s.targetId = -1;
       s.meleeId = -1;
       if (s.task) this.dropTask(s);
