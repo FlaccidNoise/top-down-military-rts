@@ -7,7 +7,7 @@ import { WEAPONS } from './sim/data';
 import type { OrderKind, TeamOrder } from './sim/orders';
 import { DT, type Sim, type Soldier } from './sim/sim';
 import { applyEngagementOutcome, makeStrategicBattle, newFront, syncStrengths } from './strategic/bridge';
-import { operationStatus, type Engagement, type Front } from './strategic/front';
+import { operationStatus, REINFORCE_CYCLE_DAYS, REINFORCE_PER_COMPANY, type Engagement, type Front } from './strategic/front';
 import { loadGame, saveGame } from './strategic/save';
 import { makeDefaultSector } from './strategic/sector';
 import { emplacementOf, Hud, infantrySquads } from './ui/hud';
@@ -467,7 +467,10 @@ function frame(now: number): void {
         const e = front.step();
         if (front.day > prevDay) {
           advanceDays(campaign, front.day - prevDay);
-          fillReplacements(campaign, front.day * 31 + 7);
+          if (front.day % REINFORCE_CYCLE_DAYS === 0) {
+            const arrived = fillReplacements(campaign, front.day * 31 + 7, REINFORCE_PER_COMPANY);
+            if (arrived > 0) stratView.flash(`+${arrived} replacements arrived`);
+          }
           syncStrengths(campaign, front);
           prevDay = front.day;
           saveGame(campaign, front);
