@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { EDGE, GameMap } from '../src/sim/map';
-import { dangerScore } from '../src/sim/orders';
-import { Sim, sightBetween } from '../src/sim/sim';
+import { dangerScore, visibleEnemies } from '../src/sim/orders';
+import { Sim, sightBetween, sightToSoldier } from '../src/sim/sim';
 
 describe('order vocabulary: move/fast/sneak executor', () => {
   it('a steady team in a quiet map complies and paths directly (no bounding)', () => {
@@ -99,6 +99,31 @@ describe('order vocabulary: move/fast/sneak executor', () => {
     expect(sim.soldiers[0].targetId).toBe(-1);
     expect(sim.soldiers[1].targetId).toBe(-1);
     expect(sim.takeEvents().length).toBe(0);
+  });
+
+  it('a sneaking team behind a hedgerow is unseen beyond 20m, spotted inside it', () => {
+    const m = new GameMap(80, 20);
+    for (let y = 0; y < 20; y++) m.setTerrain(30, y, 'hedge');
+    const sim = new Sim(m, 9);
+    sim.addSquad('blue', 'sneaker', [{ name: 'A', weapon: 'garand', x: 32.5, y: 10.5 }]);
+    sim.addSquad('blue', 'walker', [{ name: 'B', weapon: 'garand', x: 32.5, y: 12.5 }]);
+    sim.addSquad('red', 'mg', [{ name: 'R1', weapon: 'mg42', x: 5.5, y: 10.5 }]);
+    sim.orderTeam(0, { kind: 'sneak', x: 50, y: 10 });
+    expect(sim.teams[0].orderState.order?.kind).toBe('sneak'); // guard: order not downgraded/balked
+
+    const [sneaker, walker, mg] = [sim.soldiers[0], sim.soldiers[1], sim.soldiers[2]];
+    // 27m through one hedge (conceal 0.5): the sneaker is unseen, the orderless control isn't
+    expect(sightToSoldier(sim, mg.x, mg.y, sneaker).visible).toBe(false);
+    expect(sightToSoldier(sim, mg.x, mg.y, walker).visible).toBe(true);
+    const seen = visibleEnemies(sim, 'red');
+    expect(seen).not.toContain(sneaker);
+    expect(seen).toContain(walker);
+    // the preview says why, not just that
+    const p = sim.shotPreview(mg.x, mg.y, 'mg42', sneaker, false, 1);
+    expect(p.visible).toBe(false);
+    expect(p.concealed).toBe(true);
+    // inside 20m the same concealment no longer hides him
+    expect(sightToSoldier(sim, 28.5, 10.5, sneaker).visible).toBe(true);
   });
 
   it('a sneaking mover is hit as accurately as a stationary target (negates the mover discount)', () => {

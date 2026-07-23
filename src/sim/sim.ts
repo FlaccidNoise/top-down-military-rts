@@ -230,6 +230,7 @@ export interface ShotPreview {
   dist: number;
   cover: number; // effective cover incl. pinned/downed hug-the-ground bonus
   acc: number;
+  concealed?: boolean; // invisible because sneaking behind concealment, not because LOS is blocked
 }
 
 export interface ApShotPreview {
@@ -320,9 +321,30 @@ export function sightBetween(sim: Sim, x0: number, y0: number, x1: number, y1: n
   for (const p of sim.smoke) {
     if (distToSegment(p.x, p.y, x0, y0, x1, y1) <= 1.5) opacity += 0.5;
   }
-  if (opacity >= 1) return { visible: false, cover: 0 };
-  if (opacity > 0) return { visible: true, cover: Math.min(0.95, base.cover + opacity * 0.4) };
+  if (opacity >= 1) return { visible: false, cover: 0, conceal: 1 };
+  if (opacity > 0) {
+    return { visible: true, cover: Math.min(0.95, base.cover + opacity * 0.4), conceal: Math.min(1, base.conceal + opacity) };
+  }
   return base;
+}
+
+// Sight to a soldier: sightBetween plus the spotting rule that completes the
+// sneak order — a sneaking target with >= 0.5 accumulated concealment (one
+// hedge, two woods tiles, or a smoke puff on the ray) is unseen beyond 20m.
+// Deterministic, no RNG. Every soldier-target sense (acquire, live fire,
+// ambush trigger, honest vision) routes through this; sight to a map point
+// stays on sightBetween.
+export function sightToSoldier(sim: Sim, x0: number, y0: number, t: Soldier): LosResult {
+  const sight = sightBetween(sim, x0, y0, t.x, t.y);
+  if (
+    sight.visible &&
+    sight.conceal >= 0.5 &&
+    sim.teams[t.teamId].orderState.order?.kind === 'sneak' &&
+    Math.hypot(t.x - x0, t.y - y0) > 20
+  ) {
+    return { visible: false, cover: 0, conceal: sight.conceal, concealed: true };
+  }
+  return sight;
 }
 
 export class Sim {
@@ -1223,7 +1245,7 @@ export class Sim {
         if (!e.alive || e.downed || e.side !== enemySide) continue;
         if (order.arc && !this.inArc(s.x, s.y, e.x, e.y, order.arc)) continue;
         const d = Math.hypot(e.x - s.x, e.y - s.y);
-        if (d <= thresh && sightBetween(this, s.x, s.y, e.x, e.y).visible) {
+        if (d <= thresh && sightToSoldier(this, s.x, s.y, e).visible) {
           triggered = true;
           break outer;
         }
@@ -1557,7 +1579,7 @@ export class Sim {
       return;
     }
     if (t) {
-      if (!sightBetween(this, v.x, v.y, t.x, t.y).visible) {
+      if (!sightToSoldier(this, v.x, v.y, t).visible) {
         v.targetSoldierId = -1;
         return;
       }
@@ -1618,7 +1640,7 @@ export class Sim {
     for (const c of candidates) {
       const e = this.soldiers[c.id];
       if (arc && !this.inArc(x, y, e.x, e.y, arc)) continue;
-      if (sightBetween(this, x, y, e.x, e.y).visible) return c.id;
+      if (sightToSoldier(this, x, y, e).visible) return c.id;
     }
     return -1;
   }
@@ -1679,12 +1701,12 @@ export class Sim {
   // The exact accuracy math live fire uses, exposed for hit-chance previews —
   // the UI must never re-derive (and drift from) this formula.
   shotPreview(fx: number, fy: number, weapon: WeaponKey, t: Soldier, shooterMoving: boolean, aim: number): ShotPreview {
-    const sight = sightBetween(this, fx, fy, t.x, t.y);
+    const sight = sightToSoldier(this, fx, fy, t);
     const d = Math.hypot(t.x - fx, t.y - fy);
-    if (!sight.visible) return { visible: false, dist: d, cover: 0, acc: 0 };
+    if (!sight.visible) return { visible: false, dist: d, cover: 0, acc: 0, concealed: sight.concealed };
     const w = WEAPONS[weapon];
     let cover = sight.cover;
-    if (t.mental === 'pinned' || t.downed) cover = Math.min(0.9, cover + 0.3);
+    if (t.mental === 'pinned' || t.downed) cover = Math.max(cover, Math.min(0.9, cover + 0.3));
     let acc = w.accuracy * (1 - 0.75 * (d / w.range)) * (1 - cover) * aim;
     if (shooterMoving) acc *= 0.5;
     // Movers are harder to hit — except a sneaking target: once spotted, a
@@ -2401,11 +2423,25 @@ export class Sim {
     if (best) best.role = 'leader';
   }
 
+  // Public: omnidirectional summary of the cover available at a spot — the
+  // tile's own cover or an adjacent hedgerow bank to hug. Shared by AI
+  // cover-seeking, danger scoring, and the UI's move-preview dot colors.
+  coverAt(x: number, y: number): number {
+    const tx = Math.floor(x);
+    const ty = Math.floor(y);
+    return Math.max(
+      this.map.terrainAt(tx, ty).cover,
+      this.map.terrainAt(tx + 1, ty).coverBehind ?? 0,
+      this.map.terrainAt(tx - 1, ty).coverBehind ?? 0,
+      this.map.terrainAt(tx, ty + 1).coverBehind ?? 0,
+      this.map.terrainAt(tx, ty - 1).coverBehind ?? 0,
+    );
+  }
+
   // Public: the same cover predicate AI cover-seeking uses drives the UI's
   // move-preview dot colors — one definition of "in cover".
   inCover(x: number, y: number): boolean {
-    const t = this.map.terrainAt(Math.floor(x), Math.floor(y));
-    return t.cover > 0.2 || this.map.terrainKeyAt(Math.floor(x), Math.floor(y)) === 'floor';
+    return this.coverAt(x, y) > 0.2 || this.map.terrainKeyAt(Math.floor(x), Math.floor(y)) === 'floor';
   }
 
   private findCoverSpot(s: Soldier): { x: number; y: number } | null {
@@ -2463,7 +2499,7 @@ export class Sim {
   }
 
   private fire(s: Soldier, t: Soldier): void {
-    if (!sightBetween(this, s.x, s.y, t.x, t.y).visible) {
+    if (!sightToSoldier(this, s.x, s.y, t).visible) {
       s.targetId = -1;
       return;
     }

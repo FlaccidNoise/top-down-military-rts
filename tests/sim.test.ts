@@ -38,6 +38,53 @@ describe('line of sight', () => {
   });
 });
 
+describe('hedgerow cover and concealment', () => {
+  // vertical hedge line at x=10
+  const hedgeMap = () => {
+    const m = new GameMap(20, 5);
+    for (let y = 0; y < 5; y++) m.setTerrain(10, y, 'hedge');
+    return m;
+  };
+
+  it('a shot crossing a hedge within 2m of the target grants lip cover (0.5)', () => {
+    const r = los(hedgeMap(), 2.5, 2.5, 11.5, 2.5);
+    expect(r.visible).toBe(true);
+    expect(r.cover).toBeCloseTo(0.5, 10);
+  });
+
+  it('lip cover is directional — no cover from the hedgeless side', () => {
+    const r = los(hedgeMap(), 18.5, 2.5, 11.5, 2.5);
+    expect(r.visible).toBe(true);
+    expect(r.cover).toBe(0);
+    expect(r.conceal).toBe(0);
+  });
+
+  it('standing in the hedge itself keeps the tile cover (0.35)', () => {
+    expect(los(hedgeMap(), 2.5, 2.5, 10.5, 2.5).cover).toBeCloseTo(0.35, 10);
+  });
+
+  it('a hedge crossed far from the target conceals but grants no cover', () => {
+    const r = los(hedgeMap(), 2.5, 2.5, 15.5, 2.5);
+    expect(r.visible).toBe(true);
+    expect(r.cover).toBe(0);
+    expect(r.conceal).toBeCloseTo(0.5, 10);
+  });
+
+  it('two hedges still block sight', () => {
+    const m = hedgeMap();
+    for (let y = 0; y < 5; y++) m.setTerrain(13, y, 'hedge');
+    expect(los(m, 2.5, 2.5, 16.5, 2.5).visible).toBe(false);
+  });
+
+  it('coverAt/inCover treat hedge-adjacent tiles as cover to hug', () => {
+    const sim = new Sim(hedgeMap(), 1);
+    expect(sim.coverAt(11.5, 2.5)).toBeCloseTo(0.5, 10);
+    expect(sim.inCover(11.5, 2.5)).toBe(true);
+    expect(sim.coverAt(2.5, 2.5)).toBe(0);
+    expect(sim.inCover(2.5, 2.5)).toBe(false);
+  });
+});
+
 describe('pathfinding', () => {
   it('routes through the door, not through walls or windows', () => {
     const plan = generateMap(1);

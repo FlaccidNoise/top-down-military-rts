@@ -1,5 +1,5 @@
 import { WEAPONS, type WeaponDef } from './data';
-import { sightBetween, type Side, type Sim, type Soldier, type Team } from './sim';
+import { sightBetween, sightToSoldier, type Side, type Sim, type Soldier, type Team } from './sim';
 
 // The order vocabulary (spec: docs/specs/2026-07-22-order-execution.md). One
 // order per team; the executor in sim.ts decomposes it into per-soldier tasks.
@@ -36,7 +36,7 @@ export function visibleEnemies(sim: Sim, side: Side): Soldier[] {
   const seen: Soldier[] = [];
   for (const e of enemies) {
     for (const f of friendlies) {
-      if (Math.hypot(f.x - e.x, f.y - e.y) <= WEAPONS[f.weapon].range && sightBetween(sim, f.x, f.y, e.x, e.y).visible) {
+      if (Math.hypot(f.x - e.x, f.y - e.y) <= WEAPONS[f.weapon].range && sightToSoldier(sim, f.x, f.y, e).visible) {
         seen.push(e);
         break;
       }
@@ -69,7 +69,7 @@ export function dangerSamples(sim: Sim, team: Team, dest: { x: number; y: number
     const px = cx + (dest.x - cx) * t;
     const py = cy + (dest.y - cy) * t;
     let point = 0;
-    if (sim.map.terrainAt(Math.floor(px), Math.floor(py)).cover < 0.1) point += 0.05;
+    if (sim.coverAt(px, py) < 0.1) point += 0.05;
     for (const e of known) {
       const w = WEAPONS[e.weapon];
       if (Math.hypot(e.x - px, e.y - py) <= w.range && sightBetween(sim, e.x, e.y, px, py).visible) {
