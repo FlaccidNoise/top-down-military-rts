@@ -3,6 +3,7 @@ import { RedCommander } from '../sim/ai';
 import { SQUADS, TEAMS, type SquadKey } from '../sim/data';
 import type { GameMap } from '../sim/map';
 import { generateMap, type Building, type Vec } from '../sim/mapgen';
+import { mulberry32, type Rng } from '../sim/rng';
 import { wireBonds } from '../sim/scenario';
 import { Sim, type MemberInit } from '../sim/sim';
 import { COMPANY_TOE, squadHeadcount } from '../sim/toe';
@@ -120,6 +121,7 @@ function assignSectorAnchors(sorted: Vec[], keys: SquadKey[]): Vec[] {
 
 // M-A: every engagement fights on a fresh procgen battle map, at the design
 // scale of a full company (18 blue squads, TO&E garrison strength red).
+// Supports both blue-attacker and red-attacker (counterattack) engagements.
 export function makeStrategicBattle(
   c: Campaign,
   front: Front,
@@ -128,63 +130,86 @@ export function makeStrategicBattle(
 ): { sim: Sim; commander: RedCommander; name: string; companyIndex: number } {
   const attacker = front.chits.find((ch) => ch.id === e.attackerId)!;
   const defender = front.chits.find((ch) => ch.id === e.defenderId)!;
-  // Ford assault: the attacker halted on a river cell, so it is crossing under
-  // fire — fight on the river archetype (wide water band between blue and the
-  // garrison) whatever the contested cell's own terrain, and blue comes out of
-  // the water suppressed and fatigued. Bridges stay the cheap crossing.
+  const attackerSide = attacker.side;
   const viaFord = front.sector.cells[attacker.cell].terrain === 'river';
   const plan = generateMap(seed, 320, 240, viaFord ? 'river' : front.sector.cells[e.cell].terrain);
   const sim = new Sim(plan.map, seed);
   sim.buildings = plan.buildings;
 
   const { west } = plan.spawns;
-  const company = c.companies[attacker.companyIndex];
-  const rosters: RosterEntry[][] = [];
   const yLo = 4;
   const yHi = plan.map.h - 5;
-  const bandH = (yHi - yLo) / 6;
-  company.squads.forEach((si, i) => {
-    const teamRosters = fitRoster(c, si);
-    if (teamRosters.every((t) => t.length === 0)) return;
-    let band = 0;
-    while (i >= BAND_START[band + 1]) band++;
-    const idx = i - BAND_START[band];
-    const count = BAND_START[band + 1] - BAND_START[band];
-    const support = band === 3 || band === 4; // mortars/MGs/bazookas set up rear
-    const anchor = nudgePassable(plan.map, support ? west.x + 3 : west.x + 7, yLo + bandH * (band + (idx + 0.5) / count));
-    const roster: Partial<MemberInit>[][] = teamRosters.map((team) =>
-      team.map((r) => ({
-        name: r.name,
-        x: anchor.x + sim.rng.range(-2, 2),
-        y: anchor.y + sim.rng.range(-3, 3),
-        courage: r.courage,
-        xp: r.xp,
-        bodyDamage: r.bodyDamage,
-        pid: r.pid,
-        crewSkill: r.crewSkill,
-      })),
-    );
-    const squad = sim.addSquadFromDef('blue', c.squads[si].def, anchor.x, anchor.y, roster);
-    squad.name = c.squads[si].name;
-    rosters.push(teamRosters.flat());
-  });
-  wireBonds(sim, rosters);
+  const commanderPosts: Record<number, Vec> = {};
 
-  if (viaFord) {
-    for (const s of sim.soldiers) {
-      if (s.side !== 'blue') continue;
-      s.suppression = Math.max(s.suppression, FORD_SUPPRESSION);
-      s.stamina = Math.min(s.stamina, FORD_STAMINA);
+  // --- Field attacker ---
+  if (attackerSide === 'blue') {
+    const company = c.companies[attacker.companyIndex];
+    const rosters: RosterEntry[][] = [];
+    const bandH = (yHi - yLo) / 6;
+    company.squads.forEach((si, i) => {
+      const teamRosters = fitRoster(c, si);
+      if (teamRosters.every((t) => t.length === 0)) return;
+      let band = 0;
+      while (i >= BAND_START[band + 1]) band++;
+      const idx = i - BAND_START[band];
+      const count = BAND_START[band + 1] - BAND_START[band];
+      const support = band === 3 || band === 4; // mortars/MGs/bazookas set up rear
+      const anchor = nudgePassable(plan.map, support ? west.x + 3 : west.x + 7, yLo + bandH * (band + (idx + 0.5) / count));
+      const roster: Partial<MemberInit>[][] = teamRosters.map((team) =>
+        team.map((r) => ({
+          name: r.name,
+          x: anchor.x + sim.rng.range(-2, 2),
+          y: anchor.y + sim.rng.range(-3, 3),
+          courage: r.courage,
+          xp: r.xp,
+          bodyDamage: r.bodyDamage,
+          pid: r.pid,
+          crewSkill: r.crewSkill,
+        })),
+      );
+      const squad = sim.addSquadFromDef('blue', c.squads[si].def, anchor.x, anchor.y, roster);
+      squad.name = c.squads[si].name;
+      rosters.push(teamRosters.flat());
+    });
+    wireBonds(sim, rosters);
+
+    if (viaFord) {
+      for (const s of sim.soldiers) {
+        if (s.side !== 'blue') continue;
+        s.suppression = Math.max(s.suppression, FORD_SUPPRESSION);
+        s.stamina = Math.min(s.stamina, FORD_STAMINA);
+      }
+    }
+  } else {
+    // --- Red attacker: field from TO&E de_grenadier_co at west spawn ---
+    const atkFielded: { key: SquadKey; take: number }[] = [];
+    let atkRemaining = attacker.strength;
+    for (const key of COMPANY_TOE.de_grenadier_co) {
+      if (atkRemaining <= 0) break;
+      const take = Math.min(squadHeadcount(key), atkRemaining);
+      atkFielded.push({ key, take });
+      atkRemaining -= take;
+    }
+    const yBandH = atkFielded.length > 0 ? (yHi - yLo) / atkFielded.length : yHi - yLo;
+    atkFielded.forEach(({ key, take }, i) => {
+      const anchor = nudgePassable(plan.map, west.x + 7, yLo + yBandH * (i + 0.5));
+      const roster = take === squadHeadcount(key) ? undefined : partialRoster(key, take);
+      const squad = sim.addSquadFromDef('red', key, anchor.x, anchor.y, roster);
+      const nearestObj = plan.objectives.reduce((best, o) => distSq(anchor, o) < distSq(anchor, best) ? o : best, plan.objectives[0]);
+      commanderPosts[squad.id] = nearestObj;
+      squad.name = `${i + 1}. ${SQUADS[key].name}`;
+    });
+
+    if (viaFord) {
+      for (const s of sim.soldiers) {
+        if (s.side !== 'red') continue;
+        s.suppression = Math.max(s.suppression, FORD_SUPPRESSION);
+        s.stamina = Math.min(s.stamina, FORD_STAMINA);
+      }
     }
   }
 
-  // German garrison: buildings, objectives, and woods stands near an objective
-  // are posts, split into 2-3 sectors by nearest objective; squads go to the
-  // least-covered sector first, then onto that sector's anchors. Anchors
-  // farther than GARRISON_RADIUS from every objective are excluded — a
-  // garrison defends its objectives, not every copse on the map. Dispersing
-  // remnants across the full 320x240 map left battles unresolvable (blue
-  // never finds the last defenders, the attrition floor never trips).
+  // --- Compute garrison anchors (same for both sides) ---
   const anchors: Vec[] = [...plan.buildings.map(buildingCenter), ...plan.objectives, ...plan.woodsStands];
   const sectorAnchors: Vec[][] = plan.objectives.map(() => []);
   for (const a of anchors) {
@@ -204,60 +229,123 @@ export function makeStrategicBattle(
   const weight = sectorAnchors.map((s) => s.length / totalAnchors);
   const sortedSectorAnchors = sectorAnchors.map((list) => [...list].sort((a, b) => distSq(a, west) - distSq(b, west)));
 
-  // Field exactly defender.strength men: TO&E squads in order, the last one
-  // partial if the strength doesn't land on a squad boundary.
-  const fielded: { key: SquadKey; take: number }[] = [];
-  let remaining = defender.strength;
-  for (const key of COMPANY_TOE.de_grenadier_co) {
-    if (remaining <= 0) break;
-    const take = Math.min(squadHeadcount(key), remaining);
-    fielded.push({ key, take });
-    remaining -= take;
-  }
-  const assignedHeadcount = sectorAnchors.map(() => 0);
-  const sectorOfSquad = fielded.map(({ take }) => {
-    let best = 0;
-    let bestScore = Infinity;
-    weight.forEach((w, sIdx) => {
-      const score = assignedHeadcount[sIdx] / w;
-      if (score < bestScore) {
-        bestScore = score;
-        best = sIdx;
-      }
+  // --- Field defender ---
+  if (attackerSide === 'blue') {
+    // Field exactly defender.strength men: TO&E squads in order, the last one
+    // partial if the strength doesn't land on a squad boundary.
+    const fielded: { key: SquadKey; take: number }[] = [];
+    let remaining = defender.strength;
+    for (const key of COMPANY_TOE.de_grenadier_co) {
+      if (remaining <= 0) break;
+      const take = Math.min(squadHeadcount(key), remaining);
+      fielded.push({ key, take });
+      remaining -= take;
+    }
+    const assignedHeadcount = sectorAnchors.map(() => 0);
+    const sectorOfSquad = fielded.map(({ take }) => {
+      let best = 0;
+      let bestScore = Infinity;
+      weight.forEach((w, sIdx) => {
+        const score = assignedHeadcount[sIdx] / w;
+        if (score < bestScore) {
+          bestScore = score;
+          best = sIdx;
+        }
+      });
+      assignedHeadcount[best] += take;
+      return best;
     });
-    assignedHeadcount[best] += take;
-    return best;
-  });
 
-  const anchorForSquad: Vec[] = new Array(fielded.length);
-  sectorAnchors.forEach((_, sIdx) => {
-    const idxs = sectorOfSquad.map((s, idx) => (s === sIdx ? idx : -1)).filter((idx) => idx >= 0);
-    const picks = assignSectorAnchors(
-      sortedSectorAnchors[sIdx],
-      idxs.map((idx) => fielded[idx].key),
-    );
-    idxs.forEach((idx, k) => (anchorForSquad[idx] = picks[k]));
-  });
+    const anchorForSquad: Vec[] = new Array(fielded.length);
+    sectorAnchors.forEach((_, sIdx) => {
+      const idxs = sectorOfSquad.map((s, idx) => (s === sIdx ? idx : -1)).filter((idx) => idx >= 0);
+      const picks = assignSectorAnchors(
+        sortedSectorAnchors[sIdx],
+        idxs.map((idx) => fielded[idx].key),
+      );
+      idxs.forEach((idx, k) => (anchorForSquad[idx] = picks[k]));
+    });
 
-  const posts: Record<number, Vec> = {};
-  fielded.forEach(({ key, take }, i) => {
-    const anchor = anchorForSquad[i];
-    const roster = take === squadHeadcount(key) ? undefined : partialRoster(key, take);
-    const squad = sim.addSquadFromDef('red', key, anchor.x, anchor.y, roster);
-    posts[squad.id] = anchor;
-    squad.name = `${i + 1}. ${SQUADS[key].name}`;
-  });
+    fielded.forEach(({ key, take }, i) => {
+      const anchor = anchorForSquad[i];
+      const roster = take === squadHeadcount(key) ? undefined : partialRoster(key, take);
+      const squad = sim.addSquadFromDef('red', key, anchor.x, anchor.y, roster);
+      commanderPosts[squad.id] = anchor;
+      squad.name = `${i + 1}. ${SQUADS[key].name}`;
+    });
+  } else {
+    // --- Blue defender: field from campaign roster at objective anchors ---
+    const defCompany = c.companies[defender.companyIndex];
+    const defKeys: SquadKey[] = [];
+    const defSquadIdxs: number[] = [];
+    defCompany.squads.forEach((si) => {
+      const teamRosters = fitRoster(c, si);
+      if (teamRosters.every((t) => t.length === 0)) return;
+      defKeys.push(c.squads[si].def);
+      defSquadIdxs.push(si);
+    });
+
+    const assignedHeadcount = sectorAnchors.map(() => 0);
+    const sectorOfSquad = defKeys.map((key) => {
+      let best = 0;
+      let bestScore = Infinity;
+      const hc = squadHeadcount(key);
+      weight.forEach((w, sIdx) => {
+        const score = assignedHeadcount[sIdx] / w;
+        if (score < bestScore) {
+          bestScore = score;
+          best = sIdx;
+        }
+      });
+      assignedHeadcount[best] += hc;
+      return best;
+    });
+
+    const anchorForSquad: Vec[] = new Array(defKeys.length);
+    const defRosters: RosterEntry[][] = [];
+    sectorAnchors.forEach((_, sIdx) => {
+      const idxs = sectorOfSquad.map((s, idx) => (s === sIdx ? idx : -1)).filter((idx) => idx >= 0);
+      const picks = assignSectorAnchors(
+        sortedSectorAnchors[sIdx],
+        idxs.map((idx) => defKeys[idx]),
+      );
+      idxs.forEach((idx, k) => (anchorForSquad[idx] = picks[k]));
+    });
+
+    defKeys.forEach((key, i) => {
+      const si = defSquadIdxs[i];
+      const teamRosters = fitRoster(c, si);
+      const anchor = anchorForSquad[i];
+      const roster: Partial<MemberInit>[][] = teamRosters.map((team) =>
+        team.map((r) => ({
+          name: r.name,
+          x: anchor.x + sim.rng.range(-2, 2),
+          y: anchor.y + sim.rng.range(-3, 3),
+          courage: r.courage,
+          xp: r.xp,
+          bodyDamage: r.bodyDamage,
+          pid: r.pid,
+          crewSkill: r.crewSkill,
+        })),
+      );
+      const squad = sim.addSquadFromDef('blue', c.squads[si].def, anchor.x, anchor.y, roster);
+      squad.name = c.squads[si].name;
+      defRosters.push(teamRosters.flat());
+    });
+    wireBonds(sim, defRosters);
+  }
 
   const { x, y } = cellXY(front.sector, e.cell);
+  const stance = attackerSide === 'red' ? 'attack' : 'defend';
   return {
     sim,
-    commander: new RedCommander({ stance: 'defend', posts }),
+    commander: new RedCommander({ stance, posts: commanderPosts }),
     name: `${defender.name} at (${x}, ${y})`,
     companyIndex: attacker.companyIndex,
   };
 }
 
-function retreat(front: Front, chit: Chit): void {
+export function retreat(front: Front, chit: Chit): void {
   const { x, y } = cellXY(front.sector, chit.cell);
   for (const [dx, dy] of [
     [1, 0],
@@ -283,22 +371,102 @@ export function applyEngagementOutcome(
   front: Front,
   e: Engagement,
   sim: Sim,
-): { record: BattleRecord; redLosses: number; cellTaken: boolean } {
-  const won = sim.winner === 'blue';
-  const record = applyBattleResults(c, sim, won);
+): { record: BattleRecord; redLosses: number; attackerLosses: number; cellTaken: boolean } {
   const attacker = front.chits.find((ch) => ch.id === e.attackerId)!;
   const defender = front.chits.find((ch) => ch.id === e.defenderId)!;
+  const won = sim.winner === attacker.side;
+  const record = applyBattleResults(c, sim, won);
   const redLosses = sim.soldiers.filter((s) => s.side === 'red' && (!s.alive || s.downed)).length;
+  const attackerLosses = sim.soldiers.filter((s) => s.side === attacker.side && (!s.alive || s.downed)).length;
   defender.strength = Math.max(0, defender.strength - redLosses);
   let cellTaken = false;
   if (won) {
     if (defender.strength > 0) retreat(front, defender);
-    front.sector.cells[e.cell].owner = 'blue';
+    front.sector.cells[e.cell].owner = attacker.side;
     attacker.cell = e.cell;
     cellTaken = true;
   } else if (front.sector.cells[attacker.cell].terrain === 'river') {
-    retreat(front, attacker); // a beaten ford assault falls back off the water — rivers are transit, never a resting cell
+    retreat(front, attacker);
   }
   syncStrengths(c, front);
-  return { record, redLosses, cellTaken };
+  return { record, redLosses, attackerLosses, cellTaken };
+}
+
+// Resolve an engagement without running a Sim — coarse Lanchester-style
+// resolution for AI-vs-AI battles.
+export function resolveCoarse(
+  c: Campaign,
+  front: Front,
+  e: Engagement,
+): { record: BattleRecord; attackerLosses: number; defenderLosses: number } {
+  const attacker = front.chits.find((ch) => ch.id === e.attackerId)!;
+  const defender = front.chits.find((ch) => ch.id === e.defenderId)!;
+  const seed = front.clockMin * 7919 + e.cell;
+  const rng = mulberry32(seed);
+
+  const defCell = front.sector.cells[e.cell];
+  const atkCell = front.sector.cells[attacker.cell];
+  let terrainMult = 1.0;
+  if (defCell.terrain === 'town') terrainMult *= 1.5;
+  if (defCell.terrain === 'woods') terrainMult *= 1.3;
+  if (atkCell.terrain === 'river') terrainMult *= 1.4;
+
+  const score = attacker.strength / (attacker.strength + defender.strength * terrainMult);
+  const clampedScore = Math.max(0.05, Math.min(0.95, score));
+  const attackerWins = rng.next() < clampedScore;
+
+  const loserStrength = attackerWins ? defender.strength : attacker.strength;
+  const winnerLosses = Math.max(0, Math.floor(loserStrength * (0.1 + rng.next() * 0.15)));
+  const loserLosses = Math.max(1, Math.floor(loserStrength * (0.4 + rng.next() * 0.3)));
+
+  const atkLosses = attackerWins ? winnerLosses : loserLosses;
+  const defLosses = attackerWins ? loserLosses : winnerLosses;
+  attacker.strength = Math.max(0, attacker.strength - atkLosses);
+  defender.strength = Math.max(0, defender.strength - defLosses);
+
+  const record: BattleRecord = { day: front.day, won: attackerWins === (attacker.side === 'blue'), kia: [], wounded: [] };
+  if (attacker.side === 'blue') {
+    applyCoarseBlueLosses(c, attacker, atkLosses, rng, record);
+  }
+  if (defender.side === 'blue') {
+    applyCoarseBlueLosses(c, defender, defLosses, rng, record);
+  }
+  c.log.push(record);
+
+  if (attackerWins) {
+    if (defender.strength > 0) retreat(front, defender);
+    front.sector.cells[e.cell].owner = attacker.side;
+    attacker.cell = e.cell;
+  } else if (front.sector.cells[attacker.cell].terrain === 'river') {
+    retreat(front, attacker);
+  }
+  syncStrengths(c, front);
+
+  return { record, attackerLosses: atkLosses, defenderLosses: defLosses };
+}
+
+function applyCoarseBlueLosses(c: Campaign, chit: Chit, lossCount: number, rng: Rng, record: BattleRecord): void {
+  if (chit.side !== 'blue' || lossCount <= 0) return;
+  const company = c.companies[chit.companyIndex];
+  const fitPids: number[] = [];
+  for (const si of company.squads) {
+    for (const pid of squadMembers(c.squads[si])) {
+      if (c.soldiers[pid].status === 'fit') fitPids.push(pid);
+    }
+  }
+  const toDraw = Math.min(lossCount, fitPids.length);
+  for (let i = 0; i < toDraw; i++) {
+    const j = i + rng.int(fitPids.length - i);
+    [fitPids[i], fitPids[j]] = [fitPids[j], fitPids[i]];
+    const pid = fitPids[i];
+    const cs = c.soldiers[pid];
+    if (rng.next() < 0.3) {
+      cs.status = 'kia';
+      record.kia.push(cs.name);
+    } else {
+      cs.status = 'recovering';
+      cs.recoveryDays = 1 + rng.int(3);
+      record.wounded.push(cs.name);
+    }
+  }
 }

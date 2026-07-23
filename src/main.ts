@@ -1,3 +1,4 @@
+import { cellXY } from './strategic/sector';
 import { advanceDays, fillReplacements, newCampaign, squadMembers, type Campaign } from './campaign/campaign';
 import { AudioEngine } from './render/audio';
 import { Camera } from './render/camera';
@@ -6,14 +7,18 @@ import { StrategicView, TERRAIN_LABELS } from './render/strategic';
 import type { RedCommander } from './sim/ai';
 import { WEAPONS } from './sim/data';
 import type { OrderKind, TeamOrder } from './sim/orders';
-import { DT, type Sim, type Soldier } from './sim/sim';
-import { applyEngagementOutcome, makeStrategicBattle, newFront, syncStrengths } from './strategic/bridge';
-import { operationStatus, REINFORCE_CYCLE_DAYS, REINFORCE_PER_COMPANY, type Engagement, type Front } from './strategic/front';
+import { DT, fanOffsets, SQUAD_FAN, type Side, type Sim, type Soldier } from './sim/sim';
+import { applyEngagementOutcome, makeStrategicBattle, newFront, resolveCoarse, syncStrengths } from './strategic/bridge';
+import { StrategicCommander, RED_DEFENDER, BLUE_ATTACKER } from './strategic/command';
+import { operationStatus, REINFORCE_CYCLE_DAYS, REINFORCE_PER_COMPANY, type Chit, type Engagement, type Front } from './strategic/front';
 import { loadGame, saveGame } from './strategic/save';
 import { makeDefaultSector } from './strategic/sector';
-import { emplacementOf, Hud, infantrySquads } from './ui/hud';
+import { emplacementOf, Hud, infantrySquads, type HudState } from './ui/hud';
+import { StratHud } from './ui/strat-hud';
 import { drawOverlays, EventPings } from './ui/overlays';
 import { computeShot, pickAt, Tooltip } from './ui/tooltip';
+import { actionForEvent, formatBinding, loadKeymap, type Keymap } from './ui/keymap';
+import { PauseMenu } from './ui/menu';
 import './ui/ui.css';
 
 const canvas = document.createElement('canvas');
@@ -42,6 +47,20 @@ if (loaded) {
   saveGame(campaign, front);
 }
 
+const aiParam = new URLSearchParams(location.search).get('ai'); // ?ai=red|blue|both
+const aiSides = new Set<Side>();
+if (aiParam === 'red') aiSides.add('red');
+else if (aiParam === 'blue') aiSides.add('blue');
+else if (aiParam === 'both') { aiSides.add('red'); aiSides.add('blue'); }
+
+const commanders: StrategicCommander[] = [];
+function buildCommanders() {
+  commanders.length = 0;
+  if (aiSides.has('red')) commanders.push(new StrategicCommander('red', RED_DEFENDER));
+  if (aiSides.has('blue')) commanders.push(new StrategicCommander('blue', BLUE_ATTACKER));
+}
+buildCommanders();
+
 const ORDER_KINDS: OrderKind[] = ['move', 'fast', 'sneak', 'fire', 'smoke', 'defend', 'ambush', 'assault'];
 
 let mode: 'strategic' | 'battle' = 'strategic';
@@ -68,7 +87,9 @@ const unlockAudio = () => audio.unlock();
 window.addEventListener('pointerdown', unlockAudio);
 window.addEventListener('keydown', unlockAudio);
 let paused = true;
-let selectedSquad = -1;
+let selectedSquads: number[] = [];
+// Primary = last element of selectedSquads. Kept for existing call sites.
+function getPrimary(): number { return selectedSquads.length > 0 ? selectedSquads[selectedSquads.length - 1] : -1; }
 let selectedTeam = -1; // -1 = whole squad; narrowed to one team within selectedSquad
 let selectedVehicle = -1;
 let lastTeamId = -1; // most recently selected team, survives a later vehicle selection (Mount reads this)
@@ -80,19 +101,30 @@ const mouse = { x: 0, y: 0, onCanvas: false };
 const pings = new EventPings();
 
 function selectSquad(id: number): void {
-  selectedSquad = id;
+  selectedSquads = id < 0 ? [] : [id];
   selectedTeam = -1;
   selectedVehicle = -1;
-  renderer.selectedVehicle = -1;
+  if (renderer) renderer.selectedVehicle = -1;
   armedOrder = null;
   if (id >= 0) lastTeamId = sim.squads[id].teamIds[0];
 }
 
+function toggleSquadSelection(id: number): void {
+  if (id < 0) return;
+  const idx = selectedSquads.indexOf(id);
+  if (idx >= 0) selectedSquads.splice(idx, 1);
+  else selectedSquads.push(id);
+  selectedTeam = -1;
+  selectedVehicle = -1;
+  if (renderer) renderer.selectedVehicle = -1;
+  armedOrder = null;
+}
+
 function selectVehicle(id: number): void {
   selectedVehicle = id;
-  selectedSquad = -1;
+  selectedSquads = [];
   selectedTeam = -1;
-  renderer.selectedVehicle = id;
+  if (renderer) renderer.selectedVehicle = id;
 }
 
 function setTargetMode(m: '' | 'barrage' | 'air' | 'wheel' | 'empfire' | 'empsmoke'): void {
@@ -103,7 +135,6 @@ function setTargetMode(m: '' | 'barrage' | 'air' | 'wheel' | 'empfire' | 'empsmo
 const urlSeed = new URLSearchParams(location.search).get('seed'); // debug: ?seed=N pins the map
 if (urlSeed !== null && !Number.isFinite(Number(urlSeed))) console.warn(`?seed=${urlSeed} is not a number; ignoring`);
 const fowOff = new URLSearchParams(location.search).get('fow') === '0'; // debug: ?fow=0 disables fog of war (render-only; never touches sim outcomes)
-
 const hud = new Hud({
   selectSquad,
   selectVehicle,
@@ -126,11 +157,11 @@ const hud = new Hud({
     armedOrder = armedOrder === kind ? null : kind;
   },
   deployEmplacement: () => {
-    const e = emplacementOf(sim, selectedSquad);
+    const e = emplacementOf(sim, getPrimary());
     if (e) sim.orderDeploy(e.id);
   },
   packEmplacement: () => {
-    const e = emplacementOf(sim, selectedSquad);
+    const e = emplacementOf(sim, getPrimary());
     if (e) sim.orderPack(e.id);
   },
   wheelEmplacement: () => setTargetMode(targetMode === 'wheel' ? '' : 'wheel'),
@@ -153,17 +184,51 @@ const hud = new Hud({
     if (e) sim.orderUnhitch(e.id);
   },
 });
+const stratHud = new StratHud();
 const tooltip = new Tooltip(hud.root);
+let pauseBeforeMenu: boolean | null = null;
+const menu = new PauseMenu({
+  onResume: () => {
+    if (pauseBeforeMenu === null) return;
+    if (mode === 'strategic') stratPaused = pauseBeforeMenu;
+    else paused = pauseBeforeMenu;
+    pauseBeforeMenu = null;
+  },
+  onKeymapChanged: (km: Keymap) => { hud.setKeymap(km); }
+});
+menu.setKeymap(loadKeymap(localStorage));
 
 function showContactModal(e: Engagement): void {
   const attacker = front.chits.find((c) => c.id === e.attackerId)!;
   const defender = front.chits.find((c) => c.id === e.defenderId)!;
   const cell = front.sector.cells[e.cell];
   const terrain = TERRAIN_LABELS[cell.terrain].toLowerCase();
+  const forceCol = (c: Chit): string => {
+    const cls = c.side === 'blue' ? 'us' : 'ge';
+    let str = `~${c.strength} men`;
+    let comp = 'enemy — composition unknown';
+    if (c.companyIndex >= 0) {
+      const squads = campaign.companies[c.companyIndex].squads.map((si) => campaign.squads[si]);
+      const fit = squads.flatMap(squadMembers).map((pid) => campaign.soldiers[pid]).filter((s) => s.status !== 'kia');
+      const tally = new Map<string, number>();
+      for (const s of fit) tally.set(s.weapon, (tally.get(s.weapon) ?? 0) + 1);
+      const weapons = [...tally].map(([w, n]) => `${n} ${WEAPONS[w as keyof typeof WEAPONS].name}`).join(' · ');
+      str = `${c.strength} men`;
+      comp = `${squads.length} squads · ${fit.length} fit<br>${weapons}`;
+    }
+    return `<div class="fc-col ${cls}"><h4>${c.name}</h4><p class="fc-str">${str}</p><p class="fc-comp">${comp}</p></div>`;
+  };
+  const objectives = front.sector.cells.filter((c) => c.objective);
+  const held = objectives.filter((c) => c.owner === 'blue').length;
+  const stakes = cell.objective
+    ? `Objective — ${held}/${objectives.length} held toward victory`
+    : 'Front cell — losing shifts the front line';
   debriefEl.innerHTML = `<div class="db-scroll"><div class="db">
     <h1>CONTACT</h1>
-    <p class="sub">${attacker.name} (${attacker.strength} men) has met ${defender.name} (~${defender.strength} men).</p>
+    <p class="sub">${attacker.name} has met ${defender.name}.</p>
+    <div class="fc">${forceCol(attacker)}<div class="fc-vs">VS</div>${forceCol(defender)}</div>
     <p class="intel">Terrain: <b>${terrain}</b>${cell.objective ? ' <span class="obj">— objective</span>' : ''}</p>
+    <p class="stakes">Stakes: ${stakes}</p>
     </div></div>
     <div class="db-actions">
       <button id="fight" class="primary">Attack</button>
@@ -206,12 +271,13 @@ function startEngagementBattle(e: Engagement): void {
   cam.scale = boot.scale;
   mode = 'battle';
   paused = true;
-  selectedSquad = -1;
+  selectedSquads = [];
   selectedVehicle = -1;
   setTargetMode('');
   winnerAt = -1;
   debriefShown = false;
   debriefEl.style.display = 'none';
+  boxRect = null;
   pings.reset();
   tooltip.clear();
 }
@@ -255,7 +321,7 @@ function showDebrief(): void {
   document.getElementById('next')!.onclick = () => {
     debriefEl.style.display = 'none';
     mode = 'strategic';
-    stratPaused = true;
+    stratPaused = !(aiSides.has('red') && aiSides.has('blue'));
     tooltip.clear();
   };
 }
@@ -270,6 +336,7 @@ function freshCampaign(): void {
   prevDay = front.day;
   stratPaused = true;
   saveGame(campaign, front);
+  buildCommanders();
 }
 
 function showOperationEnd(status: 'won' | 'lost'): void {
@@ -289,25 +356,38 @@ function showOperationEnd(status: 'won' | 'lost'): void {
 
 let dragStart: { x: number; y: number } | null = null;
 let dragged = false;
+let boxRect: { x: number; y: number; w: number; h: number } | null = null;
+let rmbDown = false;
+let rmbAnchor: { sx: number; sy: number; wx: number; wy: number } | null = null;
 
 canvas.addEventListener('mousedown', (e) => {
   if (e.button === 0) {
     dragStart = { x: e.clientX, y: e.clientY };
     dragged = false;
+    boxRect = null;
+  }
+  if (e.button === 2) {
+    rmbDown = true;
+    const [wx, wy] = cam.screenToWorld(e.clientX, e.clientY, canvas.width, canvas.height);
+    rmbAnchor = { sx: e.clientX, sy: e.clientY, wx, wy };
   }
 });
 window.addEventListener('mousemove', (e) => {
   mouse.x = e.clientX;
   mouse.y = e.clientY;
   mouse.onCanvas = e.target === canvas;
-  if (mode === 'battle' && dragStart && e.buttons & 1) {
+  if (mode !== 'battle') return;
+  if (dragStart && e.buttons & 1) {
     const dx = e.clientX - dragStart.x;
     const dy = e.clientY - dragStart.y;
     if (dragged || Math.hypot(dx, dy) > 5) {
-      dragged = true;
-      cam.x -= dx / cam.scale;
-      cam.y -= dy / cam.scale;
-      dragStart = { x: e.clientX, y: e.clientY };
+      if (!dragged) { dragged = true; boxRect = null; }
+      // Box select
+      const x0 = dragStart.x;
+      const y0 = dragStart.y;
+      const x1 = e.clientX;
+      const y1 = e.clientY;
+      boxRect = { x: Math.min(x0, x1), y: Math.min(y0, y1), w: Math.abs(x1 - x0), h: Math.abs(y1 - y0) };
     }
   }
 });
@@ -319,13 +399,41 @@ canvas.addEventListener('mouseleave', () => {
 });
 canvas.addEventListener('mouseup', (e) => {
   if (e.button !== 0) return;
+  
   if (mode === 'strategic') {
     const cell = stratView.cellAtScreen(e.clientX, e.clientY, canvas.width, canvas.height);
     const chit = cell >= 0 ? front.chitAt(cell, 'blue') : undefined;
     selectedChit = chit ? chit.id : -1;
     dragStart = null;
+    boxRect = null;
     return;
   }
+  
+  if (boxRect && dragged) {
+    // Box-select completion
+    const [wx0, wy0] = cam.screenToWorld(boxRect.x, boxRect.y, canvas.width, canvas.height);
+    const [wx1, wy1] = cam.screenToWorld(boxRect.x + boxRect.w, boxRect.y + boxRect.h, canvas.width, canvas.height);
+    const minX = Math.min(wx0, wx1), maxX = Math.max(wx0, wx1);
+    const minY = Math.min(wy0, wy1), maxY = Math.max(wy0, wy1);
+    const found: number[] = [];
+    for (const sq of infantrySquads(sim)) {
+      const any = sq.soldierIds.some((id) => {
+        const s = sim.soldiers[id];
+        return s.alive && !s.downed && s.inVehicle < 0 && s.x >= minX && s.x <= maxX && s.y >= minY && s.y <= maxY;
+      });
+      if (any) found.push(sq.id);
+    }
+    if (e.shiftKey) {
+      for (const id of found) { if (!selectedSquads.includes(id)) selectedSquads.push(id); }
+    } else {
+      selectedSquads = found;
+    }
+    selectedTeam = -1;
+    dragStart = null;
+    boxRect = null;
+    return;
+  }
+  
   if (!dragged) {
     const [wx, wy] = cam.screenToWorld(e.clientX, e.clientY, canvas.width, canvas.height);
     if (targetMode === 'barrage') {
@@ -339,19 +447,19 @@ canvas.addEventListener('mouseup', (e) => {
         renderer.markStrafe(wx, wy);
       }
     } else if (targetMode === 'wheel') {
-      const e = emplacementOf(sim, selectedSquad);
+      const e = emplacementOf(sim, getPrimary());
       if (e) sim.orderWheel(e.id, wx, wy);
       setTargetMode('');
     } else if (targetMode === 'empfire') {
-      const e = emplacementOf(sim, selectedSquad);
+      const e = emplacementOf(sim, getPrimary());
       if (e) sim.orderFire(e.id, wx, wy);
       setTargetMode('');
     } else if (targetMode === 'empsmoke') {
-      const e = emplacementOf(sim, selectedSquad);
+      const e = emplacementOf(sim, getPrimary());
       if (e) sim.orderSmoke(e.id, wx, wy);
       setTargetMode('');
     } else {
-      // vehicles first, then emplacement glyphs, then soldiers (narrowing team on a second click)
+      // vehicles first, then emplacement glyphs, then soldiers
       let vehicle = -1;
       for (const v of sim.vehicles) {
         if (v.alive && v.side === 'blue' && Math.hypot(v.x - wx, v.y - wy) < 3.5) vehicle = v.id;
@@ -364,7 +472,8 @@ canvas.addEventListener('mouseup', (e) => {
           if (e.side === 'blue' && Math.hypot(e.x - wx, e.y - wy) < 2.5) empSquad = sim.teams[e.crewTeamId].squadId;
         }
         if (empSquad >= 0) {
-          selectSquad(empSquad);
+          if (e.shiftKey) toggleSquadSelection(empSquad);
+          else selectSquad(empSquad);
         } else {
           let best: Soldier | null = null;
           let bestD = 15 / cam.scale;
@@ -376,12 +485,13 @@ canvas.addEventListener('mouseup', (e) => {
               best = s;
             }
           }
-          if (best && best.squadId === selectedSquad) {
+          if (best && best.squadId === getPrimary() && selectedSquads.length === 1) {
             selectedTeam = best.teamId;
             lastTeamId = best.teamId;
           } else if (best) {
-            selectSquad(best.squadId);
-          } else {
+            if (e.shiftKey) toggleSquadSelection(best.squadId);
+            else selectSquad(best.squadId);
+          } else if (!e.shiftKey) {
             selectSquad(-1);
           }
         }
@@ -389,6 +499,7 @@ canvas.addEventListener('mouseup', (e) => {
     }
   }
   dragStart = null;
+  boxRect = null;
 });
 canvas.addEventListener('contextmenu', (e) => {
   e.preventDefault();
@@ -400,60 +511,146 @@ canvas.addEventListener('contextmenu', (e) => {
     }
     return;
   }
-  if (targetMode !== '') return;
-  const [wx, wy] = cam.screenToWorld(e.clientX, e.clientY, canvas.width, canvas.height);
-  if (selectedVehicle >= 0) sim.orderVehicleMove(selectedVehicle, wx, wy);
-  else if (selectedSquad >= 0) {
-    if (armedOrder) {
-      const order: TeamOrder = { kind: armedOrder, x: wx, y: wy };
-      if (selectedTeam >= 0) sim.orderTeam(selectedTeam, order);
-      else sim.orderSquad(selectedSquad, order);
-      armedOrder = null;
-    } else if (e.shiftKey) {
-      sim.queueMove(selectedSquad, wx, wy);
-    } else if (selectedTeam >= 0) {
-      sim.orderTeam(selectedTeam, { kind: 'move', x: wx, y: wy });
-    } else {
-      sim.orderSquad(selectedSquad, { kind: 'move', x: wx, y: wy });
-    }
+  // Right-click in battle: handling moved to mouseup on button 2 via a
+  // separate listener below.
+});
+window.addEventListener('mouseup', (e) => {
+  if (e.button !== 2) return;
+  if (!rmbDown || !rmbAnchor) { rmbDown = false; rmbAnchor = null; return; }
+  rmbDown = false;
+  
+  if (mode === 'strategic') {
+    rmbAnchor = null;
+    return;
   }
+  if (targetMode !== '') { rmbAnchor = null; return; }
+  
+  const [wx, wy] = cam.screenToWorld(e.clientX, e.clientY, canvas.width, canvas.height);
+  const wdx = wx - rmbAnchor.wx;
+  const wdy = wy - rmbAnchor.wy;
+  const len = Math.hypot(wdx, wdy);
+  const K = selectedSquads.length;
+  
+  if (selectedVehicle >= 0) {
+    sim.orderVehicleMove(selectedVehicle, wx, wy);
+    rmbAnchor = null;
+    return;
+  }
+  
+  if (K === 0) { rmbAnchor = null; return; }
+  
+  // Move-family kinds that support formation orders
+  const MOVE_FAMILY: OrderKind[] = ['move', 'fast', 'sneak', 'assault', 'defend', 'ambush'];
+  const useArmed = armedOrder && MOVE_FAMILY.includes(armedOrder);
+  const kind: OrderKind = useArmed ? armedOrder! : 'move';
+  
+  if (len < 2) {
+    // Plain right-click (short drag): legacy behavior with squad fan
+    const offs = fanOffsets(K, SQUAD_FAN);
+    const primary = getPrimary();
+    for (let i = 0; i < K; i++) {
+      const id = selectedSquads[i];
+      const order: TeamOrder = { kind, x: wx, y: wy + offs[i] };
+      if (useArmed || e.shiftKey) {
+        sim.orderSquad(id, order);
+      } else if (selectedTeam >= 0 && id === primary) {
+        sim.orderTeam(selectedTeam, order);
+      } else {
+        sim.orderSquad(id, order);
+      }
+    }
+    if (useArmed) armedOrder = null;
+  } else {
+    // Right-drag: formation order
+    const facing = Math.atan2(wdy, wdx);
+    const width = Math.max(3, Math.min(60, len));
+    const seg = width / K;
+    const offs = fanOffsets(K, seg);
+    const cos = Math.cos(facing);
+    const sin = Math.sin(facing);
+    for (let i = 0; i < K; i++) {
+      const id = selectedSquads[i];
+      const ax = rmbAnchor.wx + cos * offs[i];
+      const ay = rmbAnchor.wy + sin * offs[i];
+      const order: TeamOrder = { kind, x: ax, y: ay, facing, width: seg };
+      sim.orderSquad(id, order);
+    }
+    if (useArmed) armedOrder = null;
+  }
+  
+  rmbAnchor = null;
 });
 canvas.addEventListener('wheel', (e) => {
   e.preventDefault();
-  if (mode === 'battle') cam.zoom(Math.pow(1.1, -e.deltaY / 100), e.clientX, e.clientY, canvas.width, canvas.height);
+  if (mode !== 'battle') return;
+  if (e.ctrlKey || e.shiftKey) {
+    cam.zoom(Math.pow(1.1, -e.deltaY / 100), e.clientX, e.clientY, canvas.width, canvas.height);
+  } else {
+    cam.x -= e.deltaX / cam.scale;
+    cam.y -= e.deltaY / cam.scale;
+  }
 });
 window.addEventListener('keydown', (e) => {
-  if (e.code === 'Space') {
-    e.preventDefault();
-    if (mode === 'strategic') stratPaused = !stratPaused;
-    else paused = !paused;
-  }
-  if (e.code === 'KeyM') audio.toggleMute();
-  if (mode === 'strategic') {
-    if (e.code === 'Digit1') speedIdx = 0;
-    if (e.code === 'Digit2') speedIdx = 1;
-    if (e.code === 'Digit3') speedIdx = 2;
-    if (e.code === 'Escape') selectedChit = -1;
+  if (menu.isOpen) {
+    // rebind capture handles keys first (capture phase); menu/cancel closes
+    const action = actionForEvent(e, loadKeymap(localStorage));
+    if (action === 'menu' || action === 'cancel') { e.preventDefault(); menu.close(); }
     return;
   }
-  if (e.code === 'KeyB' && sim.barragesLeft.blue > 0) setTargetMode(targetMode === 'barrage' ? '' : 'barrage');
-  if (e.code === 'KeyA' && sim.airstrikesLeft.blue > 0) setTargetMode(targetMode === 'air' ? '' : 'air');
-  if (e.code.startsWith('Digit')) {
-    const n = Number(e.code.slice(5)) - 1;
-    if (e.shiftKey) {
-      // Order-kind hotbar: plain digits already own squad selection (below),
-      // so order kinds live on shift+digit — see Task 13 commit message.
-      if (n >= 0 && n < ORDER_KINDS.length) armedOrder = armedOrder === ORDER_KINDS[n] ? null : ORDER_KINDS[n];
-    } else {
-      const list = infantrySquads(sim);
-      if (n >= 0 && n < list.length) selectSquad(list[n].id);
-    }
+  
+  const km = loadKeymap(localStorage);
+  const action = actionForEvent(e, km);
+  if (!action) return;
+  
+  e.preventDefault();
+  
+  // Global actions
+  if (action === 'pause') {
+    if (mode === 'strategic') stratPaused = !stratPaused;
+    else paused = !paused;
+    return;
   }
-  if (e.code === 'Escape') {
-    if (selectedTeam >= 0) selectedTeam = -1;
-    else selectSquad(-1);
-    armedOrder = null;
-    setTargetMode('');
+  if (action === 'mute') { audio.toggleMute(); return; }
+  if (action === 'menu' || action === 'cancel') {
+    let consumed = false;
+    if (mode === 'strategic') {
+      if (selectedChit >= 0) { selectedChit = -1; consumed = true; }
+    } else {
+      if (targetMode) { setTargetMode(''); consumed = true; }
+      else if (armedOrder) { armedOrder = null; consumed = true; }
+      else if (selectedTeam >= 0) { selectedTeam = -1; consumed = true; }
+      else if (selectedSquads.length > 0) { selectSquad(-1); consumed = true; }
+    }
+    if (!consumed) {
+      pauseBeforeMenu = mode === 'strategic' ? stratPaused : paused;
+      if (mode === 'strategic') stratPaused = true;
+      else paused = true;
+      menu.setKeymap(km);
+      menu.open();
+    }
+    return;
+  }
+  
+  if (mode === 'strategic') {
+    if (action === 'speed1') speedIdx = 0;
+    if (action === 'speed2') speedIdx = 1;
+    if (action === 'speed3') speedIdx = 2;
+    return;
+  }
+  
+  // Battle mode
+  if (action === 'barrage' && sim.barragesLeft.blue > 0) setTargetMode(targetMode === 'barrage' ? '' : 'barrage');
+  if (action === 'airstrike' && sim.airstrikesLeft.blue > 0) setTargetMode(targetMode === 'air' ? '' : 'air');
+  
+  if (action.startsWith('squad')) {
+    const n = Number(action.slice(5)) - 1;
+    const list = infantrySquads(sim);
+    if (n >= 0 && n < list.length) selectSquad(list[n].id);
+  }
+  
+  if (action.startsWith('order')) {
+    const n = Number(action.slice(5)) - 1;
+    if (n >= 0 && n < ORDER_KINDS.length) armedOrder = armedOrder === ORDER_KINDS[n] ? null : ORDER_KINDS[n];
   }
 });
 
@@ -465,6 +662,7 @@ window.addEventListener('keydown', (e) => {
   get front() {
     return front;
   },
+  commanders,
   cam,
   audio,
   setPaused: (p: boolean) => {
@@ -489,11 +687,14 @@ function frame(now: number): void {
   const dtReal = Math.min(now - last, 250);
   last = now;
   hud.root.style.display = mode === 'battle' ? '' : 'none';
+  stratHud.root.style.display = mode === 'strategic' ? '' : 'none';
   if (mode === 'strategic') {
+    stratHud.update(front, campaign, selectedChit, stratPaused);
     if (!stratPaused && !pendingEngagement && !opEnded) {
       stratAcc += (dtReal / 1000) * SPEEDS[speedIdx];
       while (stratAcc >= 1 && !pendingEngagement) {
         stratAcc -= 1;
+        for (const cmd of commanders) cmd.evaluate(front);
         const e = front.step();
         if (front.day > prevDay) {
           advanceDays(campaign, front.day - prevDay);
@@ -506,14 +707,31 @@ function frame(now: number): void {
           saveGame(campaign, front);
         }
         if (e) {
-          pendingEngagement = e;
-          stratPaused = true;
-          showContactModal(e);
+          const attacker = front.chits.find((c) => c.id === e.attackerId)!;
+          const defender = front.chits.find((c) => c.id === e.defenderId)!;
+          const attackerIsAI = aiSides.has(attacker.side);
+          const defenderIsAI = aiSides.has(defender.side);
+          
+          if (attackerIsAI && defenderIsAI) {
+            const result = resolveCoarse(campaign, front, e);
+            stratView.flash(`${attacker.name} vs ${defender.name}: ${result.record.won ? 'attacker wins' : 'defender holds'}`);
+            saveGame(campaign, front);
+          } else if (attackerIsAI && !defenderIsAI) {
+            pendingEngagement = e;
+            stratPaused = true;
+            startEngagementBattle(e);
+          } else {
+            pendingEngagement = e;
+            stratPaused = true;
+            showContactModal(e);
+          }
         }
       }
       const status = operationStatus(front);
       if (status !== 'ongoing') showOperationEnd(status);
     }
+    stratHud.update(front, campaign, selectedChit, stratPaused);
+    stratView.stagedCell = pendingEngagement ? pendingEngagement.cell : -1;
     stratView.draw(ctx, front, selectedChit, stratPaused, SPEEDS[speedIdx], canvas.width, canvas.height);
   } else {
     acc += dtReal;
@@ -544,14 +762,58 @@ function frame(now: number): void {
     audio.addUnitEvents(unitEvents);
 
     const pick = mouse.onCanvas && !targetMode ? pickAt(sim, cam, mouse.x, mouse.y, canvas.width, canvas.height) : null;
-    const shot = computeShot(sim, selectedSquad, selectedVehicle, pick);
+    const shot = computeShot(sim, getPrimary(), selectedVehicle, pick);
     const cursor = mouse.onCanvas ? cam.screenToWorld(mouse.x, mouse.y, canvas.width, canvas.height) : null;
-    const focusTeams = selectedSquad < 0 ? [] : selectedTeam >= 0 ? [selectedTeam] : sim.squads[selectedSquad].teamIds;
+    const primary = getPrimary();
+    const primarySquad = sim.squads[primary];
+    const focusTeams = primary < 0 ? [] : selectedTeam >= 0 ? [selectedTeam] : primarySquad?.teamIds ?? [];
 
-    renderer.draw(ctx, cam, selectedSquad, now);
-    drawOverlays(ctx, cam, sim, { pick, shot, selectedSquad, targetMode, focusTeams, armedOrder, cursor: cursor && { x: cursor[0], y: cursor[1] } }, pings);
-    tooltip.update(sim, pick, shot, mouse.x, mouse.y, pick?.kind === 'terrain' && (selectedSquad >= 0 || selectedVehicle >= 0));
-    hud.update(sim, { selectedSquad, selectedTeam, selectedVehicle, paused, targetMode, armedOrder, title: battleTitle });
+    // Formation drag state for overlays
+    let formationDrag: { ax: number; ay: number; facing: number; width: number } | null = null;
+    if (rmbDown && rmbAnchor) {
+      const [cx, cy] = cam.screenToWorld(mouse.x, mouse.y, canvas.width, canvas.height);
+      const wdx = cx - rmbAnchor.wx;
+      const wdy = cy - rmbAnchor.wy;
+      const len = Math.hypot(wdx, wdy);
+      if (len >= 2) {
+        formationDrag = { ax: rmbAnchor.wx, ay: rmbAnchor.wy, facing: Math.atan2(wdy, wdx), width: Math.max(3, Math.min(60, len)) };
+      }
+    }
+
+    renderer.draw(ctx, cam, selectedSquads, now);
+    drawOverlays(ctx, cam, sim, {
+      pick, shot,
+      selectedSquad: primary,
+      selectedSquads,
+      selectRect: boxRect,
+      formationDrag,
+      targetMode,
+      focusTeams,
+      armedOrder,
+      cursor: cursor && { x: cursor[0], y: cursor[1] }
+    }, pings);
+    tooltip.update(sim, pick, shot, mouse.x, mouse.y, pick?.kind === 'terrain' && (primary >= 0 || selectedVehicle >= 0));
+    const km = loadKeymap(localStorage);
+    let objective: HudState['objective'] = null;
+    if (pendingEngagement) {
+      const attacker = front.chits.find((c) => c.id === pendingEngagement!.attackerId);
+      const defender = front.chits.find((c) => c.id === pendingEngagement!.defenderId);
+      if (attacker && defender) {
+        const cell = front.sector.cells[pendingEngagement!.cell];
+        const xy = cellXY(front.sector, pendingEngagement!.cell);
+        const cellLabel = `${String.fromCharCode(65 + (xy.x % 26))}${xy.y + 1}`;
+        objective = {
+          kind: attacker.side === 'blue' ? 'attack' : 'defend',
+          cellLabel,
+          isObjective: cell.objective,
+          attackerName: attacker.name,
+          defenderName: defender.name,
+          attackerStrength: attacker.strength,
+          defenderStrength: defender.strength,
+        };
+      }
+    }
+    hud.update(sim, { selectedSquad: primary, selectedSquads, selectedTeam, selectedVehicle, paused, targetMode, armedOrder, title: battleTitle, keymap: km, objective });
 
     if (sim.winner && winnerAt < 0) winnerAt = now;
     if (winnerAt >= 0 && !debriefShown && now - winnerAt > 4000) showDebrief();
