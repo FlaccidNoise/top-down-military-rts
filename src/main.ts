@@ -29,16 +29,24 @@ const debriefEl = document.createElement('div');
 debriefEl.id = 'debrief';
 document.body.appendChild(debriefEl);
 
+// debug: ?camp=N pins the campaign seed and disables saving (screenshot
+// harness reproducibility — a pinned campaign must never clobber a real save)
+const urlCamp = new URLSearchParams(location.search).get('camp');
+const campPinned = urlCamp !== null && Number.isFinite(Number(urlCamp));
+
 let campaign: Campaign;
 let front: Front;
-const loaded = loadGame();
+const save = () => {
+  if (!campPinned) saveGame(campaign, front);
+};
+const loaded = campPinned ? null : loadGame();
 if (loaded) {
   campaign = loaded.campaign;
   front = loaded.front;
 } else {
-  campaign = newCampaign(Date.now() % 100000);
+  campaign = newCampaign(campPinned ? Number(urlCamp) : Date.now() % 100000);
   front = newFront(campaign, makeDefaultSector());
-  saveGame(campaign, front);
+  save();
 }
 
 const ORDER_KINDS: OrderKind[] = ['move', 'fast', 'sneak', 'fire', 'smoke', 'defend', 'ambush', 'assault'];
@@ -216,7 +224,7 @@ function showDebrief(): void {
   if (!e) throw new Error('showDebrief: pendingEngagement is null — startEngagementBattle must set it');
   const out = applyEngagementOutcome(campaign, front, e, sim);
   pendingEngagement = null;
-  saveGame(campaign, front);
+  save();
 
   const deployedPids = new Set(sim.soldiers.filter((s) => s.side === 'blue').map((s) => s.pid));
   const rows = campaign.companies[battleCompany].squads
@@ -263,7 +271,7 @@ function freshCampaign(): void {
   opEnded = false;
   prevDay = front.day;
   stratPaused = true;
-  saveGame(campaign, front);
+  save();
 }
 
 function showOperationEnd(status: 'won' | 'lost'): void {
@@ -494,7 +502,7 @@ function frame(now: number): void {
           }
           syncStrengths(campaign, front);
           prevDay = front.day;
-          saveGame(campaign, front);
+          save();
         }
         if (e) {
           pendingEngagement = e;
