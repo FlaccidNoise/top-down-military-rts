@@ -1,5 +1,6 @@
 import { EDGE, type GameMap } from '../sim/map';
 import type { Camera } from './camera';
+import { AO_ALPHA, SHADOW_ALPHA, SHADOW_SOFT_ALPHA, shadowOffset } from './light';
 
 // Terrain is rendered lazily into 16x16-tile chunk canvases at the nearest
 // zoom band >= camera scale (so it is only ever downscaled — always crisp),
@@ -29,29 +30,108 @@ function coarse(x: number, y: number): number {
   return a * (1 - fy) + b * fy;
 }
 
+// Second octave on a ~28m lattice — macro patch/hue drift so no two fields or
+// lawns match, per architecture.md rule 3 ("never grid-visible").
+function macro(x: number, y: number): number {
+  const cx = x / 28;
+  const cy = y / 28;
+  const ix = Math.floor(cx);
+  const iy = Math.floor(cy);
+  const fx = cx - ix;
+  const fy = cy - iy;
+  const a = hash(ix, iy, 2) * (1 - fx) + hash(ix + 1, iy, 2) * fx;
+  const b = hash(ix, iy + 1, 2) * (1 - fx) + hash(ix + 1, iy + 1, 2) * fx;
+  return a * (1 - fy) + b * fy;
+}
+
 function shade(base: [number, number, number], f: number): string {
   return `rgb(${Math.round(base[0] * f)},${Math.round(base[1] * f)},${Math.round(base[2] * f)})`;
 }
 
-const GRASS: [number, number, number] = [78, 107, 63];
-const ROAD: [number, number, number] = [138, 129, 114];
-const WOODS_GROUND: [number, number, number] = [56, 76, 48];
+// Smooth interpolation across a palette ramp, 0..1 — used for macro-driven
+// hue drift instead of a hard per-block color swap (stays "never grid-visible").
+function blendPalette(stops: [number, number, number][], t: number): [number, number, number] {
+  const n = stops.length - 1;
+  const ft = Math.max(0, Math.min(1, t)) * n;
+  const i = Math.min(n - 1, Math.floor(ft));
+  const f = ft - i;
+  const a = stops[i];
+  const b = stops[i + 1];
+  return [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f];
+}
+
+const GRASS: [number, number, number] = [85, 99, 64]; // #556340
+const GRASS_DRY: [number, number, number] = [104, 108, 66]; // macro-drift patch variant
+const ROAD: [number, number, number] = [124, 103, 76]; // warm dirt
+const WOODS_GROUND: [number, number, number] = [61, 74, 51]; // #3d4a33
+const HEDGE_GREEN: [number, number, number] = [72, 90, 48]; // yellower, denser than woods
+const CANOPY_A: [number, number, number] = [52, 78, 42];
+const CANOPY_B: [number, number, number] = [44, 68, 46];
 const FLOOR: [number, number, number] = [160, 145, 122];
-const FIELD: [number, number, number] = [106, 114, 69];
+const FLOOR_DARK: [number, number, number] = [141, 120, 95];
+const FIELD_VARIANTS: [number, number, number][] = [
+  [96, 84, 58], // turned earth
+  [142, 124, 71], // wheat
+  [107, 111, 62], // green cover crop
+];
 
 type Ctx = CanvasRenderingContext2D;
+
+// Path for a hedge tile's continuous mass: a stroke segment toward each
+// hedge-tagged neighbor (round line caps turn a zero-length segment into a
+// dot), so adjacent hedge tiles fuse into one capsule instead of four gappy
+// pompoms. `odx/ody` offsets the whole path (used to draw the shadow/AO
+// passes without rebuilding the neighbor logic).
+function hedgePath(g: Ctx, x: number, y: number, n: boolean, s: boolean, w: boolean, e: boolean, odx: number, ody: number): void {
+  const cx = x + 0.5 + odx;
+  const cy = y + 0.5 + ody;
+  g.beginPath();
+  if (!n && !s && !w && !e) {
+    g.moveTo(cx, cy);
+    g.lineTo(cx, cy);
+    return;
+  }
+  if (n) {
+    g.moveTo(cx, cy);
+    g.lineTo(x + 0.5 + odx, y + ody);
+  }
+  if (s) {
+    g.moveTo(cx, cy);
+    g.lineTo(x + 0.5 + odx, y + 1 + ody);
+  }
+  if (w) {
+    g.moveTo(cx, cy);
+    g.lineTo(x + odx, y + 0.5 + ody);
+  }
+  if (e) {
+    g.moveTo(cx, cy);
+    g.lineTo(x + 1 + odx, y + 0.5 + ody);
+  }
+}
 
 function drawTileBase(g: Ctx, map: GameMap, x: number, y: number): void {
   const t = map.terrainKeyAt(x, y);
   const v = 0.93 + coarse(x, y) * 0.1 + hash(x, y) * 0.04;
   if (t === 'grass') {
-    g.fillStyle = shade(GRASS, v);
-    g.fillRect(x, y, 1, 1);
-    for (let i = 0; i < 3; i++) {
+    const base = blendPalette([GRASS, GRASS_DRY], macro(x, y));
+    // 2x2 sub-tile sampling — each quadrant gets its own coarse() read
+    // instead of one flat value per tile, which is what made the grass
+    // read as a visible 1m checkerboard at high zoom.
+    for (let sub = 0; sub < 4; sub++) {
+      const ox = sub & 1;
+      const oy = sub >> 1;
+      const sx = x + ox * 0.5;
+      const sy = y + oy * 0.5;
+      const sv = 0.88 + coarse(sx + 0.25, sy + 0.25) * 0.16 + hash(x, y, sub) * 0.05;
+      g.fillStyle = shade(base, sv);
+      g.fillRect(sx, sy, 0.5, 0.5);
+    }
+    for (let i = 0; i < 5; i++) {
       const h1 = hash(x, y, 10 + i);
       const h2 = hash(x, y, 20 + i);
-      g.fillStyle = shade(GRASS, h1 > 0.5 ? 1.18 : 0.8);
-      g.fillRect(x + h1, y + h2, 0.07, 0.07);
+      const sz = 0.05 + hash(x, y, 35 + i) * 0.05;
+      g.fillStyle = hash(x, y, 30 + i) > 0.7 ? shade(GRASS_DRY, 1.15) : shade(GRASS, h1 > 0.5 ? 1.18 : 0.78);
+      g.fillRect(x + h1, y + h2, sz, sz);
     }
   } else if (t === 'road') {
     g.fillStyle = shade(ROAD, v);
@@ -62,38 +142,116 @@ function drawTileBase(g: Ctx, map: GameMap, x: number, y: number): void {
       g.arc(x + hash(x, y, 3 + i), y + hash(x, y, 5 + i), 0.05 + hash(x, y, 7 + i) * 0.08, 0, Math.PI * 2);
       g.fill();
     }
-    // shoulder where road meets non-road
+    const roadAt = (tx: number, ty: number) => map.inBounds(tx, ty) && map.terrainKeyAt(tx, ty) === 'road';
+    const n = roadAt(x, y - 1);
+    const s = roadAt(x, y + 1);
+    const w = roadAt(x - 1, y);
+    const e = roadAt(x + 1, y);
+    // shoulders on every edge that isn't road, dust-tan hue bleeding inward
     g.fillStyle = 'rgba(0,0,0,0.15)';
-    if (map.terrainKeyAt(x, y - 1) !== 'road' && map.inBounds(x, y - 1)) g.fillRect(x, y, 1, 0.12);
-    if (map.terrainKeyAt(x, y + 1) !== 'road' && map.inBounds(x, y + 1)) g.fillRect(x, y + 0.88, 1, 0.12);
+    if (!n) g.fillRect(x, y, 1, 0.12);
+    if (!s) g.fillRect(x, y + 0.88, 1, 0.12);
+    if (!w) g.fillRect(x, y, 0.12, 1);
+    if (!e) g.fillRect(x + 0.88, y, 0.12, 1);
+    g.fillStyle = 'rgba(168,140,92,0.12)';
+    if (!n) g.fillRect(x, y + 0.12, 1, 0.1);
+    if (!s) g.fillRect(x, y + 0.78, 1, 0.1);
+    if (!w) g.fillRect(x + 0.12, y, 0.1, 1);
+    if (!e) g.fillRect(x + 0.78, y, 0.1, 1);
+    // twin wheel ruts along the road's running direction
+    g.fillStyle = 'rgba(0,0,0,0.1)';
+    if (w || e) {
+      g.fillRect(x, y + 0.22, 1, 0.09);
+      g.fillRect(x, y + 0.69, 1, 0.09);
+    } else {
+      g.fillRect(x + 0.22, y, 0.09, 1);
+      g.fillRect(x + 0.69, y, 0.09, 1);
+    }
   } else if (t === 'woods') {
     g.fillStyle = shade(WOODS_GROUND, v);
     g.fillRect(x, y, 1, 1);
-  } else if (t === 'hedge') {
-    g.fillStyle = shade(WOODS_GROUND, v * 0.92);
-    g.fillRect(x, y, 1, 1);
-    for (let i = 0; i < 3; i++) {
-      const cx = x + 0.2 + hash(x, y, 50 + i) * 0.6;
-      const cy = y + 0.2 + hash(x, y, 55 + i) * 0.6;
-      const r = 0.28 + hash(x, y, 60 + i) * 0.2;
-      g.fillStyle = shade([52, 82, 44], 0.8 + hash(x, y, 65 + i) * 0.4);
+    // leaf litter / undergrowth texture
+    for (let i = 0; i < 4; i++) {
+      const lx = x + hash(x, y, 80 + i);
+      const ly = y + hash(x, y, 85 + i);
+      g.fillStyle = hash(x, y, 90 + i) > 0.45 ? 'rgba(20,24,14,0.22)' : 'rgba(120,110,70,0.16)';
       g.beginPath();
-      g.arc(cx, cy, r, 0, Math.PI * 2);
+      g.ellipse(lx, ly, 0.09 + hash(x, y, 95 + i) * 0.08, 0.05 + hash(x, y, 96 + i) * 0.05, hash(x, y, 97 + i) * Math.PI, 0, Math.PI * 2);
       g.fill();
     }
+  } else if (t === 'hedge') {
+    const isHedge = (tx: number, ty: number) => map.inBounds(tx, ty) && map.terrainKeyAt(tx, ty) === 'hedge';
+    const n = isHedge(x, y - 1);
+    const s = isHedge(x, y + 1);
+    const w = isHedge(x - 1, y);
+    const e = isHedge(x + 1, y);
+    g.fillStyle = shade(WOODS_GROUND, v * 0.88);
+    g.fillRect(x, y, 1, 1);
+    const width = 0.58 + hash(x, y, 51) * 0.3;
+    const [sdx, sdy] = shadowOffset(0.4);
+    // base AO: subtle all-around ground darkening at the hedge's foot
+    g.lineWidth = width * 1.3;
+    g.strokeStyle = `rgba(8,10,7,${AO_ALPHA * 0.6})`;
+    hedgePath(g, x, y, n, s, w, e, 0, 0);
+    g.stroke();
+    // soft two-layer SE cast shadow
+    g.lineWidth = width * 1.15;
+    g.strokeStyle = `rgba(10,14,8,${SHADOW_SOFT_ALPHA})`;
+    hedgePath(g, x, y, n, s, w, e, sdx * 1.6, sdy * 1.6);
+    g.stroke();
+    g.lineWidth = width * 1.1;
+    g.strokeStyle = `rgba(10,14,8,${SHADOW_ALPHA})`;
+    hedgePath(g, x, y, n, s, w, e, sdx, sdy);
+    g.stroke();
+    // hedge mass — yellower, denser green than woods
+    g.lineWidth = width;
+    g.strokeStyle = shade(HEDGE_GREEN, 0.82 + hash(x, y, 52) * 0.3);
+    hedgePath(g, x, y, n, s, w, e, 0, 0);
+    g.stroke();
+    // NW rim catching the sun
+    g.lineWidth = width * 0.3;
+    g.strokeStyle = `rgba(190,215,150,${0.1 + hash(x, y, 53) * 0.12})`;
+    hedgePath(g, x, y, n, s, w, e, -sdx * 0.3, -sdy * 0.3);
+    g.stroke();
   } else if (t === 'field') {
-    g.fillStyle = shade(FIELD, v);
+    const bx = x >> 3; // 8m parcel block — furrow geometry only, color stays smooth
+    const by = y >> 3;
+    const base = blendPalette(FIELD_VARIANTS, macro(x, y));
+    g.fillStyle = shade(base, v);
     g.fillRect(x, y, 1, 1);
-    g.fillStyle = 'rgba(0,0,0,0.10)';
-    g.fillRect(x, y + 0.15, 1, 0.12);
-    g.fillRect(x, y + 0.65, 1, 0.12);
+    const horizontal = hash(bx, by, 71) < 0.5;
+    const spacing = 0.4 + hash(bx, by, 73) * 0.25;
+    const phase = hash(bx, by, 72) * spacing;
+    g.fillStyle = 'rgba(0,0,0,0.1)';
+    if (horizontal) {
+      for (let fy = Math.ceil((y - phase) / spacing) * spacing + phase; fy < y + 1; fy += spacing) {
+        g.fillRect(x, fy - 0.045, 1, 0.09);
+      }
+    } else {
+      for (let fx = Math.ceil((x - phase) / spacing) * spacing + phase; fx < x + 1; fx += spacing) {
+        g.fillRect(fx - 0.045, y, 0.09, 1);
+      }
+    }
+    // darker boundary strip where the field meets non-field
+    const fieldAt = (tx: number, ty: number) => map.inBounds(tx, ty) && map.terrainKeyAt(tx, ty) === 'field';
+    g.fillStyle = 'rgba(40,32,20,0.18)';
+    if (!fieldAt(x, y - 1)) g.fillRect(x, y, 1, 0.08);
+    if (!fieldAt(x, y + 1)) g.fillRect(x, y + 0.92, 1, 0.08);
+    if (!fieldAt(x - 1, y)) g.fillRect(x, y, 0.08, 1);
+    if (!fieldAt(x + 1, y)) g.fillRect(x + 0.92, y, 0.08, 1);
   } else {
-    // floor: plank shading per row, seams between rows, staggered butt joints
-    g.fillStyle = shade(FLOOR, 0.92 + hash(0, y, 7) * 0.14);
-    g.fillRect(x, y, 1, 1);
-    g.fillStyle = 'rgba(0,0,0,0.12)';
-    g.fillRect(x, y, 1, 0.035);
-    if (hash(x, y, 8) < 0.3) g.fillRect(x + hash(x, y, 9), y, 0.035, 1);
+    // floor: plank rows every 0.33m, two wood tones, staggered butt joints.
+    // rowIdx is world-space (y*3+r) so joints don't repeat identically tile to tile.
+    for (let r = 0; r < 3; r++) {
+      const ry = y + r / 3;
+      const rowIdx = y * 3 + r;
+      const tone = rowIdx % 2 === 0 ? FLOOR : FLOOR_DARK;
+      g.fillStyle = shade(tone, 0.92 + hash(x, rowIdx, 7) * 0.14);
+      g.fillRect(x, ry, 1, 1 / 3);
+      g.fillStyle = 'rgba(0,0,0,0.12)';
+      g.fillRect(x, ry, 1, 0.03);
+      if (hash(x, rowIdx, 8) < 0.3) g.fillRect(x + hash(x, rowIdx, 9), ry, 0.03, 1 / 3);
+    }
   }
 }
 
@@ -103,12 +261,13 @@ function drawTree(g: Ctx, map: GameMap, x: number, y: number): void {
   if (!isolated && hash(x, y, 40) >= 0.55) return;
   const cx = x + 0.3 + hash(x, y, 41) * 0.4;
   const cy = y + 0.3 + hash(x, y, 42) * 0.4;
-  const r = 0.55 + hash(x, y, 43) * 0.4;
+  const r = 0.55 + hash(x, y, 43) * 0.4; // may overhang up to ~1 tile — chunks overscan by `pad`, so this is safe
   g.fillStyle = 'rgba(10,16,8,0.3)';
   g.beginPath();
   g.ellipse(cx + 0.18, cy + 0.22, r, r * 0.9, 0, 0, Math.PI * 2);
   g.fill();
-  g.fillStyle = shade([46, 74, 40], 0.85 + hash(x, y, 44) * 0.35);
+  const canopy = hash(x, y, 45) < 0.5 ? CANOPY_A : CANOPY_B;
+  g.fillStyle = shade(canopy, 0.85 + hash(x, y, 44) * 0.35);
   g.beginPath();
   g.arc(cx, cy, r, 0, Math.PI * 2);
   g.fill();

@@ -87,11 +87,16 @@ export class Renderer {
     const ch = ctx.canvas.height;
     const dt = Math.min(0.1, (now - this.lastNow) / 1000);
     this.lastNow = now;
-    ctx.fillStyle = '#252b20';
+    ctx.fillStyle = '#161510'; // darker desaturated earth tone off-map, replacing the flat void
     ctx.fillRect(0, 0, cw, ch);
     ctx.imageSmoothingEnabled = true;
 
     this.terrain.draw(ctx, cam, cw, ch);
+    const [mx0, my0] = cam.worldToScreen(0, 0, cw, ch);
+    const [mx1, my1] = cam.worldToScreen(this.sim.map.w, this.sim.map.h, cw, ch);
+    ctx.strokeStyle = 'rgba(18,16,12,0.7)';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(mx0, my0, mx1 - mx0, my1 - my0);
     this.decals.draw(ctx, cam, cw, ch);
     this.roofs.update(this.sim, cam, dt);
     this.roofs.drawShadows(ctx, cam, cw, ch);

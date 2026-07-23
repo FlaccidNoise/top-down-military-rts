@@ -1,6 +1,7 @@
 import type { Building } from '../sim/mapgen';
 import type { Sim } from '../sim/sim';
 import type { Camera } from './camera';
+import { AO_ALPHA, SHADOW_ALPHA, SHADOW_SOFT_ALPHA, shadowOffset } from './light';
 
 // Gable roofs drawn over building footprints (sim.buildings, from the map
 // plan). A roof fades out when the camera is zoomed in close or a friendly
@@ -41,9 +42,26 @@ export class RoofLayer {
 
   drawShadows(ctx: CanvasRenderingContext2D, cam: Camera, cw: number, ch: number): void {
     this.withWorldTransform(ctx, cam, cw, ch, () => {
+      // core offset (0.71m) matches the old fixed (0.45,0.55) rect offset in
+      // magnitude; the soft layer extends further along the same sun direction.
+      const [sdx, sdy] = shadowOffset(0.71);
+      const [sdxSoft, sdySoft] = shadowOffset(1.1);
       this.buildings.forEach((b, i) => {
-        ctx.fillStyle = `rgba(12,15,10,${0.3 * this.alphas[i]})`;
-        ctx.fillRect(b.x - OVERHANG + 0.45, b.y - OVERHANG + 0.55, b.w + OVERHANG * 2, b.h + OVERHANG * 2);
+        const a = this.alphas[i];
+        const x = b.x - OVERHANG;
+        const y = b.y - OVERHANG;
+        const w = b.w + OVERHANG * 2;
+        const h = b.h + OVERHANG * 2;
+        // soft SE cast shadow — two nested alpha rects along the shared sun direction
+        ctx.fillStyle = `rgba(12,15,10,${SHADOW_SOFT_ALPHA * a})`;
+        ctx.fillRect(x + sdxSoft, y + sdySoft, w, h);
+        ctx.fillStyle = `rgba(12,15,10,${SHADOW_ALPHA * a})`;
+        ctx.fillRect(x + sdx, y + sdy, w, h);
+        // tight ambient-occlusion ring at the wall base — not sun-directional
+        const aoW = 0.22;
+        ctx.strokeStyle = `rgba(8,10,7,${AO_ALPHA * a})`;
+        ctx.lineWidth = aoW;
+        ctx.strokeRect(x + aoW / 2, y + aoW / 2, w - aoW, h - aoW);
       });
     });
   }
