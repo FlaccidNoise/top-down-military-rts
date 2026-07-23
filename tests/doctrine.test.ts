@@ -5,7 +5,7 @@ import { AI_MEMORY_TICKS, RedCommander } from '../src/sim/ai';
 import { newCampaign } from '../src/campaign/campaign';
 import { WEAPONS } from '../src/sim/data';
 import { EDGE, GameMap } from '../src/sim/map';
-import { Sim } from '../src/sim/sim';
+import { SPOT_INTERVAL, Sim } from '../src/sim/sim';
 import { makeStrategicBattle, newFront } from '../src/strategic/bridge';
 import { makeDefaultSector } from '../src/strategic/sector';
 
@@ -192,6 +192,46 @@ describe('AI commander doctrine', () => {
     }
     expect(assaultAtTick).toBeGreaterThan(300); // never before 10s of suppressive fire could even exist
     expect(mgShotsBeforeAssault).toBeGreaterThan(0); // and the base of fire really was shooting first
+  });
+
+  it('reserve still commits when a maneuver team bleeds out mid-assault (the executing-assault guard must not skip the loss check)', () => {
+    // Regression: the "an executing charge owns its team" continue-guard sits
+    // above the reserve-commit check. If it short-circuits the loss check too,
+    // a team dying mid-charge — the highest-casualty moment — never triggers
+    // reinforcement. State is forced directly (no full battle) so the assert
+    // isolates exactly that control-flow ordering.
+    const sim = new Sim(new GameMap(140, 60), 103);
+    const post = { x: 120, y: 30 };
+    const mg = sim.addSquad('red', 'MG', [{ name: 'G', weapon: 'mg42', x: 60.5, y: 30.5 }]); // base of fire
+    // three rifle teams → maneuver = first two (pool.slice(0,2)), reserve = third
+    const man = sim.addSquad(
+      'red',
+      'Man',
+      Array.from({ length: 4 }, (_, i) => ({ name: `M${i}`, weapon: 'kar98k' as const, x: 96.5, y: 28.5 + i })),
+    );
+    const man2 = sim.addSquad('red', 'Man2', [{ name: 'N', weapon: 'kar98k', x: 96.5, y: 34.5 }]);
+    const reserve = sim.addSquad('red', 'Res', [{ name: 'Res', weapon: 'kar98k', x: 50.5, y: 30.5 }]);
+    sim.addSquad('blue', 'Garrison', [{ name: 'B1', weapon: 'kar98k', x: 122.5, y: 30.5 }]);
+    const posts = { [mg.id]: post, [man.id]: post, [man2.id]: post, [reserve.id]: post };
+    const commander = new RedCommander({ stance: 'attack', posts });
+
+    // first eval: assigns groups and captures man's startStrength = 4
+    sim.tick = SPOT_INTERVAL;
+    commander.update(sim);
+    const reserveTeam = sim.teams[reserve.teamIds[0]];
+    expect(reserveTeam.orderState.order).toBeNull(); // reserve is idle before losses
+
+    // force man into an executing charge and drop it below half strength
+    const manTeam = sim.teams[man.teamIds[0]];
+    manTeam.orderState = { order: { kind: 'assault', x: post.x, y: post.y }, phase: 'executing', reason: '' };
+    for (let i = 0; i < 3; i++) sim.soldiers[man.soldierIds[i]].alive = false; // 1 of 4 left = 25%
+
+    // next eval: the guard skips man's re-order, but the reserve check must
+    // still see the 25% strength and commit
+    sim.tick = SPOT_INTERVAL + 150;
+    commander.update(sim);
+    expect(reserveTeam.orderState.order).not.toBeNull(); // reserve committed
+    expect(manTeam.orderState.order?.kind).toBe('assault'); // and the charge was NOT re-rolled
   });
 
   it('a real Gruppe (addSquadFromDef) keeps its MG-Trupp on fire/move orders while the Schützen team maneuvers, over a sustained window', () => {

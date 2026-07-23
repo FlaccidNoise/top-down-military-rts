@@ -182,25 +182,30 @@ export class RedCommander {
       if (!post) continue;
       const alive = team.soldierIds.filter((id) => sim.soldiers[id].alive);
       if (alive.length === 0) continue;
+      // Reserve commits on a maneuver team's losses — evaluated every eval
+      // BEFORE the executing-assault guard below, so a team bleeding out
+      // mid-charge (the highest-casualty moment) still triggers reinforcement.
+      const start = this.startStrength.get(teamId) ?? alive.length;
+      if (!this.reserveCommitted && start > 0 && alive.length / start < 0.5) this.commitReserve(sim);
       // an executing charge owns its team until the position is clear —
       // reissuing would re-roll compliance mid-charge and restart the run-in
       if (team.orderState.order?.kind === 'assault' && team.orderState.phase === 'executing') continue;
       const suppressed = this.suppressionEstablished(sim);
-      const confAtPost = this.threatConfNear(post.x, post.y, 15);
+      const cleared = this.threatConfNear(post.x, post.y, 15) < CLEAR_CONF;
       const c = this.centroid(sim, team.soldierIds);
-      if (suppressed && confAtPost >= CLEAR_CONF && Math.hypot(c.x - post.x, c.y - post.y) <= ASSAULT_RANGE) {
+      if (suppressed && !cleared && Math.hypot(c.x - post.x, c.y - post.y) <= ASSAULT_RANGE) {
         // suppression established, live threat on the post, close enough to
-        // charge home: the 8th order, through the same API the player uses —
-        // its compliance ladder still applies (a cautious team advances instead)
+        // charge home: the 8th order, through the same API the player uses.
+        // suppressionEstablished is a global attempt-gate; the real per-team
+        // check is orderTeam's compliance ladder (dangerScore × the assault
+        // mult), which downgrades a team that shouldn't charge to a move.
         sim.orderTeam(teamId, { kind: 'assault', x: post.x, y: post.y });
-      } else if (suppressed || confAtPost < CLEAR_CONF) {
+      } else if (suppressed || cleared) {
         sim.orderTeam(teamId, { kind: 'fast', x: post.x, y: post.y });
       } else {
         const flank = this.pickFlank(sim, team, post);
         sim.orderTeam(teamId, { kind: 'move', x: flank.x, y: flank.y });
       }
-      const start = this.startStrength.get(teamId) ?? alive.length;
-      if (!this.reserveCommitted && start > 0 && alive.length / start < 0.5) this.commitReserve(sim);
     }
   }
 
