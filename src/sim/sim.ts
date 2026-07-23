@@ -48,10 +48,6 @@ const MELEE_INTERVAL = 1.4; // s between strikes, jittered per swing
 // defenders — the charge redirects onto them and completes when none remain visible.
 const ASSAULT_RADIUS = 20; // m
 const ASSAULT_REPATH_TICKS = 15; // per-soldier redirect cadence (0.5 s)
-// SMGs with rounds left fight melee by shooting from the hip — their CQC
-// edge over the bayonet, paid for in ammo. (Sim-side twin of dudes.ts's
-// SMG_CLASS silhouette bucket; data.ts has no weapon-class field.)
-const MELEE_SMG: ReadonlySet<WeaponKey> = new Set(['thompson', 'mp40']);
 
 export type Side = 'blue' | 'red';
 export type Mental = 'steady' | 'shaken' | 'pinned' | 'broken';
@@ -2949,7 +2945,7 @@ export class Sim {
   // pain, suppression, nerves, and stamina all degrade melee too.
   private meleeStrike(s: Soldier, t: Soldier): void {
     const w: WeaponDef = WEAPONS[s.weapon];
-    const isSmg = MELEE_SMG.has(s.weapon);
+    const isSmg = WEAPONS[s.weapon].class === 'smg'; // SMGs with rounds left fight melee from the hip — CQC edge over the bayonet, paid in ammo
     const smgFire = isSmg && s.magLeft > 0;
     const clumsy = !!w.heat || w.pen !== undefined || !!w.arc; // an MG42 makes a poor club
     const base = smgFire ? 0.7 : clumsy ? 0.35 : isSmg ? 0.45 : 0.55;

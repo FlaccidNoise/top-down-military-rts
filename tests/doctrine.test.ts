@@ -234,6 +234,61 @@ describe('AI commander doctrine', () => {
     expect(manTeam.orderState.order?.kind).toBe('assault'); // and the charge was NOT re-rolled
   });
 
+  it('smoke before assault: the commander screens the objective with mortar smoke, and the charge steps off only after the screen is up', () => {
+    const map = new GameMap(140, 60);
+    const sim = new Sim(map, 102);
+    const post = { x: 120, y: 30 };
+    const mg = sim.addSquad('red', 'MG', [
+      { name: 'G', weapon: 'mg42', x: 60.5, y: 30.5 },
+      { name: 'A1', weapon: 'kar98k', x: 61.5, y: 29.5 },
+    ]);
+    // Maneuver team inside charge range, ammo zeroed (same reasoning as the
+    // assault-adoption test): a live rifle team here shoots the garrison dead
+    // before the doctrine loop can play out, and a dead post reads clear — so
+    // only the MG suppresses, and the garrison stays a live objective to
+    // screen and charge.
+    const rifle = sim.addSquad(
+      'red',
+      'Rifle',
+      Array.from({ length: 6 }, (_, i) => ({ name: `R${i}`, weapon: 'kar98k' as const, x: 96.5, y: 27.5 + i, xp: 20 })),
+    );
+    rifle.soldierIds.forEach((id) => {
+      sim.soldiers[id].morale = 1;
+      sim.soldiers[id].ammo = {};
+      sim.soldiers[id].magLeft = 0;
+    });
+    sim.soldiers[rifle.soldierIds[0]].role = 'leader';
+    // A deployed 8cm mortar well back (past minRange, inside range), crew
+    // carrying shells — the commander's screen asset. Not in cfg.posts, so
+    // it's never task-grouped or ordered to move: it sits and fires smoke
+    // when the commander tasks it.
+    sim.addEmplacement('red', 'mortar81', 40, 30, 0, 'deployed');
+    // Garrison dug onto the post with LOS over the whole approach — a naked
+    // charge here balks by construction (claim (d)); only smoke on the
+    // objective can clear the compliance the charge needs.
+    sim.addSquad('blue', 'Garrison', [
+      { name: 'B1', weapon: 'kar98k', x: 122.5, y: 30.5 },
+      { name: 'B2', weapon: 'kar98k', x: 122.5, y: 31.5 },
+      { name: 'B3', weapon: 'kar98k', x: 122.5, y: 32.5 },
+    ]);
+    const commander = new RedCommander({ stance: 'attack', posts: { [mg.id]: post, [rifle.id]: post } });
+
+    let smokeOnPostTick = -1; // first tick a smoke puff sits on the objective
+    let chargeStepsOffTick = -1; // first tick the assault is actually executing (a real charge, not a balk)
+    for (let i = 0; i < 12000 && chargeStepsOffTick < 0; i++) {
+      commander.update(sim);
+      sim.step();
+      if (smokeOnPostTick < 0 && sim.smoke.some((p) => Math.hypot(p.x - post.x, p.y - post.y) <= 10)) smokeOnPostTick = sim.tick;
+      const os = sim.teams[rifle.teamIds[0]].orderState;
+      if (chargeStepsOffTick < 0 && os.order?.kind === 'assault' && os.phase === 'executing') chargeStepsOffTick = sim.tick;
+    }
+    expect(smokeOnPostTick).toBeGreaterThan(0); // the commander employed mortar smoke on the objective
+    expect(chargeStepsOffTick).toBeGreaterThan(0); // and the maneuver team's charge actually stepped off
+    // the doctrine loop, in order: a charge onto this covered post balks until
+    // the screen blinds it, so the committed charge can only follow the smoke
+    expect(smokeOnPostTick).toBeLessThanOrEqual(chargeStepsOffTick);
+  });
+
   it('a real Gruppe (addSquadFromDef) keeps its MG-Trupp on fire/move orders while the Schützen team maneuvers, over a sustained window', () => {
     const map = new GameMap(140, 60);
     const sim = new Sim(map, 300);
