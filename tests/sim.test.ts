@@ -151,6 +151,24 @@ describe('fog of war', () => {
     expect(sim.soldierVisibleTo('blue', amb)).toBe(true);
   });
 
+  it('a tracked enemy who dies out of sight leaves a ghost until the corpse is found', () => {
+    const sim = new Sim(walledMap(), 15);
+    sim.addSquad('blue', 'a', [{ name: 'A', weapon: 'garand', x: 5.5, y: 10.5 }]);
+    sim.addSquad('red', 'r', [{ name: 'R', weapon: 'kar98k', x: 20.5, y: 10.5 }]);
+    dry(sim);
+    const [blue, red] = sim.soldiers;
+    for (let i = 0; i < 15; i++) sim.step(); // tracked in the open
+    red.x = 45.5; // staged: behind the wall...
+    red.alive = false; // ...and dead before the next sweep
+    for (let i = 0; i < 15; i++) sim.step();
+    expect(sim.soldierVisibleTo('blue', red)).toBe(false);
+    expect(sim.contacts.blue.get(`s${red.id}`)?.x).toBeCloseTo(20.5, 5); // ghost at last-seen, not silently dropped
+    blue.x = 40.5; // walks past the wall and finds the corpse
+    for (let i = 0; i < 15; i++) sim.step();
+    expect(sim.contacts.blue.has(`s${red.id}`)).toBe(false); // resolved
+    expect(sim.soldierVisibleTo('blue', red)).toBe(true); // permanent corpse marker
+  });
+
   it('an unseen corpse stays hidden until a friendly gains LOS, then is known for good', () => {
     const sim = new Sim(walledMap(), 14);
     sim.addSquad('blue', 'a', [{ name: 'A', weapon: 'garand', x: 5.5, y: 10.5 }]);
