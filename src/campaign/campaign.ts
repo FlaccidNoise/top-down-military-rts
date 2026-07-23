@@ -44,6 +44,7 @@ export function squadMembers(sq: CampaignSquad): number[] {
 }
 
 export interface Campaign {
+  seed: number; // campaign rng seed — salts coarse battle resolution (old saves normalized to 0 in loadGame)
   day: number;
   nextPid: number;
   companies: { name: string; squads: number[] }[]; // indices into squads
@@ -104,7 +105,7 @@ function companySquadNames(coName: string): string[] {
 
 export function newCampaign(seed: number): Campaign {
   const rng = mulberry32(seed);
-  const c: Campaign = { day: 1, nextPid: 1, companies: [], squads: [], soldiers: {}, log: [] };
+  const c: Campaign = { seed, day: 1, nextPid: 1, companies: [], squads: [], soldiers: {}, log: [] };
   for (const coName of COMPANY_NAMES) {
     const squadIndexes: number[] = [];
     const names = companySquadNames(coName);

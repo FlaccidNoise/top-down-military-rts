@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { newCampaign, squadMembers } from '../src/campaign/campaign';
-import { Front, OP_START_MIN, operationStatus, findPath } from '../src/strategic/front';
+import { advanceDays, fillReplacements, newCampaign, squadMembers } from '../src/campaign/campaign';
+import { Front, OP_START_MIN, REINFORCE_CYCLE_DAYS, REINFORCE_PER_COMPANY, operationStatus, findPath } from '../src/strategic/front';
 import { cellIndex, parseSector, makeDefaultSector, cellXY } from '../src/strategic/sector';
-import { newFront, makeStrategicBattle, resolveCoarse, syncStrengths, retreat } from '../src/strategic/bridge';
+import { newFront, makeStrategicBattle, applyEngagementOutcome, resolveCoarse, syncStrengths, retreat } from '../src/strategic/bridge';
 import { StrategicCommander, RED_DEFENDER, BLUE_ATTACKER } from '../src/strategic/command';
 
 function fordSector() {
@@ -185,40 +185,50 @@ describe('StrategicCommander', () => {
   });
 
   describe('AI-vs-AI', () => {
-    it('war terminates deterministically', () => {
-      const run = (seed: number) => {
-        const c = newCampaign(seed);
-        const sector = makeDefaultSector();
-        const front = newFront(c, sector);
-        const redCmd = new StrategicCommander('red', RED_DEFENDER);
-        const blueCmd = new StrategicCommander('blue', BLUE_ATTACKER);
-
-        let steps = 0;
-        while (operationStatus(front) === 'ongoing' && steps < 100000) {
-          redCmd.evaluate(front);
-          blueCmd.evaluate(front);
-          const e = front.step();
-          if (e) resolveCoarse(c, front, e);
-          steps++;
+    // Headless war, mirroring the main.ts strategic tick: both commanders,
+    // coarse resolution, heal clocks and reinforcement cycles on day change.
+    const runWar = (seed: number) => {
+      const c = newCampaign(seed);
+      const sector = makeDefaultSector();
+      const front = newFront(c, sector);
+      const redCmd = new StrategicCommander('red', RED_DEFENDER);
+      const blueCmd = new StrategicCommander('blue', BLUE_ATTACKER);
+      let prevDay = front.day;
+      let steps = 0;
+      while (operationStatus(front) === 'ongoing' && steps < 100000) {
+        redCmd.evaluate(front);
+        blueCmd.evaluate(front);
+        const e = front.step();
+        if (front.day > prevDay) {
+          advanceDays(c, front.day - prevDay);
+          if (front.day % REINFORCE_CYCLE_DAYS === 0) fillReplacements(c, front.day * 31 + 7, REINFORCE_PER_COMPANY);
+          syncStrengths(c, front);
+          prevDay = front.day;
         }
-        return { status: operationStatus(front), day: front.day, logLen: c.log.length };
-      };
+        if (e) resolveCoarse(c, front, e);
+        steps++;
+      }
+      return { status: operationStatus(front), day: front.day, logLen: c.log.length };
+    };
 
-      const a = run(42);
-      const b = run(42);
-      expect(a).toEqual(b);
+    it('same campaign seed reproduces the same war', () => {
+      expect(runWar(42)).toEqual(runWar(42));
+    }, 60000);
 
-      expect(a.status).not.toBe('ongoing');
-
-      // All outcomes should be valid (terminated before deadline).
-      // With the current doctrines, blue may always lose — that's fine;
-      // the important thing is determinism and termination.
-      const outcomes = [1, 10, 20, 42, 99].map(s => run(s));
+    it('war terminates, varies with the campaign seed, and can go either way', () => {
+      const outcomes = [0, 1, 7, 42, 99, 500, 1000, 9999].map(runWar);
       for (const o of outcomes) {
         expect(o.status).not.toBe('ongoing');
         expect(o.day).toBeLessThanOrEqual(15);
       }
-    }, 60000);
+      // The campaign seed salts every coarse battle: distinct seeds must not
+      // all produce the same scripted war.
+      const distinct = new Set(outcomes.map((o) => `${o.status}:${o.day}:${o.logLen}`));
+      expect(distinct.size).toBeGreaterThan(1);
+      // Balance: a spectate war is a war, not a script — both outcomes occur.
+      expect(outcomes.some((o) => o.status === 'won')).toBe(true);
+      expect(outcomes.some((o) => o.status === 'lost')).toBe(true);
+    }, 120000);
   });
 
   describe('battle staging', () => {
@@ -260,6 +270,51 @@ describe('StrategicCommander', () => {
       const red = sim.soldiers.filter(s => s.side === 'red');
       expect(blue.length).toBe(138);
       expect(red.length).toBe(36);
+    });
+
+    // Regression: a red-AI counterattack vs the player crashed the debrief
+    // (companyIndex -1) and reported VICTORY/DEFEAT from the attacker's side.
+    // The debrief is the player's after-action report — always BLUE-perspective.
+    const stageRedAttack = () => {
+      const c = newCampaign(10);
+      const front = newFront(c, makeDefaultSector());
+      const reserve = front.chits.find(ch => ch.name === 'Reserve')!;
+      const able = front.chits.find(ch => ch.side === 'blue')!;
+      const ableXY = cellXY(front.sector, able.cell);
+      reserve.cell = cellIndex(front.sector, ableXY.x + 1, ableXY.y);
+      const e = { attackerId: reserve.id, defenderId: able.id, cell: able.cell };
+      return { c, front, able, e };
+    };
+
+    it('red-attacker engagement: debrief company is the BLUE defender, not -1', () => {
+      const { c, front, able, e } = stageRedAttack();
+      const battle = makeStrategicBattle(c, front, e, 5);
+      expect(battle.companyIndex).toBe(able.companyIndex);
+      expect(c.companies[battle.companyIndex].squads.length).toBeGreaterThan(0);
+    });
+
+    it('red-attacker engagement repelled: record.won is true (BLUE held), cell unchanged', () => {
+      const { c, front, e } = stageRedAttack();
+      const battle = makeStrategicBattle(c, front, e, 5);
+      for (const s of battle.sim.soldiers) if (s.side === 'red') s.alive = false;
+      battle.sim.step();
+      expect(battle.sim.winner).toBe('blue');
+      const out = applyEngagementOutcome(c, front, e, battle.sim);
+      expect(out.record.won).toBe(true);
+      expect(out.cellTaken).toBe(false);
+      expect(front.sector.cells[e.cell].owner).toBe('blue');
+    });
+
+    it('red-attacker engagement lost: record.won is false (BLUE lost), cell falls', () => {
+      const { c, front, e } = stageRedAttack();
+      const battle = makeStrategicBattle(c, front, e, 5);
+      for (const s of battle.sim.soldiers) if (s.side === 'blue') s.alive = false;
+      battle.sim.step();
+      expect(battle.sim.winner).toBe('red');
+      const out = applyEngagementOutcome(c, front, e, battle.sim);
+      expect(out.record.won).toBe(false);
+      expect(out.cellTaken).toBe(true);
+      expect(front.sector.cells[e.cell].owner).toBe('red');
     });
   });
 });

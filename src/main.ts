@@ -305,6 +305,7 @@ function showDebrief(): void {
   debriefShown = true;
   const e = pendingEngagement;
   if (!e) throw new Error('showDebrief: pendingEngagement is null — startEngagementBattle must set it');
+  const blueAttacked = front.chits.find((ch) => ch.id === e.attackerId)!.side === 'blue';
   const out = applyEngagementOutcome(campaign, front, e, sim);
   pendingEngagement = null;
   saveGame(campaign, front);
@@ -327,12 +328,15 @@ function showDebrief(): void {
     })
     .join('');
 
+  const groundLine = out.cellTaken
+    ? blueAttacked ? 'The ground is ours.' : 'The position is lost.'
+    : blueAttacked ? 'The attack failed; the line is unchanged.' : 'The line held.';
   const enemyLosses = out.redLosses > 0 ? `~${out.redLosses} enemy losses` : 'no enemy losses';
   debriefEl.innerHTML = `<div class="db-scroll"><div class="db">
     <h1 class="${out.record.won ? 'win' : 'loss'}">${out.record.won ? 'VICTORY' : 'DEFEAT'}</h1>
     <p class="sub">${out.record.kia.length} KIA · ${out.record.wounded.length} wounded · ${enemyLosses}</p>
     <p class="fallen">${out.record.kia.length > 0 ? 'Fallen: ' + out.record.kia.join(', ') : 'No one died today.'}</p>
-    <p class="sub">${out.cellTaken ? 'The ground is ours.' : 'The attack failed; the line is unchanged.'}</p>
+    <p class="sub">${groundLine}</p>
     ${rows}
     </div></div>
     <div class="db-actions"><button id="next" class="primary">Return to the front</button></div>`;

@@ -143,6 +143,67 @@ export class Front {
   }
 }
 
+export interface Dijkstra {
+  dist: Float64Array;
+  prev: Int32Array;
+}
+
+// Dijkstra over 4-neighbors weighted by CELL_MINUTES from `from` to EVERY
+// cell. Batch counterpart of findPath for callers that need times/paths to
+// many cells (e.g. pressure maps, destination scans).
+export function dijkstra(sector: SectorMap, from: number): Dijkstra {
+  const n = sector.cells.length;
+  const dist = new Float64Array(n).fill(Infinity);
+  const prev = new Int32Array(n).fill(-1);
+  const visited = new Uint8Array(n);
+  dist[from] = 0;
+  for (;;) {
+    let u = -1;
+    let best = Infinity;
+    for (let i = 0; i < n; i++) {
+      if (!visited[i] && dist[i] < best) {
+        best = dist[i];
+        u = i;
+      }
+    }
+    if (u < 0) break;
+    visited[u] = 1;
+    const { x, y } = cellXY(sector, u);
+    for (const [dx, dy] of [
+      [1, 0],
+      [-1, 0],
+      [0, 1],
+      [0, -1],
+    ] as const) {
+      const nx = x + dx;
+      const ny = y + dy;
+      if (nx < 0 || ny < 0 || nx >= sector.w || ny >= sector.h) continue;
+      const v = cellIndex(sector, nx, ny);
+      const cost = CELL_MINUTES[sector.cells[v].terrain];
+      if (!isFinite(cost)) continue;
+      if (dist[u] + cost < dist[v]) {
+        dist[v] = dist[u] + cost;
+        prev[v] = u;
+      }
+    }
+  }
+  return { dist, prev };
+}
+
+export function allPathTimes(sector: SectorMap, from: number): Float64Array {
+  return dijkstra(sector, from).dist;
+}
+
+// Path reconstruction on a precomputed Dijkstra tree: same output contract
+// as findPath (sequence excluding `from`, [] if equal, null if unreachable).
+export function pathFromTree(tree: Dijkstra, from: number, to: number): number[] | null {
+  if (from === to) return [];
+  if (!isFinite(tree.dist[to])) return null;
+  const path: number[] = [];
+  for (let v = to; v !== from; v = tree.prev[v]) path.unshift(v);
+  return path;
+}
+
 // Dijkstra over 4-neighbors weighted by CELL_MINUTES. Ignores chits: paths may
 // run through enemy-held cells — contact triggers there during step(). Returns
 // the cell sequence excluding `from`, [] if from === to, null if unreachable.

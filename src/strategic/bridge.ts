@@ -337,11 +337,17 @@ export function makeStrategicBattle(
 
   const { x, y } = cellXY(front.sector, e.cell);
   const stance = attackerSide === 'red' ? 'attack' : 'defend';
+  // The debrief is the player's (BLUE) after-action report even when red
+  // attacked: always hand back the blue participant's company.
+  const blueChit = attackerSide === 'blue' ? attacker : defender;
+  if (blueChit.companyIndex < 0) {
+    throw new Error(`makeStrategicBattle: blue chit '${blueChit.name}' has no campaign company`);
+  }
   return {
     sim,
     commander: new RedCommander({ stance, posts: commanderPosts }),
     name: `${defender.name} at (${x}, ${y})`,
-    companyIndex: attacker.companyIndex,
+    companyIndex: blueChit.companyIndex,
   };
 }
 
@@ -374,13 +380,15 @@ export function applyEngagementOutcome(
 ): { record: BattleRecord; redLosses: number; attackerLosses: number; cellTaken: boolean } {
   const attacker = front.chits.find((ch) => ch.id === e.attackerId)!;
   const defender = front.chits.find((ch) => ch.id === e.defenderId)!;
-  const won = sim.winner === attacker.side;
-  const record = applyBattleResults(c, sim, won);
+  // record.won is BLUE-perspective (the debrief is the player's after-action
+  // report); attackerWon drives the map changes.
+  const attackerWon = sim.winner === attacker.side;
+  const record = applyBattleResults(c, sim, sim.winner === 'blue');
   const redLosses = sim.soldiers.filter((s) => s.side === 'red' && (!s.alive || s.downed)).length;
   const attackerLosses = sim.soldiers.filter((s) => s.side === attacker.side && (!s.alive || s.downed)).length;
   defender.strength = Math.max(0, defender.strength - redLosses);
   let cellTaken = false;
-  if (won) {
+  if (attackerWon) {
     if (defender.strength > 0) retreat(front, defender);
     front.sector.cells[e.cell].owner = attacker.side;
     attacker.cell = e.cell;
@@ -401,23 +409,31 @@ export function resolveCoarse(
 ): { record: BattleRecord; attackerLosses: number; defenderLosses: number } {
   const attacker = front.chits.find((ch) => ch.id === e.attackerId)!;
   const defender = front.chits.find((ch) => ch.id === e.defenderId)!;
-  const seed = front.clockMin * 7919 + e.cell;
+  const seed = (c.seed ^ (front.clockMin * 7919 + e.cell)) >>> 0; // per-campaign salt: wars differ across campaigns
   const rng = mulberry32(seed);
 
   const defCell = front.sector.cells[e.cell];
   const atkCell = front.sector.cells[attacker.cell];
+  // Coarse balance knobs (tuned 2026-07 across 16 campaign seeds: wars run
+  // 1-15 days with both 'won' and 'lost' outcomes): a town garrison is a
+  // fortress (repeated full-strength assaults to crack), woods give cover,
+  // and an assault across a defended river/bridge crossing is costlier.
   let terrainMult = 1.0;
-  if (defCell.terrain === 'town') terrainMult *= 1.5;
-  if (defCell.terrain === 'woods') terrainMult *= 1.3;
-  if (atkCell.terrain === 'river') terrainMult *= 1.4;
+  if (defCell.terrain === 'town') terrainMult *= 7.0;
+  if (defCell.terrain === 'woods') terrainMult *= 1.5;
+  if (atkCell.terrain === 'river' || atkCell.terrain === 'bridge') terrainMult *= 2.0; // assault across a defended crossing
 
   const score = attacker.strength / (attacker.strength + defender.strength * terrainMult);
   const clampedScore = Math.max(0.05, Math.min(0.95, score));
   const attackerWins = rng.next() < clampedScore;
 
+  const winnerStrength = attackerWins ? attacker.strength : defender.strength;
   const loserStrength = attackerWins ? defender.strength : attacker.strength;
-  const winnerLosses = Math.max(0, Math.floor(loserStrength * (0.1 + rng.next() * 0.15)));
-  const loserLosses = Math.max(1, Math.floor(loserStrength * (0.4 + rng.next() * 0.3)));
+  // Each side bleeds in proportion to its OWN strength: a small garrison
+  // that repels a big assault isn't mauled by the effort of winning (2-6%),
+  // but losing a battle is a rout (50-80%).
+  const winnerLosses = Math.max(0, Math.floor(winnerStrength * (0.02 + rng.next() * 0.04)));
+  const loserLosses = Math.max(1, Math.floor(loserStrength * (0.5 + rng.next() * 0.3)));
 
   const atkLosses = attackerWins ? winnerLosses : loserLosses;
   const defLosses = attackerWins ? loserLosses : winnerLosses;
@@ -460,7 +476,9 @@ function applyCoarseBlueLosses(c: Campaign, chit: Chit, lossCount: number, rng: 
     [fitPids[i], fitPids[j]] = [fitPids[j], fitPids[i]];
     const pid = fitPids[i];
     const cs = c.soldiers[pid];
-    if (rng.next() < 0.3) {
+    // Coarse casualties land hard: half KIA (a rout, not a skirmish), the
+    // rest out 1-3 days.
+    if (rng.next() < 0.5) {
       cs.status = 'kia';
       record.kia.push(cs.name);
     } else {

@@ -1,6 +1,6 @@
 import type { Side } from '../sim/sim';
-import { CELL_MINUTES, cellIndex, cellXY, type SectorMap } from './sector';
-import { Front, findPath, type Chit } from './front';
+import { cellIndex, cellXY, type SectorMap } from './sector';
+import { Front, dijkstra, pathFromTree, type Chit, type Dijkstra } from './front';
 
 // Per-side strategic doctrine. All values are tuning knobs — the commander
 // itself is a pure function of front state with no rng.
@@ -44,14 +44,6 @@ function manhattan(sector: SectorMap, a: number, b: number): number {
   return Math.abs(pa.x - pb.x) + Math.abs(pa.y - pb.y);
 }
 
-function pathTime(sector: SectorMap, from: number, to: number): number | null {
-  const path = findPath(sector, from, to);
-  if (path === null) return null;
-  let t = 0;
-  for (const c of path) t += CELL_MINUTES[sector.cells[c].terrain];
-  return t;
-}
-
 // A bank cell is a non-river cell adjacent to at least one river cell.
 function isBankCell(sector: SectorMap, cell: number): boolean {
   if (sector.cells[cell].terrain === 'river') return false;
@@ -65,13 +57,19 @@ function isBankCell(sector: SectorMap, cell: number): boolean {
   return false;
 }
 
-// pressure(cell) = Σ enemy strength / (1 + eta_minutes / 60)
-function computePressure(front: Front, cell: number, enemySide: Side): number {
+// pressure(cell) = Σ enemy strength / (1 + eta_minutes / 60). Eta comes from
+// one all-cells Dijkstra per enemy chit per tick (see StrategicCommander).
+function computePressure(front: Front, cell: number, enemySide: Side, treeCache: Map<number, Dijkstra>): number {
   let p = 0;
   for (const enemy of front.chits) {
     if (enemy.side !== enemySide || enemy.strength <= 0) continue;
-    const eta = pathTime(front.sector, enemy.cell, cell);
-    if (eta === null) continue;
+    let tree = treeCache.get(enemy.id);
+    if (!tree) {
+      tree = dijkstra(front.sector, enemy.cell);
+      treeCache.set(enemy.id, tree);
+    }
+    const eta = tree.dist[cell];
+    if (!isFinite(eta)) continue;
     p += enemy.strength / (1 + eta / 60);
   }
   return p;
@@ -79,6 +77,18 @@ function computePressure(front: Front, cell: number, enemySide: Side): number {
 
 export class StrategicCommander {
   private lastEvalMin = -Infinity;
+  // Per-tick Dijkstra cache: one all-cells search per chit instead of one
+  // per (cell, chit) pair. Cleared on every evaluate tick.
+  private treeCache = new Map<number, Dijkstra>();
+
+  private tree(front: Front, from: number): Dijkstra {
+    let t = this.treeCache.get(from);
+    if (!t) {
+      t = dijkstra(front.sector, from);
+      this.treeCache.set(from, t);
+    }
+    return t;
+  }
 
   constructor(
     readonly side: Side,
@@ -90,6 +100,7 @@ export class StrategicCommander {
   evaluate(front: Front): void {
     if (front.clockMin - this.lastEvalMin < this.doctrine.evalMinutes) return;
     this.lastEvalMin = front.clockMin;
+    this.treeCache.clear();
     if (this.side === 'red') this.evaluateRed(front);
     else this.evaluateBlue(front);
   }
@@ -101,6 +112,12 @@ export class StrategicCommander {
     const myChits = front.chits.filter((c) => c.side === 'red' && c.strength > 0);
     const enemyChits = front.chits.filter((c) => c.side === 'blue' && c.strength > 0);
     const idle = myChits.filter((c) => c.path.length === 0);
+    // Garrisons on objective cells hold their post: never withdrawn, never
+    // pulled into ford screens or repositioning, never drawn off by a
+    // counterattack. Mobile chits (Reserve, town/bridge garrisons off
+    // objectives) do all maneuver.
+    const holds = (chit: Chit) => front.sector.cells[chit.cell].objective;
+    const mobile = idle.filter((c) => !holds(c));
     const reserve = myChits.find((c) => c.name === 'Reserve');
     const ordered = new Set<number>();
 
@@ -117,7 +134,7 @@ export class StrategicCommander {
     }
 
     // ── 1. WITHDRAW ────────────────────────────────────────────────────
-    for (const chit of idle) {
+    for (const chit of mobile) {
       if (ordered.has(chit.id) || screening.has(chit.id)) continue;
       const adjStr = this.adjacentEnemyStrength(front, chit, enemySide);
       if (adjStr > this.doctrine.outmatchedRatio * chit.strength) {
@@ -139,7 +156,7 @@ export class StrategicCommander {
 
         let best: Chit | null = null;
         let bestDist = Infinity;
-        for (const chit of idle) {
+        for (const chit of mobile) {
           if (ordered.has(chit.id) || screening.has(chit.id)) continue;
           const isRes = reserve !== undefined && chit.id === reserve.id;
           const dist = manhattan(front.sector, chit.cell, bankCell) + (isRes ? 10000 : 0);
@@ -169,7 +186,7 @@ export class StrategicCommander {
       if (cell.owner !== 'red' || cell.terrain === 'river') continue;
       const hasChit = front.chitAt(i, 'red');
       if (!hasChit && !cell.objective) continue;
-      const p = computePressure(front, i, enemySide);
+      const p = computePressure(front, i, enemySide, this.treeCache);
       const defStr = hasChit ? hasChit.strength : 0;
       if (defStr < p && p > maxP) {
         maxP = p;
@@ -179,7 +196,7 @@ export class StrategicCommander {
     if (maxCell >= 0) {
       let best: Chit | null = null;
       let bestDist = Infinity;
-      for (const chit of idle) {
+      for (const chit of mobile) {
         if (ordered.has(chit.id) || screening.has(chit.id)) continue;
         if (reserve && chit.id === reserve.id) continue;
         const dist = manhattan(front.sector, chit.cell, maxCell);
@@ -209,7 +226,7 @@ export class StrategicCommander {
         if (!cell.objective && cell.terrain !== 'bridge') continue;
         const gar = front.chitAt(i, 'red');
         const garStr = gar ? gar.strength : 0;
-        const p = computePressure(front, i, enemySide);
+        const p = computePressure(front, i, enemySide, this.treeCache);
         if (p > 1.2 * Math.max(garStr, 0) && p > bestP) {
           bestP = p;
           bestCell = i;
@@ -227,7 +244,7 @@ export class StrategicCommander {
     }
 
     // ── 5. COUNTERATTACK ──────────────────────────────────────────────
-    for (const chit of idle) {
+    for (const chit of mobile) {
       if (ordered.has(chit.id) || screening.has(chit.id)) continue;
       const { x, y } = cellXY(front.sector, chit.cell);
       for (const [dx, dy] of DIRS) {
@@ -235,8 +252,8 @@ export class StrategicCommander {
           ny = y + dy;
         if (nx < 0 || ny < 0 || nx >= front.sector.w || ny >= front.sector.h) continue;
         const ci = cellIndex(front.sector, nx, ny);
-        const cell = front.sector.cells[ci];
-        if (cell.owner !== 'red' && cell.owner !== null) continue;
+        // Counterattack into ANY adjacent cell — including blue-owned ground
+        // (retaking lost objectives is the point of a counterattack).
         const enemy = front.chitAt(ci, enemySide);
         if (!enemy) continue;
         if (enemy.strength < this.doctrine.counterRatio * chit.strength) {
@@ -331,11 +348,12 @@ export class StrategicCommander {
     let best = -1;
     let bestMinDist = -1;
     let bestX = -1;
+    const tree = this.tree(front, chit.cell);
     for (let i = 0; i < front.sector.cells.length; i++) {
       const cell = front.sector.cells[i];
       if (cell.owner !== 'red' || cell.terrain === 'river') continue;
       if (front.chitAt(i)) continue;
-      if (findPath(front.sector, chit.cell, i) === null) continue;
+      if (!isFinite(tree.dist[i])) continue;
       let minDist = Infinity;
       for (const enemy of enemyChits) {
         const d = manhattan(front.sector, i, enemy.cell);
@@ -353,6 +371,7 @@ export class StrategicCommander {
 
   private findScreenableFords(front: Front, enemy: Chit): { riverCell: number; bankCell: number; time: number }[] {
     const results: { riverCell: number; bankCell: number; time: number }[] = [];
+    const tree = this.tree(front, enemy.cell);
     for (let i = 0; i < front.sector.cells.length; i++) {
       if (front.sector.cells[i].terrain !== 'river') continue;
       const { x, y } = cellXY(front.sector, i);
@@ -364,8 +383,8 @@ export class StrategicCommander {
         const bc = front.sector.cells[bi];
         if (bc.terrain === 'river' || bc.owner !== 'red') continue;
         if (front.chitAt(bi, 'red')) continue;
-        const time = pathTime(front.sector, enemy.cell, i);
-        if (time !== null) results.push({ riverCell: i, bankCell: bi, time });
+        const time = tree.dist[i];
+        if (isFinite(time)) results.push({ riverCell: i, bankCell: bi, time });
       }
     }
     return results;
@@ -389,11 +408,12 @@ export class StrategicCommander {
   private findRearCell(front: Front, chit: Chit): number {
     let best = -1;
     let bestMinDist = -1;
+    const tree = this.tree(front, chit.cell);
     for (let i = 0; i < front.sector.cells.length; i++) {
       const cell = front.sector.cells[i];
       if (cell.owner !== 'blue' || cell.terrain === 'river') continue;
       if (front.chitAt(i)) continue;
-      if (findPath(front.sector, chit.cell, i) === null) continue;
+      if (!isFinite(tree.dist[i])) continue;
       let minDist = Infinity;
       for (const red of front.chits) {
         if (red.side !== 'red' || red.strength <= 0) continue;
@@ -433,11 +453,12 @@ export class StrategicCommander {
   // river cell on the path. Generic: inspects findPath output, no hardcoded
   // coordinates.
   private findFordExploit(front: Front, chit: Chit): number {
+    const tree = this.tree(front, chit.cell);
     for (let i = 0; i < front.sector.cells.length; i++) {
       const cell = front.sector.cells[i];
       if (cell.terrain === 'river') continue;
       if (front.chitAt(i, 'red')) continue;
-      const path = findPath(front.sector, chit.cell, i);
+      const path = pathFromTree(tree, chit.cell, i);
       if (path === null || path.length === 0) continue;
       if (!path.some((c) => front.sector.cells[c].terrain === 'river')) continue;
       return i;

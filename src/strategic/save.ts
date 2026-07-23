@@ -25,6 +25,7 @@ export function loadGame(storage: Store = localStorage): { campaign: Campaign; f
     const raw = storage.getItem(KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as { campaign: Campaign; front: FrontSave };
+    parsed.campaign.seed ??= 0; // pre-seed-field saves: deterministic coarse fallback
     for (const s of Object.values(parsed.campaign.soldiers)) {
       const legacy = LEGACY_WEAPONS[s.weapon];
       if (legacy) s.weapon = legacy;
