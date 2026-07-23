@@ -74,6 +74,7 @@ await page.evaluate(
         best = s;
       }
     }
+    if (!best) throw new Error('no living blue soldier near anchor for death pose');
     g.cam.x = best.x;
     g.cam.y = best.y;
     g.cam.scale = 56;

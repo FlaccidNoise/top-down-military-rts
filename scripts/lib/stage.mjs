@@ -18,9 +18,9 @@ export const arg = (name, dflt) => {
   return i >= 0 ? process.argv[i + 1] : dflt;
 };
 
-export async function launch(viewport = { width: 1280, height: 800 }) {
+export async function launch() {
   const browser = await chromium.launch({ channel: 'chrome', headless: true });
-  const page = await browser.newPage({ viewport });
+  const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
   page.on('pageerror', (e) => console.error(`  pageerror: ${e.message}`));
   return { browser, page };
 }
@@ -29,7 +29,11 @@ export async function launch(viewport = { width: 1280, height: 800 }) {
 // gate relies on. Returns the defended cell's terrain kind (after any force).
 export async function gotoStaged(page, { port, seed, camp = 42, fow = 0, forceKind = null }) {
   await page.goto(`http://[::1]:${port}/?seed=${seed}&camp=${camp}&fow=${fow}`, { waitUntil: 'domcontentloaded' });
-  await page.waitForFunction(() => '__game' in window);
+  await page
+    .waitForFunction(() => '__game' in window, null, { timeout: 5000 })
+    .catch(() => {
+      throw new Error(`__game never appeared — is the dev server running? (npm run dev -- --port ${port} --strictPort, reachable at http://[::1]:${port}/)`);
+    });
   return page.evaluate(({ forceKind }) => {
     const g = window.__game;
     const front = g.front;
@@ -37,12 +41,14 @@ export async function gotoStaged(page, { port, seed, camp = 42, fow = 0, forceKi
       .filter((c) => c.side === 'red' && c.strength > 0)
       .sort((a, b) => b.strength - a.strength || a.id - b.id);
     const def = reds[0];
+    if (!def) throw new Error('no red chit to defend (empty red side) — pick a different seed/camp');
     if (forceKind) front.sector.cells[def.cell].terrain = forceKind;
     const sw = front.sector.w;
     const dist = (c) => Math.abs((c.cell % sw) - (def.cell % sw)) + Math.abs(((c.cell / sw) | 0) - ((def.cell / sw) | 0));
     const atk = front.chits
       .filter((c) => c.side === 'blue' && c.strength > 0)
       .sort((a, b) => dist(a) - dist(b) || a.id - b.id)[0];
+    if (!atk) throw new Error('no blue chit to attack (empty blue side) — pick a different seed/camp');
     g.startEngagementBattle({ attackerId: atk.id, defenderId: def.id, cell: def.cell });
     return front.sector.cells[def.cell].terrain;
   }, { forceKind });
@@ -87,6 +93,7 @@ export function deriveTargets(page, { seed, kind }) {
           bySquad.set(s.squadId, arr);
         }
         const biggest = [...bySquad.values()].sort((a, b) => b.length - a.length)[0] ?? list;
+        if (!biggest.length) throw new Error(`no living ${side} soldiers to centre on (empty scene)`);
         return { x: biggest.reduce((a, s) => a + s.x, 0) / biggest.length, y: biggest.reduce((a, s) => a + s.y, 0) / biggest.length };
       };
 
@@ -133,9 +140,9 @@ export function place(page, x, y, scale) {
 // into a per-bucket canvas; toDataURL runs once per bucket at the end, so the
 // rAF loop stays fast enough to fill every bucket.
 // Returns [{ bucket, ageMs, score, dataUrl }] — most-changed frame per bucket.
-export function burst(page, { x, y, scale, trigger, dur, buckets, roiFrac = 0.6 }) {
+export function burst(page, { x, y, scale, trigger, dur, buckets }) {
   return page.evaluate(
-    async ({ x, y, scale, trigger, dur, buckets, roiFrac }) => {
+    async ({ x, y, scale, trigger, dur, buckets }) => {
       const g = window.__game;
       const sim = g.sim;
       const canvas = document.querySelector('canvas');
@@ -146,6 +153,7 @@ export function burst(page, { x, y, scale, trigger, dur, buckets, roiFrac = 0.6 
       await raf();
       await raf(); // render the quiescent scene at this camera before baselining
 
+      const roiFrac = 0.6; // ROI = centre 60% — covers muzzle→impact span and the rising smoke column
       const rw = Math.round(canvas.width * roiFrac);
       const rh = Math.round(canvas.height * roiFrac);
       const rx = Math.round((canvas.width - rw) / 2);
@@ -190,6 +198,6 @@ export function burst(page, { x, y, scale, trigger, dur, buckets, roiFrac = 0.6 
         .map((m, b) => (m ? { ...m, dataUrl: snap[b].toDataURL('image/png') } : null))
         .filter(Boolean);
     },
-    { x, y, scale, trigger, dur, buckets, roiFrac }
+    { x, y, scale, trigger, dur, buckets }
   );
 }
