@@ -5,7 +5,7 @@ import { RedCommander } from '../src/sim/ai';
 import { newCampaign } from '../src/campaign/campaign';
 import { WEAPONS } from '../src/sim/data';
 import { EDGE, GameMap } from '../src/sim/map';
-import { Sim } from '../src/sim/sim';
+import { CONTACT_TTL, Sim } from '../src/sim/sim';
 import { makeStrategicBattle, newFront } from '../src/strategic/bridge';
 import { makeDefaultSector } from '../src/strategic/sector';
 
@@ -214,6 +214,64 @@ describe('AI commander doctrine', () => {
       steps++;
     }
     expect(sim.winner).not.toBeNull();
+  });
+});
+
+// Direct tests for the belief-state math itself (updateThreat's fade formula,
+// maybeBarrage's intel-range targeting) — the doctrine tests above only
+// exercise these through full battles, where a sign error in the fade or a
+// weapon-range gate on the barrage would survive unnoticed. Bracket access
+// reaches the private members without widening them.
+describe('intel layer math', () => {
+  it('updateThreat: tracked contacts hold conf 1; ghosts fade linearly to 0 over the TTL and clamp there', () => {
+    const sim = new Sim(new GameMap(40, 40), 1);
+    const red = sim.addSquad('red', 'R', [{ name: 'R1', weapon: 'kar98k', x: 5.5, y: 5.5 }]);
+    const blue = sim.addSquad('blue', 'B', [{ name: 'B1', weapon: 'garand', x: 20.5, y: 5.5 }]);
+    const commander = new RedCommander({ stance: 'defend', posts: { [red.id]: { x: 5, y: 5 } } });
+    const trackedId = blue.soldierIds[0];
+    sim.spotted.red.set(trackedId, { x: 20.5, y: 5.5 });
+    sim.contacts.red.set('s999', { kind: 'infantry', x: 30, y: 30, tick: 0 });
+    for (const [age, conf] of [
+      [0, 1],
+      [CONTACT_TTL / 2, 0.5],
+      [CONTACT_TTL, 0],
+      [CONTACT_TTL * 2, 0], // clamped, never negative
+    ]) {
+      sim.tick = age;
+      commander['updateThreat'](sim);
+      const threat = commander['threat'];
+      expect(threat).toHaveLength(2);
+      expect(threat[0].conf).toBe(1); // spotted stays fully believed
+      expect(threat[1].conf).toBeCloseTo(conf, 6); // the ghost fades
+    }
+  });
+
+  it('maybeBarrage: shells a spotted 5-man cluster beyond every red weapon range, at its centroid', () => {
+    const sim = new Sim(new GameMap(200, 60), 2);
+    const red = sim.addSquad('red', 'R', [{ name: 'R1', weapon: 'kar98k', x: 10.5, y: 30.5 }]);
+    // 5 blues bunched within 5m of each other, 175m from the spotter —
+    // outside kar98k range (110m), inside SPOT_RANGE (200m)
+    sim.addSquad(
+      'blue',
+      'Cluster',
+      Array.from({ length: 5 }, (_, i) => ({ name: `C${i}`, weapon: 'garand' as const, x: 185.5, y: 28.5 + i })),
+    );
+    const commander = new RedCommander({ stance: 'defend', posts: { [red.id]: { x: 10, y: 30 } } });
+    let target: { x: number; y: number } | null = null;
+    const real = sim.callBarrage.bind(sim);
+    sim.callBarrage = (side, x, y) => {
+      target = { x, y };
+      return real(side, x, y);
+    };
+    for (let i = 0; i < 300 && !target; i++) {
+      commander.update(sim);
+      sim.step();
+    }
+    expect(target).not.toBeNull();
+    const spotter = sim.soldiers[red.soldierIds[0]];
+    expect(Math.hypot(target!.x - spotter.x, target!.y - spotter.y)).toBeGreaterThan(WEAPONS.kar98k.range);
+    expect(Math.hypot(target!.x - 185.5, target!.y - 30.5)).toBeLessThan(1); // the cluster centroid, not a corner of it
+    expect(sim.barragesLeft.red).toBe(0);
   });
 });
 
