@@ -2,13 +2,32 @@ import { chitEtaMinutes, formatClock, type Chit, type Front } from '../strategic
 import { cellIndex, cellXY, type CellTerrain, type SectorMap } from '../strategic/sector';
 
 const TERRAIN_COLORS: Record<CellTerrain, string> = {
-  open: '#4e6b3f',
-  woods: '#31482b',
-  town: '#7a6a55',
-  river: '#3b5a72',
-  bridge: '#9c7a3f',
-  road: '#8a8172',
+  open: '#5a6b4c',
+  woods: '#384630',
+  town: '#7d6f5c',
+  river: '#46647a',
+  bridge: '#8f7550',
+  road: '#8c8371',
 };
+
+const MAP_BG = '#211d16';
+const GRID_LINE = 'rgba(18, 20, 14, 0.22)';
+const FRONT_LINE = '#c2a67c';
+const OWNER_TINT: Record<'blue' | 'red', string> = {
+  blue: 'rgba(70, 110, 180, 0.16)',
+  red: 'rgba(180, 70, 70, 0.16)',
+};
+
+// Deterministic per-cell texture hash (cell index + salt) -> [0,1). Never
+// Math.random in the per-frame draw path — this view redraws every frame.
+function cellHash(i: number, salt: number): number {
+  let h = (i * 374761393 + salt * 2654435761) >>> 0;
+  h = Math.imul(h ^ (h >>> 15), 2246822519);
+  h ^= h >>> 13;
+  h = Math.imul(h, 3266489917);
+  h ^= h >>> 16;
+  return (h >>> 0) / 4294967296;
+}
 
 export const TERRAIN_LABELS: Record<CellTerrain, string> = {
   open: 'Open ground',
@@ -53,18 +72,22 @@ export class StrategicView {
 
   draw(ctx: CanvasRenderingContext2D, front: Front, selectedChitId: number, paused: boolean, speed: number, canvasW: number, canvasH: number): void {
     const { size, ox, oy } = this.layout(canvasW, canvasH);
-    ctx.fillStyle = '#1a1c18';
+    ctx.fillStyle = MAP_BG;
     ctx.fillRect(0, 0, canvasW, canvasH);
     for (let i = 0; i < this.sector.cells.length; i++) {
       const cell = this.sector.cells[i];
       const { x, y } = cellXY(this.sector, i);
+      const gx = ox + x * size;
+      const gy = oy + y * size;
       ctx.fillStyle = TERRAIN_COLORS[cell.terrain];
-      ctx.fillRect(ox + x * size, oy + y * size, size - 1, size - 1);
+      ctx.fillRect(gx, gy, size, size);
+      this.drawCellTexture(ctx, i, cell.terrain, gx, gy, size);
       if (cell.owner) {
-        ctx.fillStyle = cell.owner === 'blue' ? 'rgba(70,110,180,0.28)' : 'rgba(180,70,70,0.28)';
-        ctx.fillRect(ox + x * size, oy + y * size, size - 1, size - 1);
+        ctx.fillStyle = OWNER_TINT[cell.owner];
+        ctx.fillRect(gx, gy, size, size);
       }
     }
+    this.drawGridAndFrontLine(ctx, size, ox, oy);
     this.drawObjectives(ctx, front, size, ox, oy);
 
     const selected = front.chits.find((c) => c.id === selectedChitId);
@@ -74,26 +97,154 @@ export class StrategicView {
       const { x, y } = cellXY(this.sector, chit.cell);
       const cx = ox + x * size;
       const cy = oy + y * size;
+      const bx = cx + 2;
+      const by = cy + 2;
+      const bw = size - 5;
+      const bh = size - 5;
       ctx.fillStyle = chit.side === 'blue' ? '#3a5a9a' : '#9a3a3a';
-      ctx.fillRect(cx + 2, cy + 2, size - 5, size - 5);
+      ctx.fillRect(bx, by, bw, bh);
+      ctx.strokeStyle = 'rgba(232, 228, 216, 0.55)';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(bx + 0.5, by + 0.5, bw - 1, bh - 1);
+
+      ctx.fillStyle = CREAM;
+      ctx.textBaseline = 'alphabetic';
+      ctx.font = `${Math.max(8, size * 0.45)}px monospace`;
+      ctx.textAlign = 'center';
+      ctx.fillText(chit.name[0], cx + size / 2, cy + size * 0.5);
+
+      const barH = 3;
+      const barW = Math.max(0, bw - 4);
+      const barX = bx + 2;
+      const barY = by + bh - barH - 2;
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
+      ctx.fillRect(barX, barY, barW, barH);
+      const frac = Math.max(0, Math.min(1, chit.strength / 27));
+      ctx.fillStyle = chit.side === 'blue' ? BLUE : RED;
+      ctx.fillRect(barX, barY, barW * frac, barH);
+
       if (chit.id === selectedChitId) {
         ctx.strokeStyle = '#ffffff';
         ctx.lineWidth = 2;
         ctx.strokeRect(cx + 1, cy + 1, size - 3, size - 3);
       }
-      ctx.fillStyle = CREAM;
-      ctx.textBaseline = 'alphabetic';
-      ctx.font = `${Math.max(8, size * 0.45)}px monospace`;
-      ctx.textAlign = 'center';
-      ctx.fillText(chit.name[0], cx + size / 2, cy + size * 0.55);
-      ctx.font = '10px monospace';
-      ctx.fillText(String(chit.strength), cx + size / 2, cy + size - 2);
     }
 
     this.drawHeader(ctx, front, paused, speed, canvasW);
     this.drawHintBar(ctx, canvasW, canvasH);
     this.drawLegend(ctx, canvasW, canvasH);
     if (selected) this.drawSelectedPanel(ctx, front, selected, canvasW);
+  }
+
+  // Cheap per-cell stipple from the deterministic hash — a few fills/strokes
+  // max, since this redraws every frame. Road/open keep their flat tint.
+  private drawCellTexture(ctx: CanvasRenderingContext2D, i: number, terrain: CellTerrain, gx: number, gy: number, size: number): void {
+    switch (terrain) {
+      case 'woods': {
+        const n = 3 + Math.floor(cellHash(i, 1) * 3); // 3-5 tree dots
+        ctx.fillStyle = 'rgba(20, 28, 16, 0.55)';
+        const r = Math.max(1, size * 0.07);
+        for (let k = 0; k < n; k++) {
+          const dx = 3 + cellHash(i, 10 + k * 2) * Math.max(1, size - 6);
+          const dy = 3 + cellHash(i, 11 + k * 2) * Math.max(1, size - 6);
+          ctx.beginPath();
+          ctx.arc(gx + dx, gy + dy, r, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        break;
+      }
+      case 'town': {
+        const n = 3 + Math.floor(cellHash(i, 2) * 2); // 3-4 roof specks
+        ctx.fillStyle = '#a06a4a';
+        const s = Math.max(1, size * 0.1);
+        for (let k = 0; k < n; k++) {
+          const dx = 3 + cellHash(i, 20 + k * 2) * Math.max(1, size - 7);
+          const dy = 3 + cellHash(i, 21 + k * 2) * Math.max(1, size - 7);
+          ctx.fillRect(gx + dx, gy + dy, s, s);
+        }
+        break;
+      }
+      case 'river': {
+        ctx.strokeStyle = 'rgba(200, 220, 230, 0.35)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        for (let k = 0; k < 2; k++) {
+          const dy = size * (0.3 + k * 0.4) + (cellHash(i, 30 + k) - 0.5) * size * 0.15;
+          ctx.moveTo(gx + size * 0.15, gy + dy);
+          ctx.lineTo(gx + size * 0.55, gy + dy);
+        }
+        ctx.stroke();
+        break;
+      }
+      case 'bridge': {
+        // Two parallel deck rails in the river hue, so the crossing still reads as "over water".
+        ctx.strokeStyle = 'rgba(111, 147, 171, 0.8)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(gx + size * 0.15, gy + size * 0.3);
+        ctx.lineTo(gx + size * 0.85, gy + size * 0.3);
+        ctx.moveTo(gx + size * 0.15, gy + size * 0.7);
+        ctx.lineTo(gx + size * 0.85, gy + size * 0.7);
+        ctx.stroke();
+        break;
+      }
+      default:
+        break;
+    }
+  }
+
+  // Hairline low-alpha grid on ownership boundaries; no seam at all between
+  // same-owner neighbors (reads as one continuous holding). Blue/red contact
+  // edges get the thicker contested front-line stroke instead.
+  private drawGridAndFrontLine(ctx: CanvasRenderingContext2D, size: number, ox: number, oy: number): void {
+    const { w, h } = this.sector;
+    const frontEdges: [number, number, number, number][] = [];
+    ctx.beginPath();
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const owner = this.sector.cells[cellIndex(this.sector, x, y)].owner;
+        if (x + 1 < w) {
+          const rOwner = this.sector.cells[cellIndex(this.sector, x + 1, y)].owner;
+          if (owner !== rOwner) {
+            const gx = ox + (x + 1) * size;
+            const gy0 = oy + y * size;
+            const gy1 = oy + (y + 1) * size;
+            if (owner && rOwner) frontEdges.push([gx, gy0, gx, gy1]);
+            else {
+              ctx.moveTo(gx, gy0);
+              ctx.lineTo(gx, gy1);
+            }
+          }
+        }
+        if (y + 1 < h) {
+          const dOwner = this.sector.cells[cellIndex(this.sector, x, y + 1)].owner;
+          if (owner !== dOwner) {
+            const gx0 = ox + x * size;
+            const gx1 = ox + (x + 1) * size;
+            const gy = oy + (y + 1) * size;
+            if (owner && dOwner) frontEdges.push([gx0, gy, gx1, gy]);
+            else {
+              ctx.moveTo(gx0, gy);
+              ctx.lineTo(gx1, gy);
+            }
+          }
+        }
+      }
+    }
+    ctx.strokeStyle = GRID_LINE;
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    if (frontEdges.length > 0) {
+      ctx.beginPath();
+      for (const [x0, y0, x1, y1] of frontEdges) {
+        ctx.moveTo(x0, y0);
+        ctx.lineTo(x1, y1);
+      }
+      ctx.strokeStyle = FRONT_LINE;
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }
   }
 
   private drawObjectives(ctx: CanvasRenderingContext2D, front: Front, size: number, ox: number, oy: number): void {
