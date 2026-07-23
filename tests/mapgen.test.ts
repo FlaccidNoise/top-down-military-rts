@@ -138,6 +138,18 @@ describe('mapgen', () => {
     expect(p.map.canStep(wx - 1, wy, wx, wy, 'vehicle')).toBe(false);
   });
 
+  it('bridge/river maps generate at the 60x40 floor; woods-stand anchors stay passable (seeds 1-15)', () => {
+    for (const kind of ['bridge', 'river'] as const) {
+      for (let seed = 1; seed <= 15; seed++) {
+        const p = generateMap(seed, 60, 40, kind);
+        const { west, east } = p.spawns;
+        expect(astar(p.map, west.x, west.y, east.x, east.y, 'vehicle')).not.toBeNull();
+        const big = generateMap(seed, 320, 240, kind);
+        for (const s of big.woodsStands) expect(big.map.terrainAt(s.x, s.y).passable).toBe(true);
+      }
+    }
+  });
+
   it('river maps carve a wider band than bridge maps', () => {
     const count = (kind: 'bridge' | 'river') => {
       const p = generateMap(2, 320, 240, kind);

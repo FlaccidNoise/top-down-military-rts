@@ -1,6 +1,9 @@
+import type { MapKind } from '../sim/mapgen';
 import type { Side } from '../sim/sim';
 
-export type CellTerrain = 'open' | 'woods' | 'town' | 'river' | 'bridge' | 'road';
+// Aliased to the battle-map archetype union: every strategic terrain must have
+// a tactical map interpretation (generateMap kind), so the types stay linked.
+export type CellTerrain = MapKind;
 
 export interface Cell {
   terrain: CellTerrain;

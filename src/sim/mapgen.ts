@@ -228,7 +228,10 @@ function tryGenerate(rng: Rng, w: number, h: number, kind: MapKind): MapPlan | n
     const sy = 8 + rng.int(h - 16);
     if ((sx - crossX) * (sx - crossX) + (sy - cy) * (sy - cy) < 34 * 34) continue;
     stand(sx, sy, 6 + rng.int(5) + (kind === 'woods' ? 3 : 0));
-    woodsStands.push({ x: sx, y: sy });
+    // a stand centered in the river still carves bank trees, but its center is
+    // no anchor: downstream consumers (garrison posts) order squads to it and
+    // an impassable post can never be reached or settled on
+    if (map.terrainAt(sx, sy).passable) woodsStands.push({ x: sx, y: sy });
   }
 
   // orchards: staggered tree rows near the village
