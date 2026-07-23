@@ -296,10 +296,10 @@ function drawEdge(g: Ctx, e: number, x0: number, y0: number, x1: number, y1: num
   } else if (e === EDGE.DOOR) {
     line(0.3, '#2c241a', 0, 0.15);
     line(0.3, '#2c241a', 0.85, 1);
-    line(0.16, '#8a5a30', 0.12, 0.88); // door leaf
+    line(0.16, '#7d5028', 0.12, 0.88); // door leaf
   } else {
     line(0.26, '#2c241a');
-    line(0.11, '#a8ccd8', 0.2, 0.8); // glass
+    line(0.11, '#7d8a8f', 0.2, 0.8); // glass
   }
 }
 
