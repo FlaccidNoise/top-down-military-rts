@@ -128,6 +128,23 @@ describe('assault order', () => {
     expect(st.reason).toBe('unwilling to charge — advancing instead');
   });
 
+  it('a man who breaks mid-charge flees — the repath cadence never drags him back in', () => {
+    const { sim, atk } = hedgeScreenedAssault();
+    sim.orderTeam(atk.teamIds[0], { kind: 'assault', x: 28.5, y: 6.5 });
+    const runner = sim.soldiers[atk.soldierIds[0]];
+    // let him close until the defenders are in his sight (past the screen) —
+    // the ungated bug only bites when assaultRepath has a visible target
+    expect(stepUntil(sim, () => Math.hypot(runner.x - 28.5, runner.y - 6.5) < 7)).toBe(true);
+    runner.morale = 0;
+    sim.step();
+    expect(runner.mental).toBe('broken');
+    for (let i = 0; i < 240; i++) sim.step();
+    if (runner.alive && !runner.downed) {
+      // fled clear of the objective, not repathed back onto a defender
+      expect(Math.hypot(runner.x - 28.5, runner.y - 6.5)).toBeGreaterThan(9);
+    }
+  });
+
   it('an uncontested assault just takes the ground and completes', () => {
     const sim = new Sim(flat(), 11);
     const atk = sim.addSquad('blue', 'A', [{ name: 'A1', weapon: 'garand', x: 10.5, y: 10.5 }]);

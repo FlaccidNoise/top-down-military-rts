@@ -1989,7 +1989,15 @@ export class Sim {
     // assault: on a cadence, redirect onto the nearest visible defender of the
     // objective — the closing loop that feeds the 2m melee lock. Marching
     // fire stays on (assault is deliberately absent from the hold-fire gate).
-    if (order?.kind === 'assault' && this.teams[s.teamId].orderState.phase === 'executing' && (this.tick + s.id) % ASSAULT_REPATH_TICKS === 0) {
+    // Same mental gate as considerMelee: a broken man's flee path must never
+    // be overwritten with a charge (the 15-tick cadence divides flee's 90).
+    if (
+      order?.kind === 'assault' &&
+      s.mental !== 'broken' &&
+      s.mental !== 'pinned' &&
+      this.teams[s.teamId].orderState.phase === 'executing' &&
+      (this.tick + s.id) % ASSAULT_REPATH_TICKS === 0
+    ) {
       this.assaultRepath(s, order);
     }
 
