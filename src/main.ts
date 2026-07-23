@@ -153,15 +153,16 @@ function showContactModal(e: Engagement): void {
   const defender = front.chits.find((c) => c.id === e.defenderId)!;
   const cell = front.sector.cells[e.cell];
   const terrain = TERRAIN_LABELS[cell.terrain].toLowerCase();
-  debriefEl.innerHTML = `<div class="db">
+  debriefEl.innerHTML = `<div class="db-scroll"><div class="db">
     <h1>CONTACT</h1>
     <p class="sub">${attacker.name} (${attacker.strength} men) has met ${defender.name} (~${defender.strength} men).</p>
     <p class="intel">Terrain: <b>${terrain}</b>${cell.objective ? ' <span class="obj">— objective</span>' : ''}</p>
+    </div></div>
     <div class="db-actions">
       <button id="fight" class="primary">Attack</button>
       <button id="standdown">Stand down</button>
-    </div></div>`;
-  debriefEl.style.display = 'block';
+    </div>`;
+  debriefEl.style.display = 'flex';
   document.getElementById('fight')!.onclick = () => startEngagementBattle(e);
   document.getElementById('standdown')!.onclick = () => {
     debriefEl.style.display = 'none';
@@ -219,14 +220,15 @@ function showDebrief(): void {
     .join('');
 
   const enemyLosses = out.redLosses > 0 ? `~${out.redLosses} enemy losses` : 'no enemy losses';
-  debriefEl.innerHTML = `<div class="db">
+  debriefEl.innerHTML = `<div class="db-scroll"><div class="db">
     <h1 class="${out.record.won ? 'win' : 'loss'}">${out.record.won ? 'VICTORY' : 'DEFEAT'}</h1>
     <p class="sub">${out.record.kia.length} KIA · ${out.record.wounded.length} wounded · ${enemyLosses}</p>
     <p class="fallen">${out.record.kia.length > 0 ? 'Fallen: ' + out.record.kia.join(', ') : 'No one died today.'}</p>
     <p class="sub">${out.cellTaken ? 'The ground is ours.' : 'The attack failed; the line is unchanged.'}</p>
     ${rows}
-    <div class="db-actions"><button id="next" class="primary">Return to the front</button></div></div>`;
-  debriefEl.style.display = 'block';
+    </div></div>
+    <div class="db-actions"><button id="next" class="primary">Return to the front</button></div>`;
+  debriefEl.style.display = 'flex';
   document.getElementById('next')!.onclick = () => {
     debriefEl.style.display = 'none';
     mode = 'strategic';
@@ -249,11 +251,12 @@ function freshCampaign(): void {
 function showOperationEnd(status: 'won' | 'lost'): void {
   opEnded = true;
   const kia = Object.values(campaign.soldiers).filter((s) => s.status === 'kia').length;
-  debriefEl.innerHTML = `<div class="db">
+  debriefEl.innerHTML = `<div class="db-scroll"><div class="db">
     <h1 class="${status === 'won' ? 'win' : 'loss'}">OPERATION ${status === 'won' ? 'ACCOMPLISHED' : 'FAILED'}</h1>
     <p class="sub">${campaign.log.length} battles fought over ${front.day} days · ${kia} men killed.</p>
-    <div class="db-actions"><button id="next" class="primary">New operation</button></div></div>`;
-  debriefEl.style.display = 'block';
+    </div></div>
+    <div class="db-actions"><button id="next" class="primary">New operation</button></div>`;
+  debriefEl.style.display = 'flex';
   document.getElementById('next')!.onclick = () => {
     debriefEl.style.display = 'none';
     freshCampaign();

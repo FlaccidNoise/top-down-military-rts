@@ -206,13 +206,14 @@ button.hbtn.active { background: #4b4326; border-color: #ffca6a; color: #ffe9a0;
   position: fixed;
   inset: 0;
   display: none;
-  overflow: auto;
+  flex-direction: column;
   z-index: 10;
   background: #0d0f0b;
   font: 13px/1.5 ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
   color: #d8d4c4;
 }
-#debrief .db { max-width: 640px; margin: 48px auto; padding: 0 24px; }
+#debrief .db-scroll { overflow-y: auto; min-height: 0; }
+#debrief .db { max-width: 640px; margin: 48px auto 0; padding: 0 24px; }
 #debrief h1 { letter-spacing: 6px; font-size: 26px; margin: 0 0 4px; }
 #debrief h1.win { color: #7fbf6a; }
 #debrief h1.loss { color: #d05c50; }
@@ -239,13 +240,14 @@ button.hbtn.active { background: #4b4326; border-color: #ffca6a; color: #ffe9a0;
 #debrief tr.res td { color: #8a8a74; }
 #debrief .scar { color: #e08a3c; }
 #debrief .db-actions {
-  position: sticky;
-  bottom: 0;
-  margin-top: 20px;
-  padding: 14px 0 24px;
+  flex-shrink: 0;
+  width: 100%;
+  max-width: 688px; /* .db column: 640 + 2*24 padding */
+  box-sizing: border-box;
+  margin: 0 auto;
+  padding: 20px 24px 24px;
   display: flex;
   gap: 10px;
-  background: linear-gradient(to top, #0d0f0b 65%, rgba(13, 15, 11, 0));
 }
 #debrief button {
   font: inherit;
