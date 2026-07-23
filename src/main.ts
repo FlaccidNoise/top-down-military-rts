@@ -20,6 +20,7 @@ import { computeShot, pickAt, Tooltip } from './ui/tooltip';
 import { actionForEvent, formatBinding, loadKeymap, type Keymap } from './ui/keymap';
 import { PauseMenu } from './ui/menu';
 import { coach } from './ui/coach';
+import { showFloorMenu } from './ui/floormenu';
 import './ui/ui.css';
 
 const canvas = document.createElement('canvas');
@@ -507,7 +508,7 @@ canvas.addEventListener('mouseup', (e) => {
           for (const s of sim.soldiers) {
             if (!s.alive || s.side !== 'blue' || s.inVehicle >= 0) continue;
             const d = Math.hypot(s.x - wx, s.y - wy);
-            if (d < bestD) {
+            if (d < bestD || (d === bestD && best !== null && s.level > best.level)) {
               bestD = d;
               best = s;
             }
@@ -551,8 +552,17 @@ window.addEventListener('mouseup', (e) => {
     return;
   }
   if (targetMode !== '') { rmbAnchor = null; return; }
-  
   const [wx, wy] = cam.screenToWorld(e.clientX, e.clientY, canvas.width, canvas.height);
+  if (e.altKey && selectedSquads.length > 0 && sim.map.storiesAt(Math.floor(wx), Math.floor(wy)) >= 2) {
+    showFloorMenu(document.body, sim, wx, wy, e.clientX, e.clientY, (level) => {
+      const order: TeamOrder = { kind: armedOrder ?? 'move', x: wx, y: wy, l: level };
+      if (selectedTeam >= 0) sim.orderTeam(selectedTeam, order);
+      else sim.orderSquad(getPrimary(), order);
+      armedOrder = null;
+    });
+    rmbAnchor = null;
+    return;
+  }
   const wdx = wx - rmbAnchor.wx;
   const wdy = wy - rmbAnchor.wy;
   const len = Math.hypot(wdx, wdy);

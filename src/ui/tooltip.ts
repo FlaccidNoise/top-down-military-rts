@@ -23,7 +23,7 @@ export function pickAt(sim: Sim, cam: Camera, sx: number, sy: number, cw: number
     if (s.inVehicle >= 0 || !sim.soldierVisibleTo('blue', s)) continue; // fog of war: can't probe what isn't seen
     const d = Math.hypot(s.x - wx, s.y - wy);
     if (s.alive) {
-      if (d < da) {
+      if (d < da || (d === da && bestAlive !== null && s.level > bestAlive.level)) {
         da = d;
         bestAlive = s;
       }
@@ -235,6 +235,9 @@ function soldierCard(sim: Sim, s: Soldier, shot: ShotSolution | null): string {
   const reserve = Object.values(s.ammo).reduce((a, n) => a + (n ?? 0), 0);
   const ammoChip = squadAmmoChip(sim, s);
   let html = `<div class="tt-head ${s.side}"><b>${s.name}</b><span>${WEAPONS[s.weapon].name} ${s.magLeft}+${reserve}${stars}${ammoChip ? ' ' + ammoChip : ''}</span></div>`;
+  if (sim.map.storiesAt(Math.floor(s.x), Math.floor(s.y)) >= 2) {
+    html += `<div class="tt-note">${s.level === 0 ? 'Ground' : `Floor ${s.level + 1}`}</div>`;
+  }
   if (!s.alive) return html + `<div class="tt-kia">KIA</div>` + (s.wounds.length ? woundList(s) : '');
   if (s.downed) {
     const cond = s.stabilized ? 'stabilized' : s.bleedRate > 0.0005 ? 'bleeding out' : 'incapacitated';

@@ -11,6 +11,7 @@ export interface TeamOrder {
   y: number;
   arc?: [number, number]; // facing arc, radians (defend/ambush)
   targetId?: number; // specific enemy soldier (fire)
+  l?: number; // target floor level, 0-based; undefined = auto (defend/ambush) or ground (else)
 }
 
 // Per-team legibility state, lives on Team. UI reads this directly — never

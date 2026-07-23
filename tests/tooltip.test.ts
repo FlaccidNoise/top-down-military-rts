@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { EDGE, GameMap } from '../src/sim/map';
 import { Sim } from '../src/sim/sim';
-import { computeShot, type Pick } from '../src/ui/tooltip';
+import { computeShot, pickAt, type Pick } from '../src/ui/tooltip';
 import { formatCoverBreakdown, formatCoverBreakdownForFloor } from '../src/ui/tooltip-format';
 import { TERRAIN } from '../src/sim/data';
+import { Camera } from '../src/render/camera';
 
 const soldierPick = (sim: Sim, id: number): Pick => ({ kind: 'soldier', s: sim.soldiers[id] });
 
@@ -62,5 +63,28 @@ describe('formatCoverBreakdown', () => {
     expect(lines[0]).toContain('0% in the open');
     expect(lines[1]).toContain('50% at windows');
     expect(lines[2]).toContain('Concealment: none');
+  });
+});
+
+describe('pickAt tie-breaking by level', () => {
+  it('prefers higher-level soldier at same distance', () => {
+    const sim = new Sim(new GameMap(40, 10), 1);
+    sim.addSquad('blue', 'a', [{ name: 'A', weapon: 'garand', x: 10.5, y: 5.5 }]);
+    sim.addSquad('blue', 'b', [{ name: 'B', weapon: 'garand', x: 10.5, y: 5.5 }]);
+    sim.soldiers[1].level = 1;
+    const cam = new Camera(10.5, 5.5);
+    const pick = pickAt(sim, cam, 200, 150, 400, 300);
+    expect(pick?.kind).toBe('soldier');
+    if (pick?.kind === 'soldier') expect(pick.s.id).toBe(1);
+  });
+
+  it('returns first soldier when both same level (scan-order tie)', () => {
+    const sim = new Sim(new GameMap(40, 10), 1);
+    sim.addSquad('blue', 'a', [{ name: 'A', weapon: 'garand', x: 10.5, y: 5.5 }]);
+    sim.addSquad('blue', 'b', [{ name: 'B', weapon: 'garand', x: 10.5, y: 5.5 }]);
+    const cam = new Camera(10.5, 5.5);
+    const pick = pickAt(sim, cam, 200, 150, 400, 300);
+    expect(pick?.kind).toBe('soldier');
+    if (pick?.kind === 'soldier') expect(pick.s.id).toBe(0);
   });
 });

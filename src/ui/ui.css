@@ -958,3 +958,25 @@ button:hover .hk-top {
   color: var(--amber-bright);
   background: var(--chip-active-bg);
 }
+
+/* ---- floor menu ---- */
+#floormenu {
+  position: absolute;
+  z-index: 7;
+  padding: 3px 0;
+  min-width: 100px;
+}
+#floormenu .fm-row {
+  padding: 4px 12px;
+  cursor: pointer;
+  letter-spacing: 0.5px;
+}
+#floormenu .fm-row:hover {
+  background: rgba(var(--amber-bright-rgb), 0.12);
+  color: var(--amber-bright);
+}
+#floormenu .fm-row.disabled {
+  color: var(--muted);
+  cursor: default;
+  opacity: 0.5;
+}

@@ -1154,7 +1154,7 @@ export class Sim {
     this.moveSoldiersTo(team.soldierIds, wx, wy);
   }
 
-  private moveSoldiersTo(soldierIds: number[], wx: number, wy: number): void {
+  private moveSoldiersTo(soldierIds: number[], wx: number, wy: number, gl = 0): void {
     const used = new Set<number>();
     let slot = 0;
     for (const sid of soldierIds) {
@@ -1165,7 +1165,10 @@ export class Sim {
       const spot = this.findSpot(Math.floor(wx + ox), Math.floor(wy + oy), used);
       if (!spot) continue;
       used.add(spot.y * this.map.w + spot.x);
-      const path = astar(this.map, Math.floor(s.x), Math.floor(s.y), spot.x, spot.y);
+      let path = astar(this.map, Math.floor(s.x), Math.floor(s.y), spot.x, spot.y, 'foot', s.level, gl);
+      if (!path && gl > 0) {
+        path = astar(this.map, Math.floor(s.x), Math.floor(s.y), spot.x, spot.y, 'foot', s.level, 0);
+      }
       if (path && path.length > 1) {
         if (s.task) this.dropTask(s); // direct orders override a rescue/ammo run
         s.path = path.slice(1).map((p) => ({ x: p.x + 0.5, y: p.y + 0.5, l: p.l }));
@@ -1210,13 +1213,15 @@ export class Sim {
     } else if (effective.kind === 'move' || effective.kind === 'fast' || effective.kind === 'sneak' || effective.kind === 'assault') {
       team.orderState = { order: effective, phase: 'executing', reason };
       if (effective.kind === 'sneak') this.sneakBaseline[team.id] = this.woundCount(team);
-      this.moveSoldiersTo(team.soldierIds, effective.x, effective.y);
+      this.moveSoldiersTo(team.soldierIds, effective.x, effective.y, effective.l ?? 0);
     } else if (effective.kind === 'smoke') {
       team.orderState = { order: effective, phase: 'executing', reason };
       this.deploySmoke(team, effective);
     } else if (effective.kind === 'defend' || effective.kind === 'ambush') {
       team.orderState = { order: effective, phase: 'executing', reason };
-      this.moveSoldiersTo(team.soldierIds, effective.x, effective.y);
+      const st = this.map.storiesAt(Math.floor(effective.x), Math.floor(effective.y));
+      const gl = effective.l ?? (st >= 2 ? st - 1 : 0);
+      this.moveSoldiersTo(team.soldierIds, effective.x, effective.y, gl);
     } else {
       // fire: no movement, members engage per updateSoldier's combat section
       team.orderState = { order: effective, phase: 'executing', reason };

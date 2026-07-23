@@ -272,3 +272,130 @@ describe('order vocabulary: fire/smoke/defend/ambush', () => {
     expect(sim.takeEvents().length).toBeGreaterThan(0); // trigger fires immediately
   });
 });
+
+describe('Height phase C: auto-garrison top floor', () => {
+  // Build a 3×3 floor-tile room ringed by WALL edges with one door gap.
+  // bx,by = top-left interior tile; doorSide/doorAt = where the gap is.
+  function makeRoom(m: GameMap, bx: number, by: number, w: number, h: number, doorSide: string, doorAt: number) {
+    for (let y = by; y < by + h; y++) {
+      for (let x = bx; x < bx + w; x++) {
+        m.setTerrain(x, y, 'floor');
+        m.stories[y * m.w + x] = 2;
+        m.buildingId[y * m.w + x] = 0;
+      }
+    }
+    // west / east walls
+    for (let y = by; y < by + h; y++) {
+      if (doorSide === 'w' && y === doorAt) continue;
+      m.setVEdge(bx, y, EDGE.WALL);
+    }
+    for (let y = by; y < by + h; y++) {
+      if (doorSide === 'e' && y === doorAt) continue;
+      m.setVEdge(bx + w, y, EDGE.WALL);
+    }
+    // north / south walls
+    for (let x = bx; x < bx + w; x++) {
+      if (doorSide === 'n' && x === doorAt) continue;
+      m.setHEdge(x, by, EDGE.WALL);
+    }
+    for (let x = bx; x < bx + w; x++) {
+      if (doorSide === 's' && x === doorAt) continue;
+      m.setHEdge(x, by + h, EDGE.WALL);
+    }
+  }
+
+  const STEP_BUDGET = 600;
+
+  it('A: defend on a 2-story building with stairs → every member reaches level 1', () => {
+    const m = new GameMap(15, 15);
+    // 3×3 room at (3,3)-(5,5), door on east wall at y=4
+    makeRoom(m, 3, 3, 3, 3, 'e', 4);
+    // stair at interior corner farthest from door: (3,3) (west wall, opposite east door)
+    m.stairs[3 * m.w + 3] = 1;
+
+    const sim = new Sim(m, 100);
+    sim.addSquad('blue', 'a', [
+      { name: 'A', weapon: 'garand', x: 9.5, y: 8.5 },
+      { name: 'B', weapon: 'garand', x: 9.5, y: 9.5 },
+    ]);
+    sim.orderTeam(0, { kind: 'defend', x: 4, y: 4 });
+
+    for (let i = 0; i < STEP_BUDGET; i++) sim.step();
+    expect(sim.soldiers[0].level).toBe(1);
+    expect(sim.soldiers[1].level).toBe(1);
+  });
+
+  it('B: defend on a 2-story building with NO stair → members fall back to level 0', () => {
+    const m = new GameMap(15, 15);
+    // same room but NO stair tile set
+    makeRoom(m, 3, 3, 3, 3, 'e', 4);
+    // m.stairs is all zero — no vertical route
+
+    const sim = new Sim(m, 101);
+    sim.addSquad('blue', 'a', [
+      { name: 'A', weapon: 'garand', x: 9.5, y: 8.5 },
+      { name: 'B', weapon: 'garand', x: 9.5, y: 9.5 },
+    ]);
+    sim.orderTeam(0, { kind: 'defend', x: 4, y: 4 });
+
+    for (let i = 0; i < STEP_BUDGET; i++) sim.step();
+    expect(sim.soldiers[0].level).toBe(0);
+    expect(sim.soldiers[1].level).toBe(0);
+  });
+
+  it('C: move with explicit l:1 on a 2-story building with stairs → members reach level 1', () => {
+    const m = new GameMap(15, 15);
+    makeRoom(m, 3, 3, 3, 3, 'e', 4);
+    m.stairs[3 * m.w + 3] = 1;
+
+    const sim = new Sim(m, 102);
+    sim.addSquad('blue', 'a', [
+      { name: 'A', weapon: 'garand', x: 9.5, y: 8.5 },
+      { name: 'B', weapon: 'garand', x: 9.5, y: 9.5 },
+    ]);
+    sim.orderTeam(0, { kind: 'move', x: 4, y: 4, l: 1 });
+
+    for (let i = 0; i < STEP_BUDGET; i++) sim.step();
+    expect(sim.soldiers[0].level).toBe(1);
+    expect(sim.soldiers[1].level).toBe(1);
+  });
+
+  it('D: defend auto-garrison on a 1-story building stays at level 0', () => {
+    const m = new GameMap(15, 15);
+    makeRoom(m, 3, 3, 3, 3, 'e', 4);
+    // override stories to 1
+    for (let y = 3; y < 6; y++)
+      for (let x = 3; x < 6; x++)
+        m.stories[y * m.w + x] = 1;
+    m.stairs[3 * m.w + 3] = 1;
+
+    const sim = new Sim(m, 103);
+    sim.addSquad('blue', 'a', [
+      { name: 'A', weapon: 'garand', x: 9.5, y: 8.5 },
+      { name: 'B', weapon: 'garand', x: 9.5, y: 9.5 },
+    ]);
+    sim.orderTeam(0, { kind: 'defend', x: 4, y: 4 });
+
+    for (let i = 0; i < STEP_BUDGET; i++) sim.step();
+    // st<2 → gl=0
+    expect(sim.soldiers[0].level).toBe(0);
+    expect(sim.soldiers[1].level).toBe(0);
+  });
+
+  it('E: orderSquad spreads l through offset spread', () => {
+    const m = new GameMap(15, 15);
+    makeRoom(m, 3, 3, 3, 3, 'e', 4);
+    m.stairs[3 * m.w + 3] = 1;
+
+    const sim = new Sim(m, 104);
+    const squad = sim.addSquad('blue', 'a', [
+      { name: 'A', weapon: 'garand', x: 9.5, y: 8.5 },
+      { name: 'B', weapon: 'garand', x: 9.5, y: 9.5 },
+    ]);
+    sim.orderSquad(squad.id, { kind: 'defend', x: 4, y: 4 });
+
+    for (let i = 0; i < STEP_BUDGET; i++) sim.step();
+    expect(sim.soldiers[0].level).toBe(1);
+    expect(sim.soldiers[1].level).toBe(1);
+  });
+});
