@@ -53,3 +53,11 @@ ui/ui.css + hud.ts: palette tokens matching art direction (paper/ink/amber); eve
 
 ## Execution
 Dependency: T1 → {T2, T3, T5} (parallel, disjoint files) → T4 → T6 → T7. Builder + separate validator (fresh context) per task; validator re-runs staging recipe, compares against audit baseline screenshots, checks fps (>100 at 54 soldiers), tsc + vitest. Commit per task on `visual-fidelity-pass`; land on main via `git push . HEAD:main` (fast-forward only — on failure, merge main in and re-verify) at T1, after T2+T3+T5, and at the end.
+
+## Outcome (2026-07-23, end of session)
+All 7 tasks built, independently validated (fresh-context screenshot validators), and landed on main @ 5a166df. Perf at the new 247-soldier scale: 8.8ms/frame avg (~114fps). Known leftovers, none blocking:
+- Hedge walls show slight per-tile capsule segmentation at 24 px/m (polish: extend strokes across tile boundaries).
+- Worn-paths-to-doors / mud-near-roads ground detail (audit T7-finding) deferred.
+- Event feed shows 6 entries vs the planned 5 (cosmetic).
+- Boot-camera whole-map fit can leave the west-edge blue spawn under the roster panel on 320×240 maps (documented tradeoff; revisit if players complain).
+- audit-03 baseline screenshot is mislabeled (contains a strategic frame) — auto-debrief fired mid-capture; wall-clock debrief trigger while paused is a known scripting hazard (see graphics-verify-workflow memory).

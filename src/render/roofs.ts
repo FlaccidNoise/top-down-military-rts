@@ -13,14 +13,8 @@ const FADE_SCALE = 14; // px/m at which zoom alone reveals interiors
 const PALETTES = ['#8a4b37', '#77503c', '#5a5e65'];
 const BIG_ROOF_AREA = 45; // w*h threshold for weathering "patched tile" flecks
 
-// Deterministic per-building hash, 0..1 (mirrors terrain.ts's tile hash,
-// keyed on building index instead of coordinates).
-function hash(i: number, salt: number): number {
-  let h = (i * 374761393 + salt * 668265263) | 0;
-  h = Math.imul(h ^ (h >>> 13), 1103515245) ^ 0;
-  h ^= h >>> 16;
-  return (h >>> 0) / 4294967296;
-}
+// Keyed on (building index, salt) — same arithmetic as the old local copy.
+import { hash } from './noise';
 
 function hexToRgb(hex: string): [number, number, number] {
   const n = parseInt(hex.slice(1), 16);

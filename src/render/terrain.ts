@@ -11,13 +11,7 @@ const CHUNK = 16; // tiles per side
 const BANDS = [4, 8, 16, 32, 48];
 const PIXEL_BUDGET = 24_000_000; // ~96 MB of cached RGBA
 
-// Deterministic per-tile hash, 0..1. Salt picks independent streams.
-function hash(x: number, y: number, salt = 0): number {
-  let h = (x * 374761393 + y * 668265263 + salt * 1274126177) | 0;
-  h = Math.imul(h ^ (h >>> 13), 1103515245) ^ 0;
-  h ^= h >>> 16;
-  return (h >>> 0) / 4294967296;
-}
+import { hash } from './noise';
 
 // Bilinear value noise on an 8m lattice — smooth patches, no hard square edges.
 function coarse(x: number, y: number): number {

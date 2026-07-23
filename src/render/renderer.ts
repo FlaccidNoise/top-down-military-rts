@@ -40,15 +40,7 @@ const PLANE_MS = 2600;
 
 const TEAM = { blue: '#5b9bd5', red: '#d05c50' } as const;
 
-// Deterministic hash, 0..1 — same algorithm as terrain.ts's, kept local since
-// it isn't exported. Used for per-entry/per-shot offsets so repeated effects
-// (smoke puffs, ejecta streaks) never touch the sim RNG or Math.random.
-function hash(x: number, y: number, salt = 0): number {
-  let h = (x * 374761393 + y * 668265263 + salt * 1274126177) | 0;
-  h = Math.imul(h ^ (h >>> 13), 1103515245) ^ 0;
-  h ^= h >>> 16;
-  return (h >>> 0) / 4294967296;
-}
+import { hash } from './noise';
 
 // The human player is always US/blue (same convention as hud.ts and
 // tooltip.ts); fog of war is rendered from this side's knowledge.
@@ -581,11 +573,12 @@ export class Renderer {
     const FADE_MS = 150; // faint line + kill dot lifetime (unchanged from before)
     const TRAVEL_MS = 90; // muzzle->target travel time for the bright segment (E3)
     const IMPACT_MS = 250; // impact dust lifetime, starts at TRAVEL_MS (E5)
+    const MELEE_FX_MS = 250; // strike fleck / miss swish lifetime
 
     // melee impacts: red fleck on a hit (bigger on a kill), white swish on a miss
-    this.meleeFx = this.meleeFx.filter((m) => now - m.at < 250);
+    this.meleeFx = this.meleeFx.filter((m) => now - m.at < MELEE_FX_MS);
     for (const m of this.meleeFx) {
-      const t = (now - m.at) / 250;
+      const t = (now - m.at) / MELEE_FX_MS;
       const [x, y] = cam.worldToScreen(m.x, m.y, cw, ch);
       if (m.hit) {
         ctx.fillStyle = `rgba(200, 40, 30, ${(1 - t) * 0.85})`;
@@ -690,7 +683,7 @@ export class Renderer {
             ctx.fill();
           }
         }
-        if (t.kill) {
+        if (t.kill && age < FADE_MS) {
           ctx.fillStyle = `rgba(220, 60, 40, ${a * 0.6})`;
           ctx.beginPath();
           ctx.arc(x1, y1, 5, 0, Math.PI * 2);
