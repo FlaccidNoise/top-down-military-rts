@@ -1,11 +1,11 @@
 // @ts-expect-error no @types/node in this project; node:fs still resolves fine at runtime under vitest
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { RedCommander } from '../src/sim/ai';
+import { AI_MEMORY_TICKS, RedCommander } from '../src/sim/ai';
 import { newCampaign } from '../src/campaign/campaign';
 import { WEAPONS } from '../src/sim/data';
 import { EDGE, GameMap } from '../src/sim/map';
-import { CONTACT_TTL, Sim } from '../src/sim/sim';
+import { Sim } from '../src/sim/sim';
 import { makeStrategicBattle, newFront } from '../src/strategic/bridge';
 import { makeDefaultSector } from '../src/strategic/sector';
 
@@ -223,7 +223,7 @@ describe('AI commander doctrine', () => {
 // weapon-range gate on the barrage would survive unnoticed. Bracket access
 // reaches the private members without widening them.
 describe('intel layer math', () => {
-  it('updateThreat: tracked contacts hold conf 1; ghosts fade linearly to 0 over the TTL and clamp there', () => {
+  it('updateThreat: tracked contacts hold conf 1; ghosts fade linearly to 0 over AI_MEMORY_TICKS and clamp there', () => {
     const sim = new Sim(new GameMap(40, 40), 1);
     const red = sim.addSquad('red', 'R', [{ name: 'R1', weapon: 'kar98k', x: 5.5, y: 5.5 }]);
     const blue = sim.addSquad('blue', 'B', [{ name: 'B1', weapon: 'garand', x: 20.5, y: 5.5 }]);
@@ -233,9 +233,9 @@ describe('intel layer math', () => {
     sim.contacts.red.set('s999', { kind: 'infantry', x: 30, y: 30, tick: 0 });
     for (const [age, conf] of [
       [0, 1],
-      [CONTACT_TTL / 2, 0.5],
-      [CONTACT_TTL, 0],
-      [CONTACT_TTL * 2, 0], // clamped, never negative
+      [AI_MEMORY_TICKS / 2, 0.5],
+      [AI_MEMORY_TICKS, 0],
+      [AI_MEMORY_TICKS * 2, 0], // clamped, never negative
     ]) {
       sim.tick = age;
       commander['updateThreat'](sim);

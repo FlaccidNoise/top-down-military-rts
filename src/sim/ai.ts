@@ -25,8 +25,16 @@ export interface CommanderConfig {
 interface ThreatContact {
   x: number;
   y: number;
-  conf: number; // 1 while tracked; a lost contact fades toward 0 over the ghost TTL
+  conf: number; // 1 while tracked; a lost contact fades toward 0 over AI_MEMORY_TICKS
 }
+
+// Red's memory window for the ghost-confidence fade. Defaults to the ghost
+// TTL so behavior matches the UI today, but it's a separate knob: retuning
+// ghost-marker UX must never silently retune the AI's competence (SPOT_RANGE
+// and CONTACT_TTL are difficulty constants now — decision log 2026-07-23).
+// Values above CONTACT_TTL are capped in practice: the sim deletes a contact
+// at CONTACT_TTL, so red can't remember a ghost the intel layer has dropped.
+export const AI_MEMORY_TICKS = CONTACT_TTL;
 
 const EVAL_TICKS = 150; // every 5s
 const SUPPRESSION_SECONDS = 10; // a base-of-fire team firing this long counts as suppression established
@@ -77,7 +85,7 @@ export class RedCommander {
 
   // ---- belief state: the sim's per-side intel layer, rebuilt each eval —
   // the commander keeps no private threat map; it knows exactly what its
-  // side knows (spotted at conf 1, lost contacts fading over the ghost TTL).
+  // side knows (spotted at conf 1, lost contacts fading over AI_MEMORY_TICKS).
   private spottedPositions(sim: Sim): { x: number; y: number }[] {
     const out: { x: number; y: number }[] = [];
     for (const [id, p] of sim.spotted.red) {
@@ -90,7 +98,7 @@ export class RedCommander {
     this.threat = this.spottedPositions(sim).map((p) => ({ x: p.x, y: p.y, conf: 1 }));
     for (const c of sim.contacts.red.values()) {
       if (c.kind !== 'infantry') continue;
-      this.threat.push({ x: c.x, y: c.y, conf: Math.max(0, 1 - (sim.tick - c.tick) / CONTACT_TTL) });
+      this.threat.push({ x: c.x, y: c.y, conf: Math.max(0, 1 - (sim.tick - c.tick) / AI_MEMORY_TICKS) });
     }
   }
 
