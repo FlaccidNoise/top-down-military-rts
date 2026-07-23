@@ -90,21 +90,49 @@ export class RoofLayer {
   private buildings: Building[] = [];
   private alphas: number[] = [];
   private art: RoofArt[] = [];
+  private stories: number[] = []; // per-building story count for shadow length, min 1
 
   update(sim: Sim, cam: Camera, dt: number): void {
     if (this.buildings !== sim.buildings) {
       this.buildings = sim.buildings;
       this.alphas = this.buildings.map(() => 1);
       this.art = this.buildings.map(buildArt);
+      // stories from the map's per-tile story counts (max over footprint).
+      // Flat maps have stories all 0 → 1 → shadow length identical to before.
+      this.stories = this.buildings.map((b) => {
+        let m = 0;
+        for (let y = b.y; y < b.y + b.h; y++) {
+          for (let x = b.x; x < b.x + b.w; x++) m = Math.max(m, sim.map.storiesAt(x, y));
+        }
+        return Math.max(1, m);
+      });
     }
     this.buildings.forEach((b, i) => {
+      // Ground floor: unchanged pre-height rule (any live blue soldier inside).
+      // Upper floors: fade when a PLAYER-VISIBLE soldier occupies floor L>0 —
+      // keyed on sim.soldierVisibleTo, never re-derived vision. On flat maps
+      // every soldier is level 0, so this reduces to the old check exactly.
       const inside = sim.soldiers.some(
-        (s) => s.alive && s.side === 'blue' && s.x >= b.x && s.x < b.x + b.w && s.y >= b.y && s.y < b.y + b.h,
+        (s) =>
+          s.alive &&
+          s.x >= b.x && s.x < b.x + b.w &&
+          s.y >= b.y && s.y < b.y + b.h &&
+          (s.level > 0 ? sim.soldierVisibleTo('blue', s) : s.side === 'blue'),
       );
       const target = cam.scale > FADE_SCALE || inside ? 0.12 : 1;
       const a = this.alphas[i];
       this.alphas[i] = a + (target - a) * Math.min(1, dt * 6);
     });
+  }
+
+  // True when the building interior at (x, y) is revealed (its roof is fading
+  // or gone) — lets terrain draw stair glyphs only into visible interiors.
+  interiorVisibleAt(x: number, y: number): boolean {
+    for (let i = 0; i < this.buildings.length; i++) {
+      const b = this.buildings[i];
+      if (x >= b.x && x < b.x + b.w && y >= b.y && y < b.y + b.h) return this.alphas[i] < 0.5;
+    }
+    return false;
   }
 
   private withWorldTransform(ctx: CanvasRenderingContext2D, cam: Camera, cw: number, ch: number, f: () => void): void {
@@ -120,10 +148,12 @@ export class RoofLayer {
     this.withWorldTransform(ctx, cam, cw, ch, () => {
       // core offset (0.71m) matches the old fixed (0.45,0.55) rect offset in
       // magnitude; the soft layer extends further along the same sun direction.
-      const [sdx, sdy] = shadowOffset(0.71);
-      const [sdxSoft, sdySoft] = shadowOffset(1.1);
       this.buildings.forEach((b, i) => {
         const a = this.alphas[i];
+        // drop shadow lengthens with height: taller building, longer shadow.
+        // stories is min 1, so 1-story/flat maps keep the old 0.71/1.1 offsets.
+        const [sdx, sdy] = shadowOffset(0.71 * this.stories[i]);
+        const [sdxSoft, sdySoft] = shadowOffset(1.1 * this.stories[i]);
         const x = b.x - OVERHANG;
         const y = b.y - OVERHANG;
         const w = b.w + OVERHANG * 2;

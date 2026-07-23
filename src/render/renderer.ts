@@ -128,6 +128,8 @@ export class Renderer {
     this.decals.draw(ctx, cam, cw, ch);
     this.roofs.update(this.sim, cam, dt);
     this.roofs.drawShadows(ctx, cam, cw, ch);
+    // stair glyphs only where the roof fade reveals the interior
+    this.terrain.drawStairs(ctx, cam, cw, ch, (x, y) => this.roofs.interiorVisibleAt(x, y));
 
     // Fog of war: everything below asks the sim's *VisibleTo helpers from the
     // player's side — the renderer never re-derives vision.
@@ -526,7 +528,9 @@ export class Renderer {
     ctx.save();
     ctx.translate(x, y);
     ctx.rotate(facing);
-    ctx.drawImage(spr, -pad / 2, -pad / 2, pad, pad);
+    // upper-floor soldiers read slightly larger — a cue they're above ground
+    const lvl = s.level > 0 ? 1.06 : 1;
+    ctx.drawImage(spr, (-pad / 2) * lvl, (-pad / 2) * lvl, pad * lvl, pad * lvl);
     ctx.restore();
 
     if (!s.alive) return;

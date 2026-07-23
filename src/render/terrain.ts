@@ -1,6 +1,6 @@
 import { EDGE, type GameMap } from '../sim/map';
 import type { Camera } from './camera';
-import { AO_ALPHA, SHADOW_ALPHA, SHADOW_SOFT_ALPHA, shadowOffset } from './light';
+import { AO_ALPHA, SHADOW_ALPHA, SHADOW_SOFT_ALPHA, SUN, shadowOffset } from './light';
 
 // Terrain is rendered lazily into 16x16-tile chunk canvases at the nearest
 // zoom band >= camera scale (so it is only ever downscaled — always crisp),
@@ -71,6 +71,32 @@ const FIELD_VARIANTS: [number, number, number][] = [
 ];
 
 type Ctx = CanvasRenderingContext2D;
+
+// One-sun hillshade (height phase D): lambertian shade per elev tile from the
+// shared NW sun. Direction TO the sun is the opposite of the SE shadow
+// direction in light.ts; sun elevation ~40° (tan ≈ 0.84). Shade is expressed
+// as a delta from the flat-surface lambert term so perfectly flat ground is
+// untouched even before the hasElev early-out.
+const SUN_Z = 0.84;
+const LIGHT_LEN = Math.hypot(SUN.dx, SUN.dy, SUN_Z);
+const LIGHT = { x: -SUN.dx / LIGHT_LEN, y: -SUN.dy / LIGHT_LEN, z: SUN_Z / LIGHT_LEN };
+const FLAT_DOT = LIGHT.z; // n·L for n = (0,0,1)
+const HILLSHADE = 0.45; // subtle multiply/overlay strength
+
+// Lambertian shade overlay for one tile: central differences on elev
+// (clamped) give the normal; the dot delta from FLAT_DOT lights NW-facing
+// slopes and darkens SE-facing ones.
+function drawHillshade(g: Ctx, map: GameMap, x: number, y: number): void {
+  const dzdx = Math.max(-8, Math.min(8, (map.elevAt(x + 1, y) - map.elevAt(x - 1, y)) / 2));
+  const dzdy = Math.max(-8, Math.min(8, (map.elevAt(x, y + 1) - map.elevAt(x, y - 1)) / 2));
+  if (dzdx === 0 && dzdy === 0) return;
+  const nl = Math.hypot(dzdx, dzdy, 1);
+  const dot = (-dzdx * LIGHT.x + -dzdy * LIGHT.y + LIGHT.z) / nl;
+  const d = (dot - FLAT_DOT) * HILLSHADE;
+  if (Math.abs(d) < 0.004) return;
+  g.fillStyle = d > 0 ? `rgba(255,250,235,${Math.min(0.5, d)})` : `rgba(8,10,14,${Math.min(0.5, -d)})`;
+  g.fillRect(x, y, 1, 1);
+}
 
 // Path for a hedge tile's continuous mass: a stroke segment toward each
 // hedge-tagged neighbor (round line caps turn a zero-length segment into a
@@ -317,8 +343,15 @@ function drawEdge(g: Ctx, e: number, x0: number, y0: number, x1: number, y1: num
 export class TerrainLayer {
   private cache = new Map<string, HTMLCanvasElement>();
   private pixels = 0;
+  private hasElev: boolean;
+  private hasStairs: boolean;
 
-  constructor(private map: GameMap) {}
+  constructor(private map: GameMap) {
+    // Flat maps (all elev 0, no stairs) early-out everywhere below, so their
+    // chunks stay byte-identical to the pre-height renderer.
+    this.hasElev = map.elev.some((e) => e !== 0);
+    this.hasStairs = map.stairs.some((s) => s !== 0);
+  }
 
   private chunk(cx: number, cy: number, band: number): HTMLCanvasElement {
     const key = `${cx},${cy},${band}`;
@@ -356,6 +389,11 @@ export class TerrainLayer {
     for (let y = ty0; y < ty1; y++) {
       for (let x = tx0; x <= tx1; x++) drawEdge(g, this.map.vEdge(x, y), x, y, x, y + 1);
     }
+    if (this.hasElev) {
+      for (let y = ty0; y < ty1; y++) {
+        for (let x = tx0; x < tx1; x++) drawHillshade(g, this.map, x, y);
+      }
+    }
     this.cache.set(key, c);
     this.pixels += c.width * c.height;
     for (const [k, v] of this.cache) {
@@ -381,5 +419,38 @@ export class TerrainLayer {
         ctx.drawImage(this.chunk(cx, cy, band), band, band, CHUNK * band, CHUNK * band, sx, sy, size, size);
       }
     }
+  }
+
+  // Stair glyphs over the visible window only — a dynamic pass (not baked
+  // into chunks) because visibility depends on the roof-fade state: a glyph
+  // shows only when its building's interior is revealed (`visible` predicate,
+  // supplied by the renderer from RoofLayer).
+  drawStairs(ctx: Ctx, cam: Camera, cw: number, ch: number, visible: (x: number, y: number) => boolean): void {
+    if (!this.hasStairs) return;
+    const [wx0, wy0] = cam.screenToWorld(0, 0, cw, ch);
+    const [wx1, wy1] = cam.screenToWorld(cw, ch, cw, ch);
+    const x0 = Math.max(0, Math.floor(wx0));
+    const y0 = Math.max(0, Math.floor(wy0));
+    const x1 = Math.min(this.map.w - 1, Math.ceil(wx1));
+    const y1 = Math.min(this.map.h - 1, Math.ceil(wy1));
+    ctx.save();
+    const [ox, oy] = cam.worldToScreen(0, 0, cw, ch);
+    ctx.translate(ox, oy);
+    ctx.scale(cam.scale, cam.scale);
+    ctx.lineCap = 'round';
+    for (let y = y0; y <= y1; y++) {
+      for (let x = x0; x <= x1; x++) {
+        if (!this.map.isStair(x, y) || !visible(x, y)) continue;
+        // steps: three ascending treads, dark with a lit NW lip (same sun)
+        for (let i = 0; i < 3; i++) {
+          const t = y + 0.2 + i * 0.2;
+          ctx.fillStyle = 'rgba(20,16,12,0.55)';
+          ctx.fillRect(x + 0.18 + i * 0.06, t, 0.64 - i * 0.12, 0.12);
+          ctx.fillStyle = 'rgba(255,250,235,0.35)';
+          ctx.fillRect(x + 0.18 + i * 0.06, t, 0.64 - i * 0.12, 0.03);
+        }
+      }
+    }
+    ctx.restore();
   }
 }
