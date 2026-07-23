@@ -150,6 +150,94 @@ function drawHedgeRun(g: Ctx, map: GameMap, tx0: number, ty0: number, tx1: numbe
   }
 }
 
+const DECK: [number, number, number] = [118, 96, 68]; // weathered plank
+const DECK_DARK: [number, number, number] = [94, 76, 54];
+
+// Plank deck laid across the direction of travel, curb rails on edges that
+// meet water. `ew` = the crossing runs east-west (water band is N→S).
+function drawBridgeDeck(g: Ctx, x: number, y: number, ew: boolean, waterAt: (tx: number, ty: number) => boolean): void {
+  for (let p = 0; p < 3; p++) {
+    const idx = (ew ? x : y) * 3 + p; // world-space so seams don't repeat tile to tile
+    g.fillStyle = shade(p % 2 ? DECK_DARK : DECK, 0.9 + hash(ew ? idx : x, ew ? y : idx, 110) * 0.16);
+    if (ew) g.fillRect(x + p / 3, y, 1 / 3, 1);
+    else g.fillRect(x, y + p / 3, 1, 1 / 3);
+    g.fillStyle = 'rgba(0,0,0,0.15)';
+    if (ew) g.fillRect(x + p / 3, y, 0.03, 1);
+    else g.fillRect(x, y + p / 3, 1, 0.03);
+  }
+  g.fillStyle = 'rgba(40,34,24,0.9)';
+  if (waterAt(x, y - 1)) g.fillRect(x, y, 1, 0.13);
+  if (waterAt(x, y + 1)) g.fillRect(x, y + 0.87, 1, 0.13);
+  if (waterAt(x - 1, y)) g.fillRect(x, y, 0.13, 1);
+  if (waterAt(x + 1, y)) g.fillRect(x + 0.87, y, 0.13, 1);
+  // sun catches the NW-facing rail tops
+  g.fillStyle = 'rgba(205,195,165,0.3)';
+  if (waterAt(x, y - 1)) g.fillRect(x, y, 1, 0.04);
+  if (waterAt(x - 1, y)) g.fillRect(x, y, 0.04, 1);
+}
+
+// Water banks in a post-pass over finished tile bases: a mud fringe painted
+// onto the LAND side of each bank edge (raster order would overpaint an E/S
+// fringe drawn from the water tile), depth jittered per half-tile so the
+// tile-quantized bank edge stops reading as a hard staircase; then the dark
+// waterline and a few ripple dashes inside the water.
+function drawWaterBanks(g: Ctx, map: GameMap, tx0: number, ty0: number, tx1: number, ty1: number): void {
+  const waterAt = (tx: number, ty: number) => map.inBounds(tx, ty) && map.terrainKeyAt(tx, ty) === 'water';
+  const mudAt = (tx: number, ty: number) => {
+    if (!map.inBounds(tx, ty)) return false;
+    const k = map.terrainKeyAt(tx, ty);
+    return k === 'grass' || k === 'field' || k === 'woods' || k === 'hedge'; // roads keep a clean edge (bridge rails own it)
+  };
+  for (let y = ty0; y < ty1; y++) {
+    for (let x = tx0; x < tx1; x++) {
+      if (!waterAt(x, y)) continue;
+      for (let h = 0; h < 2; h++) {
+        const d = 0.1 + hash(x * 2 + h, y, 120) * 0.22;
+        const dWet = d * 0.45;
+        if (mudAt(x, y - 1)) {
+          g.fillStyle = 'rgba(88,76,52,0.5)';
+          g.fillRect(x + h * 0.5, y - d, 0.5, d);
+          g.fillStyle = 'rgba(50,48,38,0.45)';
+          g.fillRect(x + h * 0.5, y - dWet, 0.5, dWet);
+        }
+        if (mudAt(x, y + 1)) {
+          const d2 = 0.1 + hash(x * 2 + h, y, 121) * 0.22;
+          g.fillStyle = 'rgba(88,76,52,0.5)';
+          g.fillRect(x + h * 0.5, y + 1, 0.5, d2);
+          g.fillStyle = 'rgba(50,48,38,0.45)';
+          g.fillRect(x + h * 0.5, y + 1, 0.5, d2 * 0.45);
+        }
+        if (mudAt(x - 1, y)) {
+          const d3 = 0.1 + hash(x, y * 2 + h, 122) * 0.22;
+          g.fillStyle = 'rgba(88,76,52,0.5)';
+          g.fillRect(x - d3, y + h * 0.5, d3, 0.5);
+          g.fillStyle = 'rgba(50,48,38,0.45)';
+          g.fillRect(x - d3 * 0.45, y + h * 0.5, d3 * 0.45, 0.5);
+        }
+        if (mudAt(x + 1, y)) {
+          const d4 = 0.1 + hash(x, y * 2 + h, 123) * 0.22;
+          g.fillStyle = 'rgba(88,76,52,0.5)';
+          g.fillRect(x + 1, y + h * 0.5, d4, 0.5);
+          g.fillStyle = 'rgba(50,48,38,0.45)';
+          g.fillRect(x + 1, y + h * 0.5, d4 * 0.45, 0.5);
+        }
+      }
+      // dark waterline inside the water tile on every land edge
+      g.fillStyle = 'rgba(30,38,32,0.35)';
+      if (!waterAt(x, y - 1)) g.fillRect(x, y, 1, 0.12);
+      if (!waterAt(x, y + 1)) g.fillRect(x, y + 0.88, 1, 0.12);
+      if (!waterAt(x - 1, y)) g.fillRect(x, y, 0.12, 1);
+      if (!waterAt(x + 1, y)) g.fillRect(x + 0.88, y, 0.12, 1);
+      // ripple dashes just inside the banks
+      g.fillStyle = 'rgba(200,220,225,0.1)';
+      if (!waterAt(x, y - 1) && hash(x, y, 124) < 0.6) g.fillRect(x + hash(x, y, 125) * 0.5, y + 0.2 + hash(x, y, 126) * 0.15, 0.4, 0.05);
+      if (!waterAt(x, y + 1) && hash(x, y, 127) < 0.6) g.fillRect(x + hash(x, y, 128) * 0.5, y + 0.65 + hash(x, y, 129) * 0.15, 0.4, 0.05);
+      if (!waterAt(x - 1, y) && hash(x, y, 130) < 0.6) g.fillRect(x + 0.2 + hash(x, y, 131) * 0.15, y + hash(x, y, 132) * 0.5, 0.05, 0.4);
+      if (!waterAt(x + 1, y) && hash(x, y, 133) < 0.6) g.fillRect(x + 0.65 + hash(x, y, 134) * 0.15, y + hash(x, y, 135) * 0.5, 0.05, 0.4);
+    }
+  }
+}
+
 function drawTileBase(g: Ctx, map: GameMap, x: number, y: number): void {
   const t = map.terrainKeyAt(x, y);
   const v = 0.93 + coarse(x, y) * 0.1 + hash(x, y) * 0.04;
@@ -175,6 +263,14 @@ function drawTileBase(g: Ctx, map: GameMap, x: number, y: number): void {
       g.fillRect(x + h1, y + h2, sz, sz);
     }
   } else if (t === 'road') {
+    // road carved over the water band = the bridge (mapgen draws roads last);
+    // cross-pattern lookup reaches the deck center tile of a 3-wide crossing
+    const waterAt = (tx: number, ty: number) => map.inBounds(tx, ty) && map.terrainKeyAt(tx, ty) === 'water';
+    const nsWater = waterAt(x, y - 1) || waterAt(x, y - 2) || waterAt(x, y + 1) || waterAt(x, y + 2);
+    if (nsWater || waterAt(x - 1, y) || waterAt(x - 2, y) || waterAt(x + 1, y) || waterAt(x + 2, y)) {
+      drawBridgeDeck(g, x, y, nsWater, waterAt);
+      return;
+    }
     g.fillStyle = shade(ROAD, v);
     g.fillRect(x, y, 1, 1);
     g.fillStyle = 'rgba(0,0,0,0.07)';
@@ -262,13 +358,8 @@ function drawTileBase(g: Ctx, map: GameMap, x: number, y: number): void {
       if (hash(x, y, 92 + i) < 0.35)
         g.fillRect(x + hash(x, y, 94 + i) * 0.9, y + hash(x, y, 96 + i) * 0.6, 0.06, 0.3 + hash(x, y, 98 + i) * 0.3);
     }
-    // dark bank line where water meets land
-    const waterAt = (tx: number, ty: number) => map.inBounds(tx, ty) && map.terrainKeyAt(tx, ty) === 'water';
-    g.fillStyle = 'rgba(30,38,32,0.35)';
-    if (!waterAt(x, y - 1)) g.fillRect(x, y, 1, 0.12);
-    if (!waterAt(x, y + 1)) g.fillRect(x, y + 0.88, 1, 0.12);
-    if (!waterAt(x - 1, y)) g.fillRect(x, y, 0.12, 1);
-    if (!waterAt(x + 1, y)) g.fillRect(x + 0.88, y, 0.12, 1);
+    // bank treatment lives in drawWaterBanks (post-pass — the mud fringe
+    // paints onto neighboring land tiles, which raster order would overpaint)
   } else {
     // floor: plank rows every 0.33m, two wood tones, staggered butt joints.
     // rowIdx is world-space (y*3+r) so joints don't repeat identically tile to tile.
@@ -364,6 +455,7 @@ export class TerrainLayer {
     for (let y = ty0; y < ty1; y++) {
       for (let x = tx0; x < tx1; x++) drawTileBase(g, this.map, x, y);
     }
+    drawWaterBanks(g, this.map, tx0, ty0, tx1, ty1);
     drawHedgeRun(g, this.map, tx0, ty0, tx1, ty1);
     for (let y = ty0; y < ty1; y++) {
       for (let x = tx0; x < tx1; x++) {
