@@ -1,5 +1,14 @@
 import type { GameMap } from './map';
 
+// Scratch buffers shared across calls (sim is single-threaded, astar never
+// re-enters): a company-wide move order issues ~140 astar calls in one tick,
+// and per-call allocation of three w*h arrays (~1 MB each at 320x240) was
+// pure GC churn.
+let g = new Float64Array(0);
+let from = new Int32Array(0);
+let closed = new Uint8Array(0);
+const heap: number[] = []; // binary heap of [f, node]
+
 // A* on the tile grid, 8-directional, edge-aware (doors pass, walls/windows
 // don't), no corner cutting. Returns tile coords start→goal inclusive, or null.
 export function astar(
@@ -13,14 +22,17 @@ export function astar(
   const { w, h } = map;
   if (!map.inBounds(gx, gy) || !map.terrainAt(gx, gy).passable) return null;
   const n = w * h;
-  const g = new Float64Array(n).fill(Infinity);
-  const from = new Int32Array(n).fill(-1);
-  const closed = new Uint8Array(n);
+  if (g.length < n) {
+    g = new Float64Array(n);
+    from = new Int32Array(n);
+    closed = new Uint8Array(n);
+  }
+  g.fill(Infinity, 0, n);
+  from.fill(-1, 0, n);
+  closed.fill(0, 0, n);
+  heap.length = 0;
   const start = sy * w + sx;
   const goal = gy * w + gx;
-
-  // binary heap of [f, node]
-  const heap: number[] = [];
   const push = (f: number, node: number) => {
     heap.push(f, node);
     let i = heap.length / 2 - 1;
