@@ -1,10 +1,13 @@
+import type { MapKind } from '../sim/mapgen';
 import type { Side } from '../sim/sim';
 
-export type CellTerrain = 'open' | 'woods' | 'town' | 'river' | 'bridge' | 'road';
+// Aliased to the battle-map archetype union: every strategic terrain must have
+// a tactical map interpretation (generateMap kind), so the types stay linked.
+export type CellTerrain = MapKind;
 
 export interface Cell {
   terrain: CellTerrain;
-  owner: Side | null; // null = neutral (river)
+  owner: Side | null; // null = neutral (rivers start neutral, captured when forded)
   objective: boolean;
 }
 
@@ -32,7 +35,7 @@ export const CELL_MINUTES: Record<CellTerrain, number> = {
   open: 15,
   town: 15,
   woods: 30,
-  river: Infinity,
+  river: 60, // opposed assault crossing: fordable transit, never worth it while a bridge stands
 };
 
 export function parseSector(rows: string[], frontX: number, name: string): SectorMap {

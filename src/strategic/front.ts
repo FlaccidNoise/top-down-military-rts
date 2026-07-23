@@ -89,6 +89,9 @@ export class Front {
   orderMove(chitId: number, dest: number): boolean {
     const chit = this.chits.find((c) => c.id === chitId);
     if (!chit) return false;
+    // Rivers are assault crossings: valid transit, never a destination — a
+    // company doesn't hold 500 m of open water.
+    if (this.sector.cells[dest].terrain === 'river') return false;
     const path = findPath(this.sector, chit.cell, dest);
     if (path === null) return false;
     chit.path = path;

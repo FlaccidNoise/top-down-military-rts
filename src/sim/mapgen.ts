@@ -98,14 +98,19 @@ function tryGenerate(rng: Rng, w: number, h: number, kind: MapKind): MapPlan | n
       if (rng.next() < 0.15) rx = clamp(rx + (rng.next() < 0.5 ? -1 : 1), base - 3, base + 3);
     }
     for (let i = 0; i < water.length; i++) if (water[i]) map.setTerrain(i % w, (i / w) | 0, 'water');
-    const bx = base + (width >> 1);
+    // the band random-walks ±3 off its seed column, so derive the bridge from
+    // the actual arterial-centerline ∩ water overlap (middle column of it)
+    const xs: number[] = [];
+    for (let x = 0; x < w; x++) if (water[roadY[x] * w + x]) xs.push(x);
+    if (xs.length === 0) return null; // no crossing carved: reroll rather than emit a NaN objective
+    const bx = xs[xs.length >> 1];
     bridgePt = { x: bx, y: roadY[bx] };
   }
 
   // village: buildings snapped to road frontage near the crossroads
   const buildings: Building[] = [];
   const doorSides: ('n' | 's' | 'e' | 'w')[] = [];
-  const target = 5 + rng.int(3) + (kind === 'town' ? 4 : 0);
+  const target = 5 + rng.int(3) + (kind === 'town' ? 10 : 0);
   const overlaps = (b: Building) =>
     buildings.some((o) => b.x - 2 < o.x + o.w && b.x + b.w + 2 > o.x && b.y - 2 < o.y + o.h && b.y + b.h + 2 > o.y);
   const touchesRoadOrWater = (b: Building): boolean => {
@@ -142,7 +147,7 @@ function tryGenerate(rng: Rng, w: number, h: number, kind: MapKind): MapPlan | n
       doorSides.push(door);
     }
   };
-  placeCluster(crossX, cy, roadX, target, 24);
+  placeCluster(crossX, cy, roadX, target, kind === 'town' ? 32 : 24);
   if (buildings.length < 4) return null;
 
   // second hamlet crossroads on large maps, further west along the arterial
@@ -228,7 +233,10 @@ function tryGenerate(rng: Rng, w: number, h: number, kind: MapKind): MapPlan | n
     const sy = 8 + rng.int(h - 16);
     if ((sx - crossX) * (sx - crossX) + (sy - cy) * (sy - cy) < 34 * 34) continue;
     stand(sx, sy, 6 + rng.int(5) + (kind === 'woods' ? 3 : 0));
-    woodsStands.push({ x: sx, y: sy });
+    // a stand centered in the river still carves bank trees, but its center is
+    // no anchor: downstream consumers (garrison posts) order squads to it and
+    // an impassable post can never be reached or settled on
+    if (map.terrainAt(sx, sy).passable) woodsStands.push({ x: sx, y: sy });
   }
 
   // orchards: staggered tree rows near the village

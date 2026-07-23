@@ -1,11 +1,11 @@
 // @ts-expect-error no @types/node in this project; node:fs still resolves fine at runtime under vitest
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { RedCommander } from '../src/sim/ai';
+import { AI_MEMORY_TICKS, RedCommander } from '../src/sim/ai';
 import { newCampaign } from '../src/campaign/campaign';
 import { WEAPONS } from '../src/sim/data';
 import { EDGE, GameMap } from '../src/sim/map';
-import { Sim } from '../src/sim/sim';
+import { SPOT_INTERVAL, Sim } from '../src/sim/sim';
 import { makeStrategicBattle, newFront } from '../src/strategic/bridge';
 import { makeDefaultSector } from '../src/strategic/sector';
 
@@ -137,7 +137,8 @@ describe('AI commander doctrine', () => {
         if (Math.hypot(ev.fx - 60.5, ev.fy - 30.5) < 3 && Math.hypot(ev.tx - post.x, ev.ty - post.y) < 30) mgShotsBeforeFast++;
       }
       const rifleOrder = sim.teams[rifle.teamIds[0]].orderState.order;
-      if (rifleOrder?.kind === 'fast') {
+      // the go-signal in either form: the run-in ('fast') or the charge itself
+      if (rifleOrder?.kind === 'fast' || rifleOrder?.kind === 'assault') {
         fastAtTick = sim.tick;
         if (sim.tick <= 150) firstEvalHadFast = true;
       }
@@ -145,6 +146,92 @@ describe('AI commander doctrine', () => {
     expect(fastAtTick).toBeGreaterThan(0); // the assault does eventually happen
     expect(firstEvalHadFast).toBe(false); // not an immediate, unsupported rush
     expect(mgShotsBeforeFast).toBeGreaterThan(0); // the base of fire actually shot near the post first
+  });
+
+  it('assault adoption: a maneuver team already close to a live post charges (assault order) only after the base of fire has been shooting', () => {
+    const map = new GameMap(140, 60);
+    const sim = new Sim(map, 102);
+    const post = { x: 120, y: 30 };
+    const mg = sim.addSquad('red', 'MG', [
+      { name: 'G', weapon: 'mg42', x: 60.5, y: 30.5 },
+      { name: 'A1', weapon: 'kar98k', x: 61.5, y: 29.5 },
+    ]);
+    // rifle team starts ~24m from the post — inside the AI's charge range,
+    // so the ONLY thing standing between it and an assault order is the
+    // suppression gate. Ammo zeroed: at this range a live rifle team shoots
+    // the garrison dead before 10s of suppression can even accrue, and a dead
+    // garrison means no live threat to charge (the gate correctly picks
+    // plain 'fast' for empty ground).
+    const rifle = sim.addSquad(
+      'red',
+      'Rifle',
+      Array.from({ length: 6 }, (_, i) => ({ name: `R${i}`, weapon: 'kar98k' as const, x: 96.5, y: 27.5 + i, xp: 20 })),
+    );
+    rifle.soldierIds.forEach((id) => {
+      sim.soldiers[id].morale = 1;
+      sim.soldiers[id].ammo = {};
+      sim.soldiers[id].magLeft = 0;
+    });
+    sim.soldiers[rifle.soldierIds[0]].role = 'leader';
+    sim.addSquad('blue', 'Garrison', [
+      { name: 'B1', weapon: 'kar98k', x: 122.5, y: 30.5 },
+      { name: 'B2', weapon: 'kar98k', x: 122.5, y: 31.5 },
+      { name: 'B3', weapon: 'kar98k', x: 122.5, y: 32.5 },
+    ]);
+    const commander = new RedCommander({ stance: 'attack', posts: { [mg.id]: post, [rifle.id]: post } });
+
+    let mgShotsBeforeAssault = 0;
+    let assaultAtTick = -1;
+    for (let i = 0; i < 12000 && assaultAtTick < 0; i++) {
+      commander.update(sim);
+      sim.step();
+      for (const ev of sim.takeEvents()) {
+        if (Math.hypot(ev.fx - 60.5, ev.fy - 30.5) < 3 && Math.hypot(ev.tx - post.x, ev.ty - post.y) < 30) mgShotsBeforeAssault++;
+      }
+      if (sim.teams[rifle.teamIds[0]].orderState.order?.kind === 'assault') assaultAtTick = sim.tick;
+    }
+    expect(assaultAtTick).toBeGreaterThan(300); // never before 10s of suppressive fire could even exist
+    expect(mgShotsBeforeAssault).toBeGreaterThan(0); // and the base of fire really was shooting first
+  });
+
+  it('reserve still commits when a maneuver team bleeds out mid-assault (the executing-assault guard must not skip the loss check)', () => {
+    // Regression: the "an executing charge owns its team" continue-guard sits
+    // above the reserve-commit check. If it short-circuits the loss check too,
+    // a team dying mid-charge — the highest-casualty moment — never triggers
+    // reinforcement. State is forced directly (no full battle) so the assert
+    // isolates exactly that control-flow ordering.
+    const sim = new Sim(new GameMap(140, 60), 103);
+    const post = { x: 120, y: 30 };
+    const mg = sim.addSquad('red', 'MG', [{ name: 'G', weapon: 'mg42', x: 60.5, y: 30.5 }]); // base of fire
+    // three rifle teams → maneuver = first two (pool.slice(0,2)), reserve = third
+    const man = sim.addSquad(
+      'red',
+      'Man',
+      Array.from({ length: 4 }, (_, i) => ({ name: `M${i}`, weapon: 'kar98k' as const, x: 96.5, y: 28.5 + i })),
+    );
+    const man2 = sim.addSquad('red', 'Man2', [{ name: 'N', weapon: 'kar98k', x: 96.5, y: 34.5 }]);
+    const reserve = sim.addSquad('red', 'Res', [{ name: 'Res', weapon: 'kar98k', x: 50.5, y: 30.5 }]);
+    sim.addSquad('blue', 'Garrison', [{ name: 'B1', weapon: 'kar98k', x: 122.5, y: 30.5 }]);
+    const posts = { [mg.id]: post, [man.id]: post, [man2.id]: post, [reserve.id]: post };
+    const commander = new RedCommander({ stance: 'attack', posts });
+
+    // first eval: assigns groups and captures man's startStrength = 4
+    sim.tick = SPOT_INTERVAL;
+    commander.update(sim);
+    const reserveTeam = sim.teams[reserve.teamIds[0]];
+    expect(reserveTeam.orderState.order).toBeNull(); // reserve is idle before losses
+
+    // force man into an executing charge and drop it below half strength
+    const manTeam = sim.teams[man.teamIds[0]];
+    manTeam.orderState = { order: { kind: 'assault', x: post.x, y: post.y }, phase: 'executing', reason: '' };
+    for (let i = 0; i < 3; i++) sim.soldiers[man.soldierIds[i]].alive = false; // 1 of 4 left = 25%
+
+    // next eval: the guard skips man's re-order, but the reserve check must
+    // still see the 25% strength and commit
+    sim.tick = SPOT_INTERVAL + 150;
+    commander.update(sim);
+    expect(reserveTeam.orderState.order).not.toBeNull(); // reserve committed
+    expect(manTeam.orderState.order?.kind).toBe('assault'); // and the charge was NOT re-rolled
   });
 
   it('a real Gruppe (addSquadFromDef) keeps its MG-Trupp on fire/move orders while the Schützen team maneuvers, over a sustained window', () => {
@@ -214,6 +301,64 @@ describe('AI commander doctrine', () => {
       steps++;
     }
     expect(sim.winner).not.toBeNull();
+  });
+});
+
+// Direct tests for the belief-state math itself (updateThreat's fade formula,
+// maybeBarrage's intel-range targeting) — the doctrine tests above only
+// exercise these through full battles, where a sign error in the fade or a
+// weapon-range gate on the barrage would survive unnoticed. Bracket access
+// reaches the private members without widening them.
+describe('intel layer math', () => {
+  it('updateThreat: tracked contacts hold conf 1; ghosts fade linearly to 0 over AI_MEMORY_TICKS and clamp there', () => {
+    const sim = new Sim(new GameMap(40, 40), 1);
+    const red = sim.addSquad('red', 'R', [{ name: 'R1', weapon: 'kar98k', x: 5.5, y: 5.5 }]);
+    const blue = sim.addSquad('blue', 'B', [{ name: 'B1', weapon: 'garand', x: 20.5, y: 5.5 }]);
+    const commander = new RedCommander({ stance: 'defend', posts: { [red.id]: { x: 5, y: 5 } } });
+    const trackedId = blue.soldierIds[0];
+    sim.spotted.red.set(trackedId, { x: 20.5, y: 5.5 });
+    sim.contacts.red.set('s999', { kind: 'infantry', x: 30, y: 30, tick: 0 });
+    for (const [age, conf] of [
+      [0, 1],
+      [AI_MEMORY_TICKS / 2, 0.5],
+      [AI_MEMORY_TICKS, 0],
+      [AI_MEMORY_TICKS * 2, 0], // clamped, never negative
+    ]) {
+      sim.tick = age;
+      commander['updateThreat'](sim);
+      const threat = commander['threat'];
+      expect(threat).toHaveLength(2);
+      expect(threat[0].conf).toBe(1); // spotted stays fully believed
+      expect(threat[1].conf).toBeCloseTo(conf, 6); // the ghost fades
+    }
+  });
+
+  it('maybeBarrage: shells a spotted 5-man cluster beyond every red weapon range, at its centroid', () => {
+    const sim = new Sim(new GameMap(200, 60), 2);
+    const red = sim.addSquad('red', 'R', [{ name: 'R1', weapon: 'kar98k', x: 10.5, y: 30.5 }]);
+    // 5 blues bunched within 5m of each other, 175m from the spotter —
+    // outside kar98k range (110m), inside SPOT_RANGE (200m)
+    sim.addSquad(
+      'blue',
+      'Cluster',
+      Array.from({ length: 5 }, (_, i) => ({ name: `C${i}`, weapon: 'garand' as const, x: 185.5, y: 28.5 + i })),
+    );
+    const commander = new RedCommander({ stance: 'defend', posts: { [red.id]: { x: 10, y: 30 } } });
+    let target: { x: number; y: number } | null = null;
+    const real = sim.callBarrage.bind(sim);
+    sim.callBarrage = (side, x, y) => {
+      target = { x, y };
+      return real(side, x, y);
+    };
+    for (let i = 0; i < 300 && !target; i++) {
+      commander.update(sim);
+      sim.step();
+    }
+    expect(target).not.toBeNull();
+    const spotter = sim.soldiers[red.soldierIds[0]];
+    expect(Math.hypot(target!.x - spotter.x, target!.y - spotter.y)).toBeGreaterThan(WEAPONS.kar98k.range);
+    expect(Math.hypot(target!.x - 185.5, target!.y - 30.5)).toBeLessThan(1); // the cluster centroid, not a corner of it
+    expect(sim.barragesLeft.red).toBe(0);
   });
 });
 

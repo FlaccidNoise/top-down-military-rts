@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { GameMap } from '../src/sim/map';
+import { EDGE, GameMap } from '../src/sim/map';
 import { CHARGE_BALK_REASON } from '../src/sim/orders';
 import { Sim } from '../src/sim/sim';
 
@@ -126,6 +126,81 @@ describe('assault order', () => {
     expect(st.phase).not.toBe('balked');
     expect(st.order?.kind).toBe('move'); // downgraded — no charge home
     expect(st.reason).toBe('unwilling to charge — advancing instead');
+  });
+
+  it('a man who breaks mid-charge flees — the repath cadence never drags him back in', () => {
+    const { sim, atk } = hedgeScreenedAssault();
+    sim.orderTeam(atk.teamIds[0], { kind: 'assault', x: 28.5, y: 6.5 });
+    const runner = sim.soldiers[atk.soldierIds[0]];
+    // let him close until the defenders are in his sight (past the screen) —
+    // the ungated bug only bites when assaultRepath has a visible target
+    expect(stepUntil(sim, () => Math.hypot(runner.x - 28.5, runner.y - 6.5) < 7)).toBe(true);
+    runner.morale = 0;
+    sim.step();
+    expect(runner.mental).toBe('broken');
+    for (let i = 0; i < 240; i++) sim.step();
+    if (runner.alive && !runner.downed) {
+      // fled clear of the objective, not repathed back onto a defender
+      expect(Math.hypot(runner.x - 28.5, runner.y - 6.5)).toBeGreaterThan(9);
+    }
+  });
+
+  it('a queued waypoint cannot steal a squad out of a live assault', () => {
+    const { sim, atk, def } = hedgeScreenedAssault();
+    sim.orderSquad(atk.id, { kind: 'assault', x: 28.5, y: 6.5 });
+    sim.queueMove(atk.id, 35, 6.5); // shift-click route beyond the objective
+    const st = sim.teams[atk.teamIds[0]].orderState;
+    expect(st.order?.kind).toBe('assault');
+    const defenders = def.soldierIds.map((id) => sim.soldiers[id]);
+    for (let i = 0; i < 900; i++) {
+      sim.step();
+      if (defenders.some((d) => d.alive && !d.downed)) {
+        // while the position is contested, the assault owns the team
+        expect(st.order?.kind).toBe('assault');
+      } else break;
+    }
+  });
+
+  it('a sealed holdout neither absorbs the charge nor hangs the order', () => {
+    // window room at the objective: visible, unreachable — plus a live
+    // defender 8m south the squad CAN get at
+    const m = flat(40, 16);
+    for (let y = 0; y < 16; y++) {
+      m.setTerrain(20, y, 'hedge');
+      m.setTerrain(23, y, 'hedge');
+    }
+    m.setVEdge(28, 6, EDGE.WINDOW); // west face: seen through, not walked through
+    m.setVEdge(29, 6, EDGE.WALL);
+    m.setHEdge(28, 6, EDGE.WALL);
+    m.setHEdge(28, 7, EDGE.WALL);
+    const sim = new Sim(m, 11);
+    // five men: enough that the pile-on wins even if they arrive piecemeal
+    // (three dry riflemen lost this scenario 1-v-1 in sequence — by design)
+    const atk = sim.addSquad('blue', 'A', [
+      { name: 'A1', weapon: 'garand', x: 10.5, y: 5.5 },
+      { name: 'A2', weapon: 'garand', x: 10.5, y: 7.5 },
+      { name: 'A3', weapon: 'garand', x: 9.5, y: 6.5 },
+      { name: 'A4', weapon: 'garand', x: 9.5, y: 5.5 },
+      { name: 'A5', weapon: 'garand', x: 9.5, y: 7.5 },
+    ]);
+    const def = sim.addSquad('red', 'D', [
+      { name: 'Sealed', weapon: 'kar98k', x: 28.5, y: 6.5 },
+      { name: 'Open', weapon: 'kar98k', x: 28.5, y: 14.5 },
+    ]);
+    for (const id of [...atk.soldierIds, ...def.soldierIds]) {
+      sim.soldiers[id].ammo = {};
+      sim.soldiers[id].magLeft = 0;
+    }
+    const open = sim.soldiers[def.soldierIds[1]];
+    sim.orderTeam(atk.teamIds[0], { kind: 'assault', x: 28.5, y: 6.5 });
+    const st = sim.teams[atk.teamIds[0]].orderState;
+    expect(st.phase).toBe('executing');
+    // the reachable defender gets dealt with (nearest-REACHABLE fallback) …
+    expect(stepUntil(sim, () => !open.alive || open.downed, 3600)).toBe(true);
+    // … and the sealed man does not hang the order forever
+    expect(stepUntil(sim, () => st.order === null && st.phase === 'idle', 1200)).toBe(true);
+    const sealed = sim.soldiers[def.soldierIds[0]];
+    expect(sealed.alive).toBe(true); // he was never reachable
   });
 
   it('an uncontested assault just takes the ground and completes', () => {

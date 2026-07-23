@@ -25,12 +25,21 @@ export interface CommanderConfig {
 interface ThreatContact {
   x: number;
   y: number;
-  conf: number; // 1 while tracked; a lost contact fades toward 0 over the ghost TTL
+  conf: number; // 1 while tracked; a lost contact fades toward 0 over AI_MEMORY_TICKS
 }
+
+// Red's memory window for the ghost-confidence fade. Defaults to the ghost
+// TTL so behavior matches the UI today, but it's a separate knob: retuning
+// ghost-marker UX must never silently retune the AI's competence (SPOT_RANGE
+// and CONTACT_TTL are difficulty constants now — decision log 2026-07-23).
+// Values above CONTACT_TTL are capped in practice: the sim deletes a contact
+// at CONTACT_TTL, so red can't remember a ghost the intel layer has dropped.
+export const AI_MEMORY_TICKS = CONTACT_TTL;
 
 const EVAL_TICKS = 150; // every 5s
 const SUPPRESSION_SECONDS = 10; // a base-of-fire team firing this long counts as suppression established
 const CLEAR_CONF = 0.3; // threat confidence at the post below which maneuver goes ahead regardless
+const ASSAULT_RANGE = 30; // m from the post at which a suppressed-in maneuver team charges instead of running
 const FLANK_OFFSET = 20; // meters either side of the direct axis to the post
 const BOF_SETTLE_RADIUS = 5; // close enough to the scored firing spot to stop moving and start firing
 
@@ -77,7 +86,7 @@ export class RedCommander {
 
   // ---- belief state: the sim's per-side intel layer, rebuilt each eval —
   // the commander keeps no private threat map; it knows exactly what its
-  // side knows (spotted at conf 1, lost contacts fading over the ghost TTL).
+  // side knows (spotted at conf 1, lost contacts fading over AI_MEMORY_TICKS).
   private spottedPositions(sim: Sim): { x: number; y: number }[] {
     const out: { x: number; y: number }[] = [];
     for (const [id, p] of sim.spotted.red) {
@@ -90,7 +99,7 @@ export class RedCommander {
     this.threat = this.spottedPositions(sim).map((p) => ({ x: p.x, y: p.y, conf: 1 }));
     for (const c of sim.contacts.red.values()) {
       if (c.kind !== 'infantry') continue;
-      this.threat.push({ x: c.x, y: c.y, conf: Math.max(0, 1 - (sim.tick - c.tick) / CONTACT_TTL) });
+      this.threat.push({ x: c.x, y: c.y, conf: Math.max(0, 1 - (sim.tick - c.tick) / AI_MEMORY_TICKS) });
     }
   }
 
@@ -141,7 +150,8 @@ export class RedCommander {
 
   // ---- attack stance: shape (base of fire scores a position, moves there
   // once, then suppresses) -> maneuver (bound the covered flank) -> assault
-  // (fast, once suppression's established) -> reserve commits on a maneuver
+  // (fast once suppression's established; the real 'assault' charge once
+  // within ASSAULT_RANGE of a post with live threat) -> reserve commits on a maneuver
   // team's losses (spec's attack template; the assault gate uses BOTH
   // suppression-established and a cleared threat reading so the commander
   // doesn't stall forever against an unseen post).
@@ -172,16 +182,30 @@ export class RedCommander {
       if (!post) continue;
       const alive = team.soldierIds.filter((id) => sim.soldiers[id].alive);
       if (alive.length === 0) continue;
+      // Reserve commits on a maneuver team's losses — evaluated every eval
+      // BEFORE the executing-assault guard below, so a team bleeding out
+      // mid-charge (the highest-casualty moment) still triggers reinforcement.
+      const start = this.startStrength.get(teamId) ?? alive.length;
+      if (!this.reserveCommitted && start > 0 && alive.length / start < 0.5) this.commitReserve(sim);
+      // an executing charge owns its team until the position is clear —
+      // reissuing would re-roll compliance mid-charge and restart the run-in
+      if (team.orderState.order?.kind === 'assault' && team.orderState.phase === 'executing') continue;
       const suppressed = this.suppressionEstablished(sim);
-      const confAtPost = this.threatConfNear(post.x, post.y, 15);
-      if (suppressed || confAtPost < CLEAR_CONF) {
+      const cleared = this.threatConfNear(post.x, post.y, 15) < CLEAR_CONF;
+      const c = this.centroid(sim, team.soldierIds);
+      if (suppressed && !cleared && Math.hypot(c.x - post.x, c.y - post.y) <= ASSAULT_RANGE) {
+        // suppression established, live threat on the post, close enough to
+        // charge home: the 8th order, through the same API the player uses.
+        // suppressionEstablished is a global attempt-gate; the real per-team
+        // check is orderTeam's compliance ladder (dangerScore × the assault
+        // mult), which downgrades a team that shouldn't charge to a move.
+        sim.orderTeam(teamId, { kind: 'assault', x: post.x, y: post.y });
+      } else if (suppressed || cleared) {
         sim.orderTeam(teamId, { kind: 'fast', x: post.x, y: post.y });
       } else {
         const flank = this.pickFlank(sim, team, post);
         sim.orderTeam(teamId, { kind: 'move', x: flank.x, y: flank.y });
       }
-      const start = this.startStrength.get(teamId) ?? alive.length;
-      if (!this.reserveCommitted && start > 0 && alive.length / start < 0.5) this.commitReserve(sim);
     }
   }
 

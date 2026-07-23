@@ -138,6 +138,50 @@ describe('mapgen', () => {
     expect(p.map.canStep(wx - 1, wy, wx, wy, 'vehicle')).toBe(false);
   });
 
+  it('bridge/river maps generate at the 60x40 floor; woods-stand anchors stay passable (seeds 1-15)', () => {
+    for (const kind of ['bridge', 'river'] as const) {
+      for (let seed = 1; seed <= 15; seed++) {
+        const p = generateMap(seed, 60, 40, kind);
+        const { west, east } = p.spawns;
+        expect(astar(p.map, west.x, west.y, east.x, east.y, 'vehicle')).not.toBeNull();
+        const big = generateMap(seed, 320, 240, kind);
+        for (const s of big.woodsStands) expect(big.map.terrainAt(s.x, s.y).passable).toBe(true);
+      }
+    }
+  });
+
+  it('town maps pack a denser village around the crossroads (320x240)', () => {
+    const near = (p: ReturnType<typeof generateMap>) =>
+      p.buildings.filter((b) => (b.x - p.objectives[0].x) ** 2 + (b.y - p.objectives[0].y) ** 2 < 40 * 40).length;
+    for (const seed of [1, 5, 9]) {
+      const town = generateMap(seed, 320, 240, 'town');
+      const open = generateMap(seed, 320, 240);
+      expect(near(town)).toBeGreaterThanOrEqual(near(open) + 6);
+    }
+  });
+
+  it('bridge objective sits on the carved road-water crossing (seeds 1-15)', () => {
+    for (const kind of ['bridge', 'river'] as const) {
+      for (let seed = 1; seed <= 15; seed++) {
+        const p = generateMap(seed, 320, 240, kind);
+        const b = p.objectives[p.objectives.length - 1];
+        expect(p.map.terrainKeyAt(b.x, b.y)).toBe('road');
+        // the road span is 3 rows; the band must flank it both sides nearby
+        let north = 99;
+        let south = 99;
+        for (let dy = -4; dy <= 4; dy++)
+          for (let dx = -4; dx <= 4; dx++) {
+            if (p.map.terrainKeyAt(b.x + dx, b.y + dy) !== 'water') continue;
+            const d = Math.max(Math.abs(dx), Math.abs(dy));
+            if (dy < 0) north = Math.min(north, d);
+            else if (dy > 0) south = Math.min(south, d);
+          }
+        expect(north).toBeLessThanOrEqual(2);
+        expect(south).toBeLessThanOrEqual(2);
+      }
+    }
+  });
+
   it('river maps carve a wider band than bridge maps', () => {
     const count = (kind: 'bridge' | 'river') => {
       const p = generateMap(2, 320, 240, kind);
