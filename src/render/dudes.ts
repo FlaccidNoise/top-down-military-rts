@@ -7,7 +7,7 @@ import { SHADOW_SOFT_ALPHA } from './light';
 // one rotated drawImage per soldier; rotation is free because top-down art has
 // a single valid view angle.
 
-export type Pose = 'idle' | 'walk' | 'aim' | 'kneel' | 'prone' | 'downed' | 'dead' | 'drag' | 'aid' | 'dragged' | 'melee';
+export type Pose = 'idle' | 'walk' | 'aim' | 'kneel' | 'prone' | 'downed' | 'dead' | 'drag' | 'aid' | 'dragged' | 'melee' | 'surrendered';
 export const WALK_FRAMES = 6;
 export const MELEE_FRAMES = 4; // 0 guard, 1 windup, 2 thrust, 3 recover
 export const SPRITE_SPAN = 3.6; // meters covered by the (square) sprite canvas
@@ -341,6 +341,16 @@ function dragged(g: Ctx, k: Kit, band: number): void {
   helmet(g, k, 0.32, 0);
 }
 
+// Hands up: standing, arms raised forward and out, no weapon in hands.
+function surrendered(g: Ctx, k: Kit, band: number): void {
+  torso(g, k, 0.22, 0.31, band, 'garand');
+  cap(g, 0.02, 0.24, 0.32, 0.38, 0.12, k.sleeve);
+  cap(g, 0.02, -0.24, 0.32, -0.38, 0.12, k.sleeve);
+  dot(g, 0.32, 0.38, 0.055, k.skin);
+  dot(g, 0.32, -0.38, 0.055, k.skin);
+  helmet(g, k, 0.04, 0);
+}
+
 // Close combat: braced lunge stance, both hands working the weapon as a
 // bayonet/club (SMGs read as hip-fire — the muzzle flash sells the shot).
 // The enemy is at +X. Frames: 0 guard, 1 windup (coiled back), 2 thrust, 3 recover.
@@ -415,6 +425,9 @@ function drawDude(g: Ctx, side: Side, weapon: WeaponKey, pose: Pose, frame: numb
       break;
     case 'melee':
       melee(g, k, weapon, frame, band);
+      break;
+    case 'surrendered':
+      surrendered(g, k, band);
       break;
   }
 }

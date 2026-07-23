@@ -487,6 +487,7 @@ export class Renderer {
     let pose: Pose;
     let frame = 0;
     if (!s.alive) pose = 'dead';
+    else if (s.captured) pose = 'surrendered';
     else if (s.downed) pose = carried ? 'dragged' : 'downed';
     else if (s.task?.phase === 'drag') pose = 'drag';
     else if (s.task?.phase === 'aid') pose = 'aid';

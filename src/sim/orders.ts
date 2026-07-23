@@ -38,8 +38,8 @@ const RECENT_CASUALTY_TICKS = 900; // 30s at DT=1/30
 // definition of "what a side knows" everywhere it matters.
 export function visibleEnemies(sim: Sim, side: Side): Soldier[] {
   const enemySide: Side = side === 'blue' ? 'red' : 'blue';
-  const friendlies = sim.soldiers.filter((s) => s.alive && !s.downed && s.side === side && s.inVehicle < 0);
-  const enemies = sim.soldiers.filter((e) => e.alive && !e.downed && e.side === enemySide);
+  const friendlies = sim.soldiers.filter((s) => s.alive && !s.downed && !s.captured && s.side === side && s.inVehicle < 0);
+  const enemies = sim.soldiers.filter((e) => e.alive && !e.downed && !e.captured && e.side === enemySide);
   const seen: Soldier[] = [];
   for (const e of enemies) {
     for (const f of friendlies) {
@@ -106,7 +106,7 @@ export function dangerScore(sim: Sim, team: Team, dest: { x: number; y: number }
 }
 
 export function compliance(sim: Sim, team: Team, danger: number): 'comply' | 'cautious' | 'balk' {
-  const eligible = team.soldierIds.map((id) => sim.soldiers[id]).filter((s) => s.alive && !s.downed && s.mental !== 'broken');
+  const eligible = team.soldierIds.map((id) => sim.soldiers[id]).filter((s) => s.alive && !s.downed && !s.captured && s.mental !== 'broken');
   if (eligible.length === 0) return 'balk';
   const leaderAlive = eligible.some((s) => s.role === 'leader');
   const avgMorale = eligible.reduce((a, s) => a + s.morale, 0) / eligible.length;

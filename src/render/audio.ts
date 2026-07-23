@@ -234,6 +234,7 @@ export class AudioEngine {
           this.tone(90, 0.7, 0.2, 0, 45, 'sawtooth');
           break;
         case 'broken': // morale snap — a brief anxious dyad, only for the player's men
+        case 'surrendered': // captured at melee contact — same treatment as broken
           if (friendly) this.tone(520, 0.18, 0.1, 0, 390, 'sine');
           break;
         // 'downed' is covered by the gunfire that caused it — no extra blip

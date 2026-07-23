@@ -48,6 +48,12 @@ const MELEE_INTERVAL = 1.4; // s between strikes, jittered per swing
 // defenders — the charge redirects onto them and completes when none remain visible.
 const ASSAULT_RADIUS = 20; // m
 const ASSAULT_REPATH_TICKS = 15; // per-soldier redirect cadence (0.5 s)
+// Grenades: the assault's room-clearing opener (decision log 2026-07-23).
+const GRENADE_RANGE = 12; // m
+const GRENADE_FUSE_TICKS = 30; // ~1 s
+const GRENADE_COOLDOWN_TICKS = 60;
+const GRENADE_BLAST = { suppRadius: 6, fragRadius: 3, frags: 2, dmg: [20, 55] as [number, number] };
+const GRENADE_SCATTER = 2; // m max
 
 export type Side = 'blue' | 'red';
 export type Mental = 'steady' | 'shaken' | 'pinned' | 'broken';
@@ -152,6 +158,9 @@ export interface Soldier {
   // height: floor level and stair transition
   level: number; // floor level, 0-based. vehicles/emplacements always 0
   climbLeft: number; // ticks remaining of a stair climb; >0 = on stairs transitioning
+  grenadesLeft: number; // 2 for grenadiers, 0 for everyone else
+  grenadeCooldownUntil: number; // tick when next grenade throw is allowed
+  captured: boolean; // alive, out of the fight, untargetable (surrendered at melee contact)
 }
 
 export interface Vehicle {
@@ -200,6 +209,7 @@ export interface MemberInit {
   secondary?: WeaponKey;
   carries?: LoadKey[];
   crewSkill?: Partial<Record<CrewClass, number>>;
+  grenades?: number;
 }
 
 export interface Squad {
@@ -237,7 +247,7 @@ export interface ShotEvent {
 // UI never has to diff sim state (a DOWN followed by KIA in one frame batch
 // would otherwise drop the DOWN).
 export interface UnitEvent {
-  kind: 'downed' | 'kia' | 'broken' | 'vehicle-destroyed' | 'ping';
+  kind: 'downed' | 'kia' | 'broken' | 'surrendered' | 'vehicle-destroyed' | 'ping';
   x: number;
   y: number;
   side: Side;
@@ -474,6 +484,7 @@ export class Sim {
   private leaderVacantSince = new Map<number, number>(); // teamId -> tick its leader died, pending the 10s promotion
   // Mortar rounds in flight: 3s from trigger to impact (spec: indirect fire).
   private mortarShells: { tick: number; x: number; y: number; smoke: boolean }[] = [];
+  private pendingGrenades: { x: number; y: number; fuse: number }[] = [];
   // Staggered dismount: one passenger every 0.5s (spec: "1 per 0.5s").
   private dismountQueue: { vehicleId: number; soldierId: number; tick: number }[] = [];
 
@@ -538,6 +549,9 @@ export class Sim {
       meleeTempo: 0,
       level: 0,
       climbLeft: 0,
+      grenadesLeft: m.grenades ?? 0,
+      grenadeCooldownUntil: 0,
+      captured: false,
     };
     s.morale = 0.7 + s.courage * 0.3;
     this.soldiers.push(s);
@@ -627,6 +641,7 @@ export class Sim {
           secondary: ov?.secondary,
           carries: ov?.carries ?? (slot.carries ? [...slot.carries] : []),
           crewSkill: ov?.crewSkill,
+          grenades: ov?.grenades ?? slot.grenades,
         };
         return { role: slot.role, member };
       });
@@ -702,7 +717,7 @@ export class Sim {
     for (const sid of this.teams[s.teamId].soldierIds) {
       if (sid === s.id) continue;
       const m = this.soldiers[sid];
-      if (m.alive && !m.downed && m.role === 'assistant' && Math.hypot(m.x - s.x, m.y - s.y) <= 3) return 1;
+      if (m.alive && !m.downed && !m.captured && m.role === 'assistant' && Math.hypot(m.x - s.x, m.y - s.y) <= 3) return 1;
     }
     return 1.75;
   }
@@ -1213,7 +1228,7 @@ export class Sim {
   }
 
   private eligible(s: Soldier): boolean {
-    return s.alive && !s.downed && s.mental !== 'broken';
+    return s.alive && !s.downed && !s.captured && s.mental !== 'broken';
   }
 
   // The order vocabulary's entry point (spec's "interpret + refuse"): runs
@@ -1295,7 +1310,7 @@ export class Sim {
   private teamUnderFire(team: Team): boolean {
     return team.soldierIds.some((id) => {
       const s = this.soldiers[id];
-      return s.alive && !s.downed && s.suppression > 0.35;
+      return s.alive && !s.downed && !s.captured && s.suppression > 0.35;
     });
   }
 
@@ -1399,7 +1414,7 @@ export class Sim {
       if (!this.eligible(s)) continue;
       const thresh = ambushThreshold(WEAPONS[s.weapon]);
       for (const e of this.soldiers) {
-        if (!e.alive || e.downed || e.side !== enemySide) continue;
+        if (!e.alive || e.downed || e.captured || e.side !== enemySide) continue;
         if (order.arc && !this.inArc(s.x, s.y, e.x, e.y, order.arc)) continue;
         const d = Math.hypot(e.x - s.x, e.y - s.y);
         if (d <= thresh && sightToSoldier(this, s.x, s.y, e, s.level).visible) {
@@ -1497,6 +1512,7 @@ export class Sim {
     this.stepBarrages();
     this.stepStrafes();
     this.stepSmoke();
+    this.stepGrenades();
     this.stepOrders();
     this.stepEmplacements();
     this.stepDismounts();
@@ -1513,7 +1529,7 @@ export class Sim {
     let blue = 0;
     let red = 0;
     for (const s of this.soldiers) {
-      if (!s.alive || s.downed) continue;
+      if (!s.alive || s.downed || s.captured) continue;
       if (s.side === 'blue') blue++;
       else red++;
     }
@@ -1536,7 +1552,7 @@ export class Sim {
       let moving = 0;
       for (const sid of sq.soldierIds) {
         const s = this.soldiers[sid];
-        if (!s.alive || s.downed || s.mental === 'broken') continue;
+        if (!s.alive || s.downed || s.captured || s.mental === 'broken') continue;
         eligible++;
         // a rescue task counts as busy: it holds path=null for a tick on pickup,
         // and auto-dispatching the next leg would silently cancel the rescue.
@@ -1593,6 +1609,16 @@ export class Sim {
     if (this.smoke.length === 0) return;
     for (const p of this.smoke) p.ttl -= DT;
     this.smoke = this.smoke.filter((p) => p.ttl > 0);
+  }
+
+  private stepGrenades(): void {
+    for (let i = this.pendingGrenades.length - 1; i >= 0; i--) {
+      const g = this.pendingGrenades[i];
+      if (--g.fuse <= 0) {
+        this.explode(g.x, g.y, GRENADE_BLAST);
+        this.pendingGrenades.splice(i, 1);
+      }
+    }
   }
 
   // Continues in-flight team orders: bounding leg alternation, sneak-break,
@@ -1727,7 +1753,7 @@ export class Sim {
     // tank terror: enemy infantry with sight of an approaching tank feel it
     if (this.tick % 30 === 0) {
       for (const s of this.soldiers) {
-        if (!s.alive || s.downed || s.side === v.side || s.inVehicle >= 0) continue;
+        if (!s.alive || s.downed || s.captured || s.side === v.side || s.inVehicle >= 0) continue;
         const d = Math.hypot(s.x - v.x, s.y - v.y);
         if (d < 30 && sightBetween(this, v.x, v.y, s.x, s.y, 0, s.level).visible) {
           s.suppression = Math.min(1, s.suppression + 0.05 * (1.3 - s.courage * 0.6));
@@ -1770,7 +1796,7 @@ export class Sim {
       v.targetSoldierId = this.acquireSoldierTarget(v.x, v.y, v.side, def.mgRange);
     }
     const t = v.targetSoldierId >= 0 ? this.soldiers[v.targetSoldierId] : null;
-    if (t && (!t.alive || t.downed)) {
+    if (t && (!t.alive || t.downed || t.captured)) {
       v.targetSoldierId = -1;
       return;
     }
@@ -1824,7 +1850,7 @@ export class Sim {
   private acquireSoldierTarget(x: number, y: number, side: Side, range: number, arc?: [number, number], l0 = 0): number {
     const candidates: { id: number; d: number }[] = [];
     for (const e of this.soldiers) {
-      if (!e.alive || e.downed || e.side === side) continue;
+      if (!e.alive || e.downed || e.captured || e.side === side) continue;
       if (e.inVehicle >= 0) {
         const ev = this.vehicles[e.inVehicle];
         if (!ev || !ev.alive || !isOpenTop(ev.kind) || e.role !== 'gunner') continue;
@@ -1902,7 +1928,7 @@ export class Sim {
     if (!sight.visible) return { visible: false, dist: d, cover: 0, acc: 0, concealed: sight.concealed };
     const w = WEAPONS[weapon];
     let cover = sight.cover;
-    if (t.mental === 'pinned' || t.downed) cover = Math.max(cover, Math.min(0.9, cover + 0.3));
+    if (t.mental === 'pinned' || t.downed || t.captured) cover = Math.max(cover, Math.min(0.9, cover + 0.3));
     let acc = w.accuracy * (1 - 0.75 * (d / w.range)) * (1 - cover) * aim;
     if (shooterMoving) acc *= 0.5;
     // Movers are harder to hit — except a sneaking target: once spotted, a
@@ -2000,12 +2026,13 @@ export class Sim {
       const r = this.soldiers[s.rescuerId];
       if (r.task?.kind === 'rescue' && r.task.casualtyId === s.id) this.dropTask(r); // he's back up
     }
+    if (s.captured) return; // captured men are inert: no movement, no flee, no psych re-trigger, no fire
 
     // psyche: bonded mates nearby steady the nerves
     let steadying = 0;
     for (const sid of this.squads[s.squadId].soldierIds) {
       const m = this.soldiers[sid];
-      if (m.id === s.id || !m.alive || m.downed) continue;
+      if (m.id === s.id || !m.alive || m.downed || m.captured) continue;
       if (Math.hypot(m.x - s.x, m.y - s.y) < 8) steadying += this.bond(s, m);
     }
     // defend/ambush: suppression bleeds off faster once settled in (not moving)
@@ -2022,6 +2049,25 @@ export class Sim {
       : 'steady';
     if (s.mental === 'broken' && wasMental !== 'broken') {
       this.pendingUnitEvents.push({ kind: 'broken', x: s.x, y: s.y, side: s.side, name: s.name });
+      // Overwhelmed at contact: ≥2 enemies within MELEE_ENGAGE → capture
+      // instead of flee. Count BEFORE flee clears state (a broken man clears
+      // his own meleeId first — key everything off counts around the victim).
+      let captors = 0;
+      for (const e of this.soldiers) {
+        if (!e.alive || e.downed || e.captured || e.side === s.side || e.inVehicle >= 0) continue;
+        if (Math.hypot(e.x - s.x, e.y - s.y) <= MELEE_ENGAGE) captors++;
+      }
+      if (captors >= 2) {
+        // find a captor (nearest enemy) for the force-spot and event
+        let captor: Soldier | null = null;
+        let captorD = Infinity;
+        for (const e of this.soldiers) {
+          if (!e.alive || e.downed || e.captured || e.side === s.side || e.inVehicle >= 0) continue;
+          const d = Math.hypot(e.x - s.x, e.y - s.y);
+          if (d <= MELEE_ENGAGE && d < captorD) { captorD = d; captor = e; }
+        }
+        if (captor) this.capture(s, captor);
+      }
     }
 
     // broken men flee away from the nearest enemy — breaking is the one way
@@ -2073,6 +2119,7 @@ export class Sim {
       (this.tick + s.id) % ASSAULT_REPATH_TICKS === 0
     ) {
       this.assaultRepath(s, order);
+      this.maybeThrowGrenade(s);
     }
 
     // movement (pinned men hug the ground)
@@ -2229,7 +2276,7 @@ export class Sim {
       if (forced.alive && !forced.downed && Math.hypot(forced.x - s.x, forced.y - s.y) <= w.range) s.targetId = order.targetId;
     }
     const t = s.targetId >= 0 ? this.soldiers[s.targetId] : null;
-    const targetInvalid = !t || !t.alive || t.downed || Math.hypot(t.x - s.x, t.y - s.y) > w.range;
+    const targetInvalid = !t || !t.alive || t.downed || t.captured || Math.hypot(t.x - s.x, t.y - s.y) > w.range;
     if (targetInvalid || (this.tick + s.id) % RETARGET_TICKS === 0) {
       s.targetId = this.acquire(s);
     }
@@ -2676,7 +2723,7 @@ export class Sim {
   // Public: main.ts gates enemy unit-event pings on it.
   sideSeesPoint(side: Side, x: number, y: number): boolean {
     for (const s of this.soldiers) {
-      if (!s.alive || s.downed || s.side !== side || s.inVehicle >= 0) continue;
+      if (!s.alive || s.downed || s.captured || s.side !== side || s.inVehicle >= 0) continue;
       if (Math.hypot(s.x - x, s.y - y) <= SPOT_RANGE && sightBetween(this, s.x, s.y, x, y, s.level, 0).visible) return true;
     }
     for (const v of this.vehicles) {
@@ -2690,7 +2737,7 @@ export class Sim {
     const enemySide: Side = side === 'blue' ? 'red' : 'blue';
     const spotters: { x: number; y: number; l: number }[] = [];
     for (const s of this.soldiers) {
-      if (s.alive && !s.downed && s.side === side && s.inVehicle < 0) spotters.push({ x: s.x, y: s.y, l: s.level });
+      if (s.alive && !s.downed && !s.captured && s.side === side && s.inVehicle < 0) spotters.push({ x: s.x, y: s.y, l: s.level });
     }
     for (const v of this.vehicles) if (v.alive && v.side === side) spotters.push({ x: v.x, y: v.y, l: 0 });
     const spotted = this.spotted[side];
@@ -2860,7 +2907,7 @@ export class Sim {
   private assaultDefenders(s: Soldier, order: TeamOrder): Soldier[] {
     const out: Soldier[] = [];
     for (const e of this.soldiers) {
-      if (!e.alive || e.downed || e.side === s.side || e.inVehicle >= 0) continue;
+      if (!e.alive || e.downed || e.captured || e.side === s.side || e.inVehicle >= 0) continue;
       if (Math.hypot(e.x - order.x, e.y - order.y) > ASSAULT_RADIUS) continue;
       if (sightToSoldier(this, s.x, s.y, e, s.level).visible) out.push(e);
     }
@@ -2908,6 +2955,48 @@ export class Sim {
     }
   }
 
+  // Cheap interior check: is a point inside any building footprint? Used by
+  // grenade targeting (enclosed ground softens the cluster requirement) and
+  // the roof renderer. O(buildings) — 3-5 rects, no allocation.
+  isInside(x: number, y: number): boolean {
+    for (const b of this.buildings) {
+      if (x >= b.x && x < b.x + b.w && y >= b.y && y < b.y + b.h) return true;
+    }
+    return false;
+  }
+
+  // Grenade throw: fires alongside the assault repath on the same cadence.
+  // Only throws at a clustered target point or into a building — a lone man
+  // in the open is a fire problem, not a grenade problem.
+  private maybeThrowGrenade(s: Soldier): void {
+    if (s.grenadesLeft <= 0 || this.tick < s.grenadeCooldownUntil) return;
+    let best: Soldier | null = null;
+    let bestD = Infinity;
+    for (const e of this.soldiers) {
+      if (!e.alive || e.downed || e.captured || e.side === s.side || e.inVehicle >= 0) continue;
+      const d = Math.hypot(e.x - s.x, e.y - s.y);
+      if (d > GRENADE_RANGE || d >= bestD) continue;
+      if (!sightToSoldier(this, s.x, s.y, e, s.level).visible) continue;
+      bestD = d;
+      best = e;
+    }
+    if (!best) return;
+    // Clustered: ≥2 enemies within frag radius of the target point
+    let clustered = 0;
+    for (const e of this.soldiers) {
+      if (!e.alive || e.downed || e.captured || e.side === s.side || e.inVehicle >= 0) continue;
+      if (Math.hypot(e.x - best.x, e.y - best.y) <= GRENADE_BLAST.fragRadius) clustered++;
+    }
+    const enclosed = this.isInside(best.x, best.y);
+    if (clustered < 2 && !enclosed) return;
+    // Throw: scatter exactly like the mortar (angle then dist, one draw each)
+    s.grenadesLeft--;
+    s.grenadeCooldownUntil = this.tick + GRENADE_COOLDOWN_TICKS;
+    const angle = this.rng.next() * Math.PI * 2;
+    const dist = this.rng.next() * GRENADE_SCATTER;
+    this.pendingGrenades.push({ x: best.x + Math.cos(angle) * dist, y: best.y + Math.sin(angle) * dist, fuse: GRENADE_FUSE_TICKS });
+  }
+
   // Can a man physically get at (bx, by) from (ax, ay) at melee distance?
   // Greedy tile walk over canStep — doors pass, walls and windows don't.
   // At MELEE_ENGAGE range the chain is <= 2 steps; deterministic, no RNG.
@@ -2949,7 +3038,7 @@ export class Sim {
     let best: Soldier | null = null;
     let bestD = Infinity;
     for (const e of this.soldiers) {
-      if (!e.alive || e.downed || e.side === s.side || e.inVehicle >= 0) continue;
+      if (!e.alive || e.downed || e.captured || e.side === s.side || e.inVehicle >= 0) continue;
       const d = Math.hypot(e.x - s.x, e.y - s.y);
       if (d > MELEE_ENGAGE || d >= bestD) continue;
       if (!this.meleeReachable(s.x, s.y, e.x, e.y)) continue;
@@ -2957,8 +3046,42 @@ export class Sim {
       best = e;
     }
     if (!best) return;
+    // A broken man at melee contact surrenders if ≥2 enemies are within
+    // MELEE_ENGAGE of him — a lone pursuer still gets the run-down drama.
+    if (best.mental === 'broken') {
+      let captors = 0;
+      for (const e of this.soldiers) {
+        if (!e.alive || e.downed || e.captured || e.side === best.side || e.inVehicle >= 0) continue;
+        if (Math.hypot(e.x - best.x, e.y - best.y) <= MELEE_ENGAGE) captors++;
+      }
+      if (captors >= 2) {
+        this.capture(best, s);
+        return;
+      }
+      // fall through: lone pursuer still locks and chases
+    }
     this.enterMelee(s, best.id);
     if (best.meleeId < 0) this.enterMelee(best, s.id); // already fighting someone: he keeps his man
+  }
+
+  // Capture a broken man overwhelmed at melee contact: alive, out of the
+  // fight, untargetable. Force-spots both sides (contact is a sense).
+  private capture(victim: Soldier, captor: Soldier): void {
+    victim.captured = true;
+    victim.meleeId = -1;
+    // clear any locker's meleeId pointing at the victim
+    for (const s of this.soldiers) {
+      if (s.meleeId === victim.id) s.meleeId = -1;
+    }
+    victim.path = null;
+    victim.targetId = -1;
+    if (victim.task) this.dropTask(victim);
+    // contact is a sense: both sides see the surrender
+    this.spotted[victim.side].set(captor.id, { x: captor.x, y: captor.y });
+    this.spotted[captor.side].set(victim.id, { x: victim.x, y: victim.y });
+    this.contacts[victim.side].delete(`s${captor.id}`);
+    this.contacts[captor.side].delete(`s${victim.id}`);
+    this.pendingUnitEvents.push({ kind: 'surrendered', x: victim.x, y: victim.y, side: victim.side, name: victim.name });
   }
 
   private enterMelee(m: Soldier, oppId: number): void {
@@ -2986,7 +3109,7 @@ export class Sim {
     const d = Math.hypot(t.x - s.x, t.y - s.y);
     // A routing opponent already out of strike reach can't be caught (equal
     // speeds) — break off and let the rifle take over, no futile jogging.
-    if (!t.alive || t.downed || t.inVehicle >= 0 || d > MELEE_BREAK || (t.mental === 'broken' && d > MELEE_STRIKE_RANGE)) {
+    if (!t.alive || t.downed || t.captured || t.inVehicle >= 0 || d > MELEE_BREAK || (t.mental === 'broken' && d > MELEE_STRIKE_RANGE)) {
       s.meleeId = -1;
       return false;
     }
@@ -3046,7 +3169,7 @@ export class Sim {
     }
     this.pendingMeleeEvents.push({ attackerId: s.id, victimId: t.id, x: t.x, y: t.y, hit, kill });
     if (kill) this.seenStatic[s.side].add(`s${t.id}`); // killed at arm's length: the corpse is found, not a ghost
-    if (kill || t.downed) s.meleeId = -1;
+    if (kill || t.downed || t.captured) s.meleeId = -1;
   }
 
   private acquire(s: Soldier): number {
@@ -3073,7 +3196,7 @@ export class Sim {
     const kill = this.fireSmallArms(s, t, s.path !== null, aim);
     const rate = s.mental === 'pinned' ? 2 : 1; // cowering: slower fire
     s.cooldown = w.cooldown * rate * (0.85 + this.rng.next() * 0.3);
-    if (kill || t.downed) s.targetId = -1;
+    if (kill || t.downed || t.captured) s.targetId = -1;
   }
 
   private wound(t: Soldier, dmg: number): boolean {
@@ -3185,6 +3308,9 @@ export class Sim {
         s.helperId,
         s.meleeId,
         Math.round(s.meleePhase * 1e6),
+        s.grenadesLeft,
+        s.grenadeCooldownUntil,
+        s.captured,
         Math.round((s.crewSkill.mg ?? 0) * 1e6),
         Math.round((s.crewSkill.mortar ?? 0) * 1e6),
         Math.round((s.crewSkill.gun ?? 0) * 1e6),
@@ -3219,6 +3345,7 @@ export class Sim {
         e.smokeRoundsLeft,
       ]),
       smoke: this.smoke.map((p) => [Math.round(p.x * 1e6), Math.round(p.y * 1e6), Math.round(p.ttl * 1e6)]),
+      pendingGrenades: this.pendingGrenades.map((g) => [Math.round(g.x * 1e6), Math.round(g.y * 1e6), g.fuse]),
       droppedKit: this.droppedKit.map((k) => [
         k.side,
         Math.round(k.x * 1e6),
