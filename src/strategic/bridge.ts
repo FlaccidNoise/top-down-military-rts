@@ -83,6 +83,8 @@ function nudgePassable(map: GameMap, x: number, y: number): Vec {
 
 const DIRECT_FIRE = new Set<SquadKey>(['de_gruppe', 'de_smg42']);
 const GARRISON_RADIUS = 45; // meters from an objective a garrison post may sit
+const FORD_SUPPRESSION = 0.45; // crossing under fire: shaken at spawn (fast-decaying)
+const FORD_STAMINA = 0.65; // an hour wading: no sprinting off the far bank
 
 // Front-packed partial roster of slot-default members: fields exactly `count`
 // men of a squad def (teams fill in order), so a garrison's headcount always
@@ -124,11 +126,16 @@ export function makeStrategicBattle(
   e: Engagement,
   seed: number,
 ): { sim: Sim; commander: RedCommander; name: string; companyIndex: number } {
-  const plan = generateMap(seed, 320, 240, front.sector.cells[e.cell].terrain);
-  const sim = new Sim(plan.map, seed);
-  sim.buildings = plan.buildings;
   const attacker = front.chits.find((ch) => ch.id === e.attackerId)!;
   const defender = front.chits.find((ch) => ch.id === e.defenderId)!;
+  // Ford assault: the attacker halted on a river cell, so it is crossing under
+  // fire — fight on the river archetype (wide water band between blue and the
+  // garrison) whatever the contested cell's own terrain, and blue comes out of
+  // the water suppressed and fatigued. Bridges stay the cheap crossing.
+  const viaFord = front.sector.cells[attacker.cell].terrain === 'river';
+  const plan = generateMap(seed, 320, 240, viaFord ? 'river' : front.sector.cells[e.cell].terrain);
+  const sim = new Sim(plan.map, seed);
+  sim.buildings = plan.buildings;
 
   const { west } = plan.spawns;
   const company = c.companies[attacker.companyIndex];
@@ -162,6 +169,14 @@ export function makeStrategicBattle(
     rosters.push(teamRosters.flat());
   });
   wireBonds(sim, rosters);
+
+  if (viaFord) {
+    for (const s of sim.soldiers) {
+      if (s.side !== 'blue') continue;
+      s.suppression = Math.max(s.suppression, FORD_SUPPRESSION);
+      s.stamina = Math.min(s.stamina, FORD_STAMINA);
+    }
+  }
 
   // German garrison: buildings, objectives, and woods stands near an objective
   // are posts, split into 2-3 sectors by nearest objective; squads go to the
