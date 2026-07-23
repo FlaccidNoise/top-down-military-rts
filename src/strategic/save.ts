@@ -3,7 +3,7 @@ import type { WeaponKey } from '../sim/data';
 import { Front, type FrontSave } from './front';
 import { makeDefaultSector } from './sector';
 
-const KEY = 'ccg-save-v2';
+const KEY = 'ccg-save-v3'; // v3: SquadInstance campaign schema (teams) — v2 saves are unreachable and fall back to newCampaign
 type Store = Pick<Storage, 'getItem' | 'setItem'>;
 
 // Old saves carry pre-M5 generic weapon keys; map them onto their national

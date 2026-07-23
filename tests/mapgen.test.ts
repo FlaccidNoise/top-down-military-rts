@@ -51,6 +51,13 @@ describe('mapgen', () => {
         expect(astar(p.map, west.x, west.y, b.x + (b.w >> 1), b.y + (b.h >> 1))).not.toBeNull();
       }
       expect(astar(p.map, west.x, west.y, east.x, east.y, 'vehicle')).not.toBeNull();
+      expect(p.woodsStands.length).toBeGreaterThan(0);
+      for (const s of p.woodsStands) {
+        expect(s.x).toBeGreaterThanOrEqual(0);
+        expect(s.y).toBeGreaterThanOrEqual(0);
+        expect(s.x).toBeLessThan(p.map.w);
+        expect(s.y).toBeLessThan(p.map.h);
+      }
     }
   });
 
@@ -109,6 +116,13 @@ describe('mapgen', () => {
       const { west, east } = a.spawns;
       for (const o of a.objectives) expect(astar(a.map, west.x, west.y, o.x, o.y)).not.toBeNull();
       expect(astar(a.map, west.x, west.y, east.x, east.y, 'vehicle')).not.toBeNull();
+      expect(a.woodsStands.length).toBeGreaterThan(0);
+      for (const s of a.woodsStands) {
+        expect(s.x).toBeGreaterThanOrEqual(0);
+        expect(s.y).toBeGreaterThanOrEqual(0);
+        expect(s.x).toBeLessThan(a.map.w);
+        expect(s.y).toBeLessThan(a.map.h);
+      }
     }
   });
 });
