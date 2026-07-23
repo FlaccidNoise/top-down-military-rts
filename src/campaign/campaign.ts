@@ -1,7 +1,8 @@
 import { PARTS } from '../sim/body';
-import { US_NAMES, type WeaponKey } from '../sim/data';
+import { SQUADS, TEAMS, US_NAMES, type SquadKey, type TeamKey, type WeaponKey } from '../sim/data';
 import { mulberry32 } from '../sim/rng';
 import type { CrewClass, Sim } from '../sim/sim';
+import { COMPANY_TOE } from '../sim/toe';
 
 // The campaign roster: named soldiers persisting across battles, carrying
 // wounds, experience, and bonds. Destroyed body parts never heal.
@@ -27,16 +28,29 @@ export interface BattleRecord {
   wounded: string[];
 }
 
+export interface CampaignTeam {
+  def: TeamKey;
+  members: number[]; // pids, slot order, front-packed (index i = slot i)
+}
+
+export interface CampaignSquad {
+  name: string;
+  def: SquadKey;
+  teams: CampaignTeam[]; // 1:1 with SQUADS[def].teams, same order
+}
+
+export function squadMembers(sq: CampaignSquad): number[] {
+  return sq.teams.flatMap((t) => t.members);
+}
+
 export interface Campaign {
   day: number;
   nextPid: number;
   companies: { name: string; squads: number[] }[]; // indices into squads
-  squads: { name: string; members: number[] }[];
+  squads: CampaignSquad[];
   soldiers: Record<number, CSoldier>;
   log: BattleRecord[];
 }
-
-const SQUAD_SIZE = 9;
 
 function uniqueName(c: Campaign, rng: { int(n: number): number }): string {
   const used = new Set(Object.values(c.soldiers).map((s) => s.name));
@@ -69,27 +83,47 @@ function newSoldier(c: Campaign, rng: { next(): number; int(n: number): number }
 }
 
 export const COMPANY_NAMES = ['Able', 'Baker', 'Charlie'];
-export const SQUADS_PER_COMPANY = 3;
+
+// us_rifle_co TO&E is 9 rifle, 3 mortar60, 2 m1919, 3 bazooka, 1 sniper (18
+// squads, in that order); names are derived positionally from that shape.
+function companySquadNames(coName: string): string[] {
+  const counts: Partial<Record<SquadKey, number>> = {};
+  for (const k of COMPANY_TOE.us_rifle_co) counts[k] = (counts[k] ?? 0) + 1;
+  if (counts.us_rifle !== 9 || counts.us_mortar60 !== 3 || counts.us_m1919 !== 2 || counts.us_bazooka !== 3 || counts.us_sniper !== 1) {
+    throw new Error('companySquadNames: us_rifle_co TO&E shape changed; naming assumes 9/3/2/3/1');
+  }
+  const ordinal = ['1st', '2nd', '3rd', '4th', '5th', '6th', '7th', '8th', '9th'];
+  return [
+    ...ordinal.map((o) => `${coName} ${o}`),
+    ...[1, 2, 3].map((n) => `${coName} Mortar ${n}`),
+    ...[1, 2].map((n) => `${coName} MG ${n}`),
+    ...[1, 2, 3].map((n) => `${coName} Zooka ${n}`),
+    `${coName} Scouts`,
+  ];
+}
 
 export function newCampaign(seed: number): Campaign {
   const rng = mulberry32(seed);
   const c: Campaign = { day: 1, nextPid: 1, companies: [], squads: [], soldiers: {}, log: [] };
-  const ordinal = ['1st', '2nd', '3rd'];
   for (const coName of COMPANY_NAMES) {
     const squadIndexes: number[] = [];
-    for (let q = 0; q < SQUADS_PER_COMPANY; q++) {
-      const members: number[] = [];
-      for (let i = 0; i < SQUAD_SIZE; i++) {
-        const s = newSoldier(c, rng, false);
-        if (i === 0) s.weapon = 'thompson';
-        if (i === 1) s.weapon = 'bar';
-        members.push(s.pid);
-      }
+    const names = companySquadNames(coName);
+    COMPANY_TOE.us_rifle_co.forEach((squadKey, i) => {
+      const teams: CampaignTeam[] = SQUADS[squadKey].teams.map((teamKey) => ({
+        def: teamKey,
+        members: TEAMS[teamKey].slots.map((slot) => {
+          const s = newSoldier(c, rng, false);
+          s.weapon = slot.weapon; // display/informational — battle spawns take weapons from slots
+          return s.pid;
+        }),
+      }));
+      const sq: CampaignSquad = { name: names[i], def: squadKey, teams };
       // trained together: everyone starts somewhat bonded
+      const members = squadMembers(sq);
       for (const a of members) for (const b of members) if (a !== b) c.soldiers[a].bonds[b] = 0.3;
       squadIndexes.push(c.squads.length);
-      c.squads.push({ name: `${coName} ${ordinal[q]}`, members });
-    }
+      c.squads.push(sq);
+    });
     c.companies.push({ name: coName, squads: squadIndexes });
   }
   return c;
@@ -122,7 +156,7 @@ export function applyBattleResults(c: Campaign, sim: Sim, won: boolean): BattleR
     }
     cs.battles++;
     cs.xp = Math.min(10, cs.xp + 1);
-    const sq = c.squads.findIndex((q) => q.members.includes(s.pid));
+    const sq = c.squads.findIndex((q) => squadMembers(q).includes(s.pid));
     if (sq >= 0) survivorsBySquad[sq].push(s.pid);
   }
 
@@ -155,18 +189,33 @@ export function advanceDays(c: Campaign, days: number): void {
   }
 }
 
-export function fillReplacements(c: Campaign, seed: number): number {
+export function fillReplacements(c: Campaign, seed: number, capPerCompany = Infinity): number {
   const rng = mulberry32(seed);
-  let added = 0;
+  // kia pids drop first: survivors shift toward slot 0 (array order IS slot
+  // order), so filtering alone reproduces crew succession.
   for (const squad of c.squads) {
-    squad.members = squad.members.filter((pid) => c.soldiers[pid].status !== 'kia');
-    while (squad.members.filter((pid) => c.soldiers[pid].status === 'fit').length < SQUAD_SIZE) {
-      const green = newSoldier(c, rng, true); // no bonds: the new guy is a stranger
-      squad.members.push(green.pid);
-      added++;
-    }
+    for (const team of squad.teams) team.members = team.members.filter((pid) => c.soldiers[pid].status !== 'kia');
   }
-  return added;
+  const deficit = (si: number) =>
+    c.squads[si].teams.reduce((n, t) => n + Math.max(0, TEAMS[t.def].slots.length - t.members.length), 0);
+
+  let total = 0;
+  for (const company of c.companies) {
+    const order = [...company.squads].sort((a, b) => deficit(b) - deficit(a));
+    let added = 0;
+    for (const si of order) {
+      for (const team of c.squads[si].teams) {
+        const capacity = TEAMS[team.def].slots.length;
+        while (team.members.length < capacity && added < capPerCompany) {
+          const green = newSoldier(c, rng, true); // no bonds: the new guy is a stranger
+          team.members.push(green.pid); // replacement takes the junior slot
+          added++;
+        }
+      }
+    }
+    total += added;
+  }
+  return total;
 }
 
 export interface RosterEntry {
@@ -180,19 +229,20 @@ export interface RosterEntry {
   crewSkill: Partial<Record<CrewClass, number>>;
 }
 
-export function fitRoster(c: Campaign, squadIndex: number): RosterEntry[] {
-  return c.squads[squadIndex].members
-    .map((pid) => c.soldiers[pid])
-    .filter((cs) => cs.status === 'fit')
-    .slice(0, SQUAD_SIZE)
-    .map((cs) => ({
-      pid: cs.pid,
-      name: cs.name,
-      weapon: cs.weapon,
-      courage: cs.courage,
-      xp: cs.xp,
-      bodyDamage: cs.bodyDamage,
-      bonds: cs.bonds,
-      crewSkill: cs.crewSkill,
-    }));
+export function fitRoster(c: Campaign, squadIndex: number): RosterEntry[][] {
+  return c.squads[squadIndex].teams.map((team) =>
+    team.members
+      .map((pid) => c.soldiers[pid])
+      .filter((cs) => cs.status === 'fit')
+      .map((cs) => ({
+        pid: cs.pid,
+        name: cs.name,
+        weapon: cs.weapon,
+        courage: cs.courage,
+        xp: cs.xp,
+        bodyDamage: cs.bodyDamage,
+        bonds: cs.bonds,
+        crewSkill: cs.crewSkill,
+      })),
+  );
 }

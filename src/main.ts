@@ -1,4 +1,4 @@
-import { advanceDays, fillReplacements, newCampaign, type Campaign } from './campaign/campaign';
+import { advanceDays, fillReplacements, newCampaign, squadMembers, type Campaign } from './campaign/campaign';
 import { Camera } from './render/camera';
 import { Renderer } from './render/renderer';
 import { StrategicView, TERRAIN_LABELS } from './render/strategic';
@@ -208,7 +208,7 @@ function showDebrief(): void {
   const rows = campaign.companies[battleCompany].squads
     .map((si) => campaign.squads[si])
     .map((sq) => {
-      const men = sq.members
+      const men = squadMembers(sq)
         .map((pid) => campaign.soldiers[pid])
         .map((cs) => {
           const scars = cs.bodyDamage.some((d) => d > 0) && cs.status === 'fit' ? ' <span class="scar">permanent injury</span>' : '';

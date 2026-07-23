@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { advanceDays, newCampaign } from '../src/campaign/campaign';
+import { advanceDays, newCampaign, squadMembers } from '../src/campaign/campaign';
 import { Front, findPath, formatClock, chitEtaMinutes, operationStatus, OP_START_MIN, OP_DEADLINE_DAYS } from '../src/strategic/front';
 import { cellIndex, makeDefaultSector, parseSector } from '../src/strategic/sector';
 import { applyEngagementOutcome, makeStrategicBattle, newFront, syncStrengths } from '../src/strategic/bridge';
@@ -133,12 +133,21 @@ describe('bridge', () => {
     return { c, sector, front };
   };
 
-  it('newFront fields 3 blue companies at strength 27 and 5 garrisons', () => {
+  it('newFront fields 3 blue companies at strength 138 and 5 sized garrisons', () => {
     const { front } = setup();
     const blue = front.chits.filter((ch) => ch.side === 'blue');
     expect(blue.length).toBe(3);
-    expect(blue.every((ch) => ch.strength === 27)).toBe(true);
-    expect(front.chits.filter((ch) => ch.side === 'red').length).toBe(5);
+    expect(blue.every((ch) => ch.strength === 138)).toBe(true);
+    const red = front.chits.filter((ch) => ch.side === 'red');
+    expect(red.length).toBe(5);
+    const strengthByName = Object.fromEntries(red.map((ch) => [ch.name, ch.strength]));
+    expect(strengthByName).toEqual({
+      'Brückenwache Süd': 36,
+      'Garnison St-Aubin': 109,
+      'Brückenwache Nord': 36,
+      'Garnison Vireux': 109,
+      Reserve: 109,
+    });
   });
 
   it('a strategic battle fields the company roster with pids and bonds against a sized garrison', () => {
@@ -148,9 +157,9 @@ describe('bridge', () => {
     const { sim } = makeStrategicBattle(c, front, { attackerId: able.id, defenderId: wache.id, cell: wache.cell }, 5);
     const blue = sim.soldiers.filter((s) => s.side === 'blue');
     const red = sim.soldiers.filter((s) => s.side === 'red');
-    expect(blue.length).toBe(27);
+    expect(blue.length).toBe(138);
     expect(blue.every((s) => s.pid > 0)).toBe(true);
-    expect(red.length).toBe(18); // ceil(18/9) = 2 squads
+    expect(red.length).toBe(36); // prefix of de_grenadier_co TO&E by strength: 4x 9-man Gruppen
     const [a, b] = blue;
     expect(a.bonds[b.id]).toBeCloseTo(0.3); // trained-together, wired from campaign
   });
@@ -166,7 +175,7 @@ describe('bridge', () => {
     expect(sim.winner).toBe('blue');
     const out = applyEngagementOutcome(c, front, e, sim);
     expect(out.cellTaken).toBe(true);
-    expect(out.redLosses).toBe(18);
+    expect(out.redLosses).toBe(36);
     expect(front.sector.cells[e.cell].owner).toBe('blue');
     expect(able.cell).toBe(e.cell);
     expect(front.chits.find((ch) => ch.name === 'Brückenwache Süd')).toBeUndefined();
@@ -203,7 +212,7 @@ describe('bridge', () => {
     const { c, front } = setup();
     const able = front.chits.find((ch) => ch.side === 'blue')!;
     for (const si of c.companies[able.companyIndex].squads)
-      for (const pid of c.squads[si].members) {
+      for (const pid of squadMembers(c.squads[si])) {
         c.soldiers[pid].status = 'recovering';
         c.soldiers[pid].recoveryDays = 1;
       }
@@ -212,7 +221,7 @@ describe('bridge', () => {
     expect(able.strength).toBe(0);
     advanceDays(c, 1);
     syncStrengths(c, front);
-    expect(able.strength).toBe(27);
+    expect(able.strength).toBe(138);
   });
 });
 

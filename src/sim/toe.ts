@@ -27,17 +27,3 @@ export function squadHeadcount(k: SquadKey): number {
 export function companyHeadcount(list: SquadKey[]): number {
   return list.reduce((n, k) => n + squadHeadcount(k), 0);
 }
-
-// Greedy prefix by headcount: always keeps at least one squad, and stops
-// before a squad would push the running total past targetHeadcount.
-export function prefixSlice(list: SquadKey[], targetHeadcount: number): SquadKey[] {
-  const out: SquadKey[] = [];
-  let total = 0;
-  for (const k of list) {
-    const hc = squadHeadcount(k);
-    if (out.length > 0 && total + hc > targetHeadcount) break;
-    out.push(k);
-    total += hc;
-  }
-  return out;
-}

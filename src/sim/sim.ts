@@ -550,7 +550,7 @@ export class Sim {
   // Data-driven force building: spawns every team a SquadDef calls for, named
   // and armed from data.ts. `roster` supplies per-team, per-slot overrides
   // (campaign soldiers) — any field left out falls back to the slot default.
-  addSquadFromDef(side: Side, key: SquadKey, x: number, y: number, roster?: MemberInit[][]): Squad {
+  addSquadFromDef(side: Side, key: SquadKey, x: number, y: number, roster?: Partial<MemberInit>[][]): Squad {
     const def = SQUADS[key];
     const names = side === 'blue' ? US_NAMES : DE_NAMES;
     const squad: Squad = { id: this.squads.length, side, name: def.name, soldierIds: [], teamIds: [] };
@@ -559,8 +559,13 @@ export class Sim {
     def.teams.forEach((teamKey, ti) => {
       const teamDef = TEAMS[teamKey];
       const cy = y + (ti - (n - 1) / 2) * 8; // fan teams out so a multi-team squad doesn't stack
-      const entries = teamDef.slots.map((slot: SoldierSlot, si) => {
-        const ov = roster?.[ti]?.[si];
+      // A passed roster is authoritative: this team spawns exactly its roster
+      // entries (campaign attrition), not the full establishment. No roster
+      // (or no entry for this team) means full establishment, unchanged.
+      const teamRoster = roster?.[ti];
+      const slots = teamRoster ? teamDef.slots.slice(0, teamRoster.length) : teamDef.slots;
+      const entries = slots.map((slot: SoldierSlot, si) => {
+        const ov = teamRoster?.[si];
         const member: MemberInit = {
           name: ov?.name ?? names[this.rng.int(names.length)],
           weapon: ov?.weapon ?? slot.weapon,
@@ -573,6 +578,7 @@ export class Sim {
           ammo: ov?.ammo ?? { ...slot.ammo },
           secondary: ov?.secondary,
           carries: ov?.carries ?? (slot.carries ? [...slot.carries] : []),
+          crewSkill: ov?.crewSkill,
         };
         return { role: slot.role, member };
       });

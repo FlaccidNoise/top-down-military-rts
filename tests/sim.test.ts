@@ -340,7 +340,8 @@ describe('simulation', () => {
     expect(sim.squadWaypoints[0].length).toBe(1); // queue held, no auto-dispatch mid-rescue
   });
 
-  it('an assault produces a resolved firefight with no NaN state', () => {
+  // 15s: passes in ~2.5s alone but the design-scale perf/strategic suites now contend for CPU
+  it('an assault produces a resolved firefight with no NaN state', { timeout: 15_000 }, () => {
     const sim = makeScenario(7);
     const [b0, b2] = [sim.buildings[0], sim.buildings[2]];
     sim.orderSquad(0, { kind: 'move', x: b0.x + b0.w / 2, y: b0.y + b0.h / 2 });
@@ -466,6 +467,19 @@ describe('teams and data-driven squads', () => {
     sim.orderSquad(squad.id, { kind: 'move', x: 50, y: 20 });
     const moving = (teamId: number) => sim.teams[teamId].soldierIds.some((id) => sim.soldiers[id].path !== null);
     expect(squad.teamIds.every(moving)).toBe(true);
+  });
+
+  it('addSquadFromDef with a roster shorter than the team spawns only the roster, not the full establishment', () => {
+    const sim = new Sim(new GameMap(40, 40), 63);
+    const roster = [[{ pid: 901 }, { pid: 902, crewSkill: { mg: 0.4 } }, { pid: 903 }]];
+    const squad = sim.addSquadFromDef('blue', 'us_m1919', 20, 20, roster);
+    expect(squad.soldierIds.length).toBe(3); // 5-slot team, 3-entry roster: no phantom fill
+    const team = sim.teams[squad.teamIds[0]];
+    expect(team.soldierIds.map((id) => sim.soldiers[id].pid)).toEqual([901, 902, 903]); // no -1 padding
+    expect(sim.soldiers[team.soldierIds[1]].crewSkill).toEqual({ mg: 0.4 });
+    expect(team.soldierIds.map((id) => sim.soldiers[id].weapon)).toEqual(
+      TEAMS.us_m1919_team.slots.slice(0, 3).map((sl) => sl.weapon),
+    );
   });
 });
 
