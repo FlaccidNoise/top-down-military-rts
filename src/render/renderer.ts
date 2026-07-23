@@ -722,12 +722,12 @@ export class Renderer {
             ctx.fill();
           }
         }
-        // outcome-keyed impact punch (replaces the flat red kill dot)
+        // outcome-keyed impact punch (replaces the flat red kill dot). dAge is
+        // ms since the round landed — same clock the impact dust above uses.
         if (t.hit) {
-          const iAge = age - TRAVEL_MS; // ms since the round landed
-          if (t.kill && iAge < 200) {
+          if (t.kill && dAge < 200) {
             // kill confirm: hot flash + expanding bone-toned ring
-            const kt = iAge / 200;
+            const kt = dAge / 200;
             const fa = 1 - kt;
             const fr = Math.max(2, (0.3 + kt * 0.9) * cam.scale);
             const grad = ctx.createRadialGradient(x1, y1, 0, x1, y1, fr);
@@ -743,9 +743,9 @@ export class Renderer {
             ctx.beginPath();
             ctx.arc(x1, y1, (0.4 + kt * 2.2) * cam.scale, 0, Math.PI * 2);
             ctx.stroke();
-          } else if (!t.kill && iAge < 90) {
+          } else if (!t.kill && dAge < 90) {
             // a round finding flesh/cover: brief bright fleck, no lingering marker
-            const ft = iAge / 90;
+            const ft = dAge / 90;
             ctx.fillStyle = `rgba(255,220,170,${(1 - ft) * 0.7})`;
             ctx.beginPath();
             ctx.arc(x1, y1, Math.max(1.2, cam.scale * 0.14), 0, Math.PI * 2);

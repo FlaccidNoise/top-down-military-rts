@@ -92,14 +92,16 @@ export class AudioEngine {
 
   // Screen-space placement: [gain multiplier, stereo pan]. gain falls off with
   // distance from viewport centre; culls only when far off-screen (nd > 2.6).
-  private place(x: number, y: number, cam: Camera, cw: number, ch: number): [number, number] | null {
+  // Returns [gain, pan, nd] — nd is the normalized distance from viewport centre
+  // (0 = dead centre, 1 ≈ screen corner), reused by the near-miss crack gate.
+  private place(x: number, y: number, cam: Camera, cw: number, ch: number): [number, number, number] | null {
     const [sx, sy] = cam.worldToScreen(x, y, cw, ch);
     const half = Math.hypot(cw, ch) / 2;
     const nd = Math.hypot(sx - cw / 2, sy - ch / 2) / half;
     if (nd > 2.6) return null;
     const gain = Math.max(0.08, 1 - nd * 0.62);
     const pan = Math.max(-1, Math.min(1, (sx - cw / 2) / (cw / 2)));
-    return [gain, pan];
+    return [gain, pan, nd];
   }
 
   // One filtered noise burst — the workhorse for guns, explosions, cracks, melee.
@@ -172,8 +174,10 @@ export class AudioEngine {
       const placed = this.place(s.fx, s.fy, cam, cw, ch);
       if (!placed) continue;
       const cls = s.weapon ? CLASS[s.weapon] : 'cannon';
-      // near-miss crack gates on the impact point (where the round snaps past)
-      scored.push({ g: placed[0], pan: placed[1], cls, miss: !s.hit, nd: this.centreDist(s.tx, s.ty, cam, cw, ch) });
+      // near-miss crack gates on the impact point (where the round snaps past),
+      // not the muzzle; 9 = far off-screen (place culled it), so no crack
+      const impact = this.place(s.tx, s.ty, cam, cw, ch);
+      scored.push({ g: placed[0], pan: placed[1], cls, miss: !s.hit, nd: impact ? impact[2] : 9 });
     }
     scored.sort((a, b) => b.g - a.g);
     for (let i = 0; i < Math.min(scored.length, NEW_PER_BATCH); i++) {
@@ -184,11 +188,6 @@ export class AudioEngine {
       // whip-crack for a round snapping past where the player is looking
       if (s.miss && s.nd < 0.4) this.burst(3000, 6, 0.03, 0.5 * s.g, s.pan, 'bandpass');
     }
-  }
-
-  private centreDist(x: number, y: number, cam: Camera, cw: number, ch: number): number {
-    const [sx, sy] = cam.worldToScreen(x, y, cw, ch);
-    return Math.hypot(sx - cw / 2, sy - ch / 2) / (Math.hypot(cw, ch) / 2);
   }
 
   addBooms(booms: { x: number; y: number }[], cam: Camera, cw: number, ch: number): void {
