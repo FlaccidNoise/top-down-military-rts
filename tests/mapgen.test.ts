@@ -2,11 +2,11 @@ import { describe, expect, it } from 'vitest';
 import { generateMap } from '../src/sim/mapgen';
 import { astar } from '../src/sim/path';
 
-// FNV-1a over the map's raw arrays — a compact geometry fingerprint.
+// FNV-1a over the map's raw arrays — a compact geometry + elevation fingerprint.
 function fingerprint(seed: number): string {
   const { map } = generateMap(seed);
   let h = 0x811c9dc5;
-  for (const a of [map.tiles, map.hEdges, map.vEdges]) {
+  for (const a of [map.tiles, map.hEdges, map.vEdges, map.elev, map.stories, map.buildingId, map.stairs]) {
     for (let i = 0; i < a.length; i++) {
       h ^= a[i];
       h = Math.imul(h, 0x01000193);
@@ -34,8 +34,8 @@ describe('mapgen', () => {
   });
 
   it('matches known snapshots (catches accidental generator drift)', () => {
-    expect(fingerprint(1)).toMatchInlineSnapshot(`"ef00920e"`);
-    expect(fingerprint(2)).toMatchInlineSnapshot(`"2aa5e8b2"`);
+    expect(fingerprint(1)).toMatchInlineSnapshot(`"8105059f"`);
+    expect(fingerprint(2)).toMatchInlineSnapshot(`"d2a77805"`);
   });
 
   it('spawns reach objectives and buildings on foot; the road carries vehicles (seeds 1-30)', () => {

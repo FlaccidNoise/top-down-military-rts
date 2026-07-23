@@ -1,4 +1,4 @@
-import { EDGE, GameMap } from './map';
+import { EDGE, FLOOR_H, GameMap } from './map';
 import { astar } from './path';
 import { mulberry32, type Rng } from './rng';
 
@@ -263,11 +263,35 @@ function tryGenerate(rng: Rng, w: number, h: number, kind: MapKind): MapPlan | n
 
   // roads carved last: the corridor is clear by construction
   for (let i = 0; i < road.length; i++) if (road[i]) map.setTerrain(i % w, (i / w) | 0, 'road');
-  buildings.forEach((b, i) => addBuilding(map, b, doorSides[i]));
+  buildings.forEach((b, i) => {
+    map.maxStories = Math.max(map.maxStories, addBuilding(map, b, doorSides[i], i));
+  });
 
   const objectives: Vec[] = [{ x: crossX, y: cy }, eastWoods];
   if (settlements.length > 1) objectives.push({ x: settlements[1].x, y: settlements[1].y });
   if (bridgePt) objectives.push(bridgePt);
+
+  // cosine hill domes: generated LAST so the rng position for all 2D geometry
+  // above is untouched (byte-identical tiles/edges per seed). Domes never lift
+  // structures: road/water/floor tiles and anything within 1 of a building
+  // are skipped. Overlapping domes take the max elevation.
+  for (let i = 0, n = 2 + rng.int(3); i < n; i++) {
+    const cx = rng.int(w);
+    const cy = rng.int(h);
+    const r = 8 + rng.int(12);
+    const peak = 3 + rng.int(6);
+    const r2 = r * r;
+    for (let y = Math.max(0, cy - r); y <= Math.min(h - 1, cy + r); y++)
+      for (let x = Math.max(0, cx - r); x <= Math.min(w - 1, cx + r); x++) {
+        const d2 = (x - cx) * (x - cx) + (y - cy) * (y - cy);
+        if (d2 > r2) continue;
+        const k = map.terrainKeyAt(x, y);
+        if (k === 'road' || k === 'water' || k === 'floor') continue;
+        if (nearBuilding(x, y)) continue;
+        const e = Math.round(peak * 0.5 * (1 + Math.cos(Math.PI * Math.min(1, Math.sqrt(d2) / r))));
+        if (e > map.elev[y * w + x]) map.elev[y * w + x] = e;
+      }
+  }
 
   return {
     map,
@@ -281,8 +305,20 @@ function tryGenerate(rng: Rng, w: number, h: number, kind: MapKind): MapPlan | n
 // Perimeter walls with windows every 3 tiles, a door mid-span on the
 // road-facing side, floor interior, and a partitioned second room when wide
 // enough (partition door aligned with the entrance row/column).
-function addBuilding(map: GameMap, b: Building, door: 'n' | 's' | 'e' | 'w'): void {
-  for (let y = b.y; y < b.y + b.h; y++) for (let x = b.x; x < b.x + b.w; x++) map.setTerrain(x, y, 'floor');
+// Height: every building gets buildingId = id (assigned incrementally by call
+// order) and WALL edge tops stamped at stories*FLOOR_H (exterior + partition;
+// doors/windows pass sight and keep top 0). Footprints >= 56 tiles are
+// 2-story: their back corner (interior corner farthest from the door) gets a
+// stair tile. Returns the story count.
+function addBuilding(map: GameMap, b: Building, door: 'n' | 's' | 'e' | 'w', id: number): number {
+  const stories = b.w * b.h >= 56 ? 2 : 1;
+  for (let y = b.y; y < b.y + b.h; y++)
+    for (let x = b.x; x < b.x + b.w; x++) {
+      map.setTerrain(x, y, 'floor');
+      const i = y * map.w + x;
+      map.stories[i] = stories;
+      map.buildingId[i] = id;
+    }
   const doorX = b.x + Math.floor(b.w / 2);
   const doorY = b.y + Math.floor(b.h / 2);
   const win = (i: number) => (i % 3 === 1 ? EDGE.WINDOW : EDGE.WALL);
@@ -297,6 +333,34 @@ function addBuilding(map: GameMap, b: Building, door: 'n' | 's' | 'e' | 'w'): vo
   if (b.w >= 8) {
     for (let y = b.y; y < b.y + b.h; y++) map.setVEdge(doorX, y, y === doorY ? EDGE.DOOR : EDGE.WALL);
   }
+  // stamp WALL edge tops (exterior + partition)
+  const top = stories * FLOOR_H;
+  for (let y = b.y; y <= b.y + b.h; y++)
+    for (let x = b.x; x < b.x + b.w; x++) if (map.hEdge(x, y) === EDGE.WALL) map.hEdgeTops[y * map.w + x] = top;
+  for (let y = b.y; y < b.y + b.h; y++)
+    for (let x = b.x; x <= b.x + b.w; x++) if (map.vEdge(x, y) === EDGE.WALL) map.vEdgeTops[y * (map.w + 1) + x] = top;
+  if (stories === 2) {
+    // stair in the interior corner farthest from the door
+    const drX = door === 'w' ? b.x : door === 'e' ? b.x + b.w - 1 : doorX;
+    const drY = door === 'n' ? b.y : door === 's' ? b.y + b.h - 1 : doorY;
+    let best = 0;
+    let bestD2 = -1;
+    const corners: [number, number][] = [
+      [b.x + 1, b.y + 1],
+      [b.x + b.w - 2, b.y + 1],
+      [b.x + 1, b.y + b.h - 2],
+      [b.x + b.w - 2, b.y + b.h - 2],
+    ];
+    for (let i = 0; i < corners.length; i++) {
+      const d2 = (corners[i][0] - drX) * (corners[i][0] - drX) + (corners[i][1] - drY) * (corners[i][1] - drY);
+      if (d2 > bestD2) {
+        bestD2 = d2;
+        best = i;
+      }
+    }
+    map.stairs[corners[best][1] * map.w + corners[best][0]] = 1;
+  }
+  return stories;
 }
 
 function validate(plan: MapPlan): boolean {
@@ -304,5 +368,8 @@ function validate(plan: MapPlan): boolean {
   const foot = (a: Vec, b: Vec) => astar(map, a.x, a.y, b.x, b.y) !== null;
   for (const o of objectives) if (!foot(spawns.west, o) || !foot(spawns.east, o)) return false;
   for (const b of buildings) if (!foot(spawns.west, { x: b.x + (b.w >> 1), y: b.y + (b.h >> 1) })) return false;
+  // every stair tile (2-story buildings) must be foot-reachable at ground level
+  for (let i = 0; i < map.stairs.length; i++)
+    if (map.stairs[i] === 1 && map.stories[i] === 2 && !foot(spawns.west, { x: i % map.w, y: (i / map.w) | 0 })) return false;
   return astar(map, spawns.west.x, spawns.west.y, spawns.east.x, spawns.east.y, 'vehicle') !== null;
 }
