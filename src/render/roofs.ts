@@ -123,6 +123,9 @@ export class RoofLayer {
       const [sdx, sdy] = shadowOffset(0.71);
       const [sdxSoft, sdySoft] = shadowOffset(1.1);
       this.buildings.forEach((b, i) => {
+        // shadow tracks the roof fade: a faded roof (zoomed-in interior reveal)
+        // must not leave a full-footprint shadow rect stranded on the ground
+        // with no roof above it — it reads as a dark terrain stain.
         const a = this.alphas[i];
         const x = b.x - OVERHANG;
         const y = b.y - OVERHANG;

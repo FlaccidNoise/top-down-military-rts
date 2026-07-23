@@ -86,10 +86,18 @@ for (const seed of SEEDS) {
           }
         }
 
-      const blues = g.sim.soldiers.filter((s) => s.side === 'blue');
-      const units = {
-        x: blues.reduce((a, s) => a + s.x, 0) / blues.length,
-        y: blues.reduce((a, s) => a + s.y, 0) / blues.length,
+      // centre on one squad's mean (a tight ~10m cluster) rather than the
+      // whole-force centroid, which lands in a gap between platoon bands
+      const squadCentroid = (side) => {
+        const list = g.sim.soldiers.filter((s) => s.side === side && s.alive);
+        const bySquad = new Map();
+        for (const s of list) {
+          const arr = bySquad.get(s.squadId) ?? [];
+          arr.push(s);
+          bySquad.set(s.squadId, arr);
+        }
+        const biggest = [...bySquad.values()].sort((a, b) => b.length - a.length)[0] ?? list;
+        return { x: biggest.reduce((a, s) => a + s.x, 0) / biggest.length, y: biggest.reduce((a, s) => a + s.y, 0) / biggest.length };
       };
 
       const crops = [
@@ -99,7 +107,8 @@ for (const seed of SEEDS) {
         { name: 'hamlet', ...hamlet, scale: 24 },
         { name: 'farm', ...farm, scale: 24 },
         { name: 'bocage', ...bocage, scale: 24 },
-        { name: 'units', ...units, scale: 32 },
+        { name: 'units', ...squadCentroid('blue'), scale: 32 }, // US sprites
+        { name: 'enemy', ...squadCentroid('red'), scale: 32 }, // German sprites — needs ?fow=0 (harness sets it) to be visible
       ];
       if (kind === 'bridge' || kind === 'river') {
         const bridge = plan.objectives[plan.objectives.length - 1];

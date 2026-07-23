@@ -352,8 +352,15 @@ function drawTileBase(g: Ctx, map: GameMap, x: number, y: number): void {
       g.fillRect(x + 0.69, y, 0.09, 1);
     }
   } else if (t === 'woods') {
-    g.fillStyle = shade(WOODS_GROUND, v);
-    g.fillRect(x, y, 1, 1);
+    // 2x2 sub-tile sampling (same fix grass got) — a single flat per-tile
+    // value read as a 1m checkerboard through canopy gaps at high zoom
+    for (let sub = 0; sub < 4; sub++) {
+      const sx = x + (sub & 1) * 0.5;
+      const sy = y + (sub >> 1) * 0.5;
+      const sv = 0.9 + coarse(sx + 0.25, sy + 0.25) * 0.12 + hash(x, y, sub) * 0.04;
+      g.fillStyle = shade(WOODS_GROUND, sv);
+      g.fillRect(sx, sy, 0.5, 0.5);
+    }
     // leaf litter / undergrowth texture
     for (let i = 0; i < 4; i++) {
       const lx = x + hash(x, y, 80 + i);
@@ -368,8 +375,13 @@ function drawTileBase(g: Ctx, map: GameMap, x: number, y: number): void {
     // drawHedgeRun in whole-run passes (per-tile stroke stacks let a tile's
     // dark AO/shadow overpaint the neighbor's green mass, which is what read
     // as per-tile capsule segmentation at 24 px/m)
-    g.fillStyle = shade(WOODS_GROUND, v * 0.88);
-    g.fillRect(x, y, 1, 1);
+    for (let sub = 0; sub < 4; sub++) {
+      const sx = x + (sub & 1) * 0.5;
+      const sy = y + (sub >> 1) * 0.5;
+      const sv = (0.9 + coarse(sx + 0.25, sy + 0.25) * 0.12 + hash(x, y, sub) * 0.04) * 0.88;
+      g.fillStyle = shade(WOODS_GROUND, sv);
+      g.fillRect(sx, sy, 0.5, 0.5);
+    }
   } else if (t === 'field') {
     const bx = x >> 3; // 8m parcel block — furrow geometry only, color stays smooth
     const by = y >> 3;
@@ -425,8 +437,12 @@ function drawTileBase(g: Ctx, map: GameMap, x: number, y: number): void {
 
 function drawTree(g: Ctx, map: GameMap, x: number, y: number): void {
   const wooded = (tx: number, ty: number) => map.inBounds(tx, ty) && map.terrainKeyAt(tx, ty) === 'woods';
-  const isolated = !wooded(x - 1, y) && !wooded(x + 1, y) && !wooded(x, y - 1) && !wooded(x, y + 1);
-  if (!isolated && hash(x, y, 40) >= 0.55) return;
+  // Canopy-gap culling is only safe deep inside a stand, where the bare (darker)
+  // woods floor sits under surrounding canopy. On an edge tile — any non-woods
+  // orthogonal neighbor — a culled tree exposes the dark floor square against
+  // the lighter grass, which reads as a hard dark rectangle. Keep edge trees.
+  const interior = wooded(x - 1, y) && wooded(x + 1, y) && wooded(x, y - 1) && wooded(x, y + 1);
+  if (interior && hash(x, y, 40) >= 0.55) return;
   const cx = x + 0.3 + hash(x, y, 41) * 0.4;
   const cy = y + 0.3 + hash(x, y, 42) * 0.4;
   const r = 0.55 + hash(x, y, 43) * 0.4; // may overhang up to ~1 tile — chunks overscan by `pad`, so this is safe
