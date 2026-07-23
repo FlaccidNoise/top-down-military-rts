@@ -45,6 +45,7 @@ export class Renderer {
   private roofs = new RoofLayer();
   private tracers: Tracer[] = [];
   private rs = new Map<number, RState>();
+  private deadVehicles = new Set<number>(); // scorch stamped once, on first dead frame
   private lastNow = 0;
   private booms: Boom[] = [];
   private decals: DecalLayer;
@@ -167,6 +168,10 @@ export class Renderer {
     const [x, y] = cam.worldToScreen(v.x, v.y, cw, ch);
     const pad = VEHICLE_SPAN * cam.scale;
     if (x < -pad || y < -pad || x > cw + pad || y > ch + pad) return;
+    if (!v.alive && !this.deadVehicles.has(v.id)) {
+      this.deadVehicles.add(v.id);
+      this.decals.scorch(v.x, v.y); // stamped once, under the wreck sprite from here on
+    }
     const spr = getVehicleSprite(v.kind, v.side, v.alive ? 'ok' : 'dead', vehicleBandFor(cam.scale));
     ctx.save();
     ctx.translate(x, y);
@@ -175,17 +180,22 @@ export class Renderer {
     ctx.restore();
     if (v.alive && v.id === this.selectedVehicle) {
       ctx.strokeStyle = '#ffe9a0';
-      ctx.lineWidth = 2;
+      ctx.lineWidth = 1.5; // matches the soldier selection ring
       ctx.beginPath();
       ctx.arc(x, y, cam.scale * 3.2, 0, Math.PI * 2);
       ctx.stroke();
     }
     if (v.burning) {
-      // drifting smoke: three staggered puffs on a slow clock
+      // drifting smoke: three staggered puffs on a slower clock (~half the
+      // prior spawn rate), warm ember tint fading to cool smoke as they age
       for (let i = 0; i < 3; i++) {
-        const t = ((now / 1000 + i * 0.8 + v.id) % 2.4) / 2.4;
+        const t = ((now / 1000 + i * 1.6 + v.id) % 4.8) / 4.8;
         const r = (0.8 + t * 2.2) * cam.scale;
-        ctx.fillStyle = `rgba(30, 28, 25, ${(1 - t) * 0.4})`;
+        const ember = Math.max(0, 1 - t / 0.35) * 0.6;
+        const cr = Math.round(30 + (120 - 30) * ember);
+        const cg = Math.round(28 + (55 - 28) * ember);
+        const cb = Math.round(25 + (28 - 25) * ember);
+        ctx.fillStyle = `rgba(${cr}, ${cg}, ${cb}, ${(1 - t) * 0.4})`;
         ctx.beginPath();
         ctx.arc(x + t * cam.scale * 3 * Math.sin(v.id + i), y - t * cam.scale * 4, r, 0, Math.PI * 2);
         ctx.fill();
