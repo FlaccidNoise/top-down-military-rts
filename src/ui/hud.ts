@@ -5,7 +5,7 @@ import type { Sim, Soldier, Squad, Vehicle } from '../sim/sim';
 
 export const STATE_COLOR = { steady: '#7fbf6a', shaken: '#e0c060', pinned: '#e08a3c', broken: '#d05c50' } as const;
 export const TEAM = { blue: '#5b9bd5', red: '#d05c50' } as const;
-const ORDER_KINDS: OrderKind[] = ['move', 'fast', 'sneak', 'fire', 'smoke', 'defend', 'ambush'];
+const ORDER_KINDS: OrderKind[] = ['move', 'fast', 'sneak', 'fire', 'smoke', 'defend', 'ambush', 'assault'];
 
 export interface HudCallbacks {
   selectSquad(id: number): void;
@@ -86,7 +86,7 @@ export class Hud {
       <div id="banner"></div>
       <div id="hint">
         <span class="hg">left-drag pan · wheel zoom · click select · click soldier of selected squad to focus his team</span>
-        <span class="hg">1-9 squad · ⇧1-7 order kind, right-click issues · shift+right-click waypoint · B barrage · A airstrike · space pause · esc widen/cancel</span>
+        <span class="hg">1-9 squad · ⇧1-8 order kind, right-click issues · shift+right-click waypoint · B barrage · A airstrike · space pause · esc widen/cancel</span>
       </div>`;
     document.body.appendChild(this.root);
 

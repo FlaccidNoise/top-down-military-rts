@@ -24,7 +24,7 @@ import {
 import { crewDegrade, crewHasLos, crewNear, friendlyHasLos, loadsReady, pickFirer, type Emplacement } from './emplacement';
 import { GameMap, los, type LosResult } from './map';
 import type { Building } from './mapgen';
-import { ambushThreshold, BALK_REASON, compliance, dangerScore, type OrderState, type TeamOrder } from './orders';
+import { ambushThreshold, ASSAULT_DANGER_MULT, BALK_REASON, CHARGE_BALK_REASON, compliance, dangerScore, type OrderState, type TeamOrder } from './orders';
 import { astar } from './path';
 import { mulberry32, type Rng } from './rng';
 
@@ -44,6 +44,10 @@ const MELEE_CONTACT = 0.9; // m — combatants close to here, then hold
 export const MELEE_STRIKE_RANGE = 1.3; // m — strikes only land inside this (renderer keys the pose off it)
 const MELEE_BREAK = 2.5; // m — an opponent past this has gotten away
 const MELEE_INTERVAL = 1.4; // s between strikes, jittered per swing
+// Assault order: enemies within this of the order point are the objective's
+// defenders — the charge redirects onto them and completes when none remain visible.
+const ASSAULT_RADIUS = 20; // m
+const ASSAULT_REPATH_TICKS = 15; // per-soldier redirect cadence (0.5 s)
 // SMGs with rounds left fight melee by shooting from the hip — their CQC
 // edge over the bayonet, paid for in ammo. (Sim-side twin of dudes.ts's
 // SMG_CLASS silhouette bucket; data.ts has no weapon-class field.)
@@ -626,6 +630,7 @@ export class Sim {
     if (s.path) {
       const order = this.teams[s.teamId].orderState.order;
       if (order?.kind === 'fast') speed *= 1.6;
+      else if (order?.kind === 'assault') speed *= 1.4; // weapons up, moving hard
       else if (order?.kind === 'sneak') speed *= 0.35;
     }
     if (s.carries.length > 0) speed = Math.min(speed, Math.min(...s.carries.map((l) => LOADS[l].speedCap)));
@@ -1156,22 +1161,27 @@ export class Sim {
     const eligibleIds = team.soldierIds.filter((id) => this.eligible(this.soldiers[id]));
     if (eligibleIds.length === 0) return;
 
-    const danger = dangerScore(this, team, { x: order.x, y: order.y });
+    // Assault is the scariest ask: same danger evaluation, weighted up before
+    // the ladder runs. Checked ONCE — a charge that steps off is committed
+    // (no bounding, no per-leg re-check); pinned/broken men drop out via the
+    // psych model instead.
+    const danger = dangerScore(this, team, { x: order.x, y: order.y }) * (order.kind === 'assault' ? ASSAULT_DANGER_MULT : 1);
     const verdict = compliance(this, team, danger);
     if (verdict === 'balk') {
-      team.orderState = { order, phase: 'balked', reason: BALK_REASON };
+      team.orderState = { order, phase: 'balked', reason: order.kind === 'assault' ? CHARGE_BALK_REASON : BALK_REASON };
       return;
     }
     const cautious = verdict === 'cautious';
-    const effective: TeamOrder = cautious && order.kind === 'fast' ? { ...order, kind: 'move' } : order;
-    const reason = cautious ? 'moving cautiously' : '';
+    const effective: TeamOrder =
+      cautious && (order.kind === 'fast' || order.kind === 'assault') ? { ...order, kind: 'move' } : order;
+    const reason = cautious ? (order.kind === 'assault' ? 'unwilling to charge — advancing instead' : 'moving cautiously') : '';
 
     if (effective.kind === 'move' && (cautious || this.teamUnderFire(team))) {
       team.orderState = { order: effective, phase: 'bounding_a', reason };
       const [a, b] = this.teamHalves(team);
       for (const id of b) this.soldiers[id].path = null;
       this.dispatchLeg(a, effective);
-    } else if (effective.kind === 'move' || effective.kind === 'fast' || effective.kind === 'sneak') {
+    } else if (effective.kind === 'move' || effective.kind === 'fast' || effective.kind === 'sneak' || effective.kind === 'assault') {
       team.orderState = { order: effective, phase: 'executing', reason };
       if (effective.kind === 'sneak') this.sneakBaseline[team.id] = this.woundCount(team);
       this.moveSoldiersTo(team.soldierIds, effective.x, effective.y);
@@ -1194,7 +1204,7 @@ export class Sim {
     const squad = this.squads[squadId];
     if (!squad) return;
     this.squadWaypoints[squadId] = [];
-    const isMoveKind = order.kind === 'move' || order.kind === 'fast' || order.kind === 'sneak';
+    const isMoveKind = order.kind === 'move' || order.kind === 'fast' || order.kind === 'sneak' || order.kind === 'assault';
     this.squadDest[squadId] = isMoveKind ? { x: order.x, y: order.y } : null;
     const n = squad.teamIds.length;
     squad.teamIds.forEach((teamId, ti) => {
@@ -1519,6 +1529,16 @@ export class Sim {
       } else if ((order.kind === 'move' || order.kind === 'fast' || order.kind === 'sneak') && st.phase === 'executing') {
         const eligibleIds = team.soldierIds.filter((id) => this.eligible(this.soldiers[id]));
         if (eligibleIds.length > 0 && eligibleIds.every((id) => !this.soldiers[id].path)) {
+          st.order = null;
+          st.phase = 'idle';
+          st.reason = '';
+        }
+      } else if (order.kind === 'assault' && st.phase === 'executing' && (this.tick + team.id) % ASSAULT_REPATH_TICKS === 0) {
+        // position taken: everyone arrived, out of melee, and no member sees
+        // a defender left within the objective radius
+        const eligibleIds = team.soldierIds.filter((id) => this.eligible(this.soldiers[id]));
+        const settled = eligibleIds.length > 0 && eligibleIds.every((id) => !this.soldiers[id].path && this.soldiers[id].meleeId < 0);
+        if (settled && !eligibleIds.some((id) => this.assaultDefenders(this.soldiers[id], order).length > 0)) {
           st.order = null;
           st.phase = 'idle';
           st.reason = '';
@@ -1942,6 +1962,13 @@ export class Sim {
     // stamina: recovers when settled and not under heavy fire (drain lives in advance())
     if (!s.path && s.suppression < 0.3) s.stamina = Math.min(1, s.stamina + 0.008 * DT);
 
+    // assault: on a cadence, redirect onto the nearest visible defender of the
+    // objective — the closing loop that feeds the 2m melee lock. Marching
+    // fire stays on (assault is deliberately absent from the hold-fire gate).
+    if (order?.kind === 'assault' && this.teams[s.teamId].orderState.phase === 'executing' && (this.tick + s.id) % ASSAULT_REPATH_TICKS === 0) {
+      this.assaultRepath(s, order);
+    }
+
     // movement (pinned men hug the ground)
     if (s.path && s.mental !== 'pinned') this.advance(s, this.moveSpeed(s));
 
@@ -2128,7 +2155,7 @@ export class Sim {
     // multiplied by the heaviest load he's carrying (Task 9's speedCap
     // wiring counterpart).
     const order = this.teams[s.teamId].orderState.order;
-    let drainRate = order?.kind === 'fast' ? 0.02 : 0.004;
+    let drainRate = order?.kind === 'fast' ? 0.02 : order?.kind === 'assault' ? 0.015 : 0.004;
     if (s.carries.length > 0) drainRate *= Math.max(...s.carries.map((l) => LOADS[l].staminaMult));
     s.stamina = Math.max(0, s.stamina - drainRate * DT);
     const cost = this.map.terrainAt(Math.floor(s.x), Math.floor(s.y)).moveCost;
@@ -2690,6 +2717,45 @@ export class Sim {
       s.path = path.slice(1).map((p) => ({ x: p.x + 0.5, y: p.y + 0.5 }));
       s.pathI = 0;
       s.fleeing = true;
+    }
+  }
+
+  // The objective's defenders as this soldier sees them: alive, on foot,
+  // within ASSAULT_RADIUS of the order point, and visible to him. Shared by
+  // the per-soldier redirect and (via any-member sight) assault completion.
+  private assaultDefenders(s: Soldier, order: TeamOrder): Soldier[] {
+    const out: Soldier[] = [];
+    for (const e of this.soldiers) {
+      if (!e.alive || e.downed || e.side === s.side || e.inVehicle >= 0) continue;
+      if (Math.hypot(e.x - order.x, e.y - order.y) > ASSAULT_RADIUS) continue;
+      if (sightToSoldier(this, s.x, s.y, e).visible) out.push(e);
+    }
+    return out;
+  }
+
+  // One assault redirect: path onto the nearest visible defender (the melee
+  // lock takes over inside 2m); with none in sight, close on the point itself.
+  private assaultRepath(s: Soldier, order: TeamOrder): void {
+    const defenders = this.assaultDefenders(s, order);
+    let goal: { x: number; y: number } | null = null;
+    if (defenders.length > 0) {
+      let bestD = Infinity;
+      for (const e of defenders) {
+        const d = Math.hypot(e.x - s.x, e.y - s.y);
+        if (d < bestD) {
+          bestD = d;
+          goal = e;
+        }
+      }
+      if (bestD <= MELEE_ENGAGE) return; // contact — the melee lock owns him now
+    } else if (!s.path && Math.hypot(order.x - s.x, order.y - s.y) > 4) {
+      goal = order; // nobody left in sight: take the ground itself
+    }
+    if (!goal) return;
+    const path = astar(this.map, Math.floor(s.x), Math.floor(s.y), Math.floor(goal.x), Math.floor(goal.y));
+    if (path && path.length > 1) {
+      s.path = path.slice(1).map((p) => ({ x: p.x + 0.5, y: p.y + 0.5 }));
+      s.pathI = 0;
     }
   }
 

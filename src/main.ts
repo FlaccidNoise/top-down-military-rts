@@ -41,7 +41,7 @@ if (loaded) {
   saveGame(campaign, front);
 }
 
-const ORDER_KINDS: OrderKind[] = ['move', 'fast', 'sneak', 'fire', 'smoke', 'defend', 'ambush'];
+const ORDER_KINDS: OrderKind[] = ['move', 'fast', 'sneak', 'fire', 'smoke', 'defend', 'ambush', 'assault'];
 
 let mode: 'strategic' | 'battle' = 'strategic';
 let stratView = new StrategicView(front.sector);

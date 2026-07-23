@@ -3,7 +3,7 @@ import { sightBetween, sightToSoldier, type Side, type Sim, type Soldier, type T
 
 // The order vocabulary (spec: docs/specs/2026-07-22-order-execution.md). One
 // order per team; the executor in sim.ts decomposes it into per-soldier tasks.
-export type OrderKind = 'move' | 'fast' | 'sneak' | 'fire' | 'smoke' | 'defend' | 'ambush';
+export type OrderKind = 'move' | 'fast' | 'sneak' | 'fire' | 'smoke' | 'defend' | 'ambush' | 'assault';
 
 export interface TeamOrder {
   kind: OrderKind;
@@ -22,6 +22,10 @@ export interface OrderState {
 }
 
 export const BALK_REASON = 'open ground under fire — suppress or smoke first';
+export const CHARGE_BALK_REASON = 'refusing to charge — suppress or smoke the position first';
+// Assault is the scariest ask in the vocabulary: the same danger evaluation,
+// weighted up before the compliance ladder runs (orderTeam applies it).
+export const ASSAULT_DANGER_MULT = 1.3;
 
 const RECENT_CASUALTY_TICKS = 900; // 30s at DT=1/30
 
