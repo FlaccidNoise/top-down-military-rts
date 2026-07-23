@@ -8,15 +8,32 @@ export type EdgeType = (typeof EDGE)[keyof typeof EDGE];
 
 const TERRAIN_KEYS = Object.keys(TERRAIN) as TerrainKey[];
 
+export const FLOOR_H = 3; // m per story
+export const EYE_H = 1.6; // m eye height above feet
+
 export class GameMap {
   readonly tiles: Uint8Array; // index into TERRAIN_KEYS
   readonly hEdges: Uint8Array; // hEdge(x,y): edge on north side of tile (x,y); y in 0..h
   readonly vEdges: Uint8Array; // vEdge(x,y): edge on west side of tile (x,y); x in 0..w
+  // height system
+  readonly elev: Uint8Array; // terrain elevation, meters. 0 = flat
+  readonly stories: Uint8Array; // building story count on floor tiles, else 0
+  readonly buildingId: Int16Array; // -1 outside buildings; same id = same building
+  readonly stairs: Uint8Array; // 1 = stair tile (inside a building, connects levels)
+  readonly hEdgeTops: Uint8Array; // top height (m) of a horizontal wall edge; 0 = full-height block
+  readonly vEdgeTops: Uint8Array; // top height (m) of a vertical wall edge; 0 = full-height block
+  maxStories = 0;
 
   constructor(readonly w: number, readonly h: number, fill: TerrainKey = 'grass') {
     this.tiles = new Uint8Array(w * h).fill(TERRAIN_KEYS.indexOf(fill));
     this.hEdges = new Uint8Array((h + 1) * w);
     this.vEdges = new Uint8Array(h * (w + 1));
+    this.elev = new Uint8Array(w * h);
+    this.stories = new Uint8Array(w * h);
+    this.buildingId = new Int16Array(w * h).fill(-1);
+    this.stairs = new Uint8Array(w * h);
+    this.hEdgeTops = new Uint8Array((h + 1) * w);
+    this.vEdgeTops = new Uint8Array(h * (w + 1));
   }
 
   inBounds(x: number, y: number): boolean {
@@ -54,6 +71,31 @@ export class GameMap {
     this.vEdges[y * (this.w + 1) + x] = e;
   }
 
+  elevAt(x: number, y: number): number {
+    if (!this.inBounds(x, y)) return 0;
+    return this.elev[y * this.w + x];
+  }
+  storiesAt(x: number, y: number): number {
+    if (!this.inBounds(x, y)) return 0;
+    return this.stories[y * this.w + x];
+  }
+  buildingIdAt(x: number, y: number): number {
+    if (!this.inBounds(x, y)) return -1;
+    return this.buildingId[y * this.w + x];
+  }
+  isStair(x: number, y: number): boolean {
+    if (!this.inBounds(x, y)) return false;
+    return this.stairs[y * this.w + x] === 1;
+  }
+  hEdgeTop(x: number, y: number): number {
+    if (x < 0 || x >= this.w || y < 0 || y > this.h) return 0;
+    return this.hEdgeTops[y * this.w + x];
+  }
+  vEdgeTop(x: number, y: number): number {
+    if (x < 0 || x > this.w || y < 0 || y >= this.h) return 0;
+    return this.vEdgeTops[y * (this.w + 1) + x];
+  }
+
   // Can a unit step between two orthogonally adjacent tiles?
   // Vehicles can't enter buildings or woods and never pass any edge feature.
   canStep(x0: number, y0: number, x1: number, y1: number, mode: 'foot' | 'vehicle' = 'foot'): boolean {
@@ -85,23 +127,42 @@ export interface LosResult {
 // Terrain with coverBehind (hedgerows) works the same way directionally: a
 // shot crossing it within 2m of the target grants that cover — hugging the far
 // side of a hedgerow bank; shots that don't cross the hedge get none.
-export function los(map: GameMap, x0: number, y0: number, x1: number, y1: number): LosResult {
-  let tx = Math.floor(x0);
-  let ty = Math.floor(y0);
+// 2.5D LOS: extends Amanatides & Woo with elevation profile check.
+// l0,l1 are floor levels (0-based). With all elev=0 and l0=l1=0, behavior
+// is byte-identical to the legacy los() — edge tops of 0 mean full-height block.
+export function los(map: GameMap, x0: number, y0: number, x1: number, y1: number, l0 = 0, l1 = 0): LosResult {
+  const tx0 = Math.floor(x0);
+  const ty0 = Math.floor(y0);
+  let tx = tx0;
+  let ty = ty0;
   const tx1 = Math.floor(x1);
   const ty1 = Math.floor(y1);
   let cover = map.terrainAt(tx1, ty1).cover;
   if (tx === tx1 && ty === ty1) return { visible: true, cover, conceal: 0 };
 
+  // floor/ceiling between same building different levels
+  if (l0 !== l1) {
+    const bId0 = map.buildingIdAt(tx0, ty0);
+    if (bId0 >= 0 && map.buildingIdAt(tx1, ty1) === bId0) {
+      return { visible: false, cover: 0, conceal: 1 };
+    }
+  }
+
   const dx = x1 - x0;
   const dy = y1 - y0;
   const len = Math.hypot(dx, dy);
+  if (len === 0) return { visible: true, cover, conceal: 0 };
   const stepX = dx > 0 ? 1 : -1;
   const stepY = dy > 0 ? 1 : -1;
   const tDeltaX = dx !== 0 ? Math.abs(1 / dx) : Infinity;
   const tDeltaY = dy !== 0 ? Math.abs(1 / dy) : Infinity;
   let tMaxX = dx !== 0 ? (stepX > 0 ? tx + 1 - x0 : x0 - tx) * tDeltaX : Infinity;
   let tMaxY = dy !== 0 ? (stepY > 0 ? ty + 1 - y0 : y0 - ty) * tDeltaY : Infinity;
+
+  // eye-to-eye z line
+  const z0 = map.elevAt(tx0, ty0) + l0 * FLOOR_H + EYE_H;
+  const z1 = map.elevAt(tx1, ty1) + l1 * FLOOR_H + EYE_H;
+  const dz = z1 - z0;
 
   let opacity = 0;
   let lastWindowT = -1;
@@ -111,16 +172,23 @@ export function los(map: GameMap, x0: number, y0: number, x1: number, y1: number
 
   while ((tx !== tx1 || ty !== ty1) && guard-- > 0) {
     let tEntry: number;
+    let edgeTop: number;
     if (tMaxX < tMaxY) {
       const e = map.vEdge(stepX > 0 ? tx + 1 : tx, ty);
-      if (e === EDGE.WALL) return { visible: false, cover: 0, conceal: 1 };
+      if (e === EDGE.WALL) {
+        edgeTop = map.vEdgeTop(stepX > 0 ? tx + 1 : tx, ty);
+        if (edgeTop === 0 || z0 + dz * tMaxX < edgeTop) return { visible: false, cover: 0, conceal: 1 };
+      }
       if (e === EDGE.WINDOW) lastWindowT = tMaxX;
       tEntry = tMaxX;
       tx += stepX;
       tMaxX += tDeltaX;
     } else {
       const e = map.hEdge(tx, stepY > 0 ? ty + 1 : ty);
-      if (e === EDGE.WALL) return { visible: false, cover: 0, conceal: 1 };
+      if (e === EDGE.WALL) {
+        edgeTop = map.hEdgeTop(tx, stepY > 0 ? ty + 1 : ty);
+        if (edgeTop === 0 || z0 + dz * tMaxY < edgeTop) return { visible: false, cover: 0, conceal: 1 };
+      }
       if (e === EDGE.WINDOW) lastWindowT = tMaxY;
       tEntry = tMaxY;
       ty += stepY;
@@ -128,11 +196,19 @@ export function los(map: GameMap, x0: number, y0: number, x1: number, y1: number
     }
     if (tx !== tx1 || ty !== ty1) {
       const t = map.terrainAt(tx, ty);
-      opacity += t.opacity;
-      if (opacity >= 1) return { visible: false, cover: 0, conceal: 1 };
-      if (t.coverBehind !== undefined) {
-        lastLip = t.coverBehind;
-        lastLipT = tEntry;
+      const lineZ = z0 + dz * tEntry;
+      // ground occlusion
+      if (map.elevAt(tx, ty) >= lineZ) return { visible: false, cover: 0, conceal: 1 };
+      // feature skip: shooting over canopy
+      if (t.featureHeight !== undefined && lineZ >= map.elevAt(tx, ty) + t.featureHeight) {
+        // over the canopy — no opacity or cover-behind from this tile
+      } else {
+        opacity += t.opacity;
+        if (opacity >= 1) return { visible: false, cover: 0, conceal: 1 };
+        if (t.coverBehind !== undefined) {
+          lastLip = t.coverBehind;
+          lastLipT = tEntry;
+        }
       }
     }
   }

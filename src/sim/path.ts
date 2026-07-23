@@ -1,16 +1,16 @@
-import type { GameMap } from './map';
+import { type GameMap } from './map';
 
 // Scratch buffers shared across calls (sim is single-threaded, astar never
-// re-enters): a company-wide move order issues ~140 astar calls in one tick,
-// and per-call allocation of three w*h arrays (~1 MB each at 320x240) was
-// pure GC churn.
+// re-enters).
 let g = new Float64Array(0);
 let from = new Int32Array(0);
 let closed = new Uint8Array(0);
 const heap: number[] = []; // binary heap of [f, node]
 
-// A* on the tile grid, 8-directional, edge-aware (doors pass, walls/windows
-// don't), no corner cutting. Returns tile coords start→goal inclusive, or null.
+// A* on the tile grid, 8-directional within a level + vertical step on
+// stair tiles. No corner cutting. Returns tile coords start→goal inclusive
+// with level, or null. New optional sl,gl level params (default 0).
+// Level axis allocated lazily: ground-only searches keep single-layer perf.
 export function astar(
   map: GameMap,
   sx: number,
@@ -18,10 +18,16 @@ export function astar(
   gx: number,
   gy: number,
   mode: 'foot' | 'vehicle' = 'foot',
-): { x: number; y: number }[] | null {
+  sl = 0,
+  gl = 0,
+): { x: number; y: number; l: number }[] | null {
   const { w, h } = map;
   if (!map.inBounds(gx, gy) || !map.terrainAt(gx, gy).passable) return null;
-  const n = w * h;
+  if (mode === 'vehicle' && (sl > 0 || gl > 0)) return null;
+
+  const needLevels = Math.max(sl, gl) + 1;
+  const layerSize = w * h;
+  const n = layerSize * needLevels;
   if (g.length < n) {
     g = new Float64Array(n);
     from = new Int32Array(n);
@@ -31,8 +37,8 @@ export function astar(
   from.fill(-1, 0, n);
   closed.fill(0, 0, n);
   heap.length = 0;
-  const start = sy * w + sx;
-  const goal = gy * w + gx;
+  const start = sl * layerSize + sy * w + sx;
+  const goal = gl * layerSize + gy * w + gx;
   const push = (f: number, node: number) => {
     heap.push(f, node);
     let i = heap.length / 2 - 1;
@@ -81,13 +87,18 @@ export function astar(
   g[start] = 0;
   push(hCost(sx, sy), start);
 
+  const hasStairs = needLevels > 1; // only check stairs when levels are in play
+
   while (heap.length > 0) {
     const cur = pop();
     if (cur === goal) break;
     if (closed[cur]) continue;
     closed[cur] = 1;
-    const cx = cur % w;
-    const cy = (cur / w) | 0;
+    const cl = (cur / layerSize) | 0;
+    const ci = cur % layerSize;
+    const cx = ci % w;
+    const cy = (ci / w) | 0;
+
     for (let dy = -1; dy <= 1; dy++) {
       for (let dx = -1; dx <= 1; dx++) {
         if (dx === 0 && dy === 0) continue;
@@ -105,7 +116,7 @@ export function astar(
           ok = map.canStep(cx, cy, nx, ny, mode);
         }
         if (!ok) continue;
-        const ni = ny * w + nx;
+        const ni = cl * layerSize + ny * w + nx;
         if (closed[ni]) continue;
         const stepCost = (dx !== 0 && dy !== 0 ? 1.414 : 1) * map.terrainAt(nx, ny).moveCost;
         const ng = g[cur] + stepCost;
@@ -116,13 +127,42 @@ export function astar(
         }
       }
     }
+
+    // vertical step on stair tiles (only checked when level axis is active)
+    if (hasStairs && map.isStair(cx, cy)) {
+      if (cl + 1 < needLevels) {
+        const niUp = (cl + 1) * layerSize + cy * w + cx;
+        if (!closed[niUp]) {
+          const ng = g[cur] + 2;
+          if (ng < g[niUp]) {
+            g[niUp] = ng;
+            from[niUp] = cur;
+            push(ng + hCost(cx, cy), niUp);
+          }
+        }
+      }
+      if (cl - 1 >= 0) {
+        const niDn = (cl - 1) * layerSize + cy * w + cx;
+        if (!closed[niDn]) {
+          const ng = g[cur] + 2;
+          if (ng < g[niDn]) {
+            g[niDn] = ng;
+            from[niDn] = cur;
+            push(ng + hCost(cx, cy), niDn);
+          }
+        }
+      }
+    }
   }
 
   if (from[goal] === -1 && goal !== start) return null;
-  const out: { x: number; y: number }[] = [];
+  const out: { x: number; y: number; l?: number }[] = [];
   for (let node = goal; node !== -1; node = from[node]) {
-    out.push({ x: node % w, y: (node / w) | 0 });
+    const l = (node / layerSize) | 0;
+    const ci = node % layerSize;
+    if (needLevels <= 1) out.push({ x: ci % w, y: (ci / w) | 0 });
+    else out.push({ x: ci % w, y: (ci / w) | 0, l });
     if (node === start) break;
   }
-  return out.reverse();
+  return out.reverse() as { x: number; y: number; l: number }[];
 }

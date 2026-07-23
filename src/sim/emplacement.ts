@@ -86,7 +86,7 @@ export function pickFirer(sim: Sim, e: Emplacement): Soldier | null {
 export function friendlyHasLos(sim: Sim, side: Side, x: number, y: number): boolean {
   for (const s of sim.soldiers) {
     if (!s.alive || s.downed || s.side !== side || s.inVehicle >= 0) continue;
-    if (sightBetween(sim, s.x, s.y, x, y).visible) return true;
+    if (sightBetween(sim, s.x, s.y, x, y, s.level, 0).visible) return true;
   }
   return false;
 }

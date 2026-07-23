@@ -5,14 +5,15 @@ export interface TerrainDef {
   opacity: number; // LOS accumulates this per tile crossed; >= 1 blocks
   coverBehind?: number; // directional: cover granted when a shot crosses this tile within 2m of the target (hedgerow lip)
   passable: boolean;
+  featureHeight?: number; // physical height (m) of the terrain feature for LOS profile check
 }
 
 export const TERRAIN = {
   grass: { color: '#4e6b3f', moveCost: 1, cover: 0, opacity: 0, passable: true },
   road: { color: '#8a8172', moveCost: 0.85, cover: 0, opacity: 0, passable: true },
-  woods: { color: '#31482b', moveCost: 1.6, cover: 0.3, opacity: 0.35, passable: true },
+  woods: { color: '#31482b', moveCost: 1.6, cover: 0.3, opacity: 0.35, passable: true, featureHeight: 8 },
   floor: { color: '#a0917a', moveCost: 1, cover: 0, opacity: 0, passable: true },
-  hedge: { color: '#2f4a28', moveCost: 1.8, cover: 0.35, opacity: 0.5, coverBehind: 0.5, passable: true },
+  hedge: { color: '#2f4a28', moveCost: 1.8, cover: 0.35, opacity: 0.5, coverBehind: 0.5, passable: true, featureHeight: 2 },
   field: { color: '#6a7245', moveCost: 1.1, cover: 0.05, opacity: 0, passable: true },
   water: { color: '#465a63', moveCost: 1, cover: 0, opacity: 0, passable: false },
 } satisfies Record<string, TerrainDef>;

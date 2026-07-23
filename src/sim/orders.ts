@@ -40,7 +40,7 @@ export function visibleEnemies(sim: Sim, side: Side): Soldier[] {
   const seen: Soldier[] = [];
   for (const e of enemies) {
     for (const f of friendlies) {
-      if (Math.hypot(f.x - e.x, f.y - e.y) <= WEAPONS[f.weapon].range && sightToSoldier(sim, f.x, f.y, e).visible) {
+      if (Math.hypot(f.x - e.x, f.y - e.y) <= WEAPONS[f.weapon].range && sightToSoldier(sim, f.x, f.y, e, f.level).visible) {
         seen.push(e);
         break;
       }
@@ -76,7 +76,7 @@ export function dangerSamples(sim: Sim, team: Team, dest: { x: number; y: number
     if (sim.coverAt(px, py) < 0.1) point += 0.05;
     for (const e of known) {
       const w = WEAPONS[e.weapon];
-      if (Math.hypot(e.x - px, e.y - py) <= w.range && sightBetween(sim, e.x, e.y, px, py).visible) {
+      if (Math.hypot(e.x - px, e.y - py) <= w.range && sightBetween(sim, e.x, e.y, px, py, e.level, 0).visible) {
         point += 0.15;
         break; // one covering enemy is enough to flag the point; not per-enemy
       }
