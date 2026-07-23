@@ -1,4 +1,5 @@
 import type { Camera } from '../render/camera';
+import { dangerSamples, type OrderKind } from '../sim/orders';
 import { OFFSETS, type Sim, type UnitEvent } from '../sim/sim';
 import type { Pick, ShotSolution } from './tooltip';
 
@@ -6,7 +7,16 @@ export interface OverlayState {
   pick: Pick;
   shot: ShotSolution | null;
   selectedSquad: number;
-  targetMode: '' | 'barrage' | 'air';
+  targetMode: '' | 'barrage' | 'air' | 'wheel' | 'empfire' | 'empsmoke';
+  focusTeams: number[]; // the selected squad's teams, or one narrowed team
+  armedOrder: OrderKind | null;
+  cursor: { x: number; y: number } | null; // world position, for the danger preview
+}
+
+function teamCentroid(sim: Sim, soldierIds: number[]): { x: number; y: number } | null {
+  const alive = soldierIds.map((id) => sim.soldiers[id]).filter((s) => s.alive && !s.downed);
+  if (alive.length === 0) return null;
+  return { x: alive.reduce((a, s) => a + s.x, 0) / alive.length, y: alive.reduce((a, s) => a + s.y, 0) / alive.length };
 }
 
 // World-anchored order feedback, drawn on the canvas after the scene.
@@ -87,6 +97,49 @@ export function drawOverlays(ctx: CanvasRenderingContext2D, cam: Camera, sim: Si
         ctx.stroke();
       }
     }
+  }
+
+  // Order-kind danger preview: while an order is armed, the same 8 points
+  // dangerScore will sum over, colored green (safe) to red (0.2/point cap) —
+  // the legibility contract: see the risk before you commit to the order.
+  // Offsets match orderSquad's own team-fanout formula exactly (Sim.orderSquad,
+  // sim.ts) so the preview lines up with where the order will actually land.
+  if (st.armedOrder && st.cursor && !st.targetMode) {
+    const n = st.focusTeams.length;
+    st.focusTeams.forEach((tid, ti) => {
+      const team = sim.teams[tid];
+      if (!team) return;
+      const oy = (ti - (n - 1) / 2) * 8;
+      const dest = { x: st.cursor!.x, y: st.cursor!.y + oy };
+      for (const p of dangerSamples(sim, team, dest)) {
+        const [sx, sy] = cam.worldToScreen(p.x, p.y, cw, ch);
+        const t = Math.min(1, p.score / 0.2);
+        const r = Math.round(127 + 128 * t);
+        const g = Math.round(191 - 131 * t);
+        ctx.fillStyle = `rgb(${r},${g},60)`;
+        ctx.beginPath();
+        ctx.arc(sx, sy, Math.max(2, cam.scale * 0.12), 0, Math.PI * 2);
+        ctx.fill();
+      }
+    });
+  }
+
+  // Selected team(s) show their OrderState above their soldiers: kind +
+  // refusal reason. A balked team's chip pulses so a refusal is never missed.
+  for (const tid of st.focusTeams) {
+    const team = sim.teams[tid];
+    if (!team) continue;
+    const os = team.orderState;
+    if (!os.order && os.phase === 'idle') continue;
+    const centroid = teamCentroid(sim, team.soldierIds);
+    if (!centroid) continue;
+    const [sx, sy] = cam.worldToScreen(centroid.x, centroid.y, cw, ch);
+    const label = os.order ? os.order.kind.toUpperCase() : '';
+    const text = os.reason ? `${label} — ${os.reason}` : label;
+    const balked = os.phase === 'balked';
+    if (balked) ctx.globalAlpha = 0.4 + 0.6 * Math.abs(Math.sin(sim.tick / 12));
+    chip(ctx, sx, sy - cam.scale * 1.1 - 10, text, balked ? '#ff8a5c' : '#ffe9a0');
+    if (balked) ctx.globalAlpha = 1;
   }
 
   if (st.shot) {

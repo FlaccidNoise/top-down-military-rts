@@ -45,21 +45,25 @@ export function visibleEnemies(sim: Sim, side: Side): Soldier[] {
   return seen;
 }
 
-// Danger score for a team moving toward `dest`: samples 8 points along the
-// straight line from the team's current centroid to dest and SUMS their
-// per-point contributions (no averaging — the plan's formula is a sum).
-// Deterministic, no RNG — the same evaluation backs soldier refusal,
-// firing-position choice, and (Task 12) the AI's own risk assessment (spec's
-// coherence rule).
-export function dangerScore(sim: Sim, team: Team, dest: { x: number; y: number }): number {
+export interface DangerSample {
+  x: number;
+  y: number;
+  score: number; // 0..0.2 per point (open ground +0.05, covering enemy +0.15)
+}
+
+// The 8 sample points dangerScore sums over, exposed so the UI can preview
+// the same evaluation the team's refusal model will run (legibility
+// contract: what you see before ordering is what decides compliance).
+// Deterministic, no RNG.
+export function dangerSamples(sim: Sim, team: Team, dest: { x: number; y: number }): DangerSample[] {
   const eligible = team.soldierIds.map((id) => sim.soldiers[id]).filter((s) => s.alive && !s.downed && s.mental !== 'broken');
-  if (eligible.length === 0) return 0;
+  if (eligible.length === 0) return [];
   const cx = eligible.reduce((a, s) => a + s.x, 0) / eligible.length;
   const cy = eligible.reduce((a, s) => a + s.y, 0) / eligible.length;
   const side = sim.squads[team.squadId].side;
   const known = visibleEnemies(sim, side);
 
-  let total = 0;
+  const samples: DangerSample[] = [];
   for (let i = 0; i < 8; i++) {
     const t = i / 7;
     const px = cx + (dest.x - cx) * t;
@@ -73,8 +77,20 @@ export function dangerScore(sim: Sim, team: Team, dest: { x: number; y: number }
         break; // one covering enemy is enough to flag the point; not per-enemy
       }
     }
-    total += point;
+    samples.push({ x: px, y: py, score: point });
   }
+  return samples;
+}
+
+// Danger score for a team moving toward `dest`: sums dangerSamples' 8
+// per-point contributions (no averaging — the plan's formula is a sum), plus
+// a flat recent-casualty term. Deterministic, no RNG — the same evaluation
+// backs soldier refusal, firing-position choice, and the AI commander's own
+// risk assessment (spec's coherence rule).
+export function dangerScore(sim: Sim, team: Team, dest: { x: number; y: number }): number {
+  const samples = dangerSamples(sim, team, dest);
+  if (samples.length === 0) return 0;
+  let total = samples.reduce((a, p) => a + p.score, 0);
   // Recent casualty is squad-scoped (a sister team's loss raises this team's
   // danger too); the ambush trigger's own casualty check stays team-scoped.
   const lastCasualty = sim.squadLastCasualty[team.squadId] ?? -Infinity;

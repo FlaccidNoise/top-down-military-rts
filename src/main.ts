@@ -4,12 +4,13 @@ import { Renderer } from './render/renderer';
 import { StrategicView, TERRAIN_LABELS } from './render/strategic';
 import type { RedCommander } from './sim/ai';
 import { WEAPONS } from './sim/data';
-import { DT, type Sim } from './sim/sim';
+import type { OrderKind, TeamOrder } from './sim/orders';
+import { DT, type Sim, type Soldier } from './sim/sim';
 import { applyEngagementOutcome, makeStrategicBattle, newFront, syncStrengths } from './strategic/bridge';
 import { operationStatus, type Engagement, type Front } from './strategic/front';
 import { loadGame, saveGame } from './strategic/save';
 import { makeDefaultSector } from './strategic/sector';
-import { Hud, infantrySquads } from './ui/hud';
+import { emplacementOf, Hud, infantrySquads } from './ui/hud';
 import { drawOverlays, EventPings } from './ui/overlays';
 import { computeShot, pickAt, Tooltip } from './ui/tooltip';
 import './ui/ui.css';
@@ -40,6 +41,8 @@ if (loaded) {
   saveGame(campaign, front);
 }
 
+const ORDER_KINDS: OrderKind[] = ['move', 'fast', 'sneak', 'fire', 'smoke', 'defend', 'ambush'];
+
 let mode: 'strategic' | 'battle' = 'strategic';
 let stratView = new StrategicView(front.sector);
 let selectedChit = -1;
@@ -60,8 +63,11 @@ let battleTitle = '';
 const cam = new Camera(60, 60);
 let paused = true;
 let selectedSquad = -1;
+let selectedTeam = -1; // -1 = whole squad; narrowed to one team within selectedSquad
 let selectedVehicle = -1;
-let targetMode: '' | 'barrage' | 'air' = '';
+let lastTeamId = -1; // most recently selected team, survives a later vehicle selection (Mount reads this)
+let armedOrder: OrderKind | null = null; // order kind armed via ⇧1-7 / order bar, issued by right-click
+let targetMode: '' | 'barrage' | 'air' | 'wheel' | 'empfire' | 'empsmoke' = '';
 let winnerAt = -1; // ms timestamp when winner appeared
 let debriefShown = false;
 const mouse = { x: 0, y: 0, onCanvas: false };
@@ -69,17 +75,21 @@ const pings = new EventPings();
 
 function selectSquad(id: number): void {
   selectedSquad = id;
+  selectedTeam = -1;
   selectedVehicle = -1;
   renderer.selectedVehicle = -1;
+  armedOrder = null;
+  if (id >= 0) lastTeamId = sim.squads[id].teamIds[0];
 }
 
 function selectVehicle(id: number): void {
   selectedVehicle = id;
   selectedSquad = -1;
+  selectedTeam = -1;
   renderer.selectedVehicle = id;
 }
 
-function setTargetMode(m: '' | 'barrage' | 'air'): void {
+function setTargetMode(m: '' | 'barrage' | 'air' | 'wheel' | 'empfire' | 'empsmoke'): void {
   targetMode = m;
   canvas.style.cursor = m ? 'crosshair' : '';
 }
@@ -104,6 +114,36 @@ const hud = new Hud({
   togglePause: () => {
     if (mode === 'strategic') stratPaused = !stratPaused;
     else paused = !paused;
+  },
+  armOrder: (kind) => {
+    armedOrder = armedOrder === kind ? null : kind;
+  },
+  deployEmplacement: () => {
+    const e = emplacementOf(sim, selectedSquad);
+    if (e) sim.orderDeploy(e.id);
+  },
+  packEmplacement: () => {
+    const e = emplacementOf(sim, selectedSquad);
+    if (e) sim.orderPack(e.id);
+  },
+  wheelEmplacement: () => setTargetMode(targetMode === 'wheel' ? '' : 'wheel'),
+  fireEmplacement: () => setTargetMode(targetMode === 'empfire' ? '' : 'empfire'),
+  smokeEmplacement: () => setTargetMode(targetMode === 'empsmoke' ? '' : 'empsmoke'),
+  mountVehicle: () => {
+    if (selectedVehicle >= 0 && lastTeamId >= 0) sim.orderMount(lastTeamId, selectedVehicle);
+  },
+  dismountVehicle: () => {
+    if (selectedVehicle >= 0) sim.orderDismount(selectedVehicle);
+  },
+  hitchVehicle: () => {
+    const v = sim.vehicles[selectedVehicle];
+    if (!v) return;
+    const near = sim.emplacements.find((e) => e.side === v.side && e.state === 'packed' && e.towedBy < 0 && Math.hypot(e.x - v.x, e.y - v.y) <= 4);
+    if (near) sim.orderHitch(v.id, near.id);
+  },
+  unhitchVehicle: () => {
+    const e = sim.emplacements.find((e) => e.towedBy === selectedVehicle);
+    if (e) sim.orderUnhitch(e.id);
   },
 });
 const tooltip = new Tooltip(hud.root);
@@ -264,8 +304,20 @@ canvas.addEventListener('mouseup', (e) => {
         setTargetMode('');
         renderer.markStrafe(wx, wy);
       }
+    } else if (targetMode === 'wheel') {
+      const e = emplacementOf(sim, selectedSquad);
+      if (e) sim.orderWheel(e.id, wx, wy);
+      setTargetMode('');
+    } else if (targetMode === 'empfire') {
+      const e = emplacementOf(sim, selectedSquad);
+      if (e) sim.orderFire(e.id, wx, wy);
+      setTargetMode('');
+    } else if (targetMode === 'empsmoke') {
+      const e = emplacementOf(sim, selectedSquad);
+      if (e) sim.orderSmoke(e.id, wx, wy);
+      setTargetMode('');
     } else {
-      // vehicles first, then squads
+      // vehicles first, then emplacement glyphs, then soldiers (narrowing team on a second click)
       let vehicle = -1;
       for (const v of sim.vehicles) {
         if (v.alive && v.side === 'blue' && Math.hypot(v.x - wx, v.y - wy) < 3.5) vehicle = v.id;
@@ -273,17 +325,32 @@ canvas.addEventListener('mouseup', (e) => {
       if (vehicle >= 0) {
         selectVehicle(vehicle);
       } else {
-        let best = -1;
-        let bestD = 15 / cam.scale;
-        for (const s of sim.soldiers) {
-          if (!s.alive || s.side !== 'blue' || s.inVehicle >= 0) continue;
-          const d = Math.hypot(s.x - wx, s.y - wy);
-          if (d < bestD) {
-            bestD = d;
-            best = s.squadId;
+        let empSquad = -1;
+        for (const e of sim.emplacements) {
+          if (e.side === 'blue' && Math.hypot(e.x - wx, e.y - wy) < 2.5) empSquad = sim.teams[e.crewTeamId].squadId;
+        }
+        if (empSquad >= 0) {
+          selectSquad(empSquad);
+        } else {
+          let best: Soldier | null = null;
+          let bestD = 15 / cam.scale;
+          for (const s of sim.soldiers) {
+            if (!s.alive || s.side !== 'blue' || s.inVehicle >= 0) continue;
+            const d = Math.hypot(s.x - wx, s.y - wy);
+            if (d < bestD) {
+              bestD = d;
+              best = s;
+            }
+          }
+          if (best && best.squadId === selectedSquad) {
+            selectedTeam = best.teamId;
+            lastTeamId = best.teamId;
+          } else if (best) {
+            selectSquad(best.squadId);
+          } else {
+            selectSquad(-1);
           }
         }
-        selectSquad(best);
       }
     }
   }
@@ -302,8 +369,18 @@ canvas.addEventListener('contextmenu', (e) => {
   const [wx, wy] = cam.screenToWorld(e.clientX, e.clientY, canvas.width, canvas.height);
   if (selectedVehicle >= 0) sim.orderVehicleMove(selectedVehicle, wx, wy);
   else if (selectedSquad >= 0) {
-    if (e.shiftKey) sim.queueMove(selectedSquad, wx, wy);
-    else sim.orderSquad(selectedSquad, { kind: 'move', x: wx, y: wy });
+    if (armedOrder) {
+      const order: TeamOrder = { kind: armedOrder, x: wx, y: wy };
+      if (selectedTeam >= 0) sim.orderTeam(selectedTeam, order);
+      else sim.orderSquad(selectedSquad, order);
+      armedOrder = null;
+    } else if (e.shiftKey) {
+      sim.queueMove(selectedSquad, wx, wy);
+    } else if (selectedTeam >= 0) {
+      sim.orderTeam(selectedTeam, { kind: 'move', x: wx, y: wy });
+    } else {
+      sim.orderSquad(selectedSquad, { kind: 'move', x: wx, y: wy });
+    }
   }
 });
 canvas.addEventListener('wheel', (e) => {
@@ -327,11 +404,19 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'KeyA' && sim.airstrikesLeft.blue > 0) setTargetMode(targetMode === 'air' ? '' : 'air');
   if (e.code.startsWith('Digit')) {
     const n = Number(e.code.slice(5)) - 1;
-    const list = infantrySquads(sim);
-    if (n >= 0 && n < list.length) selectSquad(list[n].id);
+    if (e.shiftKey) {
+      // Order-kind hotbar: plain digits already own squad selection (below),
+      // so order kinds live on shift+digit — see Task 13 commit message.
+      if (n >= 0 && n < ORDER_KINDS.length) armedOrder = armedOrder === ORDER_KINDS[n] ? null : ORDER_KINDS[n];
+    } else {
+      const list = infantrySquads(sim);
+      if (n >= 0 && n < list.length) selectSquad(list[n].id);
+    }
   }
   if (e.code === 'Escape') {
-    selectSquad(-1);
+    if (selectedTeam >= 0) selectedTeam = -1;
+    else selectSquad(-1);
+    armedOrder = null;
     setTargetMode('');
   }
 });
@@ -350,6 +435,7 @@ window.addEventListener('keydown', (e) => {
     paused = p;
   },
   selectSquad: (i: number) => selectSquad(i),
+  selectVehicle: (i: number) => selectVehicle(i),
   getCampaign: () => campaign,
   startEngagementBattle,
   showDebrief,
@@ -404,11 +490,13 @@ function frame(now: number): void {
 
     const pick = mouse.onCanvas && !targetMode ? pickAt(sim, cam, mouse.x, mouse.y, canvas.width, canvas.height) : null;
     const shot = computeShot(sim, selectedSquad, selectedVehicle, pick);
+    const cursor = mouse.onCanvas ? cam.screenToWorld(mouse.x, mouse.y, canvas.width, canvas.height) : null;
+    const focusTeams = selectedSquad < 0 ? [] : selectedTeam >= 0 ? [selectedTeam] : sim.squads[selectedSquad].teamIds;
 
     renderer.draw(ctx, cam, selectedSquad, now);
-    drawOverlays(ctx, cam, sim, { pick, shot, selectedSquad, targetMode }, pings);
+    drawOverlays(ctx, cam, sim, { pick, shot, selectedSquad, targetMode, focusTeams, armedOrder, cursor: cursor && { x: cursor[0], y: cursor[1] } }, pings);
     tooltip.update(sim, pick, shot, mouse.x, mouse.y, pick?.kind === 'terrain' && (selectedSquad >= 0 || selectedVehicle >= 0));
-    hud.update(sim, { selectedSquad, selectedVehicle, paused, targetMode, title: battleTitle });
+    hud.update(sim, { selectedSquad, selectedTeam, selectedVehicle, paused, targetMode, armedOrder, title: battleTitle });
 
     if (sim.winner && winnerAt < 0) winnerAt = now;
     if (winnerAt >= 0 && !debriefShown && now - winnerAt > 4000) showDebrief();

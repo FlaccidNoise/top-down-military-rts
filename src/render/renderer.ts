@@ -106,7 +106,7 @@ export class Renderer {
       for (const s of this.sim.soldiers) if (s.alive && !s.downed && s.inVehicle < 0) this.drawSoldier(ctx, cam, s, selectedSquad, dt, cw, ch);
     }
     for (const v of this.sim.vehicles) if (v.alive) this.drawVehicle(ctx, cam, v, now, cw, ch);
-    for (const e of this.sim.emplacements) this.drawEmplacement(ctx, cam, e, cw, ch);
+    for (const e of this.sim.emplacements) this.drawEmplacement(ctx, cam, e, selectedSquad, cw, ch);
 
     this.drawFire(ctx, cam, now, cw, ch);
     this.roofs.drawTops(ctx, cam, cw, ch);
@@ -190,7 +190,7 @@ export class Renderer {
   // Simple crewed-weapon glyph — follows drawVehicle's scheme (team-colored
   // hull + barrel line) at ~40% of a vehicle's footprint. Dashed while
   // packed/transitioning, solid once dug in.
-  private drawEmplacement(ctx: CanvasRenderingContext2D, cam: Camera, e: Emplacement, cw: number, ch: number): void {
+  private drawEmplacement(ctx: CanvasRenderingContext2D, cam: Camera, e: Emplacement, selectedSquad: number, cw: number, ch: number): void {
     const [x, y] = cam.worldToScreen(e.x, e.y, cw, ch);
     const pad = VEHICLE_SPAN * cam.scale * 0.4;
     if (x < -pad || y < -pad || x > cw + pad || y > ch + pad) return;
@@ -213,6 +213,13 @@ export class Renderer {
     ctx.stroke();
     ctx.setLineDash([]);
     ctx.restore();
+    if (this.sim.teams[e.crewTeamId]?.squadId === selectedSquad) {
+      ctx.strokeStyle = '#ffe9a0';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(x, y, r + 3, 0, Math.PI * 2);
+      ctx.stroke();
+    }
   }
 
   private drawPlanes(ctx: CanvasRenderingContext2D, cam: Camera, now: number, cw: number, ch: number): void {
