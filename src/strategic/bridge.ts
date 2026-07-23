@@ -296,6 +296,8 @@ export function applyEngagementOutcome(
     front.sector.cells[e.cell].owner = 'blue';
     attacker.cell = e.cell;
     cellTaken = true;
+  } else if (front.sector.cells[attacker.cell].terrain === 'river') {
+    retreat(front, attacker); // a beaten ford assault falls back off the water — rivers are transit, never a resting cell
   }
   syncStrengths(c, front);
   return { record, redLosses, cellTaken };

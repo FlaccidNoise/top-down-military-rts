@@ -262,6 +262,20 @@ describe('bridge', () => {
     expect(front.chits.filter((ch) => ch.side === 'blue').length).toBe(2); // Able wiped, pruned
   });
 
+  it('a lost ford assault retreats the attacker off the river cell', () => {
+    const { c, front } = setup();
+    const able = front.chits.find((ch) => ch.side === 'blue')!;
+    const garrison = front.chits.find((ch) => ch.name === 'Garnison Vireux')!;
+    able.cell = cellIndex(front.sector, 20, 10); // halted mid-ford
+    const e = { attackerId: able.id, defenderId: garrison.id, cell: garrison.cell };
+    const { sim } = makeStrategicBattle(c, front, e, 5);
+    sim.winner = 'red'; // beaten back with survivors
+    applyEngagementOutcome(c, front, e, sim);
+    // never rests on open water: retreated to a friendly bank cell, or overrun
+    expect(able.strength === 0 || front.sector.cells[able.cell].terrain !== 'river').toBe(true);
+    if (able.strength > 0) expect(front.sector.cells[able.cell].owner).toBe('blue');
+  });
+
   it('saveGame/loadGame roundtrips campaign and front', () => {
     const store = new Map<string, string>();
     const storage = { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => void store.set(k, v) };
