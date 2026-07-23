@@ -192,13 +192,12 @@ function drawWaterBanks(g: Ctx, map: GameMap, tx0: number, ty0: number, tx1: num
     for (let x = tx0; x < tx1; x++) {
       if (!waterAt(x, y)) continue;
       for (let h = 0; h < 2; h++) {
-        const d = 0.1 + hash(x * 2 + h, y, 120) * 0.22;
-        const dWet = d * 0.45;
         if (mudAt(x, y - 1)) {
+          const d = 0.1 + hash(x * 2 + h, y, 120) * 0.22;
           g.fillStyle = 'rgba(88,76,52,0.5)';
           g.fillRect(x + h * 0.5, y - d, 0.5, d);
           g.fillStyle = 'rgba(50,48,38,0.45)';
-          g.fillRect(x + h * 0.5, y - dWet, 0.5, dWet);
+          g.fillRect(x + h * 0.5, y - d * 0.45, 0.5, d * 0.45);
         }
         if (mudAt(x, y + 1)) {
           const d2 = 0.1 + hash(x * 2 + h, y, 121) * 0.22;
@@ -269,6 +268,19 @@ function drawDoorTrails(g: Ctx, map: GameMap, tx0: number, ty0: number, tx1: num
       if (inEast === floorAt(x - 1, y)) continue;
       trail(x, y + 0.5, inEast ? -1 : 1, 0);
     }
+  }
+}
+
+// 2x2 sub-tile sampling of the woods-ground tone (same fix grass got — a
+// single flat per-tile value reads as a 1m checkerboard through canopy gaps
+// at high zoom). `darken` dims it under hedges.
+function drawSubTileGround(g: Ctx, x: number, y: number, darken = 1): void {
+  for (let sub = 0; sub < 4; sub++) {
+    const sx = x + (sub & 1) * 0.5;
+    const sy = y + (sub >> 1) * 0.5;
+    const sv = (0.9 + coarse(sx + 0.25, sy + 0.25) * 0.12 + hash(x, y, sub) * 0.04) * darken;
+    g.fillStyle = shade(WOODS_GROUND, sv);
+    g.fillRect(sx, sy, 0.5, 0.5);
   }
 }
 
@@ -352,15 +364,7 @@ function drawTileBase(g: Ctx, map: GameMap, x: number, y: number): void {
       g.fillRect(x + 0.69, y, 0.09, 1);
     }
   } else if (t === 'woods') {
-    // 2x2 sub-tile sampling (same fix grass got) — a single flat per-tile
-    // value read as a 1m checkerboard through canopy gaps at high zoom
-    for (let sub = 0; sub < 4; sub++) {
-      const sx = x + (sub & 1) * 0.5;
-      const sy = y + (sub >> 1) * 0.5;
-      const sv = 0.9 + coarse(sx + 0.25, sy + 0.25) * 0.12 + hash(x, y, sub) * 0.04;
-      g.fillStyle = shade(WOODS_GROUND, sv);
-      g.fillRect(sx, sy, 0.5, 0.5);
-    }
+    drawSubTileGround(g, x, y);
     // leaf litter / undergrowth texture
     for (let i = 0; i < 4; i++) {
       const lx = x + hash(x, y, 80 + i);
@@ -375,13 +379,7 @@ function drawTileBase(g: Ctx, map: GameMap, x: number, y: number): void {
     // drawHedgeRun in whole-run passes (per-tile stroke stacks let a tile's
     // dark AO/shadow overpaint the neighbor's green mass, which is what read
     // as per-tile capsule segmentation at 24 px/m)
-    for (let sub = 0; sub < 4; sub++) {
-      const sx = x + (sub & 1) * 0.5;
-      const sy = y + (sub >> 1) * 0.5;
-      const sv = (0.9 + coarse(sx + 0.25, sy + 0.25) * 0.12 + hash(x, y, sub) * 0.04) * 0.88;
-      g.fillStyle = shade(WOODS_GROUND, sv);
-      g.fillRect(sx, sy, 0.5, 0.5);
-    }
+    drawSubTileGround(g, x, y, 0.88);
   } else if (t === 'field') {
     const bx = x >> 3; // 8m parcel block — furrow geometry only, color stays smooth
     const by = y >> 3;
