@@ -102,6 +102,7 @@ function tryGenerate(rng: Rng, w: number, h: number, kind: MapKind): MapPlan | n
     // the actual arterial-centerline ∩ water overlap (middle column of it)
     const xs: number[] = [];
     for (let x = 0; x < w; x++) if (water[roadY[x] * w + x]) xs.push(x);
+    if (xs.length === 0) return null; // no crossing carved: reroll rather than emit a NaN objective
     const bx = xs[xs.length >> 1];
     bridgePt = { x: bx, y: roadY[bx] };
   }
