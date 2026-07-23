@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { EDGE, GameMap } from '../src/sim/map';
-import { Sim } from '../src/sim/sim';
+import { Sim, sightToSoldier } from '../src/sim/sim';
 
 // Open ground; soldiers get zeroed ammo unless a test needs live rounds, so
 // melee is the only combat channel (and the RNG sequence stays melee-only).
@@ -119,5 +119,56 @@ describe('melee', () => {
       return sim.snapshot();
     };
     expect(run()).toBe(run());
+  });
+});
+
+// The melee × FoW seam: contact is a sense. The lock ignores smoke and
+// concealment, but pays for it with honest intel — both fighters are spotted
+// for both sides while steel is out, and a melee kill is a found corpse.
+describe('melee × fog of war', () => {
+  // two puffs on the ray = accumulated opacity 1.0: LOS fully blocked at any range
+  const smokeAt = (sim: Sim, x: number, y: number) => {
+    sim.smoke.push({ x, y, ttl: 9999 }, { x, y, ttl: 9999 });
+  };
+
+  it('smoke does not stop a melee lock, and contact spots both fighters for both sides', () => {
+    const { sim, a, b } = pair();
+    smokeAt(sim, (a.x + b.x) / 2, a.y);
+    expect(sightToSoldier(sim, a.x, a.y, b).visible).toBe(false); // staging guard: smoke really blinds them
+    expect(stepUntil(sim, () => a.meleeId === b.id && b.meleeId === a.id)).toBe(true);
+    expect(sim.soldierVisibleTo('blue', b)).toBe(true); // bumped into: intel, not raycast
+    expect(sim.soldierVisibleTo('red', a)).toBe(true);
+  });
+
+  it('the spot holds across sweeps while the fight lasts; a melee kill is a found corpse', () => {
+    const { sim, a, b } = pair();
+    smokeAt(sim, (a.x + b.x) / 2, a.y);
+    expect(stepUntil(sim, () => a.meleeId === b.id)).toBe(true);
+    for (let i = 0; i < 31; i++) sim.step(); // two full sweeps: raycasts fail in smoke, contact must not ghost
+    expect(sim.soldierVisibleTo('blue', b)).toBe(true);
+    expect(sim.soldierVisibleTo('red', a)).toBe(true);
+    let kill: { attackerId: number; victimId: number } | undefined;
+    for (let i = 0; i < 3600 && !kill; i++) {
+      sim.step();
+      kill = sim.takeMeleeEvents().find((e) => e.kill);
+    }
+    expect(kill).toBeDefined(); // this seed's fight ends in a kill, not a bleed-out
+    const victim = sim.soldiers[kill!.victimId];
+    const killer = sim.soldiers[kill!.attackerId];
+    expect(victim.alive).toBe(false);
+    expect(sim.soldierVisibleTo(killer.side, victim)).toBe(true); // corpse found at arm's length, despite the smoke
+  });
+
+  it('a sneaking man hidden even from the sweep is revealed by melee contact; his team order survives', () => {
+    const { sim, a, b } = pair({ dist: 4 }); // beyond the 2m lock range
+    sim.orderTeam(b.teamId, { kind: 'sneak', x: b.x, y: b.y }); // sneak in place
+    smokeAt(sim, a.x + 1, a.y);
+    smokeAt(sim, b.x - 1, b.y);
+    for (let i = 0; i < 15; i++) sim.step(); // a full sweep passes...
+    expect(sim.soldierVisibleTo('blue', b)).toBe(false); // ...and the sneak+smoke stack holds
+    b.x = a.x + 1.3; // staged: he creeps onto the blue man's position between sweeps
+    expect(stepUntil(sim, () => a.meleeId === b.id || b.meleeId === a.id)).toBe(true);
+    expect(sim.soldierVisibleTo('blue', b)).toBe(true); // contact breaks the sneak
+    expect(sim.teams[b.teamId].orderState.order?.kind).toBe('sneak'); // one man's bad luck doesn't blow the team's order
   });
 });
