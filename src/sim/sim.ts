@@ -38,6 +38,16 @@ const AID_SECONDS = 8;
 const BARRAGE_DELAY_TICKS = 20 * 30;
 const BARRAGE_ROUNDS = 12;
 const BOUND_LEG = 15; // meters per bounding rush (spec's "15m legs")
+// Melee (decision log 2026-07-23): proximity-triggered close combat.
+const MELEE_ENGAGE = 2.0; // m — an enemy this close (and reachable on foot) locks both into melee
+const MELEE_CONTACT = 0.9; // m — combatants close to here, then hold
+export const MELEE_STRIKE_RANGE = 1.3; // m — strikes only land inside this (renderer keys the pose off it)
+const MELEE_BREAK = 2.5; // m — an opponent past this has gotten away
+const MELEE_INTERVAL = 1.4; // s between strikes, jittered per swing
+// SMGs with rounds left fight melee by shooting from the hip — their CQC
+// edge over the bayonet, paid for in ammo. (Sim-side twin of dudes.ts's
+// SMG_CLASS silhouette bucket; data.ts has no weapon-class field.)
+const MELEE_SMG: ReadonlySet<WeaponKey> = new Set(['thompson', 'mp40']);
 
 export type Side = 'blue' | 'red';
 export type Mental = 'steady' | 'shaken' | 'pinned' | 'broken';
@@ -134,6 +144,11 @@ export interface Soldier {
   inEmplacement: number; // emplacement id crewing, -1 = none
   carries: LoadKey[]; // emplacement loads on his back (Task 4's speedCap/staminaMult factor)
   mountTarget: number; // vehicle id he's walking to board, -1 = none
+  // melee: who he's fighting hand-to-hand (-1 = none; several attackers may
+  // point at one victim — the victim strikes back at whoever engaged him first)
+  meleeId: number;
+  meleePhase: number; // 0..1 strike cycle, advances only in strike range; strike lands at wrap
+  meleeTempo: number; // cycles/s, re-jittered each swing
 }
 
 export interface Vehicle {
@@ -223,6 +238,15 @@ export interface UnitEvent {
   y: number;
   side: Side;
   name: string;
+}
+
+// One melee swing landing (or whiffing) at the victim — drives the
+// renderer's impact feedback, same consume-queue shape as ShotEvent.
+export interface MeleeEvent {
+  x: number;
+  y: number;
+  hit: boolean;
+  kill: boolean;
 }
 
 export interface ShotPreview {
@@ -397,6 +421,7 @@ export class Sim {
   private pendingBooms: { x: number; y: number }[] = [];
   private pendingPlanes: { x0: number; y: number; x1: number }[] = [];
   private pendingUnitEvents: UnitEvent[] = [];
+  private pendingMeleeEvents: MeleeEvent[] = [];
   // Per-squad move state, indexed by squad id. Read-only for the UI (route preview).
   squadDest: ({ x: number; y: number } | null)[] = [];
   squadWaypoints: { x: number; y: number }[][] = [];
@@ -468,6 +493,9 @@ export class Sim {
       inEmplacement: -1,
       carries: m.carries ? [...m.carries] : [],
       mountTarget: -1,
+      meleeId: -1,
+      meleePhase: 0,
+      meleeTempo: 0,
     };
     s.morale = 0.7 + s.courage * 0.3;
     this.soldiers.push(s);
@@ -1359,6 +1387,12 @@ export class Sim {
     return e;
   }
 
+  takeMeleeEvents(): MeleeEvent[] {
+    const e = this.pendingMeleeEvents;
+    this.pendingMeleeEvents = [];
+    return e;
+  }
+
   step(): void {
     this.tick++;
     this.stepWaypoints();
@@ -1829,6 +1863,7 @@ export class Sim {
         this.dropKit(s);
         s.path = null;
         s.targetId = -1;
+        s.meleeId = -1;
         if (s.task) this.dropTask(s);
         this.triggerSuccession(s);
       }
@@ -1862,15 +1897,22 @@ export class Sim {
       this.pendingUnitEvents.push({ kind: 'broken', x: s.x, y: s.y, side: s.side, name: s.name });
     }
 
-    // broken men flee away from the nearest enemy
+    // broken men flee away from the nearest enemy — breaking is the one way
+    // out of a melee lock: he drops his guard and runs (and can be run down)
     if (s.mental === 'broken') {
       s.targetId = -1;
+      s.meleeId = -1;
       if (s.task) this.dropTask(s);
       if (!s.fleeing || (this.tick + s.id) % 90 === 0) this.flee(s);
     } else if (s.fleeing) {
       s.fleeing = false;
       s.path = null;
     }
+
+    // close combat: an enemy in reach locks both into melee, which overrides
+    // tasks, orders, and ranged fire until it resolves (kill, down, or rout)
+    if (s.meleeId < 0 && s.mental !== 'pinned' && s.mental !== 'broken' && (this.tick + s.id) % 10 === 0) this.considerMelee(s);
+    if (s.meleeId >= 0 && this.updateMelee(s)) return;
 
     // rescue / ammo run / weapon succession: a bonded squadmate may pull a
     // casualty out of the fight, ferry belts to a dry gunner, or take over a
@@ -2626,6 +2668,118 @@ export class Sim {
     }
   }
 
+  // Can a man physically get at (bx, by) from (ax, ay) at melee distance?
+  // Greedy tile walk over canStep — doors pass, walls and windows don't.
+  // At MELEE_ENGAGE range the chain is <= 2 steps; deterministic, no RNG.
+  private meleeReachable(ax: number, ay: number, bx: number, by: number): boolean {
+    let tx = Math.floor(ax);
+    let ty = Math.floor(ay);
+    const tx1 = Math.floor(bx);
+    const ty1 = Math.floor(by);
+    let guard = 4;
+    while ((tx !== tx1 || ty !== ty1) && guard-- > 0) {
+      const sx = Math.sign(tx1 - tx);
+      const sy = Math.sign(ty1 - ty);
+      const order = Math.abs(tx1 - tx) >= Math.abs(ty1 - ty) ? [[sx, 0], [0, sy]] : [[0, sy], [sx, 0]];
+      let stepped = false;
+      for (const [dx, dy] of order) {
+        if (dx === 0 && dy === 0) continue;
+        if (this.map.canStep(tx, ty, tx + dx, ty + dy)) {
+          tx += dx;
+          ty += dy;
+          stepped = true;
+          break;
+        }
+      }
+      if (!stepped) return false;
+    }
+    return tx === tx1 && ty === ty1;
+  }
+
+  private considerMelee(s: Soldier): void {
+    let best: Soldier | null = null;
+    let bestD = Infinity;
+    for (const e of this.soldiers) {
+      if (!e.alive || e.downed || e.side === s.side || e.inVehicle >= 0) continue;
+      const d = Math.hypot(e.x - s.x, e.y - s.y);
+      if (d > MELEE_ENGAGE || d >= bestD) continue;
+      if (!this.meleeReachable(s.x, s.y, e.x, e.y)) continue;
+      bestD = d;
+      best = e;
+    }
+    if (!best) return;
+    this.enterMelee(s, best.id);
+    if (best.meleeId < 0) this.enterMelee(best, s.id); // already fighting someone: he keeps his man
+  }
+
+  private enterMelee(m: Soldier, oppId: number): void {
+    m.meleeId = oppId;
+    m.meleePhase = 0.4; // start at guard; first strike after the windup below
+    m.meleeTempo = 1 / this.rng.range(0.9, 1.5);
+    m.path = null;
+    m.targetId = -1;
+    m.mountTarget = -1;
+    if (m.task) this.dropTask(m);
+    m.suppression = Math.min(1, m.suppression + 0.15); // steel at arm's length
+  }
+
+  // One tick of an ongoing melee. Returns true while the fight holds this
+  // soldier (skip tasks, movement, and ranged combat); false once it resolves.
+  private updateMelee(s: Soldier): boolean {
+    const t = this.soldiers[s.meleeId];
+    const d = Math.hypot(t.x - s.x, t.y - s.y);
+    if (!t.alive || t.downed || t.inVehicle >= 0 || d > MELEE_BREAK) {
+      s.meleeId = -1;
+      return false;
+    }
+    s.stamina = Math.max(0, s.stamina - 0.03 * DT); // grappling is exhausting
+    if (d > MELEE_CONTACT) {
+      // close to contact: straight steps, wall-aware (a routing opponent is
+      // pursued this way too — same speed, so strikes keep landing in range)
+      const step = Math.min(this.moveSpeed(s) * DT, d - MELEE_CONTACT);
+      const nx = s.x + ((t.x - s.x) / d) * step;
+      const ny = s.y + ((t.y - s.y) / d) * step;
+      const cx = Math.floor(s.x);
+      const cy = Math.floor(s.y);
+      if ((Math.floor(nx) === cx && Math.floor(ny) === cy) || this.map.canStep(cx, cy, Math.floor(nx), Math.floor(ny))) {
+        s.x = nx;
+        s.y = ny;
+      }
+    }
+    if (d > MELEE_STRIKE_RANGE) {
+      s.meleePhase = 0.4; // can't wind up on the move — guard until back in reach
+      return true;
+    }
+    s.meleePhase += s.meleeTempo * DT;
+    if (s.meleePhase >= 1) {
+      s.meleePhase = 0;
+      s.meleeTempo = 1 / (MELEE_INTERVAL * this.rng.range(0.85, 1.15));
+      this.meleeStrike(s, t);
+    }
+    return true;
+  }
+
+  // One swing, resolved through the standard wound/body model. Hit chance is
+  // weapon-class base x aimFactor — the same aim formula as ranged fire, so
+  // pain, suppression, nerves, and stamina all degrade melee too.
+  private meleeStrike(s: Soldier, t: Soldier): void {
+    const w: WeaponDef = WEAPONS[s.weapon];
+    const smgFire = MELEE_SMG.has(s.weapon) && s.magLeft > 0;
+    const clumsy = !!w.heat || w.pen !== undefined || !!w.arc; // an MG42 makes a poor club
+    const base = smgFire ? 0.7 : clumsy ? 0.35 : MELEE_SMG.has(s.weapon) ? 0.45 : 0.55;
+    const dmg: [number, number] = smgFire ? w.damage : clumsy || MELEE_SMG.has(s.weapon) ? [20, 50] : [30, 70];
+    const hit = this.rng.next() < Math.min(0.9, Math.max(0.05, base * this.aimFactor(s)));
+    let kill = false;
+    if (hit) kill = this.wound(t, this.rng.range(dmg[0], dmg[1]));
+    else t.suppression = Math.min(1, t.suppression + 0.1); // a blade past your face
+    if (smgFire) {
+      s.magLeft--;
+      this.pendingEvents.push({ fx: s.x, fy: s.y, tx: t.x, ty: t.y, hit, kill }); // hip-fire muzzle flash
+    }
+    this.pendingMeleeEvents.push({ x: t.x, y: t.y, hit, kill });
+    if (kill || t.downed) s.meleeId = -1;
+  }
+
   private acquire(s: Soldier): number {
     const order = this.teams[s.teamId].orderState.order;
     const arc = (order?.kind === 'defend' || order?.kind === 'ambush') ? order.arc : undefined;
@@ -2677,6 +2831,7 @@ export class Sim {
     t.alive = false;
     t.path = null;
     t.downed = false;
+    t.meleeId = -1;
     if (t.task) this.dropTask(t);
     if (t.rescuerId >= 0) {
       const r = this.soldiers[t.rescuerId];
@@ -2759,6 +2914,8 @@ export class Sim {
         s.mountTarget,
         s.role,
         s.helperId,
+        s.meleeId,
+        Math.round(s.meleePhase * 1e6),
         Math.round((s.crewSkill.mg ?? 0) * 1e6),
         Math.round((s.crewSkill.mortar ?? 0) * 1e6),
         Math.round((s.crewSkill.gun ?? 0) * 1e6),

@@ -1,5 +1,5 @@
 import type { Emplacement } from '../sim/emplacement';
-import type { ShotEvent, Side, Sim, Soldier, Vehicle } from '../sim/sim';
+import { MELEE_STRIKE_RANGE, type MeleeEvent, type ShotEvent, type Side, type Sim, type Soldier, type Vehicle } from '../sim/sim';
 import type { Camera } from './camera';
 import { DecalLayer } from './decals';
 import { bandFor, getSprite, SPRITE_MIN_SCALE, SPRITE_SPAN, WALK_FRAMES, type Pose } from './dudes';
@@ -47,6 +47,7 @@ export class Renderer {
   private terrain: TerrainLayer;
   private roofs = new RoofLayer();
   private tracers: Tracer[] = [];
+  private meleeFx: (MeleeEvent & { at: number })[] = [];
   private rs = new Map<number, RState>();
   private lastNow = 0;
   private booms: Boom[] = [];
@@ -63,6 +64,13 @@ export class Renderer {
 
   addEvents(events: ShotEvent[], now: number): void {
     for (const e of events) this.tracers.push({ ...e, at: now });
+  }
+
+  addMeleeEvents(events: MeleeEvent[], now: number): void {
+    for (const e of events) {
+      this.meleeFx.push({ ...e, at: now });
+      if (e.hit) this.decals.smear(e.x, e.y, Math.random() * Math.PI * 2);
+    }
   }
 
   addBooms(booms: { x: number; y: number }[], now: number): void {
@@ -279,6 +287,13 @@ export class Renderer {
     }
   }
 
+  // Melee pose only while actually trading blows; a closer/pursuer out of
+  // strike range falls through to the walk animation instead.
+  private inStrikeRange(s: Soldier): boolean {
+    const o = this.sim.soldiers[s.meleeId];
+    return Math.hypot(o.x - s.x, o.y - s.y) <= MELEE_STRIKE_RANGE + 0.1;
+  }
+
   private state(s: Soldier): RState {
     let st = this.rs.get(s.id);
     if (!st) {
@@ -322,7 +337,12 @@ export class Renderer {
     else if (s.downed) pose = carried ? 'dragged' : 'downed';
     else if (s.task?.phase === 'drag') pose = 'drag';
     else if (s.task?.phase === 'aid') pose = 'aid';
-    else if (s.mental === 'pinned' || (s.mental === 'broken' && !s.path)) pose = 'prone';
+    else if (s.meleeId >= 0 && this.inStrikeRange(s)) {
+      // sim-driven strike cycle (freezes on pause, like walk): the thrust
+      // frame shows right after the phase wrap, when the MeleeEvent lands
+      pose = 'melee';
+      frame = s.meleePhase < 0.18 ? 2 : s.meleePhase < 0.42 ? 3 : s.meleePhase < 0.78 ? 0 : 1;
+    } else if (s.mental === 'pinned' || (s.mental === 'broken' && !s.path)) pose = 'prone';
     else if (moved > 1e-4) {
       pose = 'walk';
       st.phase += moved * 1.4;
@@ -331,7 +351,10 @@ export class Renderer {
 
     if (s.alive) {
       let desired = st.facing;
-      if (s.task?.phase === 'aid') {
+      if (s.meleeId >= 0) {
+        const o = this.sim.soldiers[s.meleeId];
+        desired = Math.atan2(o.y - s.y, o.x - s.x);
+      } else if (s.task?.phase === 'aid') {
         const c = this.sim.soldiers[s.task.casualtyId];
         desired = Math.atan2(c.y - s.y, c.x - s.x);
       } else if (s.targetId >= 0 && !s.downed) {
@@ -464,6 +487,26 @@ export class Renderer {
   }
 
   private drawFire(ctx: CanvasRenderingContext2D, cam: Camera, now: number, cw: number, ch: number): void {
+    // melee impacts: red fleck on a hit (bigger on a kill), white swish on a miss
+    this.meleeFx = this.meleeFx.filter((m) => now - m.at < 250);
+    for (const m of this.meleeFx) {
+      const t = (now - m.at) / 250;
+      const [x, y] = cam.worldToScreen(m.x, m.y, cw, ch);
+      if (m.hit) {
+        ctx.fillStyle = `rgba(200, 40, 30, ${(1 - t) * 0.85})`;
+        ctx.beginPath();
+        ctx.arc(x, y, (m.kill ? 0.45 : 0.28) * (0.7 + t) * cam.scale, 0, Math.PI * 2);
+        ctx.fill();
+      } else {
+        const a0 = ((m.x * 7 + m.y * 13) % 6.28) + t * 1.5; // stable per-event swish angle
+        ctx.strokeStyle = `rgba(235, 235, 225, ${(1 - t) * 0.7})`;
+        ctx.lineWidth = Math.max(1.5, cam.scale * 0.07);
+        ctx.beginPath();
+        ctx.arc(x, y, 0.55 * cam.scale, a0, a0 + 1.1);
+        ctx.stroke();
+      }
+    }
+
     this.tracers = this.tracers.filter((t) => now - t.at < 150);
     for (const t of this.tracers) {
       const age = now - t.at;

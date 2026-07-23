@@ -494,6 +494,7 @@ function frame(now: number): void {
       acc = 0;
     }
     renderer.addEvents(sim.takeEvents(), now);
+    renderer.addMeleeEvents(sim.takeMeleeEvents(), now);
     renderer.addBooms(sim.takeBooms(), now);
     renderer.addPlanes(sim.takePlanes(), now);
     // fog of war: enemy unit events only ping where a friendly can see
