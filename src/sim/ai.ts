@@ -1,5 +1,5 @@
 import { EMPLACEMENTS, WEAPONS, type WeaponDef } from './data';
-import { crewNear, type Emplacement } from './emplacement';
+import { crewNear, friendlyHasLos, type Emplacement } from './emplacement';
 import { dangerScore } from './orders';
 import { CONTACT_TTL, SPOT_INTERVAL, sightBetween, type Sim, type Team } from './sim';
 
@@ -196,13 +196,16 @@ export class RedCommander {
       const cleared = this.threatConfNear(post.x, post.y, 15) < CLEAR_CONF;
       const c = this.centroid(sim, team.soldierIds);
       const dist = Math.hypot(c.x - post.x, c.y - post.y);
-      // Screen the objective as the maneuver team enters SMOKE_RANGE with a
-      // live post: laid a touch beyond ASSAULT_RANGE so the smoke's flight and
-      // a blinded position are up by the time the team is in charge range —
-      // that's what lets the final leg's charge clear compliance (a naked
-      // charge onto a covered post balks by construction).
-      if (suppressed && !cleared && dist <= SMOKE_RANGE) this.maybeSmokeObjective(sim, post);
-      if (suppressed && !cleared && dist <= ASSAULT_RANGE) {
+      // Same gate at two distance bands: press the objective when suppression's
+      // up and the post still reads live.
+      const pressing = suppressed && !cleared;
+      // Screen the objective as the maneuver team enters SMOKE_RANGE — laid a
+      // touch beyond ASSAULT_RANGE so the smoke's flight and a blinded position
+      // are up by the time the team is in charge range, which is what lets the
+      // final leg's charge clear compliance (a naked charge onto a covered
+      // post balks by construction).
+      if (pressing && dist <= SMOKE_RANGE) this.maybeSmokeObjective(sim, post);
+      if (pressing && dist <= ASSAULT_RANGE) {
         // suppression established, live threat on the post, close enough to
         // charge home: the 8th order, through the same API the player uses.
         // suppressionEstablished is a global attempt-gate; the real per-team
@@ -350,19 +353,29 @@ export class RedCommander {
   // into doctrine. One mission at a time; a mortar already smoking is left to
   // finish (readyMortar skips smokeRoundsLeft > 0) rather than re-tasked.
   private maybeSmokeObjective(sim: Sim, post: { x: number; y: number }): void {
-    const mortar = this.readyMortar(sim);
+    const mortar = this.readyMortar(sim, post);
     if (mortar) sim.orderSmoke(mortar.id, post.x, post.y);
   }
 
   // A deployed red mortar not mid-smoke-mission, with shells its crew can
-  // still feed — the commander's screen asset, scanned side-wide like the
-  // barrage: any mortar on the field can screen any objective, independent of
-  // task-group assignment.
-  private readyMortar(sim: Sim): Emplacement | null {
+  // still feed, that can actually range and see the objective — the
+  // commander's screen asset, scanned side-wide like the barrage: any mortar
+  // on the field can screen any objective, independent of task-group assignment.
+  private readyMortar(sim: Sim, post: { x: number; y: number }): Emplacement | null {
     for (const e of sim.emplacements) {
       if (e.side !== 'red' || e.state !== 'deployed' || e.smokeRoundsLeft > 0) continue;
       const w: WeaponDef = WEAPONS[EMPLACEMENTS[e.kind].weapon];
       if (!w.arc) continue;
+      // Reachability is a HARD gate, not a nicety. orderSmoke commits the
+      // mission (smokeRoundsLeft = 4) up front, but fireEmplacementIndirect
+      // only decrements it on a round that actually fires — a post outside the
+      // tube's [minRange, range] band, or with no friendly LOS, never fires,
+      // never decrements, and readyMortar's own smokeRoundsLeft>0 skip would
+      // then lock that tube out of every future mission. So only task one that
+      // can range and see the objective right now.
+      const d = Math.hypot(e.x - post.x, e.y - post.y);
+      if (d < w.arc.minRange || d > w.range) continue;
+      if (!friendlyHasLos(sim, e.side, post.x, post.y)) continue;
       if (crewNear(sim, e).some((s) => (s.ammo[w.ammo.type] ?? 0) > 0)) return e;
     }
     return null;

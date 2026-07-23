@@ -2945,7 +2945,7 @@ export class Sim {
   // pain, suppression, nerves, and stamina all degrade melee too.
   private meleeStrike(s: Soldier, t: Soldier): void {
     const w: WeaponDef = WEAPONS[s.weapon];
-    const isSmg = WEAPONS[s.weapon].class === 'smg'; // SMGs with rounds left fight melee from the hip — CQC edge over the bayonet, paid in ammo
+    const isSmg = w.class === 'smg'; // SMGs with rounds left fight melee from the hip — CQC edge over the bayonet, paid in ammo
     const smgFire = isSmg && s.magLeft > 0;
     const clumsy = !!w.heat || w.pen !== undefined || !!w.arc; // an MG42 makes a poor club
     const base = smgFire ? 0.7 : clumsy ? 0.35 : isSmg ? 0.45 : 0.55;

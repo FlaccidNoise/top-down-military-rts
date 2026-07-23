@@ -289,6 +289,24 @@ describe('AI commander doctrine', () => {
     expect(smokeOnPostTick).toBeLessThanOrEqual(chargeStepsOffTick);
   });
 
+  it('readyMortar refuses a tube that cannot range the objective — never commits an unfulfillable smoke mission that would lock the tube out for the match', () => {
+    // orderSmoke commits smokeRoundsLeft=4 up front, but an out-of-band mortar
+    // never fires and never decrements it, and readyMortar skips any tube with
+    // smokeRoundsLeft>0 — so tasking an unreachable mortar permanently disables
+    // it. The range/LOS guard must refuse it before that can happen.
+    const sim = new Sim(new GameMap(200, 60), 7);
+    sim.addSquad('red', 'Spotter', [{ name: 'S', weapon: 'kar98k', x: 100.5, y: 30.5 }]); // friendly LOS to the post
+    const post = { x: 100, y: 30 };
+    const commander = new RedCommander({ stance: 'attack', posts: {} });
+    // inside mortar81's minRange (30m): 10m from the post — unreachable arc
+    const tooClose = sim.addEmplacement('red', 'mortar81', 100, 40, 0, 'deployed');
+    expect(commander['readyMortar'](sim, post)).toBeNull(); // refused, not tasked
+    expect(sim.emplacements[tooClose.id].smokeRoundsLeft).toBe(0); // and never committed
+    // a second tube in-band (60m) is the one selected
+    const inRange = sim.addEmplacement('red', 'mortar81', 40, 30, 0, 'deployed');
+    expect(commander['readyMortar'](sim, post)?.id).toBe(inRange.id);
+  });
+
   it('a real Gruppe (addSquadFromDef) keeps its MG-Trupp on fire/move orders while the Schützen team maneuvers, over a sustained window', () => {
     const map = new GameMap(140, 60);
     const sim = new Sim(map, 300);
