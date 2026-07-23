@@ -95,6 +95,23 @@ describe('melee', () => {
     }
   });
 
+  it('N-vs-1: two attackers pile onto one victim, who fights back at the first', () => {
+    const sim = new Sim(flat(), 42);
+    const squad = sim.addSquad('blue', 'A', [
+      { name: 'A1', weapon: 'garand', x: 5.5, y: 5.0 },
+      { name: 'A2', weapon: 'garand', x: 5.5, y: 6.0 },
+    ]);
+    const bId = sim.addSquad('red', 'B', [{ name: 'B', weapon: 'kar98k', x: 6.6, y: 5.5 }]).soldierIds[0];
+    const [a1, a2] = squad.soldierIds.map((id) => sim.soldiers[id]);
+    const b = sim.soldiers[bId];
+    for (const s of [a1, a2, b]) {
+      s.ammo = {};
+      s.magLeft = 0;
+    }
+    expect(stepUntil(sim, () => a1.meleeId === b.id && a2.meleeId === b.id)).toBe(true);
+    expect([a1.id, a2.id]).toContain(b.meleeId); // victim fights exactly one of them
+  });
+
   it('is deterministic (snapshot includes melee state)', () => {
     const run = () => {
       const { sim } = pair({ seed: 7 });

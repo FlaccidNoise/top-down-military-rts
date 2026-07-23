@@ -2742,7 +2742,16 @@ export class Sim {
       const ny = s.y + ((t.y - s.y) / d) * step;
       const cx = Math.floor(s.x);
       const cy = Math.floor(s.y);
-      if ((Math.floor(nx) === cx && Math.floor(ny) === cy) || this.map.canStep(cx, cy, Math.floor(nx), Math.floor(ny))) {
+      const tx = Math.floor(nx);
+      const ty = Math.floor(ny);
+      const legal =
+        (tx === cx && ty === cy) ? true
+        : (tx === cx || ty === cy) ? this.map.canStep(cx, cy, tx, ty)
+        // diagonal crossing: both L-paths must be steppable — the pathfinder's
+        // no-corner-cutting rule (path.ts); canStep alone half-checks diagonals
+        : this.map.canStep(cx, cy, tx, cy) && this.map.canStep(tx, cy, tx, ty) &&
+          this.map.canStep(cx, cy, cx, ty) && this.map.canStep(cx, ty, tx, ty);
+      if (legal) {
         s.x = nx;
         s.y = ny;
       }
