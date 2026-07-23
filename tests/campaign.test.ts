@@ -88,6 +88,13 @@ describe('red commander', () => {
     sim.addSquad('red', '1. Gruppe', [0, 1, 2, 3].map((i) => ({ name: `r${i}`, weapon: 'garand', x: 30.5 + i, y: 30.5, xp: 30 })));
     sim.soldiers[3].role = 'leader';
     for (const s of sim.squads[1].soldierIds) sim.soldiers[s].morale = 1;
+    for (const s of sim.soldiers) {
+      s.magLeft = 0;
+      s.ammo = {}; // dry: no firefight while red's spotting sweep runs
+    }
+    // the commander reads sim intel (spotted/contacts), not live LOS — a
+    // sweep must run before it can know the post is taken
+    for (let i = 0; i < 15; i++) sim.step();
     const commander = new RedCommander({ stance: 'defend', posts: { 1: { x: 10, y: 10 } } });
     commander.update(sim);
     const ordered = sim.squads[1].soldierIds.map((i) => sim.soldiers[i]).filter((s) => s.path !== null);

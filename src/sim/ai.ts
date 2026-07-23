@@ -1,17 +1,19 @@
 import { WEAPONS, type WeaponDef } from './data';
-import { dangerScore, visibleEnemies } from './orders';
-import { sightBetween, type Sim, type Team } from './sim';
+import { dangerScore } from './orders';
+import { CONTACT_TTL, SPOT_INTERVAL, sightBetween, type Sim, type Team } from './sim';
 
 // Red commander: issues squad orders through the same public order API the
 // player uses. Design requirement (decision log): must maneuver and
 // counterattack — the whole genre ships passive AI. Deterministic given
 // identical call ticks.
 //
-// Honest vision (spec: ai-commander.md): the only read of the opposing
-// side's state anywhere in this module is visibleEnemies() (and
-// dangerScore(), which is itself built on visibleEnemies) — belief state,
-// aim points, and the barrage target all trace back to contacts red units
-// actually had line of sight to, plus the static briefing (cfg.posts).
+// Honest vision (spec: ai-commander.md): the only reads of the opposing
+// side's state anywhere in this module are the sim's own per-side intel
+// layer (sim.spotted / sim.contacts — the same spotting sweep, last-known
+// ghosts, and TTL the player's fog of war runs on) and dangerScore()
+// (weapon-range engagement semantics, built on visibleEnemies). Belief
+// state, aim points, and the barrage target all trace back to contacts red
+// units actually sighted, plus the static briefing (cfg.posts).
 // tests/doctrine.test.ts's honesty audit greps this file's source for the
 // enemy side's own literal to catch a regression back to a direct read.
 
@@ -23,13 +25,10 @@ export interface CommanderConfig {
 interface ThreatContact {
   x: number;
   y: number;
-  conf: number; // 0..1, decays when not re-sighted
-  tick: number;
+  conf: number; // 1 while tracked; a lost contact fades toward 0 over the ghost TTL
 }
 
 const EVAL_TICKS = 150; // every 5s
-const THREAT_MERGE_RADIUS = 12; // fold a fresh sighting into a nearby existing contact
-const THREAT_DECAY = 0.95; // per eval when not re-sighted
 const SUPPRESSION_SECONDS = 10; // a base-of-fire team firing this long counts as suppression established
 const CLEAR_CONF = 0.3; // threat confidence at the post below which maneuver goes ahead regardless
 const FLANK_OFFSET = 20; // meters either side of the direct axis to the post
@@ -59,6 +58,10 @@ export class RedCommander {
   constructor(private cfg: CommanderConfig) {}
 
   update(sim: Sim): void {
+    // No orders before the first spotting sweep reports: with the belief
+    // state on sim intel, an earlier eval would read "no contacts anywhere"
+    // as a cleared field and send the assault in cold.
+    if (sim.tick < SPOT_INTERVAL) return;
     if (sim.tick - this.lastEval < EVAL_TICKS) return;
     this.lastEval = sim.tick;
 
@@ -72,20 +75,22 @@ export class RedCommander {
     this.maybeBarrage(sim);
   }
 
-  // ---- belief state: contacts built only from what red currently sees ----
+  // ---- belief state: the sim's per-side intel layer, rebuilt each eval —
+  // the commander keeps no private threat map; it knows exactly what its
+  // side knows (spotted at conf 1, lost contacts fading over the ghost TTL).
+  private spottedPositions(sim: Sim): { x: number; y: number }[] {
+    const out: { x: number; y: number }[] = [];
+    for (const [id, p] of sim.spotted.red) {
+      if (!sim.soldiers[id].downed) out.push(p); // tracked but downed: out of the fight
+    }
+    return out;
+  }
+
   private updateThreat(sim: Sim): void {
-    for (const t of this.threat) t.conf *= THREAT_DECAY;
-    this.threat = this.threat.filter((t) => t.conf > 0.02);
-    for (const e of visibleEnemies(sim, 'red')) {
-      const near = this.threat.find((t) => Math.hypot(t.x - e.x, t.y - e.y) < THREAT_MERGE_RADIUS);
-      if (near) {
-        near.x = e.x;
-        near.y = e.y;
-        near.conf = 1;
-        near.tick = sim.tick;
-      } else {
-        this.threat.push({ x: e.x, y: e.y, conf: 1, tick: sim.tick });
-      }
+    this.threat = this.spottedPositions(sim).map((p) => ({ x: p.x, y: p.y, conf: 1 }));
+    for (const c of sim.contacts.red.values()) {
+      if (c.kind !== 'infantry') continue;
+      this.threat.push({ x: c.x, y: c.y, conf: Math.max(0, 1 - (sim.tick - c.tick) / CONTACT_TTL) });
     }
   }
 
@@ -284,11 +289,12 @@ export class RedCommander {
     }
   }
 
-  // One barrage on the densest cluster among units red has actually seen,
-  // once it musters five or more together.
+  // One barrage on the densest cluster among red's spotted contacts, once
+  // five or more sit together — intel-range knowledge, not weapon range: the
+  // commander can shell an observed concentration its rifles can't yet reach.
   private maybeBarrage(sim: Sim): void {
     if (this.barrageUsed || sim.barragesLeft.red <= 0) return;
-    const seen = visibleEnemies(sim, 'red');
+    const seen = this.spottedPositions(sim);
     for (const b of seen) {
       const cluster = seen.filter((o) => Math.hypot(o.x - b.x, o.y - b.y) < 8);
       if (cluster.length >= 5) {

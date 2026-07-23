@@ -388,9 +388,9 @@ export function sightToSoldier(sim: Sim, x0: number, y0: number, t: Soldier): Lo
 // intel see). Both look through sightToSoldier, so concealment hides from
 // intel too. Recomputed on a cadence in step(); deterministic (no RNG) and
 // never read back by sim behavior.
-const SPOT_INTERVAL = 15; // ticks: 0.5 s between spotting sweeps
+export const SPOT_INTERVAL = 15; // ticks: 0.5 s between spotting sweeps
 const SPOT_RANGE = 200; // m — beyond every small-arms range
-const CONTACT_TTL = 45 * 30; // ticks a last-known ghost lingers
+export const CONTACT_TTL = 45 * 30; // ticks a last-known ghost lingers
 
 export interface Contact {
   kind: 'infantry' | 'vehicle';
