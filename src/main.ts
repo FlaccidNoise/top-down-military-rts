@@ -171,6 +171,19 @@ function showContactModal(e: Engagement): void {
   };
 }
 
+// Boot framing: fit the whole map when the viewport allows ≥3 px/m (the
+// threshold ui.md already treats as "whole map fits" for the strategic map
+// zoom-out); otherwise frame ~120m across around the blue spawn centroid so
+// the view isn't half dead space off the map edge.
+function bootCamera(s: Sim, cw: number, ch: number): { x: number; y: number; scale: number } {
+  const fit = Math.min(cw / s.map.w, ch / s.map.h);
+  if (fit >= 3) return { x: s.map.w / 2, y: s.map.h / 2, scale: fit };
+  const blue = s.soldiers.filter((sd) => sd.side === 'blue');
+  const cx = blue.length ? blue.reduce((a, sd) => a + sd.x, 0) / blue.length : s.map.w / 2;
+  const cy = blue.length ? blue.reduce((a, sd) => a + sd.y, 0) / blue.length : s.map.h / 2;
+  return { x: cx, y: cy, scale: Math.min(48, Math.max(2, cw / 120)) };
+}
+
 function startEngagementBattle(e: Engagement): void {
   pendingEngagement = e;
   const seed = urlSeed !== null && Number.isFinite(Number(urlSeed)) ? Number(urlSeed) : front.clockMin * 7919 + e.cell;
@@ -181,10 +194,10 @@ function startEngagementBattle(e: Engagement): void {
   battleCompany = battle.companyIndex;
   renderer = new Renderer(sim);
   battleTitle = `Day ${front.day} ${front.hhmm} — ${battle.name}`;
-  const first = sim.soldiers.find((s) => s.side === 'blue');
-  cam.x = first ? first.x + 12 : 60;
-  cam.y = first ? first.y : 60;
-  cam.scale = 8;
+  const boot = bootCamera(sim, canvas.width, canvas.height);
+  cam.x = boot.x;
+  cam.y = boot.y;
+  cam.scale = boot.scale;
   mode = 'battle';
   paused = true;
   selectedSquad = -1;
@@ -194,6 +207,7 @@ function startEngagementBattle(e: Engagement): void {
   debriefShown = false;
   debriefEl.style.display = 'none';
   pings.reset();
+  tooltip.clear();
 }
 
 function showDebrief(): void {
@@ -236,6 +250,7 @@ function showDebrief(): void {
     debriefEl.style.display = 'none';
     mode = 'strategic';
     stratPaused = true;
+    tooltip.clear();
   };
 }
 
@@ -289,6 +304,12 @@ window.addEventListener('mousemove', (e) => {
       dragStart = { x: e.clientX, y: e.clientY };
     }
   }
+});
+canvas.addEventListener('mouseleave', () => {
+  // window 'mousemove' only updates mouse.onCanvas on movement, so a cursor
+  // that exits the canvas and stops (e.g. leaves the browser window) would
+  // otherwise leave the tooltip frozen on stale content forever.
+  mouse.onCanvas = false;
 });
 canvas.addEventListener('mouseup', (e) => {
   if (e.button !== 0) return;

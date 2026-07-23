@@ -1,6 +1,7 @@
 import type { Camera } from '../render/camera';
 import { dangerSamples, type OrderKind } from '../sim/orders';
-import { OFFSETS, type Sim, type UnitEvent } from '../sim/sim';
+import { OFFSETS, type Side, type Sim, type UnitEvent } from '../sim/sim';
+import { TEAM } from './hud';
 import type { Pick, ShotSolution } from './tooltip';
 
 export interface OverlayState {
@@ -163,7 +164,7 @@ export function drawOverlays(ctx: CanvasRenderingContext2D, cam: Camera, sim: Si
     chip(ctx, (x0 + x1) / 2, (y0 + y1) / 2, st.shot.ok ? `${Math.round(st.shot.acc * 100)}%` : blockedLabel, st.shot.ok ? '#ffe9a0' : '#a0a090');
   }
 
-  pings.draw(ctx, cam, sim, cw, ch);
+  pings.draw(ctx, sim, cw, ch);
 }
 
 function chip(ctx: CanvasRenderingContext2D, x: number, y: number, text: string, color: string): void {
@@ -183,27 +184,31 @@ function chip(ctx: CanvasRenderingContext2D, x: number, y: number, text: string,
 }
 
 interface Ping {
-  x: number;
-  y: number;
+  side: Side;
   label: string;
   color: string;
   tick: number;
 }
 
 const PING_TICKS = 8 * 30;
+const MAX_VISIBLE = 6;
+const ROW_W = 190;
+const ROW_H = 20;
+const ROW_GAP = 3;
 
-// Pings sim-emitted unit events the player must not miss — with edge arrows
-// when they happen off-screen. Sim-tick expiry: pause-safe.
+// Pings sim-emitted unit events the player must not miss, as a fixed
+// right-edge feed column (screen-space only — never anchored to world
+// position, so entries can never overlap). Sim-tick expiry: pause-safe.
 export class EventPings {
   private pings: Ping[] = [];
 
   add(events: UnitEvent[], tick: number): void {
     for (const e of events) {
       if (e.kind === 'vehicle-destroyed') {
-        this.push(e.x, e.y, `${e.name} DESTROYED`, e.side === 'blue' ? '#d05c50' : '#ffca6a', tick);
+        this.push(e.side, `${e.name} — DESTROYED`, e.side === 'blue' ? '#d05c50' : '#ffca6a', tick);
       } else if (e.side === 'blue') {
-        const label = e.kind === 'kia' ? 'KIA' : e.kind === 'downed' ? 'DOWN' : 'BROKE';
-        this.push(e.x, e.y, `${e.name} ${label}`, e.kind === 'downed' ? '#e08a3c' : '#d05c50', tick);
+        const label = e.kind === 'kia' ? 'KIA' : e.kind === 'downed' ? 'DOWN' : e.kind === 'broken' ? 'BROKE' : null;
+        if (label) this.push(e.side, `${e.name} — ${label}`, e.kind === 'downed' ? '#e08a3c' : '#d05c50', tick);
       }
     }
   }
@@ -212,55 +217,38 @@ export class EventPings {
     this.pings = [];
   }
 
-  private push(x: number, y: number, label: string, color: string, tick: number): void {
-    this.pings.push({ x, y, label, color, tick });
-    if (this.pings.length > 12) this.pings.shift();
+  private push(side: Side, label: string, color: string, tick: number): void {
+    this.pings.push({ side, label, color, tick });
+    if (this.pings.length > MAX_VISIBLE) this.pings.shift(); // never more stored than are ever drawn
   }
 
-  draw(ctx: CanvasRenderingContext2D, cam: Camera, sim: Sim, cw: number, ch: number): void {
+  draw(ctx: CanvasRenderingContext2D, sim: Sim, cw: number, ch: number): void {
     this.pings = this.pings.filter((p) => sim.tick - p.tick < PING_TICKS);
-    const placed: { x: number; y: number; w: number }[] = []; // stack co-located chips instead of occluding
-    const edgeCounts = new Map<string, number>(); // stack off-screen arrow chips along the edge instead of overlapping
-    for (const p of this.pings) {
+    const visible = this.pings.slice(-MAX_VISIBLE).reverse(); // newest at top
+    const x = cw - ROW_W - 12;
+    let y = 60; // keep clear of the top bar
+    ctx.font = '11px ui-monospace, Menlo, monospace';
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = 'left';
+    for (const p of visible) {
       const life = (sim.tick - p.tick) / PING_TICKS; // 0..1
-      const a = life < 0.6 ? 1 : 1 - (life - 0.6) / 0.4; // hold at full readability, ease out only over the tail
-      const [x, y] = cam.worldToScreen(p.x, p.y, cw, ch);
-      const m = 30;
-      const top = 60; // keep clear of the top bar
-      ctx.globalAlpha = a;
-      if (x < m || x > cw - m || y < top || y > ch - m) {
-        // corners fold into the L/R edge so adjacent buckets share one stacking counter
-        const edgeKey = x < m ? 'L' : x > cw - m ? 'R' : y < top ? 'T' : 'B';
-        const stack = edgeCounts.get(edgeKey) ?? 0;
-        edgeCounts.set(edgeKey, stack + 1);
-        let cx = Math.min(Math.max(x, m), cw - m);
-        let cy = Math.min(Math.max(y, top), ch - m);
-        if (edgeKey === 'L' || edgeKey === 'R') cy = Math.min(Math.max(cy + stack * 20, top), ch - m);
-        else cx = Math.min(Math.max(cx + stack * 20, m), cw - m);
-        const ang = Math.atan2(y - cy, x - cx);
-        ctx.save();
-        ctx.translate(cx, cy);
-        ctx.rotate(ang);
-        ctx.fillStyle = p.color;
-        ctx.beginPath();
-        ctx.moveTo(11, 0);
-        ctx.lineTo(0, -5);
-        ctx.lineTo(0, 5);
-        ctx.closePath();
-        ctx.fill();
-        ctx.restore();
-        ctx.font = '11px ui-monospace, Menlo, monospace';
-        const half = ctx.measureText(p.label).width / 2 + 16;
-        chip(ctx, cx - Math.cos(ang) * half, cy - Math.sin(ang) * half, p.label, p.color);
-      } else {
-        ctx.font = '11px ui-monospace, Menlo, monospace';
-        const w = ctx.measureText(p.label).width + 10;
-        let cy = y - cam.scale * 0.9 - 10;
-        while (placed.some((q) => Math.abs(q.y - cy) < 18 && Math.abs(q.x - x) < (q.w + w) / 2)) cy -= 18;
-        placed.push({ x, y: cy, w });
-        chip(ctx, x, cy, p.label, p.color);
-      }
-      ctx.globalAlpha = 1;
+      ctx.globalAlpha = life < 0.6 ? 1 : 1 - (life - 0.6) / 0.4; // hold at full readability, ease out only over the tail
+      ctx.fillStyle = 'rgba(18,22,15,0.85)';
+      ctx.fillRect(x, y, ROW_W, ROW_H);
+      ctx.fillStyle = TEAM[p.side]; // side-colored left border
+      ctx.fillRect(x, y, 3, ROW_H);
+      ctx.fillStyle = p.color;
+      ctx.fillText(clipToWidth(ctx, p.label, ROW_W - 16), x + 10, y + ROW_H / 2 + 1);
+      y += ROW_H + ROW_GAP;
     }
+    ctx.globalAlpha = 1;
+    ctx.textBaseline = 'alphabetic';
   }
+}
+
+function clipToWidth(ctx: CanvasRenderingContext2D, text: string, maxWidth: number): string {
+  if (ctx.measureText(text).width <= maxWidth) return text;
+  let t = text;
+  while (t.length > 1 && ctx.measureText(`${t}…`).width > maxWidth) t = t.slice(0, -1);
+  return `${t}…`;
 }

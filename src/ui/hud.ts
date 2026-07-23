@@ -4,7 +4,7 @@ import type { OrderKind } from '../sim/orders';
 import type { Sim, Soldier, Squad, Vehicle } from '../sim/sim';
 
 export const STATE_COLOR = { steady: '#7fbf6a', shaken: '#e0c060', pinned: '#e08a3c', broken: '#d05c50' } as const;
-const TEAM = { blue: '#5b9bd5', red: '#d05c50' } as const;
+export const TEAM = { blue: '#5b9bd5', red: '#d05c50' } as const;
 const ORDER_KINDS: OrderKind[] = ['move', 'fast', 'sneak', 'fire', 'smoke', 'defend', 'ambush'];
 
 export interface HudCallbacks {
@@ -66,6 +66,7 @@ const BARS_LEGEND = '<div class="bars-key"><i class="sw sup"></i>suppression<i c
 export class Hud {
   readonly root: HTMLDivElement;
   private sig = '';
+  private lastSel = ''; // selectedSquad|selectedVehicle at last render — gates auto-scroll to "on change" only
 
   constructor(cb: HudCallbacks) {
     this.root = document.createElement('div');
@@ -181,33 +182,22 @@ export class Hud {
           `<div class="card-head"><b>${VEHICLES[v.kind].name}</b><span class="n">${status}</span></div>${rows}</div>`,
       );
     }
-    for (const sq of infantrySquads(sim)) {
-      const men = sq.soldierIds.map((id) => sim.soldiers[id]);
-      const sel = sq.id === st.selectedSquad;
-      const dots = men
-        .map((m) => {
-          const c = !m.alive ? '#4a4a3e' : m.downed ? '#d05c50' : STATE_COLOR[m.mental];
-          const label = !m.alive ? 'KIA' : m.downed ? 'DOWN' : m.mental.toUpperCase();
-          return `<i title="${m.name} — ${label}" style="${m.alive && m.downed ? `border:1px solid ${c}` : `background:${c}`}"></i>`;
-        })
-        .join('');
-      const showLegend = sel && men.some((m) => m.alive && !m.downed);
-      const emp = sel ? emplacementOf(sim, sq.id) : null;
-      const focus = sel && st.selectedTeam >= 0 ? `<div class="focus">Team: ${sim.teams[st.selectedTeam]?.name ?? ''} <i>(esc widens)</i></div>` : '';
-      const rows = sel
-        ? focus + orderBar(st) + (emp ? emplacementContext(sim, emp) : '') + (showLegend ? BARS_LEGEND : '') + men.map((m) => soldierRow(m)).join('')
-        : '';
-      cards.push(
-        `<div class="card panel${sel ? ' sel' : ''}" data-squad="${sq.id}" tabindex="0" role="button">` +
-          `<div class="card-head"><b>${sq.name}</b><span class="n">${men.filter((m) => m.alive).length}/${men.length}</span></div>` +
-          `<div class="dots">${dots}</div>${rows}</div>`,
-      );
-    }
-    const sq = this.q('#squads');
+    // Rifle squads (2 teams) vs. crewed weapons/scout squads (1 team, the
+    // TO&E's mortar/MG/zooka/sniper-scout slots) — same Squad shape, split by
+    // team count so the 18-squad roster fits under a "WEAPONS" divider
+    // instead of one long undifferentiated list.
+    const infantry = infantrySquads(sim);
+    const rifleSquads = infantry.filter((q) => q.teamIds.length > 1);
+    const weaponSquads = infantry.filter((q) => q.teamIds.length === 1);
+    for (const q of rifleSquads) cards.push(squadCard(sim, q, st));
+    if (weaponSquads.length) cards.push('<div class="wpn-divider">WEAPONS</div>');
+    for (const q of weaponSquads) cards.push(squadCard(sim, q, st));
+
+    const panel = this.q('#squads');
     // innerHTML rebuild destroys keyboard focus (sig rebuilds run every 5 ticks
     // while unpaused) — re-focus the same entity's element afterwards.
     const focused =
-      document.activeElement instanceof HTMLElement && sq.contains(document.activeElement)
+      document.activeElement instanceof HTMLElement && panel.contains(document.activeElement)
         ? document.activeElement.closest<HTMLElement>('[data-squad],[data-vehicle],[data-soldier]')
         : null;
     const focusSel = focused
@@ -216,9 +206,40 @@ export class Hud {
           .map((a) => `[${a}="${focused.getAttribute(a)}"]`)
           .join('')
       : '';
-    sq.innerHTML = cards.join('');
-    if (focusSel) sq.querySelector<HTMLElement>(focusSel)?.focus();
+    panel.innerHTML = cards.join('');
+    if (focusSel) panel.querySelector<HTMLElement>(focusSel)?.focus();
+
+    // Auto-scroll only on an actual selection change, not on every sig
+    // rebuild (which also fires every 5 ticks while unpaused) — otherwise
+    // this would fight a player manually scrolling the roster.
+    const selKey = `${st.selectedSquad}|${st.selectedVehicle}`;
+    if (selKey !== this.lastSel) {
+      this.lastSel = selKey;
+      panel.querySelector('.card.sel')?.scrollIntoView({ block: 'nearest' });
+    }
   }
+}
+
+function squadCard(sim: Sim, sq: Squad, st: HudState): string {
+  const men = sq.soldierIds.map((id) => sim.soldiers[id]);
+  const sel = sq.id === st.selectedSquad;
+  const dots = men
+    .map((m) => {
+      const c = !m.alive ? '#4a4a3e' : m.downed ? '#d05c50' : STATE_COLOR[m.mental];
+      const label = !m.alive ? 'KIA' : m.downed ? 'DOWN' : m.mental.toUpperCase();
+      return `<i title="${m.name} — ${label}" style="${m.alive && m.downed ? `border:1px solid ${c}` : `background:${c}`}"></i>`;
+    })
+    .join('');
+  const showLegend = sel && men.some((m) => m.alive && !m.downed);
+  const emp = sel ? emplacementOf(sim, sq.id) : null;
+  const focus = sel && st.selectedTeam >= 0 ? `<div class="focus">Team: ${sim.teams[st.selectedTeam]?.name ?? ''} <i>(esc widens)</i></div>` : '';
+  const rows = sel
+    ? focus + orderBar(st) + (emp ? emplacementContext(sim, emp) : '') + (showLegend ? BARS_LEGEND : '') + men.map((m) => soldierRow(m)).join('')
+    : '';
+  return (
+    `<div class="card panel${sel ? ' sel' : ''}" data-squad="${sq.id}" tabindex="0" role="button">` +
+    `<div class="card-head"><b>${sq.name}</b><span class="n">${men.filter((m) => m.alive).length}/${men.length}</span><div class="dots">${dots}</div></div>${rows}</div>`
+  );
 }
 
 function soldierRow(m: Soldier): string {

@@ -151,6 +151,14 @@ export class Tooltip {
     parent.appendChild(this.el);
   }
 
+  // Forces the card hidden and its cache key reset — called on canvas
+  // mouseleave and on strategic<->battle mode switches, both of which stop
+  // the per-frame update() calls that would otherwise clear stale content.
+  clear(): void {
+    this.key = '';
+    this.el.style.display = 'none';
+  }
+
   update(sim: Sim, pick: Pick, shot: ShotSolution | null, mx: number, my: number, moveHint: boolean): void {
     if (!pick) {
       if (this.key) {
