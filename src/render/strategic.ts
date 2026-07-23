@@ -50,6 +50,13 @@ const RED = '#d05c50';
 
 const REDUCED_MOTION = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
 
+// Angle on the header 24h ring for a minutes-of-day value: noon at top,
+// midnight at bottom, 06:00/18:00 on the horizon ends. Marker position:
+// x = cx + r*sin(a), y = cy - r*cos(a).
+export function timeOfDayAngle(minOfDay: number): number {
+  return ((((minOfDay % 1440) + 1440) % 1440) - 720) / 1440 * Math.PI * 2;
+}
+
 const HEADER_H = 34;
 const FOOTER_H = 24;
 const HINT_TEXT = 'SPACE pause  ·  1/2/3 speed  ·  click select  ·  right-click move  ·  ESC deselect';
@@ -57,6 +64,7 @@ const HINT_TEXT = 'SPACE pause  ·  1/2/3 speed  ·  click select  ·  right-cli
 export class StrategicView {
   private flashMsg: string | null = null;
   private flashUntil = 0;
+  stagedCell = -1; // engagement-staging highlight; -1 = none
 
   constructor(readonly sector: SectorMap) {}
 
@@ -98,6 +106,7 @@ export class StrategicView {
     }
     this.drawGridAndFrontLine(ctx, size, ox, oy);
     this.drawObjectives(ctx, front, size, ox, oy);
+    if (this.stagedCell >= 0 && this.stagedCell < this.sector.cells.length) this.drawStagedCell(ctx, front, size, ox, oy);
 
     const selected = front.chits.find((c) => c.id === selectedChitId);
     if (selected && selected.path.length > 0) this.drawPathPreview(ctx, selected, size, ox, oy);
@@ -297,6 +306,19 @@ export class StrategicView {
     ctx.stroke();
   }
 
+  // Pulsing amber dashed border on the cell an engagement is staged on.
+  private drawStagedCell(ctx: CanvasRenderingContext2D, front: Front, size: number, ox: number, oy: number): void {
+    const { x, y } = cellXY(this.sector, this.stagedCell);
+    const gx = ox + x * size;
+    const gy = oy + y * size;
+    const pulse = REDUCED_MOTION ? 0.8 : 0.55 + 0.35 * Math.sin(front.clockMin * 0.12);
+    ctx.strokeStyle = `rgba(255, 202, 106, ${pulse})`;
+    ctx.lineWidth = 2;
+    ctx.setLineDash([4, 3]);
+    ctx.strokeRect(gx + 1.5, gy + 1.5, size - 4, size - 4);
+    ctx.setLineDash([]);
+  }
+
   private drawPathPreview(ctx: CanvasRenderingContext2D, selected: Chit, size: number, ox: number, oy: number): void {
     ctx.strokeStyle = 'rgba(230,230,200,0.7)';
     ctx.lineWidth = 2;
@@ -345,7 +367,10 @@ export class StrategicView {
     ctx.fillText(this.sector.name.toUpperCase(), 12, HEADER_H / 2);
     const titleW = ctx.measureText(this.sector.name.toUpperCase()).width;
     ctx.fillStyle = CREAM;
-    ctx.fillText(`DAY ${front.day}  ·  ${front.hhmm}`, 12 + titleW + 18, HEADER_H / 2);
+    const clockText = `DAY ${front.day}  ·  ${front.hhmm}`;
+    ctx.fillText(clockText, 12 + titleW + 18, HEADER_H / 2);
+    const clockW = ctx.measureText(clockText).width;
+    this.drawTimeRing(ctx, front, 12 + titleW + 18 + clockW + 26, HEADER_H / 2);
 
     ctx.textAlign = 'right';
     ctx.fillStyle = paused ? AMBER : MUTED;
@@ -357,6 +382,36 @@ export class StrategicView {
     const reinforceText = hours < 1 ? 'Reinforcements <1h' : `Reinforcements in ${Math.round(hours)}h`;
     ctx.fillStyle = MUTED;
     ctx.fillText(reinforceText, canvasW - 12 - speedW - 24, HEADER_H / 2);
+  }
+
+  // 24h time-of-day ring: static (sim-clock-driven, not animated), so
+  // REDUCED_MOTION-safe by construction. Upper semicircle = day.
+  private drawTimeRing(ctx: CanvasRenderingContext2D, front: Front, cx: number, cy: number): void {
+    const r = 11;
+    ctx.strokeStyle = PANEL_BORDER;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(cx - r, cy + 0.5);
+    ctx.lineTo(cx + r, cy + 0.5);
+    ctx.stroke();
+    const tod = front.clockMin % 1440;
+    const a = timeOfDayAngle(tod);
+    const mx = cx + (r - 3.5) * Math.sin(a);
+    const my = cy - (r - 3.5) * Math.cos(a);
+    if (tod >= 6 * 60 && tod < 18 * 60) {
+      ctx.fillStyle = AMBER;
+      ctx.beginPath();
+      ctx.arc(mx, my, 2.2, 0, Math.PI * 2);
+      ctx.fill();
+    } else {
+      ctx.strokeStyle = MUTED;
+      ctx.beginPath();
+      ctx.arc(mx, my, 2.2, 0, Math.PI * 2);
+      ctx.stroke();
+    }
   }
 
   private drawFlash(ctx: CanvasRenderingContext2D, canvasW: number): void {

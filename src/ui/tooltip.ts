@@ -3,6 +3,7 @@ import { woundLabel } from '../sim/body';
 import { TERRAIN, VEHICLES, WEAPONS, type TerrainDef, type TerrainKey, type WeaponDef } from '../sim/data';
 import { sightBetween, type Sim, type Soldier, type Vehicle } from '../sim/sim';
 import { STATE_COLOR } from './hud';
+import { formatCoverBreakdown, formatCoverBreakdownForFloor } from './tooltip-format';
 
 export type Pick =
   | { kind: 'soldier'; s: Soldier }
@@ -143,12 +144,19 @@ function apSolution(sim: Sim, fx: number, fy: number, pen: number, accuracy: num
 export class Tooltip {
   private el: HTMLDivElement;
   private key = '';
+  private canvas: HTMLCanvasElement | null = null;
 
   constructor(parent: HTMLElement) {
     this.el = document.createElement('div');
     this.el.id = 'tip';
     this.el.className = 'panel';
     parent.appendChild(this.el);
+  }
+
+  // Bind the canvas for mouseleave clearing.
+  bindCanvas(c: HTMLCanvasElement): void {
+    this.canvas = c;
+    c.addEventListener('mouseleave', () => this.clear());
   }
 
   // Forces the card hidden and its cache key reset — called on canvas
@@ -208,10 +216,25 @@ function shotSection(shot: ShotSolution): string {
   );
 }
 
+function squadAmmoChip(sim: Sim, s: Soldier): string {
+  const sq = sim.squads[s.squadId];
+  if (!sq) return '';
+  let total = 0;
+  let max = 0;
+  for (const id of sq.soldierIds) {
+    const m = sim.soldiers[id];
+    total += Object.values(m.ammo).reduce((a, n) => a + (n ?? 0), 0);
+    max += m.ammoStart;
+  }
+  if (max <= 0) return '';
+  return `<span class="tt-ammo">Ammo ${total}/${max}</span>`;
+}
+
 function soldierCard(sim: Sim, s: Soldier, shot: ShotSolution | null): string {
   const stars = s.xp > 0 ? ' · ' + '★'.repeat(Math.min(s.xp, 5)) : '';
   const reserve = Object.values(s.ammo).reduce((a, n) => a + (n ?? 0), 0);
-  let html = `<div class="tt-head ${s.side}"><b>${s.name}</b><span>${WEAPONS[s.weapon].name} ${s.magLeft}+${reserve}${stars}</span></div>`;
+  const ammoChip = squadAmmoChip(sim, s);
+  let html = `<div class="tt-head ${s.side}"><b>${s.name}</b><span>${WEAPONS[s.weapon].name} ${s.magLeft}+${reserve}${stars}${ammoChip ? ' ' + ammoChip : ''}</span></div>`;
   if (!s.alive) return html + `<div class="tt-kia">KIA</div>` + (s.wounds.length ? woundList(s) : '');
   if (s.downed) {
     const cond = s.stabilized ? 'stabilized' : s.bleedRate > 0.0005 ? 'bleeding out' : 'incapacitated';
@@ -247,7 +270,8 @@ function soldierCard(sim: Sim, s: Soldier, shot: ShotSolution | null): string {
 
 function vehicleCard(sim: Sim, v: Vehicle, shot: ShotSolution | null): string {
   const def = VEHICLES[v.kind];
-  let html = `<div class="tt-head ${v.side}"><b>${def.name}</b><span>${v.side === 'blue' ? 'US' : 'GE'}${v.alive ? '' : ' · DESTROYED'}</span></div>`;
+  const burn = v.burning ? ' · <span class="crit">BURNING</span>' : '';
+  let html = `<div class="tt-head ${v.side}"><b>${def.name}</b><span>${v.side === 'blue' ? 'US' : 'GE'}${v.alive ? burn : ' · DESTROYED'}</span></div>`;
   html += `<div class="tt-note">Armor F ${def.armor.front} / S ${def.armor.side} / R ${def.armor.rear} mm</div>`;
   html += `<div class="tt-note">Gun pen ${def.gunPen} mm · ${def.gunRange} m · MG ${def.mgRange} m</div>`;
   if (v.alive) {
@@ -258,7 +282,9 @@ function vehicleCard(sim: Sim, v: Vehicle, shot: ShotSolution | null): string {
         return `<div><span>${c.name}</span>${st}</div>`;
       })
       .join('');
-    html += `<div class="tt-sec">CREW</div><div class="tt-rows">${crew}</div>`;
+    const aliveCount = v.crewIds.filter((id) => sim.soldiers[id].alive).length;
+    html += `<div class="tt-sec">CREW ${aliveCount}/${v.crewIds.length}</div><div class="tt-rows">${crew}</div>`;
+    html += `<div class="tt-note">AP ${v.ammo.ap} · HE ${v.ammo.he}</div>`;
   }
   if (shot) html += shotSection(shot);
   return html;
@@ -269,15 +295,11 @@ const TERRAIN_NAME: Record<TerrainKey, string> = { grass: 'Open ground', road: '
 function terrainCard(sim: Sim, wx: number, wy: number, moveHint: boolean): string {
   const k = sim.map.terrainKeyAt(Math.floor(wx), Math.floor(wy));
   const t: TerrainDef = TERRAIN[k];
-  const cover =
-    k === 'floor'
-      ? 'cover 0% in the open — 50% at windows'
-      : t.coverBehind !== undefined
-        ? `cover ${pct(t.cover)} inside — ${pct(t.coverBehind)} hugging the far side`
-        : `cover ${pct(t.cover)}`;
-  const conceal = t.opacity > 0 ? `blocks sight ${pct(t.opacity)} per tile` : 'no concealment';
+  const lines = k === 'floor' ? formatCoverBreakdownForFloor() : formatCoverBreakdown(t);
   const speed = `move speed ×${(1 / t.moveCost).toFixed(2)}`;
-  let html = `<div class="tt-head"><b>${TERRAIN_NAME[k]}</b></div><div class="tt-rows"><div><span>${cover}</span></div><div><span>${conceal}</span></div><div><span>${speed}</span></div></div>`;
-  if (moveHint) html += `<div class="tt-sec">RIGHT-CLICK TO MOVE HERE</div>`;
+  let html = `<div class="tt-head"><b>${TERRAIN_NAME[k]}</b></div><div class="tt-rows">`;
+  for (const l of lines) html += `<div><span>${l}</span></div>`;
+  html += `<div><span>${speed}</span></div></div>`;
+  if (moveHint) html += `<div class="tt-sec">RIGHT-CLICK MOVE · RIGHT-DRAG FORMATION</div>`;
   return html;
 }

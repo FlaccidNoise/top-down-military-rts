@@ -19,6 +19,7 @@ import { drawOverlays, EventPings } from './ui/overlays';
 import { computeShot, pickAt, Tooltip } from './ui/tooltip';
 import { actionForEvent, formatBinding, loadKeymap, type Keymap } from './ui/keymap';
 import { PauseMenu } from './ui/menu';
+import { coach } from './ui/coach';
 import './ui/ui.css';
 
 const canvas = document.createElement('canvas');
@@ -107,6 +108,10 @@ function selectSquad(id: number): void {
   if (renderer) renderer.selectedVehicle = -1;
   armedOrder = null;
   if (id >= 0) lastTeamId = sim.squads[id].teamIds[0];
+  if (id >= 0 && mode === 'battle') {
+    const t = document.getElementById('squads');
+    if (t) coach.maybeShow('first-squad-select', t, 'Select a squad, then right-click to move. Shift+1-8 arms an order.');
+  }
 }
 
 function toggleSquadSelection(id: number): void {
@@ -118,6 +123,16 @@ function toggleSquadSelection(id: number): void {
   selectedVehicle = -1;
   if (renderer) renderer.selectedVehicle = -1;
   armedOrder = null;
+}
+
+/** Arm an order kind (toggle) and fire first-order-arm coachmark once. */
+function doArmOrder(kind: OrderKind): void {
+  armedOrder = armedOrder === kind ? null : kind;
+  if (armedOrder) {
+    const btn = document.querySelector(`[data-order="${armedOrder}"]`) as HTMLElement | null;
+    const t = btn ?? document.getElementById('squads');
+    if (t) coach.maybeShow('first-order-arm', t, 'Order armed — right-click to issue. Shift+right-click queues a waypoint.');
+  }
 }
 
 function selectVehicle(id: number): void {
@@ -154,7 +169,7 @@ const hud = new Hud({
     else paused = !paused;
   },
   armOrder: (kind) => {
-    armedOrder = armedOrder === kind ? null : kind;
+    doArmOrder(kind);
   },
   deployEmplacement: () => {
     const e = emplacementOf(sim, getPrimary());
@@ -235,6 +250,10 @@ function showContactModal(e: Engagement): void {
       <button id="standdown">Stand down</button>
     </div>`;
   debriefEl.style.display = 'flex';
+  {
+    const fight = document.getElementById('fight');
+    coach.maybeShow('first-engagement', fight ?? debriefEl, 'Staging — review the force comparison, then Attack or Stand down.');
+  }
   document.getElementById('fight')!.onclick = () => startEngagementBattle(e);
   document.getElementById('standdown')!.onclick = () => {
     debriefEl.style.display = 'none';
@@ -404,6 +423,10 @@ canvas.addEventListener('mouseup', (e) => {
     const cell = stratView.cellAtScreen(e.clientX, e.clientY, canvas.width, canvas.height);
     const chit = cell >= 0 ? front.chitAt(cell, 'blue') : undefined;
     selectedChit = chit ? chit.id : -1;
+    if (chit) {
+      const t = document.getElementById('strat-hud');
+      if (t) coach.maybeShow('first-strat-chit', t, 'Chit selected — right-click a cell to move. ✕ on a waypoint cancels it.');
+    }
     dragStart = null;
     boxRect = null;
     return;
@@ -650,7 +673,7 @@ window.addEventListener('keydown', (e) => {
   
   if (action.startsWith('order')) {
     const n = Number(action.slice(5)) - 1;
-    if (n >= 0 && n < ORDER_KINDS.length) armedOrder = armedOrder === ORDER_KINDS[n] ? null : ORDER_KINDS[n];
+    if (n >= 0 && n < ORDER_KINDS.length) doArmOrder(ORDER_KINDS[n]);
   }
 });
 
@@ -689,6 +712,7 @@ function frame(now: number): void {
   hud.root.style.display = mode === 'battle' ? '' : 'none';
   stratHud.root.style.display = mode === 'strategic' ? '' : 'none';
   if (mode === 'strategic') {
+    hud.updateIdle('strategic', selectedChit >= 0 || stratPaused);
     stratHud.update(front, campaign, selectedChit, stratPaused);
     if (!stratPaused && !pendingEngagement && !opEnded) {
       stratAcc += (dtReal / 1000) * SPEEDS[speedIdx];
@@ -814,6 +838,7 @@ function frame(now: number): void {
       }
     }
     hud.update(sim, { selectedSquad: primary, selectedSquads, selectedTeam, selectedVehicle, paused, targetMode, armedOrder, title: battleTitle, keymap: km, objective });
+    hud.updateIdle('battle', targetMode !== '' || selectedSquads.length > 0 || selectedVehicle >= 0 || selectedTeam >= 0 || paused);
 
     if (sim.winner && winnerAt < 0) winnerAt = now;
     if (winnerAt >= 0 && !debriefShown && now - winnerAt > 4000) showDebrief();
