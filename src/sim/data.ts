@@ -106,9 +106,8 @@ export const TEAMS = {
       { role: 'rifleman', weapon: 'garand', ammo: { clip_3006: 8 } },
       { role: 'rifleman', weapon: 'garand', ammo: { clip_3006: 8 } },
       { role: 'rifleman', weapon: 'garand', ammo: { clip_3006: 8 } },
-      { role: 'rifleman', weapon: 'garand', ammo: { clip_3006: 8 } },
-      { role: 'rifleman', weapon: 'garand', ammo: { clip_3006: 18 } }, // grenadier stand-in: 10 extra clips, no grenades this milestone
       { role: 'aidman', weapon: 'carbine', ammo: { mag_carbine: 6 } }, // spec: carries a carbine/pistol, no combat role
+      { role: 'rifleman', weapon: 'garand', ammo: { clip_3006: 18 } }, // grenadier stand-in: 10 extra clips, no grenades this milestone
     ],
   },
   us_m1919_team: {
@@ -158,7 +157,6 @@ export const TEAMS = {
       { role: 'leader', weapon: 'mp40', ammo: { mag_mp40: 5 } },
       { role: 'rifleman', weapon: 'kar98k', ammo: { clip_792: 8, faust: 1 } },
       { role: 'rifleman', weapon: 'kar98k', ammo: { clip_792: 8, faust: 1 } },
-      { role: 'rifleman', weapon: 'kar98k', ammo: { clip_792: 8 } },
       { role: 'rifleman', weapon: 'kar98k', ammo: { clip_792: 8 } },
       { role: 'rifleman', weapon: 'kar98k', ammo: { clip_792: 8 } },
       { role: 'aidman', weapon: 'kar98k', ammo: { clip_792: 4 } }, // Sanitäter: carbine-equivalent, no combat role

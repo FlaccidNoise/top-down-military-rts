@@ -142,6 +142,33 @@ describe('AI commander doctrine', () => {
     expect(mgShotsBeforeFast).toBeGreaterThan(0); // the base of fire actually shot near the post first
   });
 
+  it('a real Gruppe (addSquadFromDef) keeps its MG-Trupp on fire/move orders while the Schützen team maneuvers, over a sustained window', () => {
+    const map = new GameMap(140, 60);
+    const sim = new Sim(map, 300);
+    const post = { x: 120, y: 30 };
+    const squad = sim.addSquadFromDef('red', 'de_gruppe', 40, 30);
+    const [mgTruppId, schuetzenId] = squad.teamIds;
+    sim.addSquad('blue', 'Garrison', [
+      { name: 'B1', weapon: 'garand', x: 122.5, y: 30.5 },
+      { name: 'B2', weapon: 'garand', x: 122.5, y: 31.5 },
+    ]);
+    const commander = new RedCommander({ stance: 'attack', posts: { [squad.id]: post } });
+
+    let sawMgFire = false;
+    let sawSchuetzenManeuver = false;
+    for (let i = 0; i < 6000; i++) {
+      commander.update(sim);
+      sim.step();
+      const mgOrder = sim.teams[mgTruppId].orderState.order;
+      if (mgOrder) expect(mgOrder.kind).not.toBe('fast'); // the MG-Trupp is base of fire — never rushed
+      if (mgOrder?.kind === 'fire') sawMgFire = true;
+      const schOrder = sim.teams[schuetzenId].orderState.order;
+      if (schOrder?.kind === 'move' || schOrder?.kind === 'fast') sawSchuetzenManeuver = true;
+    }
+    expect(sawMgFire).toBe(true); // the MG-Trupp actually reached fire orders, not stuck on move forever
+    expect(sawSchuetzenManeuver).toBe(true); // and the rifle team maneuvered instead of also firing in place
+  });
+
   it('existing campaign battles still produce a winner within 20k ticks', () => {
     const c = newCampaign(1);
     const front = newFront(c, makeDefaultSector());

@@ -74,8 +74,8 @@ describe('unit data referential integrity', () => {
   it('per-squad slot-count sanity', () => {
     const slotCount = (squadKey: keyof typeof SQUADS) =>
       SQUADS[squadKey].teams.reduce((n, teamKey) => n + TEAMS[teamKey].slots.length, 0);
-    expect(slotCount('us_rifle')).toBe(13); // 12 + aidman (Baker)
-    expect(slotCount('de_gruppe')).toBe(10); // 9 + aidman (Schützen)
+    expect(slotCount('us_rifle')).toBe(12);
+    expect(slotCount('de_gruppe')).toBe(9);
   });
 
   it('every EMPLACEMENT_CREW entry names a real, single-team crew squad matching its own side', () => {

@@ -1926,9 +1926,13 @@ export class Sim {
     // serve the emplacement AND fire his sidearm in the same tick. Formal
     // succession (Sim.updateTakeOver) later folds him into the gate above by
     // handing him the served weapon outright.
+    // Gated on state === 'deployed': a packed gun has nothing to serve —
+    // updateEmplacement's fire loop bails on state before ever reaching
+    // pickFirer, so excluding personal fire here too would just strand the
+    // crew unarmed. Packed, everyone fights with whatever's in their hands.
     if (s.inEmplacement >= 0) {
       const emp = this.emplacements[s.inEmplacement];
-      if (emp && (s.weapon === EMPLACEMENTS[emp.kind].weapon || pickFirer(this, emp)?.id === s.id)) return;
+      if (emp && emp.state === 'deployed' && (s.weapon === EMPLACEMENTS[emp.kind].weapon || pickFirer(this, emp)?.id === s.id)) return;
     }
 
     // Order-level fire discipline: sneak and (untriggered) ambush hold fire
@@ -2316,6 +2320,11 @@ export class Sim {
   // successor. Team-scoped ("teammate"), not squad-scoped.
   private triggerSuccession(g: Soldier): void {
     if (g.role !== 'gunner') return;
+    // A packed gun has nothing to serve — no formal succession, the crew
+    // just fights with their personal weapons (the updateSoldier gate above
+    // already stopped excluding them once state !== 'deployed').
+    const emp = g.inEmplacement >= 0 ? this.emplacements[g.inEmplacement] : null;
+    if (emp && emp.state !== 'deployed') return;
     const team = this.teams[g.teamId];
     const rank = (r: Role) => (r === 'assistant' ? 0 : r === 'bearer' ? 1 : 2);
     let best: Soldier | null = null;
@@ -2328,7 +2337,6 @@ export class Sim {
     }
     if (!best) return;
     g.role = 'rifleman'; // vacate the slot
-    const emp = g.inEmplacement >= 0 ? this.emplacements[g.inEmplacement] : null;
     best.task = {
       kind: 'takeOver',
       empId: emp ? emp.id : -1,
@@ -2623,6 +2631,7 @@ export class Sim {
       ]),
       squadLastCasualty: this.squadLastCasualty,
       teamLastCasualty: this.teamLastCasualty,
+      leaderVacantSince: [...this.leaderVacantSince.entries()].sort((a, b) => a[0] - b[0]),
     });
   }
 }

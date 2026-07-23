@@ -295,7 +295,7 @@ describe('teams and data-driven squads', () => {
   it('addSquadFromDef spawns a US rifle squad as 12 men in 2 teams with the roster weapons', () => {
     const sim = new Sim(new GameMap(40, 40), 60);
     const squad = sim.addSquadFromDef('blue', 'us_rifle', 20, 20);
-    expect(squad.soldierIds.length).toBe(13); // 12 + aidman (Baker)
+    expect(squad.soldierIds.length).toBe(12);
     expect(squad.teamIds.length).toBe(2);
     const [able, baker] = squad.teamIds.map((id) => sim.teams[id]);
     expect(able.soldierIds.map((id) => sim.soldiers[id].weapon)).toEqual(TEAMS.us_able.slots.map((sl) => sl.weapon));
@@ -306,7 +306,7 @@ describe('teams and data-driven squads', () => {
   it('addSquadFromDef spawns a German Gruppe as 9 men, MG-Trupp holding 3', () => {
     const sim = new Sim(new GameMap(40, 40), 61);
     const squad = sim.addSquadFromDef('red', 'de_gruppe', 20, 20);
-    expect(squad.soldierIds.length).toBe(10); // 9 + aidman (Schützen)
+    expect(squad.soldierIds.length).toBe(9);
     const mgTrupp = sim.teams[squad.teamIds[0]];
     expect(mgTrupp.soldierIds.length).toBe(3);
   });
@@ -355,6 +355,54 @@ describe('ammo runner + weapon pickup', () => {
 });
 
 describe('casualty chain v2: succession, two-man carry, aidman', () => {
+  it('regression: a gunner killed on a packed (not deployed) emplacement does not disarm the surviving crew', () => {
+    const sim = new Sim(new GameMap(60, 20), 53);
+    const e = sim.addEmplacement('blue', 'mg42_lafette', 10.5, 10.5); // packed by default
+    expect(e.state).toBe('packed');
+    const crew = sim.teams[e.crewTeamId].soldierIds.map((id) => sim.soldiers[id]);
+    const gunner = crew.find((s) => s.role === 'gunner')!;
+    sim.addSquad('red', 'target', [{ name: 'T', weapon: 'kar98k', x: 30.5, y: 10.5, ammo: {} }]);
+    sim.soldiers[sim.soldiers.length - 1].magLeft = 0; // dry: no return fire complicating the read
+
+    gunner.wounds.push({ part: 0, dmg: 100 });
+    gunner.bloodLoss = 1;
+    sim.step(); // kills him this tick
+    expect(gunner.alive).toBe(false);
+    // no formal succession for a packed gun — nothing to serve
+    const survivors = crew.filter((s) => s.id !== gunner.id);
+    expect(survivors.every((s) => s.task === null)).toBe(true);
+
+    let fired = false;
+    for (let i = 0; i < 300 && !fired; i++) {
+      sim.step();
+      if (sim.takeEvents().length > 0) fired = true;
+    }
+    expect(fired).toBe(true); // a surviving crewman still fights with his personal weapon
+  });
+
+  it('leader succession: the highest-xp teammate becomes leader about 10s after the leader dies, not before', () => {
+    const sim = new Sim(new GameMap(20, 20), 52);
+    sim.addSquad('blue', 'a', [
+      { name: 'L', weapon: 'garand', x: 10.5, y: 10.5 },
+      { name: 'Low', weapon: 'garand', x: 10.5, y: 10.5, xp: 2 },
+      { name: 'High', weapon: 'garand', x: 10.5, y: 10.5, xp: 9 },
+    ]);
+    const [leader, low, high] = sim.soldiers;
+    leader.role = 'leader';
+    leader.wounds.push({ part: 0, dmg: 100 });
+    leader.bloodLoss = 1; // kills him on the next physiology tick
+    sim.step();
+    expect(leader.alive).toBe(false);
+
+    for (let i = 0; i < 250; i++) sim.step(); // well short of 10s: no promotion yet
+    expect(high.role).not.toBe('leader');
+    expect(low.role).not.toBe('leader');
+
+    for (let i = 0; i < 100; i++) sim.step(); // past the 10s mark
+    expect(high.role).toBe('leader'); // highest xp, not the lower-xp teammate
+    expect(low.role).not.toBe('leader');
+  });
+
   it('an MG42 gunner killed on an emplacement is served by the assistant within ~10s, with a worse-aim penalty during the interim', () => {
     const sim = new Sim(new GameMap(60, 20), 46);
     const e = sim.addEmplacement('blue', 'mg42_lafette', 10.5, 10.5, 0, 'deployed');
