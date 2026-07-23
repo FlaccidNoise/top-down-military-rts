@@ -322,12 +322,13 @@ function drawTileBase(g: Ctx, map: GameMap, x: number, y: number): void {
       if (roadAt(x + 1, y)) g.fillRect(x + 1 - dv, y + h * 0.5, dv, 0.5);
     }
   } else if (t === 'road') {
-    // road carved over the water band = the bridge (mapgen draws roads last);
-    // cross-pattern lookup reaches the deck center tile of a 3-wide crossing
-    const waterAt = (tx: number, ty: number) => map.inBounds(tx, ty) && map.terrainKeyAt(tx, ty) === 'water';
-    const nsWater = waterAt(x, y - 1) || waterAt(x, y - 2) || waterAt(x, y + 1) || waterAt(x, y + 2);
-    if (nsWater || waterAt(x - 1, y) || waterAt(x - 2, y) || waterAt(x + 1, y) || waterAt(x + 2, y)) {
-      drawBridgeDeck(g, x, y, nsWater, waterAt);
+    // a road tile that overwrote water is a bridge deck (map.bridges, set by
+    // mapgen — NOT re-guessed from proximity, which mislabels roads merely
+    // running alongside a river). Orientation/rails read the real water band.
+    if (map.isBridge(x, y)) {
+      const waterAt = (tx: number, ty: number) => map.inBounds(tx, ty) && map.terrainKeyAt(tx, ty) === 'water';
+      const ew = waterAt(x, y - 1) || waterAt(x, y - 2) || waterAt(x, y + 1) || waterAt(x, y + 2); // band is N→S ⇒ crossing runs E→W
+      drawBridgeDeck(g, x, y, ew, waterAt);
       return;
     }
     g.fillStyle = shade(ROAD, v);
