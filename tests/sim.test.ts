@@ -85,6 +85,90 @@ describe('hedgerow cover and concealment', () => {
   });
 });
 
+describe('fog of war', () => {
+  // dry everyone so the scene stays static (shared-RNG rule: zero ammo, never toggle alive in A/B tests)
+  const dry = (sim: Sim) => {
+    for (const s of sim.soldiers) {
+      s.magLeft = 0;
+      s.ammo = {};
+    }
+  };
+  // vertical double-hedge wall: accumulated opacity 1.0 blocks LOS entirely
+  const walledMap = () => {
+    const m = new GameMap(80, 20);
+    for (let y = 0; y < 20; y++) {
+      m.setTerrain(30, y, 'hedge');
+      m.setTerrain(33, y, 'hedge');
+    }
+    return m;
+  };
+
+  it('knows nothing at battle start; spots an enemy in the open after one sweep', () => {
+    const sim = new Sim(new GameMap(80, 20), 11);
+    sim.addSquad('blue', 'a', [{ name: 'A', weapon: 'garand', x: 5.5, y: 10.5 }]);
+    sim.addSquad('red', 'r', [{ name: 'R', weapon: 'kar98k', x: 55.5, y: 10.5 }]);
+    dry(sim);
+    const [blue, red] = sim.soldiers;
+    expect(sim.soldierVisibleTo('blue', red)).toBe(false); // tick 0: no intel yet
+    expect(sim.soldierVisibleTo('blue', blue)).toBe(true); // friendlies always
+    for (let i = 0; i < 15; i++) sim.step();
+    expect(sim.soldierVisibleTo('blue', red)).toBe(true);
+    expect(sim.spotted.red.has(blue.id)).toBe(true); // intel is symmetric
+  });
+
+  it('a spotted enemy who breaks LOS ghosts at his last-SEEN spot; the ghost expires', () => {
+    const sim = new Sim(walledMap(), 12);
+    sim.addSquad('blue', 'a', [{ name: 'A', weapon: 'garand', x: 5.5, y: 10.5 }]);
+    sim.addSquad('red', 'r', [{ name: 'R', weapon: 'kar98k', x: 20.5, y: 10.5 }]);
+    dry(sim);
+    const red = sim.soldiers[1];
+    for (let i = 0; i < 15; i++) sim.step();
+    expect(sim.soldierVisibleTo('blue', red)).toBe(true);
+    red.x = 45.5; // staged: slips behind the wall between sweeps
+    for (let i = 0; i < 15; i++) sim.step();
+    expect(sim.soldierVisibleTo('blue', red)).toBe(false);
+    const ghost = sim.contacts.blue.get(`s${red.id}`);
+    expect(ghost?.kind).toBe('infantry');
+    expect(ghost!.x).toBeCloseTo(20.5, 5); // where we last SAW him, not where he hides
+    for (let i = 0; i <= 45 * 30 + 15; i++) sim.step();
+    expect(sim.contacts.blue.has(`s${red.id}`)).toBe(false); // expired
+  });
+
+  it('an untriggered ambush behind a hedge is off the intel picture; defend reveals it', () => {
+    const m = new GameMap(80, 20);
+    for (let y = 0; y < 20; y++) m.setTerrain(30, y, 'hedge');
+    const sim = new Sim(m, 13);
+    sim.addSquad('blue', 'obs', [{ name: 'A', weapon: 'garand', x: 5.5, y: 10.5 }]);
+    sim.addSquad('red', 'amb', [{ name: 'R', weapon: 'kar98k', x: 60.5, y: 10.5 }]); // 55m: beyond the 40m kar98k ambush trigger
+    dry(sim);
+    const amb = sim.soldiers[1];
+    sim.orderTeam(amb.teamId, { kind: 'ambush', x: 60.5, y: 10.5 });
+    for (let i = 0; i < 15; i++) sim.step();
+    expect(sim.teams[amb.teamId].orderState.order?.kind).toBe('ambush'); // guard: untriggered
+    expect(sim.soldierVisibleTo('blue', amb)).toBe(false); // conceal 0.5, holding fire
+    sim.orderTeam(amb.teamId, { kind: 'defend', x: 60.5, y: 10.5 });
+    for (let i = 0; i < 15; i++) sim.step();
+    expect(sim.soldierVisibleTo('blue', amb)).toBe(true);
+  });
+
+  it('an unseen corpse stays hidden until a friendly gains LOS, then is known for good', () => {
+    const sim = new Sim(walledMap(), 14);
+    sim.addSquad('blue', 'a', [{ name: 'A', weapon: 'garand', x: 5.5, y: 10.5 }]);
+    sim.addSquad('red', 'r', [{ name: 'R', weapon: 'kar98k', x: 45.5, y: 10.5 }]);
+    dry(sim);
+    const [blue, red] = sim.soldiers;
+    red.alive = false; // staged death behind the wall (single scenario, not an RNG A/B)
+    for (let i = 0; i < 15; i++) sim.step();
+    expect(sim.soldierVisibleTo('blue', red)).toBe(false);
+    blue.x = 40.5; // walks past the wall: corpse in plain sight
+    for (let i = 0; i < 15; i++) sim.step();
+    expect(sim.soldierVisibleTo('blue', red)).toBe(true);
+    blue.x = 5.5; // leaves again — the find is permanent
+    for (let i = 0; i < 15; i++) sim.step();
+    expect(sim.soldierVisibleTo('blue', red)).toBe(true);
+  });
+});
+
 describe('pathfinding', () => {
   it('routes through the door, not through walls or windows', () => {
     const plan = generateMap(1);

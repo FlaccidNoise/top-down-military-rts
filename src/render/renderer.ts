@@ -1,5 +1,5 @@
 import type { Emplacement } from '../sim/emplacement';
-import type { ShotEvent, Sim, Soldier, Vehicle } from '../sim/sim';
+import type { ShotEvent, Side, Sim, Soldier, Vehicle } from '../sim/sim';
 import type { Camera } from './camera';
 import { DecalLayer } from './decals';
 import { bandFor, getSprite, SPRITE_MIN_SCALE, SPRITE_SPAN, WALK_FRAMES, type Pose } from './dudes';
@@ -38,6 +38,10 @@ interface Plane {
 const PLANE_MS = 2600;
 
 const TEAM = { blue: '#5b9bd5', red: '#d05c50' } as const;
+
+// The human player is always US/blue (same convention as hud.ts and
+// tooltip.ts); fog of war is rendered from this side's knowledge.
+const PLAYER_SIDE: Side = 'blue';
 
 export class Renderer {
   private terrain: TerrainLayer;
@@ -96,22 +100,52 @@ export class Renderer {
     this.roofs.update(this.sim, cam, dt);
     this.roofs.drawShadows(ctx, cam, cw, ch);
 
-    for (const v of this.sim.vehicles) if (!v.alive) this.drawVehicle(ctx, cam, v, now, cw, ch);
+    // Fog of war: everything below asks the sim's *VisibleTo helpers from the
+    // player's side — the renderer never re-derives vision.
+    const vis = (s: Soldier) => this.sim.soldierVisibleTo(PLAYER_SIDE, s);
+    const visV = (v: Vehicle) => this.sim.vehicleVisibleTo(PLAYER_SIDE, v);
+    for (const v of this.sim.vehicles) if (!v.alive && visV(v)) this.drawVehicle(ctx, cam, v, now, cw, ch);
     if (cam.scale < SPRITE_MIN_SCALE) {
-      for (const s of this.sim.soldiers) if (s.inVehicle < 0) this.drawDot(ctx, cam, s, selectedSquad, cw, ch);
+      for (const s of this.sim.soldiers) if (s.inVehicle < 0 && vis(s)) this.drawDot(ctx, cam, s, selectedSquad, cw, ch);
     } else {
       // dead below downed below the living
-      for (const s of this.sim.soldiers) if (!s.alive && s.inVehicle < 0) this.drawSoldier(ctx, cam, s, selectedSquad, dt, cw, ch);
-      for (const s of this.sim.soldiers) if (s.alive && s.downed && s.inVehicle < 0) this.drawSoldier(ctx, cam, s, selectedSquad, dt, cw, ch);
-      for (const s of this.sim.soldiers) if (s.alive && !s.downed && s.inVehicle < 0) this.drawSoldier(ctx, cam, s, selectedSquad, dt, cw, ch);
+      for (const s of this.sim.soldiers) if (!s.alive && s.inVehicle < 0 && vis(s)) this.drawSoldier(ctx, cam, s, selectedSquad, dt, cw, ch);
+      for (const s of this.sim.soldiers) if (s.alive && s.downed && s.inVehicle < 0 && vis(s)) this.drawSoldier(ctx, cam, s, selectedSquad, dt, cw, ch);
+      for (const s of this.sim.soldiers) if (s.alive && !s.downed && s.inVehicle < 0 && vis(s)) this.drawSoldier(ctx, cam, s, selectedSquad, dt, cw, ch);
     }
-    for (const v of this.sim.vehicles) if (v.alive) this.drawVehicle(ctx, cam, v, now, cw, ch);
-    for (const e of this.sim.emplacements) this.drawEmplacement(ctx, cam, e, selectedSquad, cw, ch);
+    for (const v of this.sim.vehicles) if (v.alive && visV(v)) this.drawVehicle(ctx, cam, v, now, cw, ch);
+    for (const e of this.sim.emplacements) if (this.sim.emplacementVisibleTo(PLAYER_SIDE, e)) this.drawEmplacement(ctx, cam, e, selectedSquad, cw, ch);
 
     this.drawFire(ctx, cam, now, cw, ch);
     this.roofs.drawTops(ctx, cam, cw, ch);
+    this.drawContacts(ctx, cam, cw, ch);
     this.drawPlanes(ctx, cam, now, cw, ch);
     this.drawBarrageMarks(ctx, cam, now, cw, ch);
+  }
+
+  // Last-known ghosts: intel markers, not world objects — drawn above roofs,
+  // fading with age until the contact expires or is resolved.
+  private drawContacts(ctx: CanvasRenderingContext2D, cam: Camera, cw: number, ch: number): void {
+    for (const c of this.sim.contacts[PLAYER_SIDE].values()) {
+      const age = (this.sim.tick - c.tick) / (45 * 30);
+      const alpha = 0.55 * (1 - age);
+      if (alpha <= 0) continue;
+      const [x, y] = cam.worldToScreen(c.x, c.y, cw, ch);
+      if (x < -20 || y < -20 || x > cw + 20 || y > ch + 20) continue;
+      const r = (c.kind === 'vehicle' ? 2.4 : 1.1) * cam.scale;
+      ctx.strokeStyle = `rgba(208, 92, 80, ${alpha})`;
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = `rgba(208, 92, 80, ${alpha})`;
+      ctx.font = `${Math.max(9, cam.scale * 0.9)}px system-ui, sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('?', x, y);
+    }
   }
 
   // Pulsing dashed amber — shared style for call-in target markers.

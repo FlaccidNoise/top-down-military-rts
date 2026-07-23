@@ -329,22 +329,43 @@ export function sightBetween(sim: Sim, x0: number, y0: number, x1: number, y1: n
 }
 
 // Sight to a soldier: sightBetween plus the spotting rule that completes the
-// sneak order — a sneaking target with >= 0.5 accumulated concealment (one
-// hedge, two woods tiles, or a smoke puff on the ray) is unseen beyond 20m.
-// Deterministic, no RNG. Every soldier-target sense (acquire, live fire,
-// ambush trigger, honest vision) routes through this; sight to a map point
-// stays on sightBetween.
+// sneak and ambush orders — a hiding target (sneaking, or lying in untriggered
+// ambush) with >= 0.5 accumulated concealment (one hedge, two woods tiles, or
+// a smoke puff on the ray) is unseen beyond 20m. An ambush trigger converts
+// the order to defend, so the first volley reveals the position. Deterministic,
+// no RNG. Every soldier-target sense (acquire, live fire, ambush trigger,
+// honest vision, fog-of-war spotting) routes through this; sight to a map
+// point stays on sightBetween.
 export function sightToSoldier(sim: Sim, x0: number, y0: number, t: Soldier): LosResult {
   const sight = sightBetween(sim, x0, y0, t.x, t.y);
+  const order = sim.teams[t.teamId].orderState.order;
   if (
     sight.visible &&
     sight.conceal >= 0.5 &&
-    sim.teams[t.teamId].orderState.order?.kind === 'sneak' &&
+    (order?.kind === 'sneak' || order?.kind === 'ambush') &&
     Math.hypot(t.x - x0, t.y - y0) > 20
   ) {
     return { visible: false, cover: 0, conceal: sight.conceal, concealed: true };
   }
   return sight;
+}
+
+// --- Fog of war: per-side spotting (the intel layer) ---
+// visibleEnemies (orders.ts) answers "who can we engage right now"
+// (weapon-range-bound, drives the danger model); this layer answers "who do
+// we know about" (SPOT_RANGE-bound, drives what the player and future AI
+// intel see). Both look through sightToSoldier, so concealment hides from
+// intel too. Recomputed on a cadence in step(); deterministic (no RNG) and
+// never read back by sim behavior.
+const SPOT_INTERVAL = 15; // ticks: 0.5 s between spotting sweeps
+const SPOT_RANGE = 200; // m — beyond every small-arms range
+const CONTACT_TTL = 45 * 30; // ticks a last-known ghost lingers
+
+export interface Contact {
+  kind: 'infantry' | 'vehicle';
+  x: number;
+  y: number;
+  tick: number;
 }
 
 export class Sim {
@@ -357,6 +378,16 @@ export class Sim {
   vehicles: Vehicle[] = [];
   emplacements: Emplacement[] = [];
   winner: Side | null = null;
+  // fog of war (see the module comment above Contact). fowDisabled is a
+  // dev/staging escape hatch read ONLY by the *VisibleTo helpers, never by
+  // step() — flipping it can never change sim outcomes.
+  fowDisabled = false;
+  // spotted maps carry the last position a spotter actually saw, so a lost
+  // contact ghosts where he was last SEEN, not where he secretly is now
+  spotted: Record<Side, Map<number, { x: number; y: number }>> = { blue: new Map(), red: new Map() };
+  spottedVehicles: Record<Side, Map<number, { x: number; y: number }>> = { blue: new Map(), red: new Map() };
+  seenStatic: Record<Side, Set<string>> = { blue: new Set(), red: new Set() }; // corpses s{id}, wrecks v{id}, emplacements e{id} — permanent once seen
+  contacts: Record<Side, Map<string, Contact>> = { blue: new Map(), red: new Map() };
   barragesLeft: Record<Side, number> = { blue: 2, red: 1 };
   airstrikesLeft: Record<Side, number> = { blue: 1, red: 0 };
   startStrength: Record<Side, number> = { blue: 0, red: 0 };
@@ -1342,6 +1373,10 @@ export class Sim {
     }
     for (const s of this.soldiers) {
       if (s.alive) this.updateSoldier(s);
+    }
+    if (this.tick % SPOT_INTERVAL === 0) {
+      this.updateSpotting('blue');
+      this.updateSpotting('red');
     }
     let blue = 0;
     let red = 0;
@@ -2421,6 +2456,105 @@ export class Sim {
       if (!best || c.xp > best.xp) best = c;
     }
     if (best) best.role = 'leader';
+  }
+
+  // Any living un-downed soldier or alive vehicle of `side` with LOS to the
+  // point within SPOT_RANGE. (friendlyHasLos in emplacement.ts is the
+  // unlimited-range mortar-spotting rule — different semantics, not this.)
+  // Public: main.ts gates enemy unit-event pings on it.
+  sideSeesPoint(side: Side, x: number, y: number): boolean {
+    for (const s of this.soldiers) {
+      if (!s.alive || s.downed || s.side !== side || s.inVehicle >= 0) continue;
+      if (Math.hypot(s.x - x, s.y - y) <= SPOT_RANGE && sightBetween(this, s.x, s.y, x, y).visible) return true;
+    }
+    for (const v of this.vehicles) {
+      if (!v.alive || v.side !== side) continue;
+      if (Math.hypot(v.x - x, v.y - y) <= SPOT_RANGE && sightBetween(this, v.x, v.y, x, y).visible) return true;
+    }
+    return false;
+  }
+
+  private updateSpotting(side: Side): void {
+    const enemySide: Side = side === 'blue' ? 'red' : 'blue';
+    const spotters: { x: number; y: number }[] = [];
+    for (const s of this.soldiers) {
+      if (s.alive && !s.downed && s.side === side && s.inVehicle < 0) spotters.push(s);
+    }
+    for (const v of this.vehicles) if (v.alive && v.side === side) spotters.push(v);
+    const spotted = this.spotted[side];
+    const spottedV = this.spottedVehicles[side];
+    const seen = this.seenStatic[side];
+    const contacts = this.contacts[side];
+
+    for (const t of this.soldiers) {
+      if (t.side !== enemySide) continue;
+      const key = `s${t.id}`;
+      if (t.alive && t.inVehicle >= 0) {
+        spotted.delete(t.id); // aboard: covered by his vehicle's visibility
+      } else if (t.alive) {
+        const now = spotters.some((p) => Math.hypot(t.x - p.x, t.y - p.y) <= SPOT_RANGE && sightToSoldier(this, p.x, p.y, t).visible);
+        if (now) {
+          spotted.set(t.id, { x: t.x, y: t.y });
+          contacts.delete(key);
+        } else {
+          const last = spotted.get(t.id);
+          if (last) {
+            spotted.delete(t.id);
+            contacts.set(key, { kind: 'infantry', x: last.x, y: last.y, tick: this.tick });
+          }
+        }
+      } else {
+        spotted.delete(t.id);
+        if (!seen.has(key) && this.sideSeesPoint(side, t.x, t.y)) seen.add(key);
+        if (seen.has(key)) contacts.delete(key); // corpse found resolves the ghost
+      }
+    }
+
+    for (const v of this.vehicles) {
+      if (v.side !== enemySide) continue;
+      const key = `v${v.id}`;
+      if (v.alive) {
+        if (this.sideSeesPoint(side, v.x, v.y)) {
+          spottedV.set(v.id, { x: v.x, y: v.y });
+          contacts.delete(key);
+        } else {
+          const last = spottedV.get(v.id);
+          if (last) {
+            spottedV.delete(v.id);
+            contacts.set(key, { kind: 'vehicle', x: last.x, y: last.y, tick: this.tick });
+          }
+        }
+      } else {
+        spottedV.delete(v.id);
+        if (!seen.has(key) && this.sideSeesPoint(side, v.x, v.y)) seen.add(key);
+        if (seen.has(key)) contacts.delete(key);
+      }
+    }
+
+    for (const e of this.emplacements) {
+      if (e.side === enemySide && !seen.has(`e${e.id}`) && this.sideSeesPoint(side, e.x, e.y)) seen.add(`e${e.id}`);
+    }
+
+    for (const [k, c] of contacts) {
+      if (this.tick - c.tick > CONTACT_TTL) contacts.delete(k);
+    }
+  }
+
+  // The UI's only fog-of-war surface — renderer, pickAt, and HUD all ask
+  // these; none of them re-derive vision.
+  soldierVisibleTo(side: Side, s: Soldier): boolean {
+    if (this.fowDisabled || s.side === side) return true;
+    if (s.inVehicle >= 0) return false;
+    return s.alive ? this.spotted[side].has(s.id) : this.seenStatic[side].has(`s${s.id}`);
+  }
+
+  vehicleVisibleTo(side: Side, v: Vehicle): boolean {
+    if (this.fowDisabled || v.side === side) return true;
+    return v.alive ? this.spottedVehicles[side].has(v.id) : this.seenStatic[side].has(`v${v.id}`);
+  }
+
+  emplacementVisibleTo(side: Side, e: Emplacement): boolean {
+    return this.fowDisabled || e.side === side || this.seenStatic[side].has(`e${e.id}`);
   }
 
   // Public: omnidirectional summary of the cover available at a spot — the

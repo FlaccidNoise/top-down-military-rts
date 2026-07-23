@@ -146,15 +146,15 @@ export class Hud {
     const secs = Math.floor(sim.tick / 30);
     const clock = `T+${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`;
     let us = 0;
-    let ge = 0;
+    let ge = 0; // fog of war: only the enemies we currently see
     for (const s of sim.soldiers) {
       if (!s.alive || s.downed) continue;
       if (s.side === 'blue') us++;
-      else ge++;
+      else if (sim.soldierVisibleTo('blue', s)) ge++;
     }
     this.q('#tb-title').innerHTML = `<b>${st.title}</b> · ${clock}${st.paused ? ' <span class="paused">⏸ PAUSED</span>' : ''}`;
     this.q('#tb-strength').innerHTML =
-      `<span class="us">US ${us}</span><div class="ratio"><i style="flex:${us};background:#5b9bd5"></i><i style="flex:${ge};background:#d05c50"></i></div><span class="ge">GE ${ge}</span>`;
+      `<span class="us">US ${us}</span><div class="ratio"><i style="flex:${us};background:#5b9bd5"></i><i style="flex:${ge};background:#d05c50"></i></div><span class="ge">GE ${sim.fowDisabled ? '' : '~'}${ge}</span>`;
 
     const btn = (act: string) => this.q(`[data-act="${act}"]`) as HTMLButtonElement;
     const barrage = btn('barrage');

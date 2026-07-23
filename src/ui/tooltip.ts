@@ -19,7 +19,7 @@ export function pickAt(sim: Sim, cam: Camera, sx: number, sy: number, cw: number
   let da = r;
   let dd = r;
   for (const s of sim.soldiers) {
-    if (s.inVehicle >= 0) continue;
+    if (s.inVehicle >= 0 || !sim.soldierVisibleTo('blue', s)) continue; // fog of war: can't probe what isn't seen
     const d = Math.hypot(s.x - wx, s.y - wy);
     if (s.alive) {
       if (d < da) {
@@ -33,6 +33,7 @@ export function pickAt(sim: Sim, cam: Camera, sx: number, sy: number, cw: number
   }
   if (bestAlive) return { kind: 'soldier', s: bestAlive };
   for (const v of sim.vehicles) {
+    if (!sim.vehicleVisibleTo('blue', v)) continue;
     if (Math.hypot(v.x - wx, v.y - wy) < 2.8) return { kind: 'vehicle', v };
   }
   if (bestDead) return { kind: 'soldier', s: bestDead };
