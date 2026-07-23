@@ -2533,6 +2533,7 @@ export class Sim {
       const key = `s${t.id}`;
       if (t.alive && t.inVehicle >= 0) {
         spotted.delete(t.id); // aboard: covered by his vehicle's visibility
+        contacts.delete(key); // and any foot-position ghost is moot
       } else if (t.alive) {
         const now = spotters.some((p) => Math.hypot(t.x - p.x, t.y - p.y) <= SPOT_RANGE && sightToSoldier(this, p.x, p.y, t).visible);
         if (now) {
@@ -2764,10 +2765,11 @@ export class Sim {
   // pain, suppression, nerves, and stamina all degrade melee too.
   private meleeStrike(s: Soldier, t: Soldier): void {
     const w: WeaponDef = WEAPONS[s.weapon];
-    const smgFire = MELEE_SMG.has(s.weapon) && s.magLeft > 0;
+    const isSmg = MELEE_SMG.has(s.weapon);
+    const smgFire = isSmg && s.magLeft > 0;
     const clumsy = !!w.heat || w.pen !== undefined || !!w.arc; // an MG42 makes a poor club
-    const base = smgFire ? 0.7 : clumsy ? 0.35 : MELEE_SMG.has(s.weapon) ? 0.45 : 0.55;
-    const dmg: [number, number] = smgFire ? w.damage : clumsy || MELEE_SMG.has(s.weapon) ? [20, 50] : [30, 70];
+    const base = smgFire ? 0.7 : clumsy ? 0.35 : isSmg ? 0.45 : 0.55;
+    const dmg: [number, number] = smgFire ? w.damage : clumsy || isSmg ? [20, 50] : [30, 70];
     const hit = this.rng.next() < Math.min(0.9, Math.max(0.05, base * this.aimFactor(s)));
     let kill = false;
     if (hit) kill = this.wound(t, this.rng.range(dmg[0], dmg[1]));

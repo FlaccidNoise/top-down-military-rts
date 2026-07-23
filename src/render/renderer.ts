@@ -134,6 +134,7 @@ export class Renderer {
   // Last-known ghosts: intel markers, not world objects — drawn above roofs,
   // fading with age until the contact expires or is resolved.
   private drawContacts(ctx: CanvasRenderingContext2D, cam: Camera, cw: number, ch: number): void {
+    if (this.sim.fowDisabled) return; // ?fow=0 shows real units — stale ghosts would just overdraw them
     for (const c of this.sim.contacts[PLAYER_SIDE].values()) {
       const age = (this.sim.tick - c.tick) / (45 * 30);
       const alpha = 0.55 * (1 - age);
