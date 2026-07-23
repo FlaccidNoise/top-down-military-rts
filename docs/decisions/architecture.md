@@ -38,6 +38,18 @@
 **Alternatives considered:** Pure per-frame procedural vector (rejected: pays path cost every frame, ~10k ops at 250 agents); offline PNG sprite atlases (rejected: wastes top-down's free rotation, combinatorial atlas across zoom tiers, pipeline friction per tweak).
 ---
 
+### [APPROVED] Fidelity direction: "Muted Normandy, one sun" (builds on the art-direction framework above)
+**Date:** 2026-07-23
+**Context:** Full visual fidelity pass. Game reads "hobby project": kelly-green toy palette, four visual defect classes catalogued in docs/plans/2026-07-23-visual-fidelity-audit.md (flat blob soldiers, tile-quantized terrain, primitive vehicles, thin effects + an unrendered smoke mechanic). Framework (bakes, halos, dot LOD, chunked terrain) stays; this decision fixes what the bakes *contain*.
+**Decision — the five rules every render surface follows:**
+1. **Palette: desaturated Normandy.** Mossy greens, wet-earth browns, slate/terracotta roofs, US olive-drab vs German feldgrau. Saturation ceiling ~35% for ground, units read by VALUE separation (light torso / dark limbs / distinct helmet), not hue. Hot colors reserved for fire, tracers, blood, and UI accents — they pop only because the world is muted.
+2. **One sun: NW, ~40° elevation.** Every shadow falls SE with shared offset direction (shared `src/render/light.ts` constants). Buildings, trees, hedges, vehicles, soldiers (contact ellipse) all comply; AO darkening at bases of anything vertical (walls, hedges, tree trunks). Overcast-soft edges — no hard black shadows.
+3. **Texture language: 2-octave value noise + macro patches, never grid-visible.** Detail noise stays sub-tile; a second 24–32m octave drives patch/hue drift so no two fields/lawns match. All texture lives in the chunk/sprite bakes — frame loop stays drawImage + transforms.
+4. **Effects language: hot-brief-flash, cool-lingering-smoke, earth-toned scars.** Muzzle = oriented 60ms star; explosions = fireball flash + dirt ejecta + rising grey smoke column + lingering dust; screen smoke (sim.smoke) = drifting layered puffs; impacts kick dust. Craters = earth-rim + dark center (replace charcoal starbursts). Particles capped and short-lived; wrecks burn persistently (cheap flicker + puffs).
+5. **Silhouette discipline (legibility pillar unchanged).** Crisp unit outlines, faction identity via helmet/gear shapes baked per side, team halo becomes zoom-attenuated rim (strong at 6/12 bands, whisper at 48), max ONE ring per soldier on top of it (selection > suppression). Dot LOD below 5 px/m untouched.
+**Alternatives considered:** (A) Painterly Close Combat ground — rejected: multi-octave painterly washes in Canvas 2D trend muddy, fights the legibility pillar, hardest to keep consistent across procedural surfaces. (B) Crisp flat Door Kickers vector — rejected: cheapest and cleanest but reads "tactics toy", wastes the sim's grit (persistent scars, casualty drama); its silhouette discipline is adopted into rule 5.
+---
+
 ### [APPROVED] Strategic campaign layer — front commander, universal persistence, cell-grid sector
 **Date:** 2026-07-22
 **Context:** Design brainstorm replacing the linear 3-battle placeholder campaign. Full design: docs/specs/2026-07-22-strategic-campaign.md.
