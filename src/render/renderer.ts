@@ -81,6 +81,10 @@ export class Renderer {
 
   addMeleeEvents(events: MeleeEvent[], now: number): void {
     for (const e of events) {
+      // fog of war: no fleck or blood smear at a fight the player can't see
+      const seen = this.sim.soldierVisibleTo(PLAYER_SIDE, this.sim.soldiers[e.attackerId]) ||
+        this.sim.soldierVisibleTo(PLAYER_SIDE, this.sim.soldiers[e.victimId]);
+      if (!seen) continue;
       this.meleeFx.push({ ...e, at: now });
       if (e.hit) this.decals.smear(e.x, e.y, Math.random() * Math.PI * 2);
     }
