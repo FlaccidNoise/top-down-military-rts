@@ -198,7 +198,8 @@ function shotSection(shot: ShotSolution): string {
 
 function soldierCard(sim: Sim, s: Soldier, shot: ShotSolution | null): string {
   const stars = s.xp > 0 ? ' · ' + '★'.repeat(Math.min(s.xp, 5)) : '';
-  let html = `<div class="tt-head ${s.side}"><b>${s.name}</b><span>${WEAPONS[s.weapon].name}${stars}</span></div>`;
+  const reserve = Object.values(s.ammo).reduce((a, n) => a + (n ?? 0), 0);
+  let html = `<div class="tt-head ${s.side}"><b>${s.name}</b><span>${WEAPONS[s.weapon].name} ${s.magLeft}+${reserve}${stars}</span></div>`;
   if (!s.alive) return html + `<div class="tt-kia">KIA</div>` + (s.wounds.length ? woundList(s) : '');
   if (s.downed) {
     const cond = s.stabilized ? 'stabilized' : s.bleedRate > 0.0005 ? 'bleeding out' : 'incapacitated';
