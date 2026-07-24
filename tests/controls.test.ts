@@ -30,12 +30,22 @@ describe('keymap', () => {
       expect(km.version).toBe(0);
     });
 
-    it('WASD pan defaults own A; airstrike moved to E (no battle-context clash)', () => {
+    it('WASD pan defaults own A; airstrike on V (grouped with barrage B, away from WASD)', () => {
       expect(DEFAULTS.panLeft).toEqual({ code: 'KeyA' });
-      expect(DEFAULTS.airstrike).toEqual({ code: 'KeyE' });
+      expect(DEFAULTS.airstrike).toEqual({ code: 'KeyV' });
       const battleIds = (Object.keys(CONTEXT) as ActionId[]).filter((id) => CONTEXT[id] === 'battle');
       const keys = battleIds.map((id) => `${DEFAULTS[id].code}|${DEFAULTS[id].shift ?? false}`);
       expect(new Set(keys).size).toBe(keys.length);
+    });
+
+    it('aiControl defaults to P and clashes with no other battle-context binding', () => {
+      expect(DEFAULTS.aiControl).toEqual({ code: 'KeyP' });
+      const shift = DEFAULTS.aiControl.shift ?? false;
+      for (const id of Object.keys(DEFAULTS) as ActionId[]) {
+        if (CONTEXT[id] !== 'battle' || id === 'aiControl') continue;
+        const b = DEFAULTS[id];
+        expect(b.code === 'KeyP' && (b.shift ?? false) === shift).toBe(false);
+      }
     });
 
     it('saveKeymap + loadKeymap round-trips custom bindings', () => {

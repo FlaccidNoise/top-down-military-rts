@@ -3,3 +3,5 @@ dist/
 .screenshots/
 .claude/worktrees/
 .playwright-mcp/
+.DS_Store
+*.log

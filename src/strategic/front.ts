@@ -190,10 +190,6 @@ export function dijkstra(sector: SectorMap, from: number): Dijkstra {
   return { dist, prev };
 }
 
-export function allPathTimes(sector: SectorMap, from: number): Float64Array {
-  return dijkstra(sector, from).dist;
-}
-
 // Path reconstruction on a precomputed Dijkstra tree: same output contract
 // as findPath (sequence excluding `from`, [] if equal, null if unreachable).
 export function pathFromTree(tree: Dijkstra, from: number, to: number): number[] | null {

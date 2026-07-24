@@ -127,7 +127,7 @@ export function makeStrategicBattle(
   front: Front,
   e: Engagement,
   seed: number,
-): { sim: Sim; commander: RedCommander; name: string; companyIndex: number } {
+): { sim: Sim; commander: RedCommander; blueCommander: RedCommander; name: string; companyIndex: number } {
   const attacker = front.chits.find((ch) => ch.id === e.attackerId)!;
   const defender = front.chits.find((ch) => ch.id === e.defenderId)!;
   const attackerSide = attacker.side;
@@ -140,6 +140,7 @@ export function makeStrategicBattle(
   const yLo = 4;
   const yHi = plan.map.h - 5;
   const commanderPosts: Record<number, Vec> = {};
+  const bluePosts: Record<number, Vec> = {};
 
   // --- Field attacker ---
   if (attackerSide === 'blue') {
@@ -169,6 +170,8 @@ export function makeStrategicBattle(
       );
       const squad = sim.addSquadFromDef('blue', c.squads[si].def, anchor.x, anchor.y, roster);
       squad.name = c.squads[si].name;
+      const nearestObj = plan.objectives.reduce((best, o) => distSq(anchor, o) < distSq(anchor, best) ? o : best, plan.objectives[0]);
+      bluePosts[squad.id] = nearestObj;
       rosters.push(teamRosters.flat());
     });
     wireBonds(sim, rosters);
@@ -330,6 +333,7 @@ export function makeStrategicBattle(
       );
       const squad = sim.addSquadFromDef('blue', c.squads[si].def, anchor.x, anchor.y, roster);
       squad.name = c.squads[si].name;
+      bluePosts[squad.id] = anchor;
       defRosters.push(teamRosters.flat());
     });
     wireBonds(sim, defRosters);
@@ -343,9 +347,15 @@ export function makeStrategicBattle(
   if (blueChit.companyIndex < 0) {
     throw new Error(`makeStrategicBattle: blue chit '${blueChit.name}' has no campaign company`);
   }
+  const blueCommander = new RedCommander({
+    side: 'blue',
+    stance: attackerSide === 'blue' ? 'attack' : 'defend',
+    posts: bluePosts,
+  });
   return {
     sim,
-    commander: new RedCommander({ stance, posts: commanderPosts }),
+    commander: new RedCommander({ side: 'red', stance, posts: commanderPosts }),
+    blueCommander,
     name: `${defender.name} at (${x}, ${y})`,
     companyIndex: blueChit.companyIndex,
   };
@@ -369,6 +379,29 @@ export function retreat(front: Front, chit: Chit): void {
       return;
     }
   }
+  // Blue rosters are persistent named men (an all-wounded company already
+  // stays on the map at strength 0 to recover): with no adjacent escape the
+  // company infiltrates back to the nearest owned cell within 8 cells rather
+  // than being overrun. Red chits are attrition counters and still die here.
+  if (chit.side === 'blue') {
+    let best = -1;
+    let bestD = Infinity;
+    for (let i = 0; i < front.sector.cells.length; i++) {
+      const cell = front.sector.cells[i];
+      if (cell.owner !== 'blue' || cell.terrain === 'river' || front.chitAt(i)) continue;
+      const a = cellXY(front.sector, chit.cell);
+      const b = cellXY(front.sector, i);
+      const d = Math.abs(a.x - b.x) + Math.abs(a.y - b.y);
+      if (d <= 8 && (d < bestD || (d === bestD && i < best))) {
+        best = i;
+        bestD = d;
+      }
+    }
+    if (best >= 0) {
+      chit.cell = best;
+      return;
+    }
+  }
   chit.strength = 0; // nowhere to go: overrun
 }
 
@@ -377,7 +410,7 @@ export function applyEngagementOutcome(
   front: Front,
   e: Engagement,
   sim: Sim,
-): { record: BattleRecord; redLosses: number; attackerLosses: number; cellTaken: boolean } {
+): { record: BattleRecord; redLosses: number; cellTaken: boolean } {
   const attacker = front.chits.find((ch) => ch.id === e.attackerId)!;
   const defender = front.chits.find((ch) => ch.id === e.defenderId)!;
   // record.won is BLUE-perspective (the debrief is the player's after-action
@@ -385,8 +418,10 @@ export function applyEngagementOutcome(
   const attackerWon = sim.winner === attacker.side;
   const record = applyBattleResults(c, sim, sim.winner === 'blue');
   const redLosses = sim.soldiers.filter((s) => s.side === 'red' && (!s.alive || s.downed)).length;
-  const attackerLosses = sim.soldiers.filter((s) => s.side === attacker.side && (!s.alive || s.downed)).length;
-  defender.strength = Math.max(0, defender.strength - redLosses);
+  // Attrite whichever chit is RED — attacker or defender. (Blue chit
+  // strength is recomputed from the roster by syncStrengths below.)
+  const redChit = attacker.side === 'red' ? attacker : defender;
+  redChit.strength = Math.max(0, redChit.strength - redLosses);
   let cellTaken = false;
   if (attackerWon) {
     if (defender.strength > 0) retreat(front, defender);
@@ -397,7 +432,7 @@ export function applyEngagementOutcome(
     retreat(front, attacker);
   }
   syncStrengths(c, front);
-  return { record, redLosses, attackerLosses, cellTaken };
+  return { record, redLosses, cellTaken };
 }
 
 // Resolve an engagement without running a Sim — coarse Lanchester-style
@@ -406,7 +441,7 @@ export function resolveCoarse(
   c: Campaign,
   front: Front,
   e: Engagement,
-): { record: BattleRecord; attackerLosses: number; defenderLosses: number } {
+): { record: BattleRecord; attackerWon: boolean } {
   const attacker = front.chits.find((ch) => ch.id === e.attackerId)!;
   const defender = front.chits.find((ch) => ch.id === e.defenderId)!;
   const seed = (c.seed ^ (front.clockMin * 7919 + e.cell)) >>> 0; // per-campaign salt: wars differ across campaigns
@@ -458,7 +493,7 @@ export function resolveCoarse(
   }
   syncStrengths(c, front);
 
-  return { record, attackerLosses: atkLosses, defenderLosses: defLosses };
+  return { record, attackerWon: attackerWins };
 }
 
 function applyCoarseBlueLosses(c: Campaign, chit: Chit, lossCount: number, rng: Rng, record: BattleRecord): void {

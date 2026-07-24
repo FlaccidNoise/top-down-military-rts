@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { advanceDays, fillReplacements, newCampaign, squadMembers } from '../src/campaign/campaign';
-import { Front, OP_START_MIN, REINFORCE_CYCLE_DAYS, REINFORCE_PER_COMPANY, operationStatus, findPath } from '../src/strategic/front';
+import { advanceDays, fillReplacements, newCampaign } from '../src/campaign/campaign';
+import { Front, REINFORCE_CYCLE_DAYS, REINFORCE_PER_COMPANY, operationStatus } from '../src/strategic/front';
 import { cellIndex, parseSector, makeDefaultSector, cellXY } from '../src/strategic/sector';
 import { newFront, makeStrategicBattle, applyEngagementOutcome, resolveCoarse, syncStrengths, retreat } from '../src/strategic/bridge';
 import { StrategicCommander, RED_DEFENDER, BLUE_ATTACKER } from '../src/strategic/command';
@@ -144,6 +144,26 @@ describe('StrategicCommander', () => {
       expect(engagement).not.toBeNull();
       expect(engagement!.attackerId).toBe(red.id);
     });
+
+    it('pressure is measured from the enemy chit, not a cache entry keyed by its id', () => {
+      // Regression: computePressure shared the commander's Dijkstra cache
+      // (keyed by cell) but keyed its own entries by chit ID — chit id 1 and
+      // cell 1 collide. Here the withdrawing red garrison at cell 1 seeds the
+      // cache under key 1, and the blue chit is id 1. Blue sits on the
+      // doorstep of objective (0,1); measured from its own cell that's the
+      // most-threatened objective, but measured from cell 1 the far objective
+      // (2,0) looks hotter — the reserve commits to the wrong cell.
+      const sector = parseSector(['..T.', 'T...'], 0, 'cache-key-test');
+      const front = new Front(sector);
+      front.addChit({ side: 'blue', name: 'B', cell: cellIndex(sector, 0, 0), strength: 200, companyIndex: -1 }); // id 1
+      front.addChit({ side: 'red', name: 'G', cell: cellIndex(sector, 1, 0), strength: 30, companyIndex: -1 }); // id 2, withdraws, seeding cache key 1
+      const reserve = front.addChit({ side: 'red', name: 'Reserve', cell: cellIndex(sector, 1, 1), strength: 100, companyIndex: -1 });
+
+      new StrategicCommander('red', RED_DEFENDER).evaluate(front);
+
+      expect(reserve.path.length).toBeGreaterThan(0);
+      expect(reserve.path[reserve.path.length - 1]).toBe(cellIndex(sector, 0, 1));
+    });
   });
 
   describe('blue attacker', () => {
@@ -231,6 +251,31 @@ describe('StrategicCommander', () => {
     }, 120000);
   });
 
+  describe('retreat', () => {
+    it('blue with no adjacent escape infiltrates to the nearest owned cell instead of being overrun', () => {
+      const sector = parseSector(['.....'], 2, 'overrun-test'); // cells 0-1 blue, 2-4 red
+      const front = new Front(sector);
+      const chit = front.addChit({ side: 'blue', name: 'A', cell: 2, strength: 50, companyIndex: 0 }); // just lost cell 2
+      front.addChit({ side: 'blue', name: 'B', cell: 1, strength: 50, companyIndex: 1 }); // blocks the adjacent escape
+
+      retreat(front, chit);
+
+      expect(chit.cell).toBe(0);
+      expect(chit.strength).toBe(50);
+    });
+
+    it('red with no escape is still overrun', () => {
+      const sector = parseSector(['.....'], 2, 'overrun-test');
+      const front = new Front(sector);
+      front.addChit({ side: 'blue', name: 'B', cell: 1, strength: 50, companyIndex: 0 });
+      const red = front.addChit({ side: 'red', name: 'R', cell: 0, strength: 40, companyIndex: -1 }); // on blue-owned ground, no red neighbor
+
+      retreat(front, red);
+
+      expect(red.strength).toBe(0);
+    });
+  });
+
   describe('battle staging', () => {
     it('red-attacker battle: red soldiers on west side, blue defenders near objectives', () => {
       const c = newCampaign(10);
@@ -303,6 +348,23 @@ describe('StrategicCommander', () => {
       expect(out.record.won).toBe(true);
       expect(out.cellTaken).toBe(false);
       expect(front.sector.cells[e.cell].owner).toBe('blue');
+    });
+
+    it('red-attacker engagement: the RED attacker chit attrits by its own losses', () => {
+      // Regression: redLosses were subtracted from the DEFENDER regardless of
+      // side — a red attacker never attrited (immortal counterattackers) and
+      // the blue defender was docked red's dead (masked by syncStrengths).
+      const { c, front, e } = stageRedAttack();
+      const battle = makeStrategicBattle(c, front, e, 5);
+      const redAttacker = front.chits.find(ch => ch.id === e.attackerId)!;
+      const before = redAttacker.strength;
+      // Kill half the red force, wipe none of blue: red wins on attrition floor? No —
+      // just apply the outcome directly; won/lost is irrelevant to the attrition path.
+      const redSoldiers = battle.sim.soldiers.filter(s => s.side === 'red');
+      const killed = Math.floor(redSoldiers.length / 2);
+      for (const s of redSoldiers.slice(0, killed)) s.alive = false;
+      applyEngagementOutcome(c, front, e, battle.sim);
+      expect(redAttacker.strength).toBe(before - killed);
     });
 
     it('red-attacker engagement lost: record.won is false (BLUE lost), cell falls', () => {

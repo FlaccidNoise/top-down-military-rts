@@ -1,7 +1,7 @@
 import { EMPLACEMENTS, WEAPONS, type WeaponDef } from './data';
 import { crewNear, friendlyHasLos, type Emplacement } from './emplacement';
 import { dangerScore } from './orders';
-import { CONTACT_TTL, SPOT_INTERVAL, sightBetween, type Sim, type Team } from './sim';
+import { CONTACT_TTL, SPOT_INTERVAL, sightBetween, type Side, type Sim, type Team } from './sim';
 
 // Red commander: issues squad orders through the same public order API the
 // player uses. Design requirement (decision log): must maneuver and
@@ -14,11 +14,12 @@ import { CONTACT_TTL, SPOT_INTERVAL, sightBetween, type Sim, type Team } from '.
 // ghosts, and TTL the player's fog of war runs on) and dangerScore()
 // (weapon-range engagement semantics, built on visibleEnemies). Belief
 // state, aim points, and the barrage target all trace back to contacts red
-// units actually sighted, plus the static briefing (cfg.posts).
+// units its side actually sighted, plus the static briefing (cfg.posts).
 // tests/doctrine.test.ts's honesty audit greps this file's source for the
 // enemy side's own literal to catch a regression back to a direct read.
 
 export interface CommanderConfig {
+  side: Side;
   stance: 'defend' | 'attack';
   posts: Record<number, { x: number; y: number }>; // squadId -> objective/anchor
 }
@@ -29,7 +30,7 @@ interface ThreatContact {
   conf: number; // 1 while tracked; a lost contact fades toward 0 over AI_MEMORY_TICKS
 }
 
-// Red's memory window for the ghost-confidence fade. Defaults to the ghost
+// The commander's memory window for the ghost-confidence fade. Defaults to the ghost
 // TTL so behavior matches the UI today, but it's a separate knob: retuning
 // ghost-marker UX must never silently retune the AI's competence (SPOT_RANGE
 // and CONTACT_TTL are difficulty constants now — decision log 2026-07-23).
@@ -91,7 +92,7 @@ export class RedCommander {
   // side knows (spotted at conf 1, lost contacts fading over AI_MEMORY_TICKS).
   private spottedPositions(sim: Sim): { x: number; y: number }[] {
     const out: { x: number; y: number }[] = [];
-    for (const [id, p] of sim.spotted.red) {
+    for (const [id, p] of sim.spotted[this.cfg.side]) {
       if (!sim.soldiers[id].downed) out.push(p); // tracked but downed: out of the fight
     }
     return out;
@@ -99,7 +100,7 @@ export class RedCommander {
 
   private updateThreat(sim: Sim): void {
     this.threat = this.spottedPositions(sim).map((p) => ({ x: p.x, y: p.y, conf: 1 }));
-    for (const c of sim.contacts.red.values()) {
+    for (const c of sim.contacts[this.cfg.side].values()) {
       if (c.kind !== 'infantry') continue;
       this.threat.push({ x: c.x, y: c.y, conf: Math.max(0, 1 - (sim.tick - c.tick) / AI_MEMORY_TICKS) });
     }
@@ -127,7 +128,7 @@ export class RedCommander {
   // already carries its own MG) falls back to letting every team both fire
   // and maneuver rather than leaving maneuver empty.
   private assignGroups(sim: Sim): void {
-    const redTeams = sim.teams.filter((t) => sim.squads[t.squadId].side === 'red' && this.cfg.posts[t.squadId]);
+    const redTeams = sim.teams.filter((t) => sim.squads[t.squadId].side === this.cfg.side && this.cfg.posts[t.squadId]);
     const isBaseOfFire = (team: Team) =>
       team.soldierIds.some((id) => {
         const w: WeaponDef = WEAPONS[sim.soldiers[id].weapon];
@@ -293,7 +294,7 @@ export class RedCommander {
   // the fire/move clobber that attack stance's split roles need orderTeam for.
   private runDefend(sim: Sim): void {
     for (const squad of sim.squads) {
-      if (squad.side !== 'red') continue;
+      if (squad.side !== this.cfg.side) continue;
       const post = this.cfg.posts[squad.id];
       if (!post) continue;
       const members = squad.soldierIds.map((id) => sim.soldiers[id]).filter((s) => s.alive && !s.downed);
@@ -315,7 +316,7 @@ export class RedCommander {
   // stance holds them back as a mobile reserve near their spawn.
   private updateVehicles(sim: Sim): void {
     for (const v of sim.vehicles) {
-      if (!v.alive || v.side !== 'red' || v.path) continue;
+      if (!v.alive || v.side !== this.cfg.side || v.path) continue;
       if (this.cfg.stance === 'attack') {
         const firstPost = Object.values(this.cfg.posts)[0];
         if (firstPost && Math.hypot(v.x - firstPost.x, v.y - firstPost.y) > 25) {
@@ -325,18 +326,18 @@ export class RedCommander {
     }
   }
 
-  // One barrage on the densest cluster among red's spotted contacts, once
+  // One barrage on the densest cluster among its side's spotted contacts, once
   // five or more sit together — intel-range knowledge, not weapon range: the
   // commander can shell an observed concentration its rifles can't yet reach.
   private maybeBarrage(sim: Sim): void {
-    if (this.barrageUsed || sim.barragesLeft.red <= 0) return;
+    if (this.barrageUsed || sim.barragesLeft[this.cfg.side] <= 0) return;
     const seen = this.spottedPositions(sim);
     for (const b of seen) {
       const cluster = seen.filter((o) => Math.hypot(o.x - b.x, o.y - b.y) < 8);
       if (cluster.length >= 5) {
         const cx = cluster.reduce((a, s) => a + s.x, 0) / cluster.length;
         const cy = cluster.reduce((a, s) => a + s.y, 0) / cluster.length;
-        sim.callBarrage('red', cx, cy);
+        sim.callBarrage(this.cfg.side, cx, cy);
         this.barrageUsed = true;
         break;
       }
@@ -357,13 +358,13 @@ export class RedCommander {
     if (mortar) sim.orderSmoke(mortar.id, post.x, post.y);
   }
 
-  // A deployed red mortar not mid-smoke-mission, with shells its crew can
+  // A deployed mortar of its side not mid-smoke-mission, with shells its crew can
   // still feed, that can actually range and see the objective — the
   // commander's screen asset, scanned side-wide like the barrage: any mortar
   // on the field can screen any objective, independent of task-group assignment.
   private readyMortar(sim: Sim, post: { x: number; y: number }): Emplacement | null {
     for (const e of sim.emplacements) {
-      if (e.side !== 'red' || e.state !== 'deployed' || e.smokeRoundsLeft > 0) continue;
+      if (e.side !== this.cfg.side || e.state !== 'deployed' || e.smokeRoundsLeft > 0) continue;
       const w: WeaponDef = WEAPONS[EMPLACEMENTS[e.kind].weapon];
       if (!w.arc) continue;
       // Reachability is a HARD gate, not a nicety. orderSmoke commits the

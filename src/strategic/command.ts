@@ -63,10 +63,12 @@ function computePressure(front: Front, cell: number, enemySide: Side, treeCache:
   let p = 0;
   for (const enemy of front.chits) {
     if (enemy.side !== enemySide || enemy.strength <= 0) continue;
-    let tree = treeCache.get(enemy.id);
+    // Keyed by CELL, not chit id: this cache is shared with tree() (keyed by
+    // cell), and chit ids collide with cell indices in the same keyspace.
+    let tree = treeCache.get(enemy.cell);
     if (!tree) {
       tree = dijkstra(front.sector, enemy.cell);
-      treeCache.set(enemy.id, tree);
+      treeCache.set(enemy.cell, tree);
     }
     const eta = tree.dist[cell];
     if (!isFinite(eta)) continue;

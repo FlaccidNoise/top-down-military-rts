@@ -35,6 +35,7 @@ export interface HudState {
   selectedTeam: number; // -1 = whole squad, else narrowed to one team within it
   selectedVehicle: number;
   paused: boolean;
+  aiControl: boolean;
   targetMode: '' | 'barrage' | 'air' | 'wheel' | 'empfire' | 'empsmoke';
   armedOrder: OrderKind | null;
   title: string;
@@ -186,7 +187,7 @@ export class Hud {
   update(sim: Sim, st: HudState): void {
     this.lastSim = sim;
     this.lastSt = st;
-    const sig = `${(sim.tick / 5) | 0}|${primarySquad(st)}|${st.selectedTeam}|${st.selectedVehicle}|${st.paused}|${st.targetMode}|${st.armedOrder}|${sim.winner}|${st.title}|${st.selectedSquads.join(',')}|${this.km.version}|${st.floorFocus ?? -1}`;
+    const sig = `${(sim.tick / 5) | 0}|${primarySquad(st)}|${st.selectedTeam}|${st.selectedVehicle}|${st.paused}|${st.targetMode}|${st.armedOrder}|${sim.winner}|${st.title}|${st.selectedSquads.join(',')}|${this.km.version}|${st.floorFocus ?? -1}|${st.aiControl}`;
     if (sig === this.sig) return;
     this.sig = sig;
     this.renderTop(sim, st);
@@ -298,7 +299,7 @@ export class Hud {
       if (s.side === 'blue') us++;
       else if (sim.soldierVisibleTo('blue', s)) ge++;
     }
-    this.q('#tb-title').innerHTML = `<b>${st.title}</b> · ${clock}${st.paused ? ' <span class="paused">⏸ PAUSED</span>' : ''}${st.floorFocus !== undefined && st.floorFocus >= 0 ? ` <span class="paused">⬒ ${st.floorFocus === 0 ? 'Ground' : `Floor ${st.floorFocus + 1}`} only</span>` : ''}`;
+    this.q('#tb-title').innerHTML = `<b>${st.title}</b> · ${clock}${st.paused ? ' <span class="paused">⏸ PAUSED</span>' : ''}${st.aiControl ? ' <span class="paused">AI CONTROL</span>' : ''}${st.floorFocus !== undefined && st.floorFocus >= 0 ? ` <span class="paused">⬒ ${st.floorFocus === 0 ? 'Ground' : `Floor ${st.floorFocus + 1}`} only</span>` : ''}`;
     this.q('#tb-strength').innerHTML =
       `<span class="us">US ${us}</span><div class="ratio"><i style="flex:${us};background:#5b9bd5"></i><i style="flex:${ge};background:#d05c50"></i></div><span class="ge">GE ${sim.fowDisabled ? '' : '~'}${ge}</span>`;
 

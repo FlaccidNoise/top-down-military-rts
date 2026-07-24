@@ -95,7 +95,7 @@ describe('red commander', () => {
     // the commander reads sim intel (spotted/contacts), not live LOS — a
     // sweep must run before it can know the post is taken
     for (let i = 0; i < 15; i++) sim.step();
-    const commander = new RedCommander({ stance: 'defend', posts: { 1: { x: 10, y: 10 } } });
+    const commander = new RedCommander({ side: 'red', stance: 'defend', posts: { 1: { x: 10, y: 10 } } });
     commander.update(sim);
     const ordered = sim.squads[1].soldierIds.map((i) => sim.soldiers[i]).filter((s) => s.path !== null);
     expect(ordered.length).toBeGreaterThan(0);

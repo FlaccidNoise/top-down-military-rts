@@ -17,7 +17,7 @@ import { emplacementOf, Hud, infantrySquads, type HudState } from './ui/hud';
 import { StratHud } from './ui/strat-hud';
 import { drawOverlays, EventPings } from './ui/overlays';
 import { computeShot, pickAt, Tooltip } from './ui/tooltip';
-import { actionForEvent, formatBinding, loadKeymap, type Keymap } from './ui/keymap';
+import { actionForEvent, loadKeymap, type Keymap } from './ui/keymap';
 import { PauseMenu } from './ui/menu';
 import { coach } from './ui/coach';
 import { showFloorMenu } from './ui/floormenu';
@@ -88,6 +88,8 @@ let opEnded = false;
 // battle state
 let sim: Sim;
 let commander: RedCommander;
+let blueCommander: RedCommander | undefined;
+let aiControl = false;
 let renderer: Renderer;
 let battleCompany = -1;
 let battleTitle = '';
@@ -171,10 +173,10 @@ const hud = new Hud({
     cam.y = s.y;
   },
   callBarrage: () => {
-    if (sim.barragesLeft.blue > 0) setTargetMode(targetMode === 'barrage' ? '' : 'barrage');
+    if (!aiControl && sim.barragesLeft.blue > 0) setTargetMode(targetMode === 'barrage' ? '' : 'barrage');
   },
   callAirstrike: () => {
-    if (sim.airstrikesLeft.blue > 0) setTargetMode(targetMode === 'air' ? '' : 'air');
+    if (!aiControl && sim.airstrikesLeft.blue > 0) setTargetMode(targetMode === 'air' ? '' : 'air');
   },
   togglePause: () => {
     if (mode === 'strategic') stratPaused = !stratPaused;
@@ -352,6 +354,8 @@ function startEngagementBattle(e: Engagement): void {
   sim = battle.sim;
   sim.fowDisabled = fowOff;
   commander = battle.commander;
+  blueCommander = battle.blueCommander;
+  aiControl = false;
   battleCompany = battle.companyIndex;
   renderer = new Renderer(sim);
   battleTitle = `Day ${front.day} ${front.hhmm} — ${battle.name}`;
@@ -536,12 +540,12 @@ canvas.addEventListener('mouseup', (e) => {
   
   if (!dragged) {
     const [wx, wy] = cam.screenToWorld(e.clientX, e.clientY, canvas.width, canvas.height);
-    if (targetMode === 'barrage') {
+    if (targetMode === 'barrage' && !aiControl) {
       if (sim.callBarrage('blue', wx, wy)) {
         setTargetMode('');
         renderer.markBarrage(wx, wy);
       }
-    } else if (targetMode === 'air') {
+    } else if (targetMode === 'air' && !aiControl) {
       if (sim.callAirstrike('blue', wx, wy)) {
         setTargetMode('');
         renderer.markStrafe(wx, wy);
@@ -624,6 +628,7 @@ window.addEventListener('mouseup', (e) => {
     return;
   }
   if (targetMode !== '') { rmbAnchor = null; return; }
+  if (aiControl) { rmbAnchor = null; return; }
   const [wx, wy] = cam.screenToWorld(e.clientX, e.clientY, canvas.width, canvas.height);
   if (e.altKey && selectedSquads.length > 0 && sim.map.storiesAt(Math.floor(wx), Math.floor(wy)) >= 2) {
     showFloorMenu(document.body, sim, wx, wy, e.clientX, e.clientY, (level) => {
@@ -759,8 +764,9 @@ window.addEventListener('keydown', (e) => {
   }
   
   // Battle mode
-  if (action === 'barrage' && sim.barragesLeft.blue > 0) setTargetMode(targetMode === 'barrage' ? '' : 'barrage');
-  if (action === 'airstrike' && sim.airstrikesLeft.blue > 0) setTargetMode(targetMode === 'air' ? '' : 'air');
+  if (action === 'aiControl') { aiControl = !aiControl; if (aiControl) { armedOrder = null; setTargetMode(''); } return; }
+  if (action === 'barrage' && !aiControl && sim.barragesLeft.blue > 0) setTargetMode(targetMode === 'barrage' ? '' : 'barrage');
+  if (action === 'airstrike' && !aiControl && sim.airstrikesLeft.blue > 0) setTargetMode(targetMode === 'air' ? '' : 'air');
   
   if (action.startsWith('squad')) {
     const n = Number(action.slice(5)) - 1;
@@ -833,7 +839,6 @@ function frame(now: number): void {
   stratHud.root.style.display = mode === 'strategic' ? '' : 'none';
   if (mode === 'strategic') {
     hud.updateIdle('strategic', selectedChit >= 0 || stratPaused);
-    stratHud.update(front, campaign, selectedChit, stratPaused);
     if (!stratPaused && !pendingEngagement && !opEnded) {
       stratAcc += (dtReal / 1000) * SPEEDS[speedIdx];
       while (stratAcc >= 1 && !pendingEngagement) {
@@ -858,7 +863,7 @@ function frame(now: number): void {
           
           if (attackerIsAI && defenderIsAI) {
             const result = resolveCoarse(campaign, front, e);
-            stratView.flash(`${attacker.name} vs ${defender.name}: ${result.record.won ? 'attacker wins' : 'defender holds'}`);
+            stratView.flash(`${attacker.name} vs ${defender.name}: ${result.attackerWon ? 'attacker wins' : 'defender holds'}`);
             save();
           } else if (attackerIsAI && !defenderIsAI) {
             pendingEngagement = e;
@@ -882,6 +887,7 @@ function frame(now: number): void {
     if (!paused) {
       while (acc >= DT_MS) {
         commander.update(sim);
+        if (aiControl) blueCommander?.update(sim);
         sim.step();
         acc -= DT_MS;
       }
@@ -957,7 +963,7 @@ function frame(now: number): void {
         };
       }
     }
-    hud.update(sim, { selectedSquad: primary, selectedSquads, selectedTeam, selectedVehicle, paused, targetMode, armedOrder, title: battleTitle, keymap: km, objective, floorFocus });
+    hud.update(sim, { selectedSquad: primary, selectedSquads, selectedTeam, selectedVehicle, paused, aiControl, targetMode, armedOrder, title: battleTitle, keymap: km, objective, floorFocus });
     hud.updateIdle('battle', targetMode !== '' || selectedSquads.length > 0 || selectedVehicle >= 0 || selectedTeam >= 0 || paused);
 
     // The boot framing has to measure the battle HUD, which does not exist
