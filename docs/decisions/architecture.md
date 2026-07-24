@@ -94,3 +94,22 @@
 **Perf:** 247-soldier campaign battle @ ~115fps with all effects live (288 frames/2.5s), within the 114fps fidelity-pass baseline; audio node graphs are bounded by the voice cap.
 **Alternatives considered:** render-side weapon-class hash instead of a sim field (rejected: no real identity — a hash can't tell M1 from MG42); shake baked into the camera transform (rejected: breaks picking and shakes the HUD); gating audio on FoW (rejected: inconsistent with ungated tracers, extra per-shot vision lookups for no immersion gain); per-shot AudioBuffer synthesis (rejected: regenerating noise per shot is the obvious perf trap — one shared buffer reused).
 ---
+### [APPROVED] Height — terrain elevation, 2-story buildings, 2.5D profile LOS
+*(Rebuilt 2026-07-23 from the lost worktree-height spec: the original branch's worktree was deleted unmerged with no recoverable git objects. Behavior below is the landed rebuild; mapgen fingerprints differ from the lost branch by construction.)*
+
+**Model.** `GameMap` gains `elev` (m, cosine hill domes), `stories`/`buildingId`/`stairs` (buildings), `hEdgeTops`/`vEdgeTops` (stamped wall-top heights; 0 = legacy full-height block), `maxStories`. Eye z at (x, y, level) = `elev + level*FLOOR_H(3) + EYE_H(1.6)`. `los()` keeps the 2D Amanatides & Woo tile ray and lerps an eye-to-eye height line across it: ground blocks when `elev >= lineZ`; a WALL blocks only below its stamped top; a feature (woods/hedge via `TerrainDef.featureHeight`) accumulates no opacity when the line clears `elev + featureHeight`; two points sharing a `buildingId` at different levels are separated by the floor/ceiling (the buildingId ceiling test). Soldiers gain `level` + `climbLeft` (30-tick stair climb in `advance()`; vertical movement only via stair tiles). A* is level-aware (`l*w*h + y*w + x` nodes) with the level axis allocated lazily — ground-only searches keep single-layer buffers and perf. `sightBetween`/`sightToSoldier` take `l0/l1`; every soldier-endpoint caller threads the observer level (vehicles/emplacements are always level 0).
+
+**Determinism/perf invariants held:** no RNG in LOS; snapshot equality (level/climbLeft added to `Sim.snapshot()`); flat maps (elev all-0, maxStories 0) are byte-identical in sim behavior and rendering (all new render passes early-out).
+
+**Mapgen.** Hill domes consume rng LAST (2D geometry byte-identical per seed vs pre-height); buildings with footprint ≥56 tiles are 2-story with a back-corner stair; wall tops stamped at `stories*FLOOR_H`. Fingerprints (seed 1 → `8105059f`, seed 2 → `d2a77805`) now hash elev/stories/buildingId/stairs too.
+
+**Orders/UI/render.** defend/ambush auto-garrison the top floor when a stair route exists (per-member ground fallback); Alt+right-click on a multi-story building opens a DOM floor menu issuing orders with `TeamOrder.l`; pickAt/click ties resolve to the upper soldier. Render: one-sun (NW) hillshade + stair glyph (terrain.ts), story-scaled roof shadow + level-aware roof fade keyed on `soldierVisibleTo` (roofs.ts), upper-floor sprite ×1.06.
+
+**Legibility (phase E).** Floor badge chip over upper-floor sprites + white ring at dot zoom; floor-aware draw order (upper floors paint last within each category); `F` cycles a floor-focus filter (non-focused floors at 40% alpha, HUD chip; plain keydown until the parked controls pass lands keymap integration); shot-preview re-runs the sight check with observer level forced to the target's and reports `floor-blocked` / "blocked by floor/ceiling" when vertical separation is the only block.
+
+**Accepted approximations (recorded, deliberately not modeled):**
+- Smoke is a 2D column — blinds every floor equally.
+- Blast/frag is 2D — a grenade upstairs hits downstairs.
+- Gable-above-wall geometry unmodeled (roofs are visual only).
+- Per-story windows on shared edges unmodeled (windows pass sight at any level).
+- The buildingId ceiling test is a heuristic for floor/ceiling planes (no continuous z, no slab geometry).
