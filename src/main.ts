@@ -109,6 +109,7 @@ let targetMode: '' | 'barrage' | 'air' | 'wheel' | 'empfire' | 'empsmoke' = '';
 let floorFocus = -1; // -1 = all floors; 0..maxStories-1 = only that floor, others dimmed (F key)
 let winnerAt = -1; // ms timestamp when winner appeared
 let debriefShown = false;
+let needsBootFrame = false; // re-run bootCamera once the battle HUD is laid out
 const mouse = { x: 0, y: 0, onCanvas: false };
 const pings = new EventPings();
 
@@ -272,17 +273,76 @@ function showContactModal(e: Engagement): void {
   };
 }
 
-// Boot framing: fit the whole map when the viewport allows ≥3 px/m (the
-// threshold ui.md already treats as "whole map fits" for the strategic map
-// zoom-out); otherwise frame ~120m across around the blue spawn centroid so
-// the view isn't half dead space off the map edge.
+// The HUD chrome is opaque DOM sitting on top of the canvas, so the canvas
+// center is NOT the center of what the player can actually see. Measured, not
+// assumed: the roster panel is ~266px of the left edge, which is exactly where
+// blue spawns on a west-attack map.
+function viewportInset(): { left: number; top: number; bottom: number } {
+  // Zero-area rects mean the element is hidden — during strategic mode the
+  // battle HUD is still in the DOM but collapsed, and a hidden #hint would
+  // otherwise read as an 800px bottom inset and collapse the viewport to
+  // nothing. Only elements that actually occupy space may inset the view.
+  const box = (id: string) => {
+    const r = document.getElementById(id)?.getBoundingClientRect();
+    return r && r.width > 0 && r.height > 0 ? r : null;
+  };
+  const squads = box('squads');
+  const strip = box('obj-strip');
+  const hint = box('hint');
+  return {
+    left: squads ? squads.right : 0,
+    top: strip ? strip.bottom : 0,
+    bottom: hint ? window.innerHeight - hint.top : 0,
+  };
+}
+
+// Boot framing: fit the whole map when the *unobstructed* viewport allows
+// ≥WHOLE_MAP_PX_M; otherwise frame ~120m across around the blue spawn centroid.
+// Both branches frame against the clear region rather than the raw canvas:
+// fitting the raw canvas put 122 of 138 blue soldiers behind the roster panel
+// at T+0:00 — the player opened a battle unable to see their own company.
+//
+// The threshold is 2.5, not the 3 px/m ui.md quotes, precisely because it is
+// now measured against the clear region instead of the whole canvas — the same
+// 1280x800 viewport that fits 3.33 px/m of canvas only fits 2.87 of clear
+// space. Holding the old number here would flip every 320x240 map into the
+// zoomed branch, and near a west-edge spawn that branch cannot win: blue sits
+// at world x≈7, so no camera both clears the 266px panel and avoids showing
+// off-map void. The whole-map fit has no such tension.
+const WHOLE_MAP_PX_M = 2.5;
+// Place `want` at the center of the clear span, then slide it back so the
+// clear span shows no off-map void. `a`/`b` are the world distances from the
+// camera to the near/far edge of the clear span. If the map is smaller than
+// the span there is nothing to clamp against — center it instead.
+function frameAxis(want: number, a: number, b: number, worldMax: number): number {
+  const centered = worldMax / 2 + (a - b) / 2;
+  if (a > worldMax - b) return centered;
+  return Math.max(a, Math.min(worldMax - b, want + (a - b) / 2));
+}
+
 function bootCamera(s: Sim, cw: number, ch: number): { x: number; y: number; scale: number } {
-  const fit = Math.min(cw / s.map.w, ch / s.map.h);
-  if (fit >= 3) return { x: s.map.w / 2, y: s.map.h / 2, scale: fit };
-  const blue = s.soldiers.filter((sd) => sd.side === 'blue');
-  const cx = blue.length ? blue.reduce((a, sd) => a + sd.x, 0) / blue.length : s.map.w / 2;
-  const cy = blue.length ? blue.reduce((a, sd) => a + sd.y, 0) / blue.length : s.map.h / 2;
-  return { x: cx, y: cy, scale: Math.min(48, Math.max(2, cw / 120)) };
+  const inset = viewportInset();
+  const vw = Math.max(1, cw - inset.left);
+  const vh = Math.max(1, ch - inset.top - inset.bottom);
+  const fit = Math.min(vw / s.map.w, vh / s.map.h);
+  let scale: number;
+  let cx: number;
+  let cy: number;
+  if (fit >= WHOLE_MAP_PX_M) {
+    scale = fit;
+    cx = s.map.w / 2;
+    cy = s.map.h / 2;
+  } else {
+    const blue = s.soldiers.filter((sd) => sd.side === 'blue');
+    cx = blue.length ? blue.reduce((a, sd) => a + sd.x, 0) / blue.length : s.map.w / 2;
+    cy = blue.length ? blue.reduce((a, sd) => a + sd.y, 0) / blue.length : s.map.h / 2;
+    scale = Math.min(48, Math.max(2, vw / 120));
+  }
+  return {
+    x: frameAxis(cx, (cw / 2 - inset.left) / scale, cw / 2 / scale, s.map.w),
+    y: frameAxis(cy, (ch / 2 - inset.top) / scale, (ch / 2 - inset.bottom) / scale, s.map.h),
+    scale,
+  };
 }
 
 function startEngagementBattle(e: Engagement): void {
@@ -299,6 +359,7 @@ function startEngagementBattle(e: Engagement): void {
   cam.x = boot.x;
   cam.y = boot.y;
   cam.scale = boot.scale;
+  needsBootFrame = true;
   mode = 'battle';
   paused = true;
   floorFocus = -1;
@@ -898,6 +959,18 @@ function frame(now: number): void {
     }
     hud.update(sim, { selectedSquad: primary, selectedSquads, selectedTeam, selectedVehicle, paused, targetMode, armedOrder, title: battleTitle, keymap: km, objective, floorFocus });
     hud.updateIdle('battle', targetMode !== '' || selectedSquads.length > 0 || selectedVehicle >= 0 || selectedTeam >= 0 || paused);
+
+    // The boot framing has to measure the battle HUD, which does not exist
+    // until the update above has run once. Re-frame on that first frame —
+    // before then, viewportInset() reads the collapsed strategic-mode DOM and
+    // the roster panel silently fails to inset the view.
+    if (needsBootFrame) {
+      needsBootFrame = false;
+      const b = bootCamera(sim, canvas.width, canvas.height);
+      cam.x = b.x;
+      cam.y = b.y;
+      cam.scale = b.scale;
+    }
 
     if (sim.winner && winnerAt < 0) winnerAt = now;
     if (winnerAt >= 0 && !debriefShown && now - winnerAt > 4000) showDebrief();
