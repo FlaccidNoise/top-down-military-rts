@@ -290,9 +290,16 @@ interface Barrage {
   nextTick: number;
 }
 
+// Smoke column height (m). Blinds ground-floor eyes (EYE_H 1.6m); a floor-2
+// eye (elev + FLOOR_H + EYE_H = 4.6m) sees over it. Plan §4 open question 1:
+// 3.5, not 4.5 — floor-2 should clear it decisively, not marginally.
+export const SMOKE_H = 3.5;
+
 export interface Smoke {
   x: number;
   y: number;
+  z0: number; // column base z: ground elevation + deployer level * FLOOR_H at deploy
+  h: number; // column height, m (SMOKE_H)
   ttl: number; // seconds left
 }
 
@@ -374,26 +381,41 @@ function isOpenTop(kind: VehicleKey): boolean {
   return def.openTop === true;
 }
 
-// Squared distance from a point to a segment — used to test whether a smoke
-// puff sits close enough to a sightline to obscure it.
-function distToSegment(px: number, py: number, x0: number, y0: number, x1: number, y1: number): number {
+// Closest-approach parameter t (in [0,1]) of a point to a segment — used to
+// test whether a smoke puff sits close enough to a sightline to obscure it,
+// and where along the ray the column is crossed. Returns only the scalar t so
+// the smoke loop stays allocation-free; the caller derives the squared
+// distance from t (+−× only — no Math.hypot in the decision path, plan §7).
+function closestT(px: number, py: number, x0: number, y0: number, x1: number, y1: number): number {
   const dx = x1 - x0;
   const dy = y1 - y0;
   const len2 = dx * dx + dy * dy;
-  const t = len2 > 0 ? Math.max(0, Math.min(1, ((px - x0) * dx + (py - y0) * dy) / len2)) : 0;
-  return Math.hypot(px - (x0 + t * dx), py - (y0 + t * dy));
+  return len2 > 0 ? Math.max(0, Math.min(1, ((px - x0) * dx + (py - y0) * dy) / len2)) : 0;
 }
 
 // The one LOS wrapper every soldier-vision (and vehicle-sight) call site must
 // route through: same as map.ts's los(), plus smoke. map.ts's signature stays
 // untouched — this only adds smoke's contribution on top of its result. Each
-// puff within 1.5m of the ray adds 0.5 opacity; >=1 blocks same as terrain.
+// puff within 1.5m of the ray adds 0.5 opacity, but only if the eye-line at
+// the crossing point falls inside the puff's z-interval [z0, z0+h] — so an
+// upstairs observer sees over a ground smoke column. >=1 blocks same as
+// terrain.
 export function sightBetween(sim: Sim, x0: number, y0: number, x1: number, y1: number, l0 = 0, l1 = 0): LosResult {
   const base = los(sim.map, x0, y0, x1, y1, l0, l1);
   if (!base.visible || sim.smoke.length === 0) return base;
+  const dx = x1 - x0;
+  const dy = y1 - y0;
+  const zEye0 = sim.map.elevAt(Math.floor(x0), Math.floor(y0)) + l0 * FLOOR_H + EYE_H;
+  const zEye1 = sim.map.elevAt(Math.floor(x1), Math.floor(y1)) + l1 * FLOOR_H + EYE_H;
   let opacity = 0;
   for (const p of sim.smoke) {
-    if (distToSegment(p.x, p.y, x0, y0, x1, y1) <= 1.5) opacity += 0.5;
+    const t = closestT(p.x, p.y, x0, y0, x1, y1);
+    const cx = p.x - (x0 + t * dx);
+    const cy = p.y - (y0 + t * dy);
+    if (cx * cx + cy * cy > 2.25) continue; // 1.5m gate, squared
+    const lineZ = zEye0 + (zEye1 - zEye0) * t;
+    if (lineZ < p.z0 || lineZ > p.z0 + p.h) continue; // eye-line passes over/under the column
+    opacity += 0.5;
   }
   if (opacity >= 1) return { visible: false, cover: 0, conceal: 1 };
   if (opacity > 0) {
@@ -1016,7 +1038,8 @@ export class Sim {
     if (this.mortarShells.length === 0) return;
     this.mortarShells = this.mortarShells.filter((sh) => {
       if (this.tick < sh.tick) return true;
-      if (sh.smoke) this.smoke.push({ x: sh.x, y: sh.y, ttl: 60 });
+          // Mortar/barrage smoke lands at ground level 0, wherever it falls.
+      if (sh.smoke) this.smoke.push({ x: sh.x, y: sh.y, z0: this.map.elevAt(Math.floor(sh.x), Math.floor(sh.y)), h: SMOKE_H, ttl: 60 });
       else this.explode(sh.x, sh.y, { suppRadius: 10, fragRadius: 5, frags: 2, dmg: [25, 75] });
       return false;
     });
@@ -1390,8 +1413,12 @@ export class Sim {
     const centroid = this.centroidOf(team.soldierIds);
     if (!centroid || Math.hypot(order.x - centroid.x, order.y - centroid.y) > 30) return;
     team.smokeLeft--;
-    this.smoke.push({ x: order.x - 1, y: order.y, ttl: 60 });
-    this.smoke.push({ x: order.x + 1, y: order.y, ttl: 60 });
+    // Column base = ground elevation + deployer's floor level: smoke thrown
+    // from an upstairs window screens that floor, not the street.
+    const deployer = team.soldierIds.map((id) => this.soldiers[id]).find((s) => s.alive);
+    const z0 = this.map.elevAt(Math.floor(order.x), Math.floor(order.y)) + (deployer?.level ?? 0) * FLOOR_H;
+    this.smoke.push({ x: order.x - 1, y: order.y, z0, h: SMOKE_H, ttl: 60 });
+    this.smoke.push({ x: order.x + 1, y: order.y, z0, h: SMOKE_H, ttl: 60 });
   }
 
   private inArc(fx: number, fy: number, tx: number, ty: number, arc: [number, number]): boolean {
@@ -3344,7 +3371,7 @@ export class Sim {
         e.hasTarget,
         e.smokeRoundsLeft,
       ]),
-      smoke: this.smoke.map((p) => [Math.round(p.x * 1e6), Math.round(p.y * 1e6), Math.round(p.ttl * 1e6)]),
+      smoke: this.smoke.map((p) => [Math.round(p.x * 1e6), Math.round(p.y * 1e6), Math.round(p.z0 * 1e6), Math.round(p.h * 1e6), Math.round(p.ttl * 1e6)]),
       pendingGrenades: this.pendingGrenades.map((g) => [Math.round(g.x * 1e6), Math.round(g.y * 1e6), g.fuse]),
       droppedKit: this.droppedKit.map((k) => [
         k.side,

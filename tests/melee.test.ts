@@ -128,7 +128,7 @@ describe('melee', () => {
 describe('melee × fog of war', () => {
   // two puffs on the ray = accumulated opacity 1.0: LOS fully blocked at any range
   const smokeAt = (sim: Sim, x: number, y: number) => {
-    sim.smoke.push({ x, y, ttl: 9999 }, { x, y, ttl: 9999 });
+    sim.smoke.push({ x, y, z0: 0, h: 3.5, ttl: 9999 }, { x, y, z0: 0, h: 3.5, ttl: 9999 });
   };
 
   it('smoke does not stop a melee lock, and contact spots both fighters for both sides', () => {
