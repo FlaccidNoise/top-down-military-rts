@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { RedCommander } from '../src/sim/ai';
-import { los } from '../src/sim/map';
+import { GameMap, los } from '../src/sim/map';
 import { generateMap, type Vec } from '../src/sim/mapgen';
 import { Sim, type Squad } from '../src/sim/sim';
 import { COMPANY_TOE, companyHeadcount } from '../src/sim/toe';
@@ -150,16 +150,20 @@ describe('perf: los micro-benchmark', () => {
   // tiles of the 16-building seed-7 map, observer/target levels mixed 0..2.
   //
   // Measured baseline (pre-slab-LOS, M-series dev box, 2026-07-23): 8.2ms
-  // median of 5 reps; post-slab-LOS 11.8ms (1.44x — the ratio is the real
-  // regression signal and was pinned at commit 808571b). The absolute ceiling
-  // below is padded for parallel-session load on the shared dev box (same
-  // code measured 12ms quiet / 31ms under load-4.5 standalone, 700ms+ inside
-  // contended vitest) — it guards only against a catastrophic (>4x)
-  // regression; watch the recorded ratios for the 1.5x signal.
-  const LOS_MICRO_BASELINE_MS = 64;
+  // median of 5 reps; post-slab-LOS 11.8ms (1.44x, pinned at commit 808571b).
+  // Absolute-ms asserts flap hopelessly on this shared box (same code: 12ms
+  // quiet standalone, 31ms under load-4.5, 70-800ms inside contended vitest),
+  // so the assert is a RATIO: same-process 10k-call runs on the building map
+  // (slab path, mixed levels) vs a flat all-grass map (legacy path,
+  // maxStories=0). Both suffer identical contention, so the ratio is
+  // load-invariant. Pinned ratio ~0.64 (building-map rays block early on
+  // walls — SHORTER traversals than unobstructed flat-map rays), so 2.5x is
+  // a generous tripwire that only fires on a real slab-path blowup.
+  const LOS_MICRO_MAX_RATIO = 2.5;
   it('los-micro: 10k mixed-level los() calls on a building-heavy map', () => {
     const plan = generateMap(SEED, MAP_W, MAP_H);
     const m = plan.map;
+    const flat = new GameMap(MAP_W, MAP_H);
     const bldg: number[] = [];
     for (let i = 0; i < m.stories.length; i++) if (m.buildingId[i] >= 0) bldg.push(i);
     let acc = 0;
@@ -181,11 +185,31 @@ describe('perf: los micro-benchmark', () => {
       }
       return performance.now() - t0;
     };
-    run(); // JIT warmup, untimed
+    const runFlat = (): number => {
+      const t0 = performance.now();
+      for (let i = 0; i < 10_000; i++) {
+        const a = bldg[(i * 37) % bldg.length];
+        const b = bldg[(i * 91 + 13) % bldg.length];
+        const r = los(
+          flat,
+          (a % flat.w) + 0.5,
+          Math.floor(a / flat.w) + 0.5,
+          (b % flat.w) + 0.5,
+          Math.floor(b / flat.w) + 0.5,
+          i % (flat.maxStories + 1),
+          (i >> 1) % (flat.maxStories + 1),
+        );
+        acc += r.conceal;
+      }
+      return performance.now() - t0;
+    };
+    run(); runFlat(); // JIT warmup, untimed
     const reps = [run(), run(), run(), run(), run()].sort((x, y) => x - y);
+    const flatReps = [runFlat(), runFlat(), runFlat(), runFlat(), runFlat()].sort((x, y) => x - y);
     const median = reps[2];
-    console.log(`[perf] los-micro ${JSON.stringify({ medianMs: round(median), minMs: round(reps[0]), calls: 10_000, buildingTiles: bldg.length, acc: round(acc) })}`);
-    expect(median).toBeLessThan(LOS_MICRO_BASELINE_MS);
+    const ratio = reps[2] / flatReps[2];
+    console.log(`[perf] los-micro ${JSON.stringify({ medianMs: round(median), flatMs: round(flatReps[2]), ratio: round(ratio), calls: 10_000, buildingTiles: bldg.length, acc: round(acc) })}`);
+    expect(ratio).toBeLessThan(LOS_MICRO_MAX_RATIO);
   }, 60_000);
 });
 
