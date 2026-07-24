@@ -294,6 +294,9 @@ interface Barrage {
 // eye (elev + FLOOR_H + EYE_H = 4.6m) sees over it. Plan §4 open question 1:
 // 3.5, not 4.5 — floor-2 should clear it decisively, not marginally.
 export const SMOKE_H = 3.5;
+// Suppression addend multiplier per floor slab between blast and soldier
+// (plan 2026-07-23-3d-height-sim §5): felt through the floor, not lethal.
+export const SLAB_SUPP_FACTOR = 0.25;
 
 export interface Smoke {
   x: number;
@@ -1709,6 +1712,7 @@ export class Sim {
       frags: 3,
       dmg: [25, 75],
     },
+    l = 0, // detonation level (floor); all current callers are ground-bursts
   ): void {
     this.pendingBooms.push({ x, y });
     for (const s of this.soldiers) {
@@ -1721,9 +1725,13 @@ export class Sim {
       }
       const d = Math.hypot(s.x - x, s.y - y);
       if (d > p.suppRadius) continue;
-      s.suppression = Math.min(1, s.suppression + 0.6 * (1 - d / p.suppRadius) * (1.3 - s.courage * 0.6) * mult);
+      // Slab attenuation: integer level compare + repeated multiply (no pow)
+      // — same-level victims get atten 1, byte-identical to pre-3D behavior.
+      let atten = 1;
+      for (let i = Math.abs(s.level - l); i > 0; i--) atten *= SLAB_SUPP_FACTOR;
+      s.suppression = Math.min(1, s.suppression + 0.6 * (1 - d / p.suppRadius) * (1.3 - s.courage * 0.6) * mult * atten);
       if (d > p.fragRadius) continue;
-      if (!los(this.map, x, y, s.x, s.y).visible) continue; // walls stop fragments
+      if (!los(this.map, x, y, s.x, s.y, l, s.level).visible) continue; // walls/floors stop fragments
       const frags = d < 2 ? p.frags : d < p.fragRadius * 0.55 ? Math.max(1, p.frags - 1) : 1;
       for (let i = 0; i < frags; i++) {
         const pHit = (1 - d / (p.fragRadius + 1)) * (s.downed || s.mental === 'pinned' ? 0.45 : 0.8) * mult;
