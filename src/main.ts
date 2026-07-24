@@ -97,6 +97,7 @@ let selectedVehicle = -1;
 let lastTeamId = -1; // most recently selected team, survives a later vehicle selection (Mount reads this)
 let armedOrder: OrderKind | null = null; // order kind armed via ⇧1-7 / order bar, issued by right-click
 let targetMode: '' | 'barrage' | 'air' | 'wheel' | 'empfire' | 'empsmoke' = '';
+let floorFocus = -1; // -1 = all floors; 0..maxStories-1 = only that floor, others dimmed (F key)
 let winnerAt = -1; // ms timestamp when winner appeared
 let debriefShown = false;
 const mouse = { x: 0, y: 0, onCanvas: false };
@@ -291,6 +292,7 @@ function startEngagementBattle(e: Engagement): void {
   cam.scale = boot.scale;
   mode = 'battle';
   paused = true;
+  floorFocus = -1;
   selectedSquads = [];
   selectedVehicle = -1;
   setTargetMode('');
@@ -691,6 +693,18 @@ window.addEventListener('keydown', (e) => {
   }
 });
 
+// Floor-focus filter (Height E2): F cycles All → Ground → Floor 2 → … → All.
+// Plain keydown listener — migrates into keymap.ts when the controls pass lands.
+window.addEventListener('keydown', (e) => {
+  if (e.key !== 'f' && e.key !== 'F') return;
+  if (mode !== 'battle' || menu.isOpen) return;
+  const t = e.target;
+  if (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement || (t instanceof HTMLElement && t.isContentEditable)) return;
+  const maxStories = sim.map.maxStories;
+  if (maxStories <= 0) return;
+  floorFocus = floorFocus >= maxStories - 1 ? -1 : floorFocus + 1;
+});
+
 // debug/automation handle
 (window as unknown as { __game: object }).__game = {
   get sim() {
@@ -818,7 +832,7 @@ function frame(now: number): void {
       }
     }
 
-    renderer.draw(ctx, cam, selectedSquads, now);
+    renderer.draw(ctx, cam, selectedSquads, now, floorFocus);
     drawOverlays(ctx, cam, sim, {
       pick, shot,
       selectedSquad: primary,
@@ -851,7 +865,7 @@ function frame(now: number): void {
         };
       }
     }
-    hud.update(sim, { selectedSquad: primary, selectedSquads, selectedTeam, selectedVehicle, paused, targetMode, armedOrder, title: battleTitle, keymap: km, objective });
+    hud.update(sim, { selectedSquad: primary, selectedSquads, selectedTeam, selectedVehicle, paused, targetMode, armedOrder, title: battleTitle, keymap: km, objective, floorFocus });
     hud.updateIdle('battle', targetMode !== '' || selectedSquads.length > 0 || selectedVehicle >= 0 || selectedTeam >= 0 || paused);
 
     if (sim.winner && winnerAt < 0) winnerAt = now;

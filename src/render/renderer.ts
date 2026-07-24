@@ -110,7 +110,7 @@ export class Renderer {
     for (const p of planes) this.planes.push({ ...p, at: now });
   }
 
-  draw(ctx: CanvasRenderingContext2D, cam: Camera, selectedSquad: number, now: number): void {
+  draw(ctx: CanvasRenderingContext2D, cam: Camera, selectedSquad: number, now: number, floorFocus = -1): void {
     const cw = ctx.canvas.width;
     const ch = ctx.canvas.height;
     const dt = Math.min(0.1, (now - this.lastNow) / 1000);
@@ -148,24 +148,35 @@ export class Renderer {
     // prior single level-0 pass (no per-soldier level check) — byte-identical
     // flat-map behavior, zero extra work.
     const maxL = this.sim.map.maxStories;
+    // Floor-focus filter (Height E2): with a focus active, soldiers on other
+    // floors draw at 40% alpha. floorFocus===-1 (or maxStories===0, which pins
+    // focus to -1) → zero save/restore, exactly the prior path.
+    const dim = (s: Soldier, fn: () => void): void => {
+      if (floorFocus >= 0 && s.level !== floorFocus) {
+        ctx.save();
+        ctx.globalAlpha = 0.4;
+        fn();
+        ctx.restore();
+      } else fn();
+    };
     if (cam.scale < SPRITE_MIN_SCALE) {
       if (maxL === 0) {
-        for (const s of this.sim.soldiers) if (s.inVehicle < 0 && vis(s)) this.drawDot(ctx, cam, s, selectedSquad, cw, ch);
+        for (const s of this.sim.soldiers) if (s.inVehicle < 0 && vis(s)) dim(s, () => this.drawDot(ctx, cam, s, selectedSquad, cw, ch));
       } else {
         for (let l = 0; l <= maxL; l++)
-          for (const s of this.sim.soldiers) if (s.inVehicle < 0 && vis(s) && s.level === l) this.drawDot(ctx, cam, s, selectedSquad, cw, ch);
+          for (const s of this.sim.soldiers) if (s.inVehicle < 0 && vis(s) && s.level === l) dim(s, () => this.drawDot(ctx, cam, s, selectedSquad, cw, ch));
       }
     } else {
       // dead below downed below the living
       if (maxL === 0) {
-        for (const s of this.sim.soldiers) if (!s.alive && s.inVehicle < 0 && vis(s)) this.drawSoldier(ctx, cam, s, selectedSquad, dt, cw, ch);
-        for (const s of this.sim.soldiers) if (s.alive && s.downed && s.inVehicle < 0 && vis(s)) this.drawSoldier(ctx, cam, s, selectedSquad, dt, cw, ch);
-        for (const s of this.sim.soldiers) if (s.alive && !s.downed && s.inVehicle < 0 && vis(s)) this.drawSoldier(ctx, cam, s, selectedSquad, dt, cw, ch);
+        for (const s of this.sim.soldiers) if (!s.alive && s.inVehicle < 0 && vis(s)) dim(s, () => this.drawSoldier(ctx, cam, s, selectedSquad, dt, cw, ch));
+        for (const s of this.sim.soldiers) if (s.alive && s.downed && s.inVehicle < 0 && vis(s)) dim(s, () => this.drawSoldier(ctx, cam, s, selectedSquad, dt, cw, ch));
+        for (const s of this.sim.soldiers) if (s.alive && !s.downed && s.inVehicle < 0 && vis(s)) dim(s, () => this.drawSoldier(ctx, cam, s, selectedSquad, dt, cw, ch));
       } else {
         for (let l = 0; l <= maxL; l++) {
-          for (const s of this.sim.soldiers) if (!s.alive && s.level === l && s.inVehicle < 0 && vis(s)) this.drawSoldier(ctx, cam, s, selectedSquad, dt, cw, ch);
-          for (const s of this.sim.soldiers) if (s.alive && s.downed && s.level === l && s.inVehicle < 0 && vis(s)) this.drawSoldier(ctx, cam, s, selectedSquad, dt, cw, ch);
-          for (const s of this.sim.soldiers) if (s.alive && !s.downed && s.level === l && s.inVehicle < 0 && vis(s)) this.drawSoldier(ctx, cam, s, selectedSquad, dt, cw, ch);
+          for (const s of this.sim.soldiers) if (!s.alive && s.level === l && s.inVehicle < 0 && vis(s)) dim(s, () => this.drawSoldier(ctx, cam, s, selectedSquad, dt, cw, ch));
+          for (const s of this.sim.soldiers) if (s.alive && s.downed && s.level === l && s.inVehicle < 0 && vis(s)) dim(s, () => this.drawSoldier(ctx, cam, s, selectedSquad, dt, cw, ch));
+          for (const s of this.sim.soldiers) if (s.alive && !s.downed && s.level === l && s.inVehicle < 0 && vis(s)) dim(s, () => this.drawSoldier(ctx, cam, s, selectedSquad, dt, cw, ch));
         }
       }
     }
