@@ -1,7 +1,7 @@
 import type { Camera } from '../render/camera';
 import { woundLabel } from '../sim/body';
 import { TERRAIN, VEHICLES, WEAPONS, type TerrainDef, type TerrainKey, type WeaponDef } from '../sim/data';
-import { sightBetween, type Sim, type Soldier, type Vehicle } from '../sim/sim';
+import { sightBetween, sightToSoldier, type Sim, type Soldier, type Vehicle } from '../sim/sim';
 import { STATE_COLOR } from './hud';
 import { formatCoverBreakdown, formatCoverBreakdownForFloor } from './tooltip-format';
 
@@ -51,7 +51,7 @@ export interface ShotSolution {
   acc: number;
   title: string;
   lines: string[];
-  reason?: 'no-los' | 'concealed' | 'out-of-range' | 'mixed'; // set when !ok — overlays branch on this, never on prose
+  reason?: 'no-los' | 'concealed' | 'out-of-range' | 'mixed' | 'floor-blocked'; // set when !ok — overlays branch on this, never on prose
 }
 
 const pct = (v: number) => `${Math.round(v * 100)}%`;
@@ -96,7 +96,7 @@ export function computeShot(sim: Sim, squadId: number, vehicleId: number, pick: 
     let anyRange = false;
     let anyConcealed = false;
     for (const s of shooters) {
-      const p = sim.shotPreview(s.x, s.y, s.weapon, t, s.path !== null, sim.aimFactor(s));
+      const p = sim.shotPreview(s.x, s.y, s.weapon, t, s.path !== null, sim.aimFactor(s), s.level);
       if (p.dist < nd) {
         nd = p.dist;
         nearest = s;
@@ -108,9 +108,15 @@ export function computeShot(sim: Sim, squadId: number, vehicleId: number, pick: 
       if (!best || p.acc > best.acc) best = { s, acc: p.acc, dist: p.dist, cover: p.cover };
     }
     if (!best) {
-      const reason = anyRange && !anyLos ? (anyConcealed ? 'concealed' : 'no-los') : anyLos && !anyRange ? 'out-of-range' : 'mixed';
-      const text =
-        reason === 'concealed' ? 'target concealed' : reason === 'no-los' ? 'no line of sight' : reason === 'out-of-range' ? 'out of range' : 'no line of sight or out of range';
+      const baseReason = anyRange && !anyLos ? (anyConcealed ? 'concealed' : 'no-los') : anyLos && !anyRange ? 'out-of-range' : 'mixed';
+      // floor-blocked cue: when the block is LOS only, re-run the SAME sight
+      // check with the observer forced onto the target's level. If that
+      // clears, the separator is the floor/ceiling, not a wall — say so.
+      const floorBlocked = baseReason === 'no-los' && sightToSoldier(sim, nearest.x, nearest.y, t, t.level).visible;
+      const reason = floorBlocked ? 'floor-blocked' : baseReason;
+      const text = floorBlocked
+        ? 'blocked by floor/ceiling'
+        : baseReason === 'concealed' ? 'target concealed' : baseReason === 'no-los' ? 'no line of sight' : baseReason === 'out-of-range' ? 'out of range' : 'no line of sight or out of range';
       return { fx: nearest.x, fy: nearest.y, tx: t.x, ty: t.y, ok: false, acc: 0, reason, title: 'NO SHOT', lines: [`${squad.name}: ${text}`] };
     }
     return {

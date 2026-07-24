@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { EDGE, GameMap } from '../src/sim/map';
+import { EDGE, FLOOR_H, GameMap } from '../src/sim/map';
 import { Sim } from '../src/sim/sim';
 import { computeShot, pickAt, type Pick } from '../src/ui/tooltip';
 import { formatCoverBreakdown, formatCoverBreakdownForFloor } from '../src/ui/tooltip-format';
@@ -86,5 +86,61 @@ describe('pickAt tie-breaking by level', () => {
     const pick = pickAt(sim, cam, 200, 150, 400, 300);
     expect(pick?.kind).toBe('soldier');
     if (pick?.kind === 'soldier') expect(pick.s.id).toBe(0);
+  });
+});
+
+// A 2-story building fixture built straight from GameMap APIs: floor tiles,
+// buildingId/stories arrays, perimeter WALL edges with stamped tops, a stair,
+// and (optionally) a full-height interior wall. Two soldiers spawn inside —
+// blue at (5.5, 6.5) (tile 5,6), red at (7.5, 6.5) (tile 7,6) — same building.
+function buildTwoStory(interiorWall: boolean): Sim {
+  const W = 20;
+  const m = new GameMap(W, 20);
+  for (let y = 5; y <= 8; y++)
+    for (let x = 5; x <= 8; x++) {
+      m.setTerrain(x, y, 'floor');
+      m.buildingId[y * W + x] = 0;
+      m.stories[y * W + x] = 2;
+    }
+  m.maxStories = 2;
+  m.stairs[6 * W + 6] = 1;
+  // perimeter walls (one-story partial tops) — exterior; interior rays don't
+  // cross them, but they make the building read as built.
+  const perimTop = FLOOR_H;
+  for (let y = 5; y <= 8; y++) {
+    m.setVEdge(5, y, EDGE.WALL); m.vEdgeTops[y * (W + 1) + 5] = perimTop;
+    m.setVEdge(9, y, EDGE.WALL); m.vEdgeTops[y * (W + 1) + 9] = perimTop;
+  }
+  for (let x = 5; x <= 8; x++) {
+    m.setHEdge(x, 5, EDGE.WALL); m.hEdgeTops[5 * W + x] = perimTop;
+    m.setHEdge(x, 9, EDGE.WALL); m.hEdgeTops[9 * W + x] = perimTop;
+  }
+  if (interiorWall) {
+    // full 2-story wall between tile (5,6) and (6,6) — blocks level-1 eyes
+    m.setVEdge(6, 6, EDGE.WALL); m.vEdgeTops[6 * (W + 1) + 6] = FLOOR_H * 2;
+  }
+  const sim = new Sim(m, 1);
+  sim.addSquad('blue', 'a', [{ name: 'A', weapon: 'garand', x: 5.5, y: 6.5 }]);
+  sim.addSquad('red', 'b', [{ name: 'B', weapon: 'garand', x: 7.5, y: 6.5 }]);
+  return sim;
+}
+
+describe('computeShot floor-blocked cue', () => {
+  it('reports floor-blocked for an upstairs target vs a downstairs observer in the same building', () => {
+    const sim = buildTwoStory(false);
+    sim.soldiers[1].level = 1; // red upstairs; blue stays ground
+    const shot = computeShot(sim, 0, -1, soldierPick(sim, 1));
+    expect(shot?.ok).toBe(false);
+    expect(shot?.reason).toBe('floor-blocked');
+    expect(shot?.lines[0]).toContain('floor/ceiling');
+  });
+
+  it('does NOT fire the cue for a genuine wall block (observer moved upstairs)', () => {
+    const sim = buildTwoStory(true);
+    sim.soldiers[0].level = 1; // blue upstairs
+    sim.soldiers[1].level = 1; // red upstairs, same floor
+    const shot = computeShot(sim, 0, -1, soldierPick(sim, 1));
+    expect(shot?.ok).toBe(false);
+    expect(shot?.reason).toBe('no-los');
   });
 });

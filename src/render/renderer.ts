@@ -46,6 +46,13 @@ import { hash } from './noise';
 // tooltip.ts); fog of war is rendered from this side's knowledge.
 const PLAYER_SIDE: Side = 'blue';
 
+// Floor-badge label cache: level→"floor N" string, filled lazily so the
+// per-frame hot path allocates nothing.
+const FLOOR_BADGE_LABEL: string[] = [];
+function floorBadgeLabel(level: number): string {
+  return (FLOOR_BADGE_LABEL[level] ??= String(level + 1));
+}
+
 export class Renderer {
   private terrain: TerrainLayer;
   private roofs = new RoofLayer();
@@ -136,13 +143,31 @@ export class Renderer {
     const vis = (s: Soldier) => this.sim.soldierVisibleTo(PLAYER_SIDE, s);
     const visV = (v: Vehicle) => this.sim.vehicleVisibleTo(PLAYER_SIDE, v);
     for (const v of this.sim.vehicles) if (!v.alive && visV(v)) this.drawVehicle(ctx, cam, v, now, cw, ch);
+    // Floor-aware draw order: within each category pass, lower floors first
+    // so upper floors paint on top. maxStories===0 collapses to the exact
+    // prior single level-0 pass (no per-soldier level check) — byte-identical
+    // flat-map behavior, zero extra work.
+    const maxL = this.sim.map.maxStories;
     if (cam.scale < SPRITE_MIN_SCALE) {
-      for (const s of this.sim.soldiers) if (s.inVehicle < 0 && vis(s)) this.drawDot(ctx, cam, s, selectedSquad, cw, ch);
+      if (maxL === 0) {
+        for (const s of this.sim.soldiers) if (s.inVehicle < 0 && vis(s)) this.drawDot(ctx, cam, s, selectedSquad, cw, ch);
+      } else {
+        for (let l = 0; l <= maxL; l++)
+          for (const s of this.sim.soldiers) if (s.inVehicle < 0 && vis(s) && s.level === l) this.drawDot(ctx, cam, s, selectedSquad, cw, ch);
+      }
     } else {
       // dead below downed below the living
-      for (const s of this.sim.soldiers) if (!s.alive && s.inVehicle < 0 && vis(s)) this.drawSoldier(ctx, cam, s, selectedSquad, dt, cw, ch);
-      for (const s of this.sim.soldiers) if (s.alive && s.downed && s.inVehicle < 0 && vis(s)) this.drawSoldier(ctx, cam, s, selectedSquad, dt, cw, ch);
-      for (const s of this.sim.soldiers) if (s.alive && !s.downed && s.inVehicle < 0 && vis(s)) this.drawSoldier(ctx, cam, s, selectedSquad, dt, cw, ch);
+      if (maxL === 0) {
+        for (const s of this.sim.soldiers) if (!s.alive && s.inVehicle < 0 && vis(s)) this.drawSoldier(ctx, cam, s, selectedSquad, dt, cw, ch);
+        for (const s of this.sim.soldiers) if (s.alive && s.downed && s.inVehicle < 0 && vis(s)) this.drawSoldier(ctx, cam, s, selectedSquad, dt, cw, ch);
+        for (const s of this.sim.soldiers) if (s.alive && !s.downed && s.inVehicle < 0 && vis(s)) this.drawSoldier(ctx, cam, s, selectedSquad, dt, cw, ch);
+      } else {
+        for (let l = 0; l <= maxL; l++) {
+          for (const s of this.sim.soldiers) if (!s.alive && s.level === l && s.inVehicle < 0 && vis(s)) this.drawSoldier(ctx, cam, s, selectedSquad, dt, cw, ch);
+          for (const s of this.sim.soldiers) if (s.alive && s.downed && s.level === l && s.inVehicle < 0 && vis(s)) this.drawSoldier(ctx, cam, s, selectedSquad, dt, cw, ch);
+          for (const s of this.sim.soldiers) if (s.alive && !s.downed && s.level === l && s.inVehicle < 0 && vis(s)) this.drawSoldier(ctx, cam, s, selectedSquad, dt, cw, ch);
+        }
+      }
     }
     for (const v of this.sim.vehicles) if (v.alive && visV(v)) this.drawVehicle(ctx, cam, v, now, cw, ch);
     for (const e of this.sim.emplacements) if (this.sim.emplacementVisibleTo(PLAYER_SIDE, e)) this.drawEmplacement(ctx, cam, e, selectedSquad, cw, ch);
@@ -560,6 +585,28 @@ export class Renderer {
       ctx.arc(x, y, cam.scale * 0.55 + 1.5, 0, Math.PI * 2);
       ctx.stroke();
     }
+
+    // Floor badge: dark chip with the floor number above the sprite, only for
+    // upper-floor soldiers at readable zoom (the dot path covers zoom-out).
+    if (s.level > 0 && cam.scale >= 14) {
+      const label = floorBadgeLabel(s.level);
+      const fs = Math.max(9, Math.round(cam.scale * 0.42));
+      ctx.font = `${fs}px ui-monospace, Menlo, monospace`;
+      const w = ctx.measureText(label).width + 6;
+      const h = fs + 4;
+      const cy = y - pad / 2 - h / 2 - 1;
+      ctx.fillStyle = 'rgba(18,22,15,0.9)';
+      ctx.fillRect(x - w / 2, cy - h / 2, w, h);
+      ctx.strokeStyle = 'rgba(74,82,64,0.9)';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(x - w / 2, cy - h / 2, w, h);
+      ctx.fillStyle = '#e8e4d8';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(label, x, cy);
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'alphabetic';
+    }
   }
 
   // Far-zoom LOD: the placeholder dot language, which is the right read at 2 px/m.
@@ -603,6 +650,12 @@ export class Renderer {
     if (prone) ctx.ellipse(x, y, r * 1.15, r * 0.6, 0, 0, Math.PI * 2);
     else ctx.arc(x, y, r, 0, Math.PI * 2);
     ctx.fill();
+    // upper-floor dots get a white ring so they read apart from ground level
+    if (s.level > 0) {
+      ctx.strokeStyle = 'rgba(240,236,228,0.9)';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    }
     if (s.suppression > 0.35) {
       ctx.strokeStyle = `rgba(255, 180, 40, ${Math.min(0.9, s.suppression)})`;
       ctx.lineWidth = 1;

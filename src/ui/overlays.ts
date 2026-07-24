@@ -274,7 +274,7 @@ export function drawOverlays(ctx: CanvasRenderingContext2D, cam: Camera, sim: Si
     ctx.setLineDash([]);
     // blocked shots tell the player why, not just that — from the structured reason, never prose
     const blockedLabel =
-      st.shot.reason === 'out-of-range' ? 'OUT OF RANGE' : st.shot.reason === 'no-los' ? 'NO LOS' : st.shot.reason === 'concealed' ? 'CONCEALED' : 'NO SHOT';
+      st.shot.reason === 'out-of-range' ? 'OUT OF RANGE' : st.shot.reason === 'no-los' ? 'NO LOS' : st.shot.reason === 'concealed' ? 'CONCEALED' : st.shot.reason === 'floor-blocked' ? 'FLOOR' : 'NO SHOT';
     chip(ctx, (x0 + x1) / 2, (y0 + y1) / 2, st.shot.ok ? `${Math.round(st.shot.acc * 100)}%` : blockedLabel, st.shot.ok ? '#ffe9a0' : '#a0a090');
   }
 
