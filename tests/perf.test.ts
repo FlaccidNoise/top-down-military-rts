@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { RedCommander } from '../src/sim/ai';
+import { los } from '../src/sim/map';
 import { generateMap, type Vec } from '../src/sim/mapgen';
 import { Sim, type Squad } from '../src/sim/sim';
 import { COMPANY_TOE, companyHeadcount } from '../src/sim/toe';
@@ -66,6 +67,37 @@ function buildScenario(seed: number): Scenario {
   return { sim, commander, spawns: plan.spawns, objectives: plan.objectives, blueSquads };
 }
 
+// buildScenario variant for the 3D/height perf track (plan
+// docs/plans/2026-07-23-3d-height-sim §3): red posts anchor ONLY at 2-story
+// building centers, so the commander's defend orders auto-garrison a large
+// share of the company upstairs (verified: 47/109 red at level 1 after 300
+// warmup ticks on seed 7). Exercises level-threaded sight paths and
+// stair-climb A* every tick, which set-piece-247 barely touches.
+function buildHeightScenario(seed: number): Scenario {
+  const plan = generateMap(seed, MAP_W, MAP_H);
+  const sim = new Sim(plan.map, seed);
+  sim.buildings = plan.buildings;
+
+  const blueKeys = COMPANY_TOE.us_rifle_co;
+  const blueX = plan.spawns.west.x + 7;
+  const blueSquads = blueKeys.map((key, i) => {
+    const y = 10 + (i / (blueKeys.length - 1)) * (plan.map.h - 20);
+    return sim.addSquadFromDef('blue', key, blueX, y);
+  });
+
+  const twoStory = plan.buildings.filter((b) => plan.map.stories[(b.y + (b.h >> 1)) * plan.map.w + b.x + (b.w >> 1)] === 2);
+  const anchors: Vec[] = twoStory.map((b) => ({ x: b.x + b.w / 2, y: b.y + b.h / 2 }));
+  const posts: Record<number, Vec> = {};
+  COMPANY_TOE.de_grenadier_co.forEach((key, i) => {
+    const anchor = anchors[i % anchors.length];
+    const squad = sim.addSquadFromDef('red', key, anchor.x, anchor.y);
+    posts[squad.id] = anchor;
+  });
+  const commander = new RedCommander({ stance: 'defend', posts });
+
+  return { sim, commander, spawns: plan.spawns, objectives: plan.objectives, blueSquads };
+}
+
 function warmup(sim: Sim, commander: RedCommander, ticks: number): void {
   for (let i = 0; i < ticks; i++) {
     commander.update(sim);
@@ -111,6 +143,49 @@ describe('company TOE headcount', () => {
   });
 });
 
+describe('perf: los micro-benchmark', () => {
+  // Isolates los()'s constant factor from whole-tick noise so the 3D plan's
+  // slab-LOS step can't hide a regression inside SANITY_P95_MS's headroom
+  // (docs/plans/2026-07-23-3d-height-sim §3). 10k los() calls between building
+  // tiles of the 16-building seed-7 map, observer/target levels mixed 0..2.
+  //
+  // Measured baseline (pre-slab-LOS, M-series dev box, 2026-07-23): 8.2ms
+  // median of 5 reps. The constant below is padded ~2x for a slow/loaded CI
+  // box (SANITY_P95_MS/BURST_SANITY_MS precedent); the assert then allows the
+  // plan's 1.5x regression headroom on top of that padded baseline.
+  const LOS_MICRO_BASELINE_MS = 16;
+  it('los-micro: 10k mixed-level los() calls on a building-heavy map', () => {
+    const plan = generateMap(SEED, MAP_W, MAP_H);
+    const m = plan.map;
+    const bldg: number[] = [];
+    for (let i = 0; i < m.stories.length; i++) if (m.buildingId[i] >= 0) bldg.push(i);
+    let acc = 0;
+    const run = (): number => {
+      const t0 = performance.now();
+      for (let i = 0; i < 10_000; i++) {
+        const a = bldg[(i * 37) % bldg.length];
+        const b = bldg[(i * 91 + 13) % bldg.length];
+        const r = los(
+          m,
+          (a % m.w) + 0.5,
+          Math.floor(a / m.w) + 0.5,
+          (b % m.w) + 0.5,
+          Math.floor(b / m.w) + 0.5,
+          i % (m.maxStories + 1),
+          (i >> 1) % (m.maxStories + 1),
+        );
+        acc += r.conceal;
+      }
+      return performance.now() - t0;
+    };
+    run(); // JIT warmup, untimed
+    const reps = [run(), run(), run(), run(), run()].sort((x, y) => x - y);
+    const median = reps[2];
+    console.log(`[perf] los-micro ${JSON.stringify({ medianMs: round(median), minMs: round(reps[0]), calls: 10_000, buildingTiles: bldg.length, acc: round(acc) })}`);
+    expect(median).toBeLessThan(LOS_MICRO_BASELINE_MS * 1.5);
+  }, 60_000);
+});
+
 describe('perf: design-scale tick time', () => {
   it('set-piece-247: company vs company, both dug in / settling', () => {
     const { sim, commander } = buildScenario(SEED);
@@ -137,6 +212,20 @@ describe('perf: design-scale tick time', () => {
     console.log(`[perf] order-burst ${JSON.stringify({ burstMs: round(burstMs), followMean: round(mean(follow.all)), followP95: round(p95(follow.all)), soldiers: sim.soldiers.length })}`);
     expect(burstMs).toBeLessThan(BURST_SANITY_MS);
     expect(p95(follow.all)).toBeLessThan(SANITY_P95_MS);
+  }, 120_000);
+
+  it('height-stress: red garrisoned upstairs in 2-story buildings', () => {
+    const { sim, commander } = buildHeightScenario(SEED);
+    warmup(sim, commander, 300);
+    // Scenario validity: the defend auto-garrison must actually have put red
+    // upstairs, or this benchmark exercises nothing new.
+    expect(sim.soldiers.some((s) => s.side === 'red' && s.level === 1)).toBe(true);
+    const d = measureTicks(sim, commander, 600);
+    logPerf('height-stress', d, sim.soldiers.length);
+    // Budget: same SANITY_P95_MS as the flat set-piece — level-threaded sight
+    // adds compares, not new traversals, so this should land within a few
+    // percent of set-piece-247. Tighten only after two green runs (plan §3).
+    expect(p95(d.all)).toBeLessThan(SANITY_P95_MS);
   }, 120_000);
 
   it('ambush-settle: red dug in at its posts, blue never ordered', () => {
