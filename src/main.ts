@@ -37,16 +37,25 @@ const debriefEl = document.createElement('div');
 debriefEl.id = 'debrief';
 document.body.appendChild(debriefEl);
 
+// debug: ?camp=N pins the campaign seed and disables saving (screenshot
+// harness reproducibility — a pinned campaign must never clobber a real save)
+const urlCamp = new URLSearchParams(location.search).get('camp');
+const campPinned = urlCamp !== null && Number.isFinite(Number(urlCamp));
+const campSeed = (): number => (campPinned ? Number(urlCamp) : Date.now() % 100000);
+
 let campaign: Campaign;
 let front: Front;
-const loaded = loadGame();
+const save = () => {
+  if (!campPinned) saveGame(campaign, front);
+};
+const loaded = campPinned ? null : loadGame();
 if (loaded) {
   campaign = loaded.campaign;
   front = loaded.front;
 } else {
-  campaign = newCampaign(Date.now() % 100000);
+  campaign = newCampaign(campSeed());
   front = newFront(campaign, makeDefaultSector());
-  saveGame(campaign, front);
+  save();
 }
 
 const aiParam = new URLSearchParams(location.search).get('ai'); // ?ai=red|blue|both
@@ -311,7 +320,7 @@ function showDebrief(): void {
   const blueAttacked = front.chits.find((ch) => ch.id === e.attackerId)!.side === 'blue';
   const out = applyEngagementOutcome(campaign, front, e, sim);
   pendingEngagement = null;
-  saveGame(campaign, front);
+  save();
 
   const deployedPids = new Set(sim.soldiers.filter((s) => s.side === 'blue').map((s) => s.pid));
   const rows = campaign.companies[battleCompany].squads
@@ -353,7 +362,7 @@ function showDebrief(): void {
 }
 
 function freshCampaign(): void {
-  campaign = newCampaign(Date.now() % 100000);
+  campaign = newCampaign(campSeed());
   front = newFront(campaign, makeDefaultSector());
   stratView = new StrategicView(front.sector);
   selectedChit = -1;
@@ -361,7 +370,7 @@ function freshCampaign(): void {
   opEnded = false;
   prevDay = front.day;
   stratPaused = true;
-  saveGame(campaign, front);
+  save();
   buildCommanders();
 }
 
@@ -778,7 +787,7 @@ function frame(now: number): void {
           }
           syncStrengths(campaign, front);
           prevDay = front.day;
-          saveGame(campaign, front);
+          save();
         }
         if (e) {
           const attacker = front.chits.find((c) => c.id === e.attackerId)!;
@@ -789,7 +798,7 @@ function frame(now: number): void {
           if (attackerIsAI && defenderIsAI) {
             const result = resolveCoarse(campaign, front, e);
             stratView.flash(`${attacker.name} vs ${defender.name}: ${result.record.won ? 'attacker wins' : 'defender holds'}`);
-            saveGame(campaign, front);
+            save();
           } else if (attackerIsAI && !defenderIsAI) {
             pendingEngagement = e;
             stratPaused = true;

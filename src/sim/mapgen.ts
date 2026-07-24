@@ -261,8 +261,13 @@ function tryGenerate(rng: Rng, w: number, h: number, kind: MapKind): MapPlan | n
         if (!road[y * w + x] && !nearBuilding(x, y) && map.terrainKeyAt(x, y) === 'grass') map.setTerrain(x, y, 'field');
   }
 
-  // roads carved last: the corridor is clear by construction
-  for (let i = 0; i < road.length; i++) if (road[i]) map.setTerrain(i % w, (i / w) | 0, 'road');
+  // roads carved last: the corridor is clear by construction. A road tile that
+  // overwrites water is a bridge deck — record it before the water is lost.
+  for (let i = 0; i < road.length; i++)
+    if (road[i]) {
+      map.setTerrain(i % w, (i / w) | 0, 'road');
+      if (water[i]) map.bridges[i] = 1;
+    }
   buildings.forEach((b, i) => {
     map.maxStories = Math.max(map.maxStories, addBuilding(map, b, doorSides[i], i));
   });

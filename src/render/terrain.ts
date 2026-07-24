@@ -130,6 +130,186 @@ function hedgePath(g: Ctx, x: number, y: number, n: boolean, s: boolean, w: bool
   }
 }
 
+// Hedge capsule strokes for a tile range, one visual layer at a time across
+// ALL hedge tiles (AO → cast shadow → green mass → sun rim → foliage dabs).
+// Width/shade vary via the smooth 8m/28m noise fields, not per-tile hash, so
+// adjacent tiles never show a width or value step at the boundary.
+function drawHedgeRun(g: Ctx, map: GameMap, tx0: number, ty0: number, tx1: number, ty1: number): void {
+  const isHedge = (tx: number, ty: number) => map.inBounds(tx, ty) && map.terrainKeyAt(tx, ty) === 'hedge';
+  const tiles: { x: number; y: number; n: boolean; s: boolean; w: boolean; e: boolean; width: number }[] = [];
+  for (let y = ty0; y < ty1; y++) {
+    for (let x = tx0; x < tx1; x++) {
+      if (!isHedge(x, y)) continue;
+      tiles.push({ x, y, n: isHedge(x, y - 1), s: isHedge(x, y + 1), w: isHedge(x - 1, y), e: isHedge(x + 1, y), width: 0.58 + coarse(x, y) * 0.3 });
+    }
+  }
+  if (tiles.length === 0) return;
+  const [sdx, sdy] = shadowOffset(0.4);
+  const pass = (widthOf: (t: (typeof tiles)[0]) => number, styleOf: (t: (typeof tiles)[0]) => string, odx: number, ody: number) => {
+    for (const t of tiles) {
+      g.lineWidth = widthOf(t);
+      g.strokeStyle = styleOf(t);
+      hedgePath(g, t.x, t.y, t.n, t.s, t.w, t.e, odx, ody);
+      g.stroke();
+    }
+  };
+  // base AO: subtle all-around ground darkening at the hedge's foot
+  pass((t) => t.width * 1.3, () => `rgba(8,10,7,${AO_ALPHA * 0.6})`, 0, 0);
+  // soft two-layer SE cast shadow
+  pass((t) => t.width * 1.15, () => `rgba(10,14,8,${SHADOW_SOFT_ALPHA})`, sdx * 1.6, sdy * 1.6);
+  pass((t) => t.width * 1.1, () => `rgba(10,14,8,${SHADOW_ALPHA})`, sdx, sdy);
+  // hedge mass — yellower, denser green than woods
+  pass((t) => t.width, (t) => shade(HEDGE_GREEN, 0.82 + macro(t.x, t.y) * 0.3), 0, 0);
+  // NW rim catching the sun
+  pass((t) => t.width * 0.3, (t) => `rgba(190,215,150,${0.1 + coarse(t.x, t.y) * 0.12})`, -sdx * 0.3, -sdy * 0.3);
+  // foliage dabs: the per-tile lumpiness the old hash width/shade jitter gave,
+  // without the boundary steps — small blobs never cross a tile seam visibly
+  for (const t of tiles) {
+    for (let i = 0; i < 3; i++) {
+      const dx = t.x + 0.28 + hash(t.x, t.y, 54 + i) * 0.44;
+      const dy = t.y + 0.28 + hash(t.x, t.y, 57 + i) * 0.44;
+      g.fillStyle = hash(t.x, t.y, 60 + i) > 0.5 ? shade(HEDGE_GREEN, 0.64) : shade(HEDGE_GREEN, 1.22);
+      g.beginPath();
+      g.arc(dx, dy, 0.06 + hash(t.x, t.y, 63 + i) * 0.08, 0, Math.PI * 2);
+      g.fill();
+    }
+  }
+}
+
+const DECK: [number, number, number] = [118, 96, 68]; // weathered plank
+const DECK_DARK: [number, number, number] = [94, 76, 54];
+
+// Plank deck laid across the direction of travel, curb rails on edges that
+// meet water. `ew` = the crossing runs east-west (water band is N→S).
+function drawBridgeDeck(g: Ctx, x: number, y: number, ew: boolean, waterAt: (tx: number, ty: number) => boolean): void {
+  for (let p = 0; p < 3; p++) {
+    const idx = (ew ? x : y) * 3 + p; // world-space so seams don't repeat tile to tile
+    g.fillStyle = shade(p % 2 ? DECK_DARK : DECK, 0.9 + hash(ew ? idx : x, ew ? y : idx, 110) * 0.16);
+    if (ew) g.fillRect(x + p / 3, y, 1 / 3, 1);
+    else g.fillRect(x, y + p / 3, 1, 1 / 3);
+    g.fillStyle = 'rgba(0,0,0,0.15)';
+    if (ew) g.fillRect(x + p / 3, y, 0.03, 1);
+    else g.fillRect(x, y + p / 3, 1, 0.03);
+  }
+  g.fillStyle = 'rgba(40,34,24,0.9)';
+  if (waterAt(x, y - 1)) g.fillRect(x, y, 1, 0.13);
+  if (waterAt(x, y + 1)) g.fillRect(x, y + 0.87, 1, 0.13);
+  if (waterAt(x - 1, y)) g.fillRect(x, y, 0.13, 1);
+  if (waterAt(x + 1, y)) g.fillRect(x + 0.87, y, 0.13, 1);
+  // sun catches the NW-facing rail tops
+  g.fillStyle = 'rgba(205,195,165,0.3)';
+  if (waterAt(x, y - 1)) g.fillRect(x, y, 1, 0.04);
+  if (waterAt(x - 1, y)) g.fillRect(x, y, 0.04, 1);
+}
+
+// Water banks in a post-pass over finished tile bases: a mud fringe painted
+// onto the LAND side of each bank edge (raster order would overpaint an E/S
+// fringe drawn from the water tile), depth jittered per half-tile so the
+// tile-quantized bank edge stops reading as a hard staircase; then the dark
+// waterline and a few ripple dashes inside the water.
+function drawWaterBanks(g: Ctx, map: GameMap, tx0: number, ty0: number, tx1: number, ty1: number): void {
+  const waterAt = (tx: number, ty: number) => map.inBounds(tx, ty) && map.terrainKeyAt(tx, ty) === 'water';
+  const mudAt = (tx: number, ty: number) => {
+    if (!map.inBounds(tx, ty)) return false;
+    const k = map.terrainKeyAt(tx, ty);
+    return k === 'grass' || k === 'field' || k === 'woods' || k === 'hedge'; // roads keep a clean edge (bridge rails own it)
+  };
+  for (let y = ty0; y < ty1; y++) {
+    for (let x = tx0; x < tx1; x++) {
+      if (!waterAt(x, y)) continue;
+      for (let h = 0; h < 2; h++) {
+        if (mudAt(x, y - 1)) {
+          const d = 0.1 + hash(x * 2 + h, y, 120) * 0.22;
+          g.fillStyle = 'rgba(88,76,52,0.5)';
+          g.fillRect(x + h * 0.5, y - d, 0.5, d);
+          g.fillStyle = 'rgba(50,48,38,0.45)';
+          g.fillRect(x + h * 0.5, y - d * 0.45, 0.5, d * 0.45);
+        }
+        if (mudAt(x, y + 1)) {
+          const d2 = 0.1 + hash(x * 2 + h, y, 121) * 0.22;
+          g.fillStyle = 'rgba(88,76,52,0.5)';
+          g.fillRect(x + h * 0.5, y + 1, 0.5, d2);
+          g.fillStyle = 'rgba(50,48,38,0.45)';
+          g.fillRect(x + h * 0.5, y + 1, 0.5, d2 * 0.45);
+        }
+        if (mudAt(x - 1, y)) {
+          const d3 = 0.1 + hash(x, y * 2 + h, 122) * 0.22;
+          g.fillStyle = 'rgba(88,76,52,0.5)';
+          g.fillRect(x - d3, y + h * 0.5, d3, 0.5);
+          g.fillStyle = 'rgba(50,48,38,0.45)';
+          g.fillRect(x - d3 * 0.45, y + h * 0.5, d3 * 0.45, 0.5);
+        }
+        if (mudAt(x + 1, y)) {
+          const d4 = 0.1 + hash(x, y * 2 + h, 123) * 0.22;
+          g.fillStyle = 'rgba(88,76,52,0.5)';
+          g.fillRect(x + 1, y + h * 0.5, d4, 0.5);
+          g.fillStyle = 'rgba(50,48,38,0.45)';
+          g.fillRect(x + 1, y + h * 0.5, d4 * 0.45, 0.5);
+        }
+      }
+      // dark waterline inside the water tile on every land edge
+      g.fillStyle = 'rgba(30,38,32,0.35)';
+      if (!waterAt(x, y - 1)) g.fillRect(x, y, 1, 0.12);
+      if (!waterAt(x, y + 1)) g.fillRect(x, y + 0.88, 1, 0.12);
+      if (!waterAt(x - 1, y)) g.fillRect(x, y, 0.12, 1);
+      if (!waterAt(x + 1, y)) g.fillRect(x + 0.88, y, 0.12, 1);
+      // ripple dashes just inside the banks
+      g.fillStyle = 'rgba(200,220,225,0.1)';
+      if (!waterAt(x, y - 1) && hash(x, y, 124) < 0.6) g.fillRect(x + hash(x, y, 125) * 0.5, y + 0.2 + hash(x, y, 126) * 0.15, 0.4, 0.05);
+      if (!waterAt(x, y + 1) && hash(x, y, 127) < 0.6) g.fillRect(x + hash(x, y, 128) * 0.5, y + 0.65 + hash(x, y, 129) * 0.15, 0.4, 0.05);
+      if (!waterAt(x - 1, y) && hash(x, y, 130) < 0.6) g.fillRect(x + 0.2 + hash(x, y, 131) * 0.15, y + hash(x, y, 132) * 0.5, 0.05, 0.4);
+      if (!waterAt(x + 1, y) && hash(x, y, 133) < 0.6) g.fillRect(x + 0.65 + hash(x, y, 134) * 0.15, y + hash(x, y, 135) * 0.5, 0.05, 0.4);
+    }
+  }
+}
+
+// Worn dirt trail out from each exterior building door — overlapping ellipses
+// shrinking and fading with distance, wobbled off the straight line. Trails
+// cross tile boundaries, so they run as a post-pass over the finished bases.
+function drawDoorTrails(g: Ctx, map: GameMap, tx0: number, ty0: number, tx1: number, ty1: number): void {
+  const floorAt = (tx: number, ty: number) => map.inBounds(tx, ty) && map.terrainKeyAt(tx, ty) === 'floor';
+  const trail = (px: number, py: number, dx: number, dy: number) => {
+    for (let i = 0; i < 7; i++) {
+      const t = 0.3 + i * 0.42;
+      const wob = (hash(Math.round(px * 4), Math.round(py * 4), 145 + i) - 0.5) * 0.6 * (i / 7);
+      const r = 0.36 - i * 0.028;
+      g.fillStyle = `rgba(139,116,84,${(0.36 - i * 0.045).toFixed(3)})`;
+      g.beginPath();
+      g.ellipse(px + dx * t - dy * wob, py + dy * t + dx * wob, r * (1 + Math.abs(dx) * 0.35), r * (1 + Math.abs(dy) * 0.35), 0, 0, Math.PI * 2);
+      g.fill();
+    }
+  };
+  for (let y = ty0; y <= ty1; y++) {
+    for (let x = tx0; x < tx1; x++) {
+      if (map.hEdge(x, y) !== EDGE.DOOR) continue;
+      const inSouth = floorAt(x, y); // hEdge(x,y) sits on the north side of tile (x,y)
+      if (inSouth === floorAt(x, y - 1)) continue; // internal door (or floating edge)
+      trail(x + 0.5, y, 0, inSouth ? -1 : 1);
+    }
+  }
+  for (let y = ty0; y < ty1; y++) {
+    for (let x = tx0; x <= tx1; x++) {
+      if (map.vEdge(x, y) !== EDGE.DOOR) continue;
+      const inEast = floorAt(x, y); // vEdge(x,y) sits on the west side of tile (x,y)
+      if (inEast === floorAt(x - 1, y)) continue;
+      trail(x, y + 0.5, inEast ? -1 : 1, 0);
+    }
+  }
+}
+
+// 2x2 sub-tile sampling of the woods-ground tone (same fix grass got — a
+// single flat per-tile value reads as a 1m checkerboard through canopy gaps
+// at high zoom). `darken` dims it under hedges.
+function drawSubTileGround(g: Ctx, x: number, y: number, darken = 1): void {
+  for (let sub = 0; sub < 4; sub++) {
+    const sx = x + (sub & 1) * 0.5;
+    const sy = y + (sub >> 1) * 0.5;
+    const sv = (0.9 + coarse(sx + 0.25, sy + 0.25) * 0.12 + hash(x, y, sub) * 0.04) * darken;
+    g.fillStyle = shade(WOODS_GROUND, sv);
+    g.fillRect(sx, sy, 0.5, 0.5);
+  }
+}
+
 function drawTileBase(g: Ctx, map: GameMap, x: number, y: number): void {
   const t = map.terrainKeyAt(x, y);
   const v = 0.93 + coarse(x, y) * 0.1 + hash(x, y) * 0.04;
@@ -154,7 +334,29 @@ function drawTileBase(g: Ctx, map: GameMap, x: number, y: number): void {
       g.fillStyle = hash(x, y, 30 + i) > 0.7 ? shade(GRASS_DRY, 1.15) : shade(GRASS, h1 > 0.5 ? 1.18 : 0.78);
       g.fillRect(x + h1, y + h2, sz, sz);
     }
+    // dusty verge where grass meets road: half-tile strips of jittered depth,
+    // so traffic wear bleeds past the road's own shoulder without a hard line
+    const roadAt = (tx: number, ty: number) => map.inBounds(tx, ty) && map.terrainKeyAt(tx, ty) === 'road';
+    for (let h = 0; h < 2; h++) {
+      const d = 0.14 + hash(x * 2 + h, y, 140) * 0.24;
+      g.fillStyle = `rgba(168,140,92,${0.1 + hash(x * 2 + h, y, 141) * 0.1})`;
+      if (roadAt(x, y - 1)) g.fillRect(x + h * 0.5, y, 0.5, d);
+      if (roadAt(x, y + 1)) g.fillRect(x + h * 0.5, y + 1 - d, 0.5, d);
+      const dv = 0.14 + hash(x, y * 2 + h, 142) * 0.24;
+      g.fillStyle = `rgba(168,140,92,${0.1 + hash(x, y * 2 + h, 143) * 0.1})`;
+      if (roadAt(x - 1, y)) g.fillRect(x, y + h * 0.5, dv, 0.5);
+      if (roadAt(x + 1, y)) g.fillRect(x + 1 - dv, y + h * 0.5, dv, 0.5);
+    }
   } else if (t === 'road') {
+    // a road tile that overwrote water is a bridge deck (map.bridges, set by
+    // mapgen — NOT re-guessed from proximity, which mislabels roads merely
+    // running alongside a river). Orientation/rails read the real water band.
+    if (map.isBridge(x, y)) {
+      const waterAt = (tx: number, ty: number) => map.inBounds(tx, ty) && map.terrainKeyAt(tx, ty) === 'water';
+      const ew = waterAt(x, y - 1) || waterAt(x, y - 2) || waterAt(x, y + 1) || waterAt(x, y + 2); // band is N→S ⇒ crossing runs E→W
+      drawBridgeDeck(g, x, y, ew, waterAt);
+      return;
+    }
     g.fillStyle = shade(ROAD, v);
     g.fillRect(x, y, 1, 1);
     g.fillStyle = 'rgba(0,0,0,0.07)';
@@ -189,8 +391,7 @@ function drawTileBase(g: Ctx, map: GameMap, x: number, y: number): void {
       g.fillRect(x + 0.69, y, 0.09, 1);
     }
   } else if (t === 'woods') {
-    g.fillStyle = shade(WOODS_GROUND, v);
-    g.fillRect(x, y, 1, 1);
+    drawSubTileGround(g, x, y);
     // leaf litter / undergrowth texture
     for (let i = 0; i < 4; i++) {
       const lx = x + hash(x, y, 80 + i);
@@ -201,39 +402,11 @@ function drawTileBase(g: Ctx, map: GameMap, x: number, y: number): void {
       g.fill();
     }
   } else if (t === 'hedge') {
-    const isHedge = (tx: number, ty: number) => map.inBounds(tx, ty) && map.terrainKeyAt(tx, ty) === 'hedge';
-    const n = isHedge(x, y - 1);
-    const s = isHedge(x, y + 1);
-    const w = isHedge(x - 1, y);
-    const e = isHedge(x + 1, y);
-    g.fillStyle = shade(WOODS_GROUND, v * 0.88);
-    g.fillRect(x, y, 1, 1);
-    const width = 0.58 + hash(x, y, 51) * 0.3;
-    const [sdx, sdy] = shadowOffset(0.4);
-    // base AO: subtle all-around ground darkening at the hedge's foot
-    g.lineWidth = width * 1.3;
-    g.strokeStyle = `rgba(8,10,7,${AO_ALPHA * 0.6})`;
-    hedgePath(g, x, y, n, s, w, e, 0, 0);
-    g.stroke();
-    // soft two-layer SE cast shadow
-    g.lineWidth = width * 1.15;
-    g.strokeStyle = `rgba(10,14,8,${SHADOW_SOFT_ALPHA})`;
-    hedgePath(g, x, y, n, s, w, e, sdx * 1.6, sdy * 1.6);
-    g.stroke();
-    g.lineWidth = width * 1.1;
-    g.strokeStyle = `rgba(10,14,8,${SHADOW_ALPHA})`;
-    hedgePath(g, x, y, n, s, w, e, sdx, sdy);
-    g.stroke();
-    // hedge mass — yellower, denser green than woods
-    g.lineWidth = width;
-    g.strokeStyle = shade(HEDGE_GREEN, 0.82 + hash(x, y, 52) * 0.3);
-    hedgePath(g, x, y, n, s, w, e, 0, 0);
-    g.stroke();
-    // NW rim catching the sun
-    g.lineWidth = width * 0.3;
-    g.strokeStyle = `rgba(190,215,150,${0.1 + hash(x, y, 53) * 0.12})`;
-    hedgePath(g, x, y, n, s, w, e, -sdx * 0.3, -sdy * 0.3);
-    g.stroke();
+    // ground under the hedge only — the capsule strokes are drawn by
+    // drawHedgeRun in whole-run passes (per-tile stroke stacks let a tile's
+    // dark AO/shadow overpaint the neighbor's green mass, which is what read
+    // as per-tile capsule segmentation at 24 px/m)
+    drawSubTileGround(g, x, y, 0.88);
   } else if (t === 'field') {
     const bx = x >> 3; // 8m parcel block — furrow geometry only, color stays smooth
     const by = y >> 3;
@@ -269,13 +442,8 @@ function drawTileBase(g: Ctx, map: GameMap, x: number, y: number): void {
       if (hash(x, y, 92 + i) < 0.35)
         g.fillRect(x + hash(x, y, 94 + i) * 0.9, y + hash(x, y, 96 + i) * 0.6, 0.06, 0.3 + hash(x, y, 98 + i) * 0.3);
     }
-    // dark bank line where water meets land
-    const waterAt = (tx: number, ty: number) => map.inBounds(tx, ty) && map.terrainKeyAt(tx, ty) === 'water';
-    g.fillStyle = 'rgba(30,38,32,0.35)';
-    if (!waterAt(x, y - 1)) g.fillRect(x, y, 1, 0.12);
-    if (!waterAt(x, y + 1)) g.fillRect(x, y + 0.88, 1, 0.12);
-    if (!waterAt(x - 1, y)) g.fillRect(x, y, 0.12, 1);
-    if (!waterAt(x + 1, y)) g.fillRect(x + 0.88, y, 0.12, 1);
+    // bank treatment lives in drawWaterBanks (post-pass — the mud fringe
+    // paints onto neighboring land tiles, which raster order would overpaint)
   } else {
     // floor: plank rows every 0.33m, two wood tones, staggered butt joints.
     // rowIdx is world-space (y*3+r) so joints don't repeat identically tile to tile.
@@ -294,8 +462,12 @@ function drawTileBase(g: Ctx, map: GameMap, x: number, y: number): void {
 
 function drawTree(g: Ctx, map: GameMap, x: number, y: number): void {
   const wooded = (tx: number, ty: number) => map.inBounds(tx, ty) && map.terrainKeyAt(tx, ty) === 'woods';
-  const isolated = !wooded(x - 1, y) && !wooded(x + 1, y) && !wooded(x, y - 1) && !wooded(x, y + 1);
-  if (!isolated && hash(x, y, 40) >= 0.55) return;
+  // Canopy-gap culling is only safe deep inside a stand, where the bare (darker)
+  // woods floor sits under surrounding canopy. On an edge tile — any non-woods
+  // orthogonal neighbor — a culled tree exposes the dark floor square against
+  // the lighter grass, which reads as a hard dark rectangle. Keep edge trees.
+  const interior = wooded(x - 1, y) && wooded(x + 1, y) && wooded(x, y - 1) && wooded(x, y + 1);
+  if (interior && hash(x, y, 40) >= 0.55) return;
   const cx = x + 0.3 + hash(x, y, 41) * 0.4;
   const cy = y + 0.3 + hash(x, y, 42) * 0.4;
   const r = 0.55 + hash(x, y, 43) * 0.4; // may overhang up to ~1 tile — chunks overscan by `pad`, so this is safe
@@ -378,6 +550,9 @@ export class TerrainLayer {
     for (let y = ty0; y < ty1; y++) {
       for (let x = tx0; x < tx1; x++) drawTileBase(g, this.map, x, y);
     }
+    drawWaterBanks(g, this.map, tx0, ty0, tx1, ty1);
+    drawDoorTrails(g, this.map, tx0, ty0, tx1, ty1);
+    drawHedgeRun(g, this.map, tx0, ty0, tx1, ty1);
     for (let y = ty0; y < ty1; y++) {
       for (let x = tx0; x < tx1; x++) {
         if (this.map.terrainKeyAt(x, y) === 'woods') drawTree(g, this.map, x, y);

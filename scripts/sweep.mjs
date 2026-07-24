@@ -1,0 +1,65 @@
+// Seed-sweep screenshot harness — the regression gate for all art work.
+//
+// Captures a fixed grid of crops (village, woods, hamlet, farm, bocage,
+// units, far-LOD, + bridge/river water) across N seeds against a PINNED
+// campaign (?camp= disables saving, so runs never touch a real save).
+// Scenes are static: battle boots paused and the sim is never stepped, so
+// no winner → no debrief race, and pixels are deterministic (all art noise
+// flows through the shared render hash).
+//
+// Staging + target derivation live in ./lib/stage.mjs (shared with vfx.mjs and
+// shot.mjs) so every tool jumps to a scene the same way.
+//
+// Usage: node scripts/sweep.mjs [--port 5198] [--seeds 1,2,3]
+//   Dev server must already be running: npm run dev -- --port 5198 --strictPort
+//   Output: .screenshots/sweep/s<seed>-<crop>.png + index.html contact sheet
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { arg, launch, gotoStaged, deriveTargets, place } from './lib/stage.mjs';
+
+const PORT = Number(arg('port', '5198'));
+const SEEDS = arg('seeds', '1,2,3,4,5,6,7,8,9,10').split(',').map(Number);
+const CAMP = 42; // pinned campaign — fixed chit layout across runs
+// Water art never shows up unless a red chit happens to sit on a river cell,
+// so two sweep slots force the defender's cell terrain before carving.
+const FORCE_KIND = { 3: 'bridge', 8: 'river' };
+const ORDER = ['farlod', 'village', 'woods', 'hamlet', 'farm', 'bocage', 'units', 'enemy'];
+const OUT = '.screenshots/sweep';
+
+mkdirSync(OUT, { recursive: true });
+const { browser, page } = await launch();
+
+const shots = []; // {seed, crop, file}
+for (const seed of SEEDS) {
+  console.log(`seed ${seed}${FORCE_KIND[seed] ? ` (${FORCE_KIND[seed]})` : ''}`);
+  const kind = await gotoStaged(page, { port: PORT, seed, camp: CAMP, forceKind: FORCE_KIND[seed] });
+  const targets = await deriveTargets(page, { seed, kind });
+  const order = targets.bridge ? [...ORDER, 'bridge'] : ORDER;
+  for (const name of order) {
+    const t = targets[name];
+    await place(page, t.x, t.y, t.scale);
+    const file = `s${seed}-${name}.png`;
+    await page.screenshot({ path: join(OUT, file) });
+    shots.push({ seed, crop: name, file });
+  }
+}
+await browser.close();
+
+// contact sheet: rows = seeds, cols = crops
+const cols = [...new Set(shots.map((s) => s.crop))];
+const rows = SEEDS.map((seed) => {
+  const cells = cols.map((c) => {
+    const s = shots.find((x) => x.seed === seed && x.crop === c);
+    return s ? `<td><a href="${s.file}"><img src="${s.file}" loading="lazy"></a></td>` : '<td></td>';
+  });
+  return `<tr><th>s${seed}</th>${cells.join('')}</tr>`;
+});
+writeFileSync(
+  join(OUT, 'index.html'),
+  `<!doctype html><title>seed sweep</title><style>
+  body{background:#222;color:#ddd;font:12px monospace}img{width:240px;display:block}
+  td,th{padding:2px}th{position:sticky;left:0;background:#222}a{color:#7bf}
+  </style><p><a href="../vfx/index.html">→ dynamic VFX gate</a> · static art sweep</p>
+  <table><tr><th></th>${cols.map((c) => `<th>${c}</th>`).join('')}</tr>${rows.join('')}</table>`
+);
+console.log(`${shots.length} shots → ${OUT}/index.html`);

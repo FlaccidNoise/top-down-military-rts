@@ -23,6 +23,12 @@ export class GameMap {
   readonly hEdgeTops: Uint8Array; // top height (m) of a horizontal wall edge; 0 = full-height block
   readonly vEdgeTops: Uint8Array; // top height (m) of a vertical wall edge; 0 = full-height block
   maxStories = 0;
+  // Road tiles carved over the water band — passable road to the sim (no
+  // separate terrain kind), a plank deck to the renderer. Recorded by mapgen
+  // because the road overwrites the water, destroying the overlap the renderer
+  // would otherwise have to re-guess from proximity (which mislabels roads
+  // merely running alongside a river as bridges).
+  readonly bridges: Uint8Array;
 
   constructor(readonly w: number, readonly h: number, fill: TerrainKey = 'grass') {
     this.tiles = new Uint8Array(w * h).fill(TERRAIN_KEYS.indexOf(fill));
@@ -34,6 +40,11 @@ export class GameMap {
     this.stairs = new Uint8Array(w * h);
     this.hEdgeTops = new Uint8Array((h + 1) * w);
     this.vEdgeTops = new Uint8Array(h * (w + 1));
+    this.bridges = new Uint8Array(w * h);
+  }
+
+  isBridge(x: number, y: number): boolean {
+    return this.inBounds(x, y) && this.bridges[y * this.w + x] === 1;
   }
 
   inBounds(x: number, y: number): boolean {

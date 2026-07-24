@@ -149,6 +149,9 @@ export class RoofLayer {
       // core offset (0.71m) matches the old fixed (0.45,0.55) rect offset in
       // magnitude; the soft layer extends further along the same sun direction.
       this.buildings.forEach((b, i) => {
+        // shadow tracks the roof fade: a faded roof (zoomed-in interior reveal)
+        // must not leave a full-footprint shadow rect stranded on the ground
+        // with no roof above it — it reads as a dark terrain stain.
         const a = this.alphas[i];
         // drop shadow lengthens with height: taller building, longer shadow.
         // stories is min 1, so 1-story/flat maps keep the old 0.71/1.1 offsets.
