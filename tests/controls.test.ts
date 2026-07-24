@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULTS, CONTEXT, loadKeymap, saveKeymap, formatBinding, actionForEvent, rebind, type Keymap } from '../src/ui/keymap';
+import { DEFAULTS, CONTEXT, loadKeymap, saveKeymap, formatBinding, actionForEvent, rebind, type ActionId, type Keymap } from '../src/ui/keymap';
 import { GameMap } from '../src/sim/map';
 import { Sim, fanOffsets, formationSlots, OFFSETS } from '../src/sim/sim';
 
@@ -28,6 +28,14 @@ describe('keymap', () => {
       expect(km.bindings.pause).toEqual(DEFAULTS.pause);
       expect(km.bindings.squad1).toEqual(DEFAULTS.squad1);
       expect(km.version).toBe(0);
+    });
+
+    it('WASD pan defaults own A; airstrike moved to E (no battle-context clash)', () => {
+      expect(DEFAULTS.panLeft).toEqual({ code: 'KeyA' });
+      expect(DEFAULTS.airstrike).toEqual({ code: 'KeyE' });
+      const battleIds = (Object.keys(CONTEXT) as ActionId[]).filter((id) => CONTEXT[id] === 'battle');
+      const keys = battleIds.map((id) => `${DEFAULTS[id].code}|${DEFAULTS[id].shift ?? false}`);
+      expect(new Set(keys).size).toBe(keys.length);
     });
 
     it('saveKeymap + loadKeymap round-trips custom bindings', () => {

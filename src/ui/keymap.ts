@@ -4,6 +4,7 @@
 export type ActionId =
   | 'pause' | 'mute' | 'menu' | 'cancel'            // global
   | 'barrage' | 'airstrike'                         // battle-global
+  | 'panUp' | 'panDown' | 'panLeft' | 'panRight'    // battle camera
   | 'squad1' | 'squad2' | 'squad3' | 'squad4' | 'squad5' | 'squad6' | 'squad7' | 'squad8' | 'squad9'  // battle
   | 'order1' | 'order2' | 'order3' | 'order4' | 'order5' | 'order6' | 'order7' | 'order8'              // battle
   | 'speed1' | 'speed2' | 'speed3';                 // strategic
@@ -21,7 +22,11 @@ export const DEFAULTS: Record<ActionId, Binding> = {
   menu:      { code: 'Escape' },
   cancel:    { code: 'Escape' },
   barrage:   { code: 'KeyB' },
-  airstrike: { code: 'KeyA' },
+  airstrike: { code: 'KeyE' },
+  panUp:     { code: 'KeyW' },
+  panDown:   { code: 'KeyS' },
+  panLeft:   { code: 'KeyA' },
+  panRight:  { code: 'KeyD' },
   squad1:    { code: 'Digit1' }, squad2: { code: 'Digit2' }, squad3: { code: 'Digit3' },
   squad4:    { code: 'Digit4' }, squad5: { code: 'Digit5' }, squad6: { code: 'Digit6' },
   squad7:    { code: 'Digit7' }, squad8: { code: 'Digit8' }, squad9: { code: 'Digit9' },
@@ -35,6 +40,7 @@ export const DEFAULTS: Record<ActionId, Binding> = {
 export const CONTEXT: Record<ActionId, 'global' | 'battle' | 'strategic'> = {
   pause: 'global', mute: 'global', menu: 'global', cancel: 'global',
   barrage: 'battle', airstrike: 'battle',
+  panUp: 'battle', panDown: 'battle', panLeft: 'battle', panRight: 'battle',
   squad1: 'battle', squad2: 'battle', squad3: 'battle', squad4: 'battle', squad5: 'battle',
   squad6: 'battle', squad7: 'battle', squad8: 'battle', squad9: 'battle',
   order1: 'battle', order2: 'battle', order3: 'battle', order4: 'battle',
@@ -47,6 +53,7 @@ const ORDER_KINDS_LABEL = ['Move', 'Fast', 'Sneak', 'Fire', 'Smoke', 'Defend', '
 export const LABEL: Record<ActionId, string> = {
   pause: 'Pause', mute: 'Mute', menu: 'Menu', cancel: 'Cancel',
   barrage: 'Barrage', airstrike: 'Airstrike',
+  panUp: 'Pan camera up', panDown: 'Pan camera down', panLeft: 'Pan camera left', panRight: 'Pan camera right',
   squad1: 'Select squad 1', squad2: 'Select squad 2', squad3: 'Select squad 3',
   squad4: 'Select squad 4', squad5: 'Select squad 5', squad6: 'Select squad 6',
   squad7: 'Select squad 7', squad8: 'Select squad 8', squad9: 'Select squad 9',

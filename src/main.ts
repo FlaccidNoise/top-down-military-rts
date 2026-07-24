@@ -622,13 +622,19 @@ window.addEventListener('mouseup', (e) => {
 canvas.addEventListener('wheel', (e) => {
   e.preventDefault();
   if (mode !== 'battle') return;
-  if (e.ctrlKey || e.shiftKey) {
-    cam.zoom(Math.pow(1.1, -e.deltaY / 100), e.clientX, e.clientY, canvas.width, canvas.height);
-  } else {
-    cam.x -= e.deltaX / cam.scale;
-    cam.y -= e.deltaY / cam.scale;
-  }
+  // scroll = zoom (trackpad two-finger scroll, pinch, and mouse wheel alike);
+  // ~1.003^px: a trackpad flick ramps fast, a mouse notch (dy≈100) ≈1.35×
+  const dy = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;
+  cam.zoom(Math.pow(1.003, -dy), e.clientX, e.clientY, canvas.width, canvas.height);
 });
+
+// WASD camera pan: held-key set keyed by event.code so a keyup always clears
+// (actionForEvent's shift-exactness would miss shift-state changes mid-hold).
+const PAN_DIRS: Record<string, [number, number]> = { panUp: [0, -1], panDown: [0, 1], panLeft: [-1, 0], panRight: [1, 0] };
+const panHeld = new Map<string, [number, number]>();
+const PAN_PX_PER_SEC = 550;
+window.addEventListener('keyup', (e) => panHeld.delete(e.code));
+window.addEventListener('blur', () => panHeld.clear());
 window.addEventListener('keydown', (e) => {
   if (menu.isOpen) {
     // rebind capture handles keys first (capture phase); menu/cancel closes
@@ -640,7 +646,12 @@ window.addEventListener('keydown', (e) => {
   const km = loadKeymap(localStorage);
   const action = actionForEvent(e, km);
   if (!action) return;
-  
+
+  if (action in PAN_DIRS) {
+    if (mode === 'battle') panHeld.set(e.code, PAN_DIRS[action]);
+    return;
+  }
+
   e.preventDefault();
   
   // Global actions
@@ -737,6 +748,17 @@ const DT_MS = DT * 1000;
 function frame(now: number): void {
   const dtReal = Math.min(now - last, 250);
   last = now;
+  if (mode === 'battle' && panHeld.size > 0 && !menu.isOpen) {
+    let pdx = 0;
+    let pdy = 0;
+    for (const [dx, dy] of panHeld.values()) { pdx += dx; pdy += dy; }
+    const mag = Math.hypot(pdx, pdy);
+    if (mag > 0) {
+      const step = (PAN_PX_PER_SEC / cam.scale) * (dtReal / 1000) / mag;
+      cam.x += pdx * step;
+      cam.y += pdy * step;
+    }
+  }
   hud.root.style.display = mode === 'battle' ? '' : 'none';
   stratHud.root.style.display = mode === 'strategic' ? '' : 'none';
   if (mode === 'strategic') {
