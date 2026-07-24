@@ -103,7 +103,10 @@ function buildTwoStory(interiorWall: boolean): Sim {
       m.stories[y * W + x] = 2;
     }
   m.maxStories = 2;
-  m.stairs[6 * W + 6] = 1;
+  // stair at (6,5) — deliberately OFF the (5.5,6.5)->(7.5,6.5) test ray:
+  // with slab LOS a stair on the ray is an open sightline between floors,
+  // which is not what the floor-blocked cue tests below exercise.
+  m.stairs[5 * W + 6] = 1;
   // perimeter walls (one-story partial tops) — exterior; interior rays don't
   // cross them, but they make the building read as built.
   const perimTop = FLOOR_H;

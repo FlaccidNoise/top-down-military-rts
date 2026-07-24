@@ -140,13 +140,13 @@ export function los(map: GameMap, x0: number, y0: number, x1: number, y1: number
   let cover = map.terrainAt(tx1, ty1).cover;
   if (tx === tx1 && ty === ty1) return { visible: true, cover, conceal: 0 };
 
-  // floor/ceiling between same building different levels
-  if (l0 !== l1) {
-    const bId0 = map.buildingIdAt(tx0, ty0);
-    if (bId0 >= 0 && map.buildingIdAt(tx1, ty1) === bId0) {
-      return { visible: false, cover: 0, conceal: 1 };
-    }
-  }
+  // Slab occlusion gate: flat maps (maxStories === 0) execute zero new
+  // instructions below — byte-identical to the legacy los().
+  const slabs = map.maxStories > 0;
+  const storiesArr = map.stories;
+  const stairsArr = map.stairs;
+  const elevArr = map.elev;
+  const w = map.w;
 
   const dx = x1 - x0;
   const dy = y1 - y0;
@@ -163,6 +163,27 @@ export function los(map: GameMap, x0: number, y0: number, x1: number, y1: number
   const z0 = map.elevAt(tx0, ty0) + l0 * FLOOR_H + EYE_H;
   const z1 = map.elevAt(tx1, ty1) + l1 * FLOOR_H + EYE_H;
   const dz = z1 - z0;
+
+  // Slab test for the observer's own tile (never "entered" by the traversal
+  // below). The eye sits between slabs, so this only blocks when the ray
+  // genuinely crosses a slab before leaving the tile — e.g. a downstairs eye
+  // whose ray to an upstairs target rises through the floor slab of his own
+  // room. An upstairs eye firing along/out of his floor never straddles.
+  if (slabs) {
+    const i = ty * w + tx;
+    const s = storiesArr[i];
+    if (s > 0 && stairsArr[i] === 0) {
+      const tExit = tMaxX < tMaxY ? tMaxX : tMaxY;
+      const zB = z0 + dz * tExit;
+      const zLo = z0 < zB ? z0 : zB;
+      const zHi = z0 < zB ? zB : z0;
+      const base = elevArr[i];
+      for (let k = 1; k <= s; k++) {
+        const zk = base + k * FLOOR_H;
+        if (zLo < zk && zk <= zHi) return { visible: false, cover: 0, conceal: 1 };
+      }
+    }
+  }
 
   let opacity = 0;
   let lastWindowT = -1;
@@ -193,6 +214,31 @@ export function los(map: GameMap, x0: number, y0: number, x1: number, y1: number
       tEntry = tMaxY;
       ty += stepY;
       tMaxY += tDeltaY;
+    }
+    if (slabs) {
+      // Floor/ceiling slabs: a building tile (stories > 0) that is not a
+      // stairwell implicitly contains horizontal slab planes at
+      // z_k = elev + k*FLOOR_H for k = 1..stories. If the eye-line segment
+      // across this tile straddles any slab plane, the ray passes through a
+      // floor/ceiling — blocked. Stair tiles are the opening in the slab and
+      // skip the test. Applied to every ENTERED tile including the target
+      // tile (a straddle there means the ray genuinely crosses a slab inside
+      // it — eyes sit between slabs, so they never straddle on their own).
+      // +−× comparisons only (§7 determinism).
+      const i = ty * w + tx;
+      const s = storiesArr[i];
+      if (s > 0 && stairsArr[i] === 0) {
+        const tExit = tx === tx1 && ty === ty1 ? 1 : tMaxX < tMaxY ? tMaxX : tMaxY;
+        const zA = z0 + dz * tEntry;
+        const zB = z0 + dz * tExit;
+        const zLo = zA < zB ? zA : zB;
+        const zHi = zA < zB ? zB : zA;
+        const base = elevArr[i];
+        for (let k = 1; k <= s; k++) {
+          const zk = base + k * FLOOR_H;
+          if (zLo < zk && zk <= zHi) return { visible: false, cover: 0, conceal: 1 };
+        }
+      }
     }
     if (tx !== tx1 || ty !== ty1) {
       const t = map.terrainAt(tx, ty);
