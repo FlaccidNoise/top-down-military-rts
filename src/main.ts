@@ -769,7 +769,6 @@ function frame(now: number): void {
   stratHud.root.style.display = mode === 'strategic' ? '' : 'none';
   if (mode === 'strategic') {
     hud.updateIdle('strategic', selectedChit >= 0 || stratPaused);
-    stratHud.update(front, campaign, selectedChit, stratPaused);
     if (!stratPaused && !pendingEngagement && !opEnded) {
       stratAcc += (dtReal / 1000) * SPEEDS[speedIdx];
       while (stratAcc >= 1 && !pendingEngagement) {
@@ -794,7 +793,7 @@ function frame(now: number): void {
           
           if (attackerIsAI && defenderIsAI) {
             const result = resolveCoarse(campaign, front, e);
-            stratView.flash(`${attacker.name} vs ${defender.name}: ${result.record.won ? 'attacker wins' : 'defender holds'}`);
+            stratView.flash(`${attacker.name} vs ${defender.name}: ${result.attackerWon ? 'attacker wins' : 'defender holds'}`);
             saveGame(campaign, front);
           } else if (attackerIsAI && !defenderIsAI) {
             pendingEngagement = e;
