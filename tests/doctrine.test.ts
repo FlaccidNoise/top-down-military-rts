@@ -15,16 +15,18 @@ function mean(xs: number[]): number {
 
 // Honesty audit (spec: ai-commander.md "log every commander decision's
 // input set; assert no reads outside belief state + briefing"). Pragmatic,
-// code-review-level check: RedCommander is red-only, so any literal
-// reference to the opposing side's identity anywhere in the module's source
-// would mean a direct read of enemy state outside visibleEnemies()/
-// dangerScore(). The behavioral test below (ambush honesty) backs this up
-// at runtime.
+// code-review-level check: the commander is side-generalized (cfg.side),
+// so a quoted literal for EITHER side's identity anywhere in the module's
+// source would mean a hardcoded read of one side's state outside
+// visibleEnemies()/dangerScore(). The behavioral test below (ambush
+// honesty) backs this up at runtime.
 describe('honesty audit', () => {
-  it("ai.ts never references the enemy side's own literal", () => {
+  it("ai.ts never references either side's own literal", () => {
     const src = readFileSync(new URL('../src/sim/ai.ts', import.meta.url), 'utf8');
     expect(src).not.toContain("'blue'");
     expect(src).not.toContain('"blue"');
+    expect(src).not.toContain("'red'");
+    expect(src).not.toContain('"red"');
   });
 });
 
@@ -51,7 +53,41 @@ describe('AI commander doctrine', () => {
       { name: 'B2', weapon: 'kar98k', x: 122.5, y: 31.5 },
     ]);
     const startX = 40.5;
-    const commander = new RedCommander({ stance: 'attack', posts: { [mg.id]: post, [rifle.id]: post } });
+    const commander = new RedCommander({ side: 'red', stance: 'attack', posts: { [mg.id]: post, [rifle.id]: post } });
+
+    for (let i = 0; i < 6000; i++) {
+      commander.update(sim);
+      sim.step();
+    }
+    const alive = rifle.soldierIds.map((id) => sim.soldiers[id]).filter((s) => s.alive);
+    expect(alive.length).toBeGreaterThan(0);
+    const endX = alive.reduce((a, s) => a + s.x, 0) / alive.length;
+    expect(endX - startX).toBeGreaterThanOrEqual(40);
+  });
+
+  it('aggression: attack-stance BLUE gains at least 40m toward its post by tick 6000, vs a passive red', () => {
+    const map = new GameMap(140, 60);
+    const sim = new Sim(map, 100);
+    const post = { x: 120, y: 30 };
+    const mg = sim.addSquad('blue', 'MG', [
+      { name: 'G', weapon: 'm1919', x: 40.5, y: 30.5 },
+      { name: 'A1', weapon: 'garand', x: 41.5, y: 29.5 },
+      { name: 'A2', weapon: 'garand', x: 41.5, y: 31.5 },
+    ]);
+    const rifle = sim.addSquad(
+      'blue',
+      'Rifle',
+      Array.from({ length: 6 }, (_, i) => ({ name: `R${i}`, weapon: 'garand' as const, x: 40.5, y: 20.5 + i, xp: 20 })),
+    );
+    rifle.soldierIds.forEach((id) => (sim.soldiers[id].morale = 1));
+    sim.soldiers[rifle.soldierIds[0]].role = 'leader';
+    // passive garrison near the post: never ordered, just sitting there
+    sim.addSquad('red', 'Garrison', [
+      { name: 'B1', weapon: 'kar98k', x: 122.5, y: 30.5 },
+      { name: 'B2', weapon: 'kar98k', x: 122.5, y: 31.5 },
+    ]);
+    const startX = 40.5;
+    const commander = new RedCommander({ side: 'blue', stance: 'attack', posts: { [mg.id]: post, [rifle.id]: post } });
 
     for (let i = 0; i < 6000; i++) {
       commander.update(sim);
@@ -86,7 +122,7 @@ describe('AI commander doctrine', () => {
       { name: 'R2', weapon: 'kar98k', x: 20.5, y: 21.5 },
       { name: 'R3', weapon: 'kar98k', x: 20.5, y: 22.5 },
     ]);
-    const commander = new RedCommander({ stance: 'attack', posts: { [redSquad.id]: { x: 30, y: 20 } } });
+    const commander = new RedCommander({ side: 'red', stance: 'attack', posts: { [redSquad.id]: { x: 30, y: 20 } } });
 
     let sawOrder = false;
     for (let i = 0; i < 12000; i++) {
@@ -124,7 +160,7 @@ describe('AI commander doctrine', () => {
       { name: 'B2', weapon: 'kar98k', x: 122.5, y: 31.5 },
       { name: 'B3', weapon: 'kar98k', x: 122.5, y: 32.5 },
     ]);
-    const commander = new RedCommander({ stance: 'attack', posts: { [mg.id]: post, [rifle.id]: post } });
+    const commander = new RedCommander({ side: 'red', stance: 'attack', posts: { [mg.id]: post, [rifle.id]: post } });
 
     let mgShotsBeforeFast = 0;
     let fastAtTick = -1;
@@ -178,7 +214,7 @@ describe('AI commander doctrine', () => {
       { name: 'B2', weapon: 'kar98k', x: 122.5, y: 31.5 },
       { name: 'B3', weapon: 'kar98k', x: 122.5, y: 32.5 },
     ]);
-    const commander = new RedCommander({ stance: 'attack', posts: { [mg.id]: post, [rifle.id]: post } });
+    const commander = new RedCommander({ side: 'red', stance: 'attack', posts: { [mg.id]: post, [rifle.id]: post } });
 
     let mgShotsBeforeAssault = 0;
     let assaultAtTick = -1;
@@ -213,7 +249,7 @@ describe('AI commander doctrine', () => {
     const reserve = sim.addSquad('red', 'Res', [{ name: 'Res', weapon: 'kar98k', x: 50.5, y: 30.5 }]);
     sim.addSquad('blue', 'Garrison', [{ name: 'B1', weapon: 'kar98k', x: 122.5, y: 30.5 }]);
     const posts = { [mg.id]: post, [man.id]: post, [man2.id]: post, [reserve.id]: post };
-    const commander = new RedCommander({ stance: 'attack', posts });
+    const commander = new RedCommander({ side: 'red', stance: 'attack', posts });
 
     // first eval: assigns groups and captures man's startStrength = 4
     sim.tick = SPOT_INTERVAL;
@@ -271,7 +307,7 @@ describe('AI commander doctrine', () => {
       { name: 'B2', weapon: 'kar98k', x: 122.5, y: 31.5 },
       { name: 'B3', weapon: 'kar98k', x: 122.5, y: 32.5 },
     ]);
-    const commander = new RedCommander({ stance: 'attack', posts: { [mg.id]: post, [rifle.id]: post } });
+    const commander = new RedCommander({ side: 'red', stance: 'attack', posts: { [mg.id]: post, [rifle.id]: post } });
 
     let smokeOnPostTick = -1; // first tick a smoke puff sits on the objective
     let chargeStepsOffTick = -1; // first tick the assault is actually executing (a real charge, not a balk)
@@ -297,7 +333,7 @@ describe('AI commander doctrine', () => {
     const sim = new Sim(new GameMap(200, 60), 7);
     sim.addSquad('red', 'Spotter', [{ name: 'S', weapon: 'kar98k', x: 100.5, y: 30.5 }]); // friendly LOS to the post
     const post = { x: 100, y: 30 };
-    const commander = new RedCommander({ stance: 'attack', posts: {} });
+    const commander = new RedCommander({ side: 'red', stance: 'attack', posts: {} });
     // inside mortar81's minRange (30m): 10m from the post — unreachable arc
     const tooClose = sim.addEmplacement('red', 'mortar81', 100, 40, 0, 'deployed');
     expect(commander['readyMortar'](sim, post)).toBeNull(); // refused, not tasked
@@ -317,7 +353,7 @@ describe('AI commander doctrine', () => {
       { name: 'B1', weapon: 'garand', x: 122.5, y: 30.5 },
       { name: 'B2', weapon: 'garand', x: 122.5, y: 31.5 },
     ]);
-    const commander = new RedCommander({ stance: 'attack', posts: { [squad.id]: post } });
+    const commander = new RedCommander({ side: 'red', stance: 'attack', posts: { [squad.id]: post } });
 
     let sawMgFire = false;
     let sawSchuetzenManeuver = false;
@@ -387,7 +423,7 @@ describe('intel layer math', () => {
     const sim = new Sim(new GameMap(40, 40), 1);
     const red = sim.addSquad('red', 'R', [{ name: 'R1', weapon: 'kar98k', x: 5.5, y: 5.5 }]);
     const blue = sim.addSquad('blue', 'B', [{ name: 'B1', weapon: 'garand', x: 20.5, y: 5.5 }]);
-    const commander = new RedCommander({ stance: 'defend', posts: { [red.id]: { x: 5, y: 5 } } });
+    const commander = new RedCommander({ side: 'red', stance: 'defend', posts: { [red.id]: { x: 5, y: 5 } } });
     const trackedId = blue.soldierIds[0];
     sim.spotted.red.set(trackedId, { x: 20.5, y: 5.5 });
     sim.contacts.red.set('s999', { kind: 'infantry', x: 30, y: 30, tick: 0 });
@@ -416,7 +452,7 @@ describe('intel layer math', () => {
       'Cluster',
       Array.from({ length: 5 }, (_, i) => ({ name: `C${i}`, weapon: 'garand' as const, x: 185.5, y: 28.5 + i })),
     );
-    const commander = new RedCommander({ stance: 'defend', posts: { [red.id]: { x: 10, y: 30 } } });
+    const commander = new RedCommander({ side: 'red', stance: 'defend', posts: { [red.id]: { x: 10, y: 30 } } });
     let target: { x: number; y: number } | null = null;
     const real = sim.callBarrage.bind(sim);
     sim.callBarrage = (side, x, y) => {

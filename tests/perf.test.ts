@@ -62,7 +62,7 @@ function buildScenario(seed: number): Scenario {
     const squad = sim.addSquadFromDef('red', key, anchor.x, anchor.y);
     posts[squad.id] = anchor;
   });
-  const commander = new RedCommander({ stance: 'defend', posts });
+  const commander = new RedCommander({ side: 'red', stance: 'defend', posts });
 
   return { sim, commander, spawns: plan.spawns, objectives: plan.objectives, blueSquads };
 }
@@ -93,7 +93,7 @@ function buildHeightScenario(seed: number): Scenario {
     const squad = sim.addSquadFromDef('red', key, anchor.x, anchor.y);
     posts[squad.id] = anchor;
   });
-  const commander = new RedCommander({ stance: 'defend', posts });
+  const commander = new RedCommander({ side: 'red', stance: 'defend', posts });
 
   return { sim, commander, spawns: plan.spawns, objectives: plan.objectives, blueSquads };
 }

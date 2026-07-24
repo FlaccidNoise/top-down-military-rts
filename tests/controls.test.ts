@@ -38,6 +38,16 @@ describe('keymap', () => {
       expect(new Set(keys).size).toBe(keys.length);
     });
 
+    it('aiControl defaults to P and clashes with no other battle-context binding', () => {
+      expect(DEFAULTS.aiControl).toEqual({ code: 'KeyP' });
+      const shift = DEFAULTS.aiControl.shift ?? false;
+      for (const id of Object.keys(DEFAULTS) as ActionId[]) {
+        if (CONTEXT[id] !== 'battle' || id === 'aiControl') continue;
+        const b = DEFAULTS[id];
+        expect(b.code === 'KeyP' && (b.shift ?? false) === shift).toBe(false);
+      }
+    });
+
     it('saveKeymap + loadKeymap round-trips custom bindings', () => {
       const storage = fakeStorage();
       const km = loadKeymap(storage);
