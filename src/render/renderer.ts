@@ -110,7 +110,7 @@ export class Renderer {
     for (const p of planes) this.planes.push({ ...p, at: now });
   }
 
-  draw(ctx: CanvasRenderingContext2D, cam: Camera, selectedSquad: number, now: number, floorFocus = -1): void {
+  draw(ctx: CanvasRenderingContext2D, cam: Camera, selectedSquads: number[], now: number, floorFocus = -1): void {
     const cw = ctx.canvas.width;
     const ch = ctx.canvas.height;
     const dt = Math.min(0.1, (now - this.lastNow) / 1000);
@@ -161,27 +161,27 @@ export class Renderer {
     };
     if (cam.scale < SPRITE_MIN_SCALE) {
       if (maxL === 0) {
-        for (const s of this.sim.soldiers) if (s.inVehicle < 0 && vis(s)) dim(s, () => this.drawDot(ctx, cam, s, selectedSquad, cw, ch));
+        for (const s of this.sim.soldiers) if (s.inVehicle < 0 && vis(s)) dim(s, () => this.drawDot(ctx, cam, s, selectedSquads, cw, ch));
       } else {
         for (let l = 0; l <= maxL; l++)
-          for (const s of this.sim.soldiers) if (s.inVehicle < 0 && vis(s) && s.level === l) dim(s, () => this.drawDot(ctx, cam, s, selectedSquad, cw, ch));
+          for (const s of this.sim.soldiers) if (s.inVehicle < 0 && vis(s) && s.level === l) dim(s, () => this.drawDot(ctx, cam, s, selectedSquads, cw, ch));
       }
     } else {
       // dead below downed below the living
       if (maxL === 0) {
-        for (const s of this.sim.soldiers) if (!s.alive && s.inVehicle < 0 && vis(s)) dim(s, () => this.drawSoldier(ctx, cam, s, selectedSquad, dt, cw, ch));
-        for (const s of this.sim.soldiers) if (s.alive && s.downed && s.inVehicle < 0 && vis(s)) dim(s, () => this.drawSoldier(ctx, cam, s, selectedSquad, dt, cw, ch));
-        for (const s of this.sim.soldiers) if (s.alive && !s.downed && s.inVehicle < 0 && vis(s)) dim(s, () => this.drawSoldier(ctx, cam, s, selectedSquad, dt, cw, ch));
+        for (const s of this.sim.soldiers) if (!s.alive && s.inVehicle < 0 && vis(s)) dim(s, () => this.drawSoldier(ctx, cam, s, selectedSquads, dt, cw, ch));
+        for (const s of this.sim.soldiers) if (s.alive && s.downed && s.inVehicle < 0 && vis(s)) dim(s, () => this.drawSoldier(ctx, cam, s, selectedSquads, dt, cw, ch));
+        for (const s of this.sim.soldiers) if (s.alive && !s.downed && s.inVehicle < 0 && vis(s)) dim(s, () => this.drawSoldier(ctx, cam, s, selectedSquads, dt, cw, ch));
       } else {
         for (let l = 0; l <= maxL; l++) {
-          for (const s of this.sim.soldiers) if (!s.alive && s.level === l && s.inVehicle < 0 && vis(s)) dim(s, () => this.drawSoldier(ctx, cam, s, selectedSquad, dt, cw, ch));
-          for (const s of this.sim.soldiers) if (s.alive && s.downed && s.level === l && s.inVehicle < 0 && vis(s)) dim(s, () => this.drawSoldier(ctx, cam, s, selectedSquad, dt, cw, ch));
-          for (const s of this.sim.soldiers) if (s.alive && !s.downed && s.level === l && s.inVehicle < 0 && vis(s)) dim(s, () => this.drawSoldier(ctx, cam, s, selectedSquad, dt, cw, ch));
+          for (const s of this.sim.soldiers) if (!s.alive && s.level === l && s.inVehicle < 0 && vis(s)) dim(s, () => this.drawSoldier(ctx, cam, s, selectedSquads, dt, cw, ch));
+          for (const s of this.sim.soldiers) if (s.alive && s.downed && s.level === l && s.inVehicle < 0 && vis(s)) dim(s, () => this.drawSoldier(ctx, cam, s, selectedSquads, dt, cw, ch));
+          for (const s of this.sim.soldiers) if (s.alive && !s.downed && s.level === l && s.inVehicle < 0 && vis(s)) dim(s, () => this.drawSoldier(ctx, cam, s, selectedSquads, dt, cw, ch));
         }
       }
     }
     for (const v of this.sim.vehicles) if (v.alive && visV(v)) this.drawVehicle(ctx, cam, v, now, cw, ch);
-    for (const e of this.sim.emplacements) if (this.sim.emplacementVisibleTo(PLAYER_SIDE, e)) this.drawEmplacement(ctx, cam, e, selectedSquad, cw, ch);
+    for (const e of this.sim.emplacements) if (this.sim.emplacementVisibleTo(PLAYER_SIDE, e)) this.drawEmplacement(ctx, cam, e, selectedSquads, cw, ch);
 
     this.drawFire(ctx, cam, now, cw, ch);
     this.roofs.drawTops(ctx, cam, cw, ch);
@@ -385,7 +385,7 @@ export class Renderer {
   // Simple crewed-weapon glyph — follows drawVehicle's scheme (team-colored
   // hull + barrel line) at ~40% of a vehicle's footprint. Dashed while
   // packed/transitioning, solid once dug in.
-  private drawEmplacement(ctx: CanvasRenderingContext2D, cam: Camera, e: Emplacement, selectedSquad: number, cw: number, ch: number): void {
+  private drawEmplacement(ctx: CanvasRenderingContext2D, cam: Camera, e: Emplacement, selectedSquads: number[], cw: number, ch: number): void {
     const [x, y] = cam.worldToScreen(e.x, e.y, cw, ch);
     const pad = VEHICLE_SPAN * cam.scale * 0.4;
     if (x < -pad || y < -pad || x > cw + pad || y > ch + pad) return;
@@ -408,7 +408,7 @@ export class Renderer {
     ctx.stroke();
     ctx.setLineDash([]);
     ctx.restore();
-    if (this.sim.teams[e.crewTeamId]?.squadId === selectedSquad) {
+    if (selectedSquads.includes(this.sim.teams[e.crewTeamId]?.squadId ?? -1)) {
       ctx.strokeStyle = '#ffe9a0';
       ctx.lineWidth = 2;
       ctx.beginPath();
@@ -456,7 +456,7 @@ export class Renderer {
     return st;
   }
 
-  private drawSoldier(ctx: CanvasRenderingContext2D, cam: Camera, s: Soldier, selectedSquad: number, dt: number, cw: number, ch: number): void {
+  private drawSoldier(ctx: CanvasRenderingContext2D, cam: Camera, s: Soldier, selectedSquads: number[], dt: number, cw: number, ch: number): void {
     // The sim pins a dragged casualty to the rescuer's position; draw the
     // body trailing behind the dragger instead of stacked under him.
     const carried = s.alive && s.downed && s.carriedBy >= 0;
@@ -546,7 +546,7 @@ export class Renderer {
       ctx.fill();
     }
 
-    if (s.alive && s.squadId === selectedSquad && s.path) {
+    if (s.alive && selectedSquads.includes(s.squadId) && s.path) {
       ctx.strokeStyle = 'rgba(255, 233, 160, 0.25)';
       ctx.lineWidth = 1;
       ctx.beginPath();
@@ -583,7 +583,7 @@ export class Renderer {
       ctx.stroke();
     }
     // one-ring rule (S7): selection wins over suppression, never both
-    if (s.squadId === selectedSquad) {
+    if (selectedSquads.includes(s.squadId)) {
       ctx.strokeStyle = '#ffe9a0';
       ctx.lineWidth = 1.5;
       ctx.beginPath();
@@ -621,7 +621,7 @@ export class Renderer {
   }
 
   // Far-zoom LOD: the placeholder dot language, which is the right read at 2 px/m.
-  private drawDot(ctx: CanvasRenderingContext2D, cam: Camera, s: Soldier, selectedSquad: number, cw: number, ch: number): void {
+  private drawDot(ctx: CanvasRenderingContext2D, cam: Camera, s: Soldier, selectedSquads: number[], cw: number, ch: number): void {
     const [x, y] = cam.worldToScreen(s.x, s.y, cw, ch);
     if (x < -20 || y < -20 || x > cw + 20 || y > ch + 20) return;
     const r = Math.max(2.5, 0.35 * cam.scale);
@@ -648,7 +648,7 @@ export class Renderer {
       ctx.fill();
       return;
     }
-    if (s.squadId === selectedSquad) {
+    if (selectedSquads.includes(s.squadId)) {
       ctx.strokeStyle = '#ffe9a0';
       ctx.lineWidth = 1.5;
       ctx.beginPath();

@@ -321,10 +321,43 @@ function crewClassOf(w: WeaponDef): CrewClass | null {
 
 // Formation offsets around a squad destination, meters. Exported for the
 // move-order cover preview, which must show the real spots men will take.
-export const OFFSETS = [
+export const OFFSETS: [number, number][] = [
   [0, 0], [1.5, 0], [-1.5, 0], [0, 1.5], [0, -1.5],
   [2.2, 1.5], [-2.2, 1.5], [2.2, -1.5], [-2.2, -1.5], [0, 3],
 ];
+
+// Fan-out spacing for team destinations (orderSquad legacy, 8m between teams)
+// and multi-squad fan (plain-click, 12m between squads).
+export const TEAM_FAN = 8;
+export const SQUAD_FAN = 12;
+
+// Centered offsets: n items spread across `spacing` meters, centered on zero.
+export function fanOffsets(n: number, spacing: number): number[] {
+  return Array.from({ length: n }, (_, i) => (i - (n - 1) / 2) * spacing);
+}
+
+// Per-soldier formation slots relative to a destination point.
+// - facing === undefined: OFFSETS[i % OFFSETS.length] (legacy blob).
+// - facing set: rank-and-file grid whose long axis runs ALONG facing
+// (right-drag formation orders; overlays preview uses the same helper).
+export function formationSlots(count: number, facing?: number, width?: number): [number, number][] {
+  if (facing === undefined) {
+    return Array.from({ length: count }, (_, i) => OFFSETS[i % OFFSETS.length]);
+  }
+  const cols = Math.max(2, Math.round((width ?? count * 1.5) / 1.5));
+  const rows = Math.ceil(count / cols);
+  const cos = Math.cos(facing);
+  const sin = Math.sin(facing);
+  const slots: [number, number][] = [];
+  for (let i = 0; i < count; i++) {
+    const col = i % cols;
+    const row = Math.floor(i / cols);
+    const lx = (col - (cols - 1) / 2) * 1.5;
+    const ly = (row - (rows - 1) / 2) * 1.5;
+    slots.push([lx * cos - ly * sin, lx * sin + ly * cos]);
+  }
+  return slots;
+}
 
 function isOpenTop(kind: VehicleKey): boolean {
   const def: VehicleDef = VEHICLES[kind];
@@ -1154,14 +1187,15 @@ export class Sim {
     this.moveSoldiersTo(team.soldierIds, wx, wy);
   }
 
-  private moveSoldiersTo(soldierIds: number[], wx: number, wy: number, gl = 0): void {
+  private moveSoldiersTo(soldierIds: number[], wx: number, wy: number, gl = 0, facing?: number, width?: number): void {
+    const eligibleIds = soldierIds.filter((id) => this.eligible(this.soldiers[id]));
+    const slots = formationSlots(eligibleIds.length, facing, width);
     const used = new Set<number>();
-    let slot = 0;
-    for (const sid of soldierIds) {
+    let si = 0;
+    for (const sid of eligibleIds) {
       const s = this.soldiers[sid];
-      if (!this.eligible(s)) continue;
-      const [ox, oy] = OFFSETS[slot % OFFSETS.length];
-      slot++;
+      const [ox, oy] = slots[si];
+      si++;
       const spot = this.findSpot(Math.floor(wx + ox), Math.floor(wy + oy), used);
       if (!spot) continue;
       used.add(spot.y * this.map.w + spot.x);
@@ -1213,7 +1247,7 @@ export class Sim {
     } else if (effective.kind === 'move' || effective.kind === 'fast' || effective.kind === 'sneak' || effective.kind === 'assault') {
       team.orderState = { order: effective, phase: 'executing', reason };
       if (effective.kind === 'sneak') this.sneakBaseline[team.id] = this.woundCount(team);
-      this.moveSoldiersTo(team.soldierIds, effective.x, effective.y, effective.l ?? 0);
+      this.moveSoldiersTo(team.soldierIds, effective.x, effective.y, effective.l ?? 0, effective.facing, effective.width);
     } else if (effective.kind === 'smoke') {
       team.orderState = { order: effective, phase: 'executing', reason };
       this.deploySmoke(team, effective);
@@ -1221,7 +1255,7 @@ export class Sim {
       team.orderState = { order: effective, phase: 'executing', reason };
       const st = this.map.storiesAt(Math.floor(effective.x), Math.floor(effective.y));
       const gl = effective.l ?? (st >= 2 ? st - 1 : 0);
-      this.moveSoldiersTo(team.soldierIds, effective.x, effective.y, gl);
+      this.moveSoldiersTo(team.soldierIds, effective.x, effective.y, gl, effective.facing, effective.width);
     } else {
       // fire: no movement, members engage per updateSoldier's combat section
       team.orderState = { order: effective, phase: 'executing', reason };
@@ -1238,10 +1272,24 @@ export class Sim {
     const isMoveKind = order.kind === 'move' || order.kind === 'fast' || order.kind === 'sneak' || order.kind === 'assault';
     this.squadDest[squadId] = isMoveKind ? { x: order.x, y: order.y } : null;
     const n = squad.teamIds.length;
-    squad.teamIds.forEach((teamId, ti) => {
-      const oy = (ti - (n - 1) / 2) * 8;
-      this.orderTeam(teamId, { ...order, y: order.y + oy });
-    });
+    if (order.facing === undefined) {
+      // Legacy: fan teams along y axis only
+      const offs = fanOffsets(n, TEAM_FAN);
+      squad.teamIds.forEach((teamId, ti) => {
+        this.orderTeam(teamId, { ...order, y: order.y + offs[ti] });
+      });
+    } else {
+      // Formation: fan teams along the facing axis within order.width
+      const share = (order.width ?? n * TEAM_FAN) / n;
+      const offs = fanOffsets(n, share);
+      const cos = Math.cos(order.facing);
+      const sin = Math.sin(order.facing);
+      squad.teamIds.forEach((teamId, ti) => {
+        const dx = cos * offs[ti];
+        const dy = sin * offs[ti];
+        this.orderTeam(teamId, { ...order, x: order.x + dx, y: order.y + dy, width: share });
+      });
+    }
   }
 
   private teamUnderFire(team: Team): boolean {
