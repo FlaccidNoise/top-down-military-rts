@@ -30,9 +30,9 @@ describe('keymap', () => {
       expect(km.version).toBe(0);
     });
 
-    it('WASD pan defaults own A; airstrike moved to E (no battle-context clash)', () => {
+    it('WASD pan defaults own A; airstrike on V (grouped with barrage B, away from WASD)', () => {
       expect(DEFAULTS.panLeft).toEqual({ code: 'KeyA' });
-      expect(DEFAULTS.airstrike).toEqual({ code: 'KeyE' });
+      expect(DEFAULTS.airstrike).toEqual({ code: 'KeyV' });
       const battleIds = (Object.keys(CONTEXT) as ActionId[]).filter((id) => CONTEXT[id] === 'battle');
       const keys = battleIds.map((id) => `${DEFAULTS[id].code}|${DEFAULTS[id].shift ?? false}`);
       expect(new Set(keys).size).toBe(keys.length);

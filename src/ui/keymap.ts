@@ -23,7 +23,7 @@ export const DEFAULTS: Record<ActionId, Binding> = {
   menu:      { code: 'Escape' },
   cancel:    { code: 'Escape' },
   barrage:   { code: 'KeyB' },
-  airstrike: { code: 'KeyE' },
+  airstrike: { code: 'KeyV' },
   panUp:     { code: 'KeyW' },
   panDown:   { code: 'KeyS' },
   panLeft:   { code: 'KeyA' },
