@@ -22,7 +22,7 @@ import {
   type WeaponKey,
 } from './data';
 import { crewDegrade, crewHasLos, crewNear, friendlyHasLos, loadsReady, pickFirer, type Emplacement } from './emplacement';
-import { GameMap, los, type LosResult } from './map';
+import { EYE_H, FLOOR_H, GameMap, los, type LosResult } from './map';
 import type { Building } from './mapgen';
 import { ambushThreshold, ASSAULT_DANGER_MULT, BALK_REASON, CHARGE_BALK_REASON, compliance, dangerScore, type OrderState, type TeamOrder } from './orders';
 import { astar } from './path';
@@ -129,7 +129,7 @@ export interface Soldier {
   bonds: Record<number, number>; // battle soldier id -> 0..1
   crewSkill: Partial<Record<CrewClass, number>>; // 0..1, grows +0.0005/shot serving that weapon class
   // action
-  path: { x: number; y: number }[] | null;
+  path: { x: number; y: number; l?: number }[] | null;
   pathI: number;
   cooldown: number;
   targetId: number; // -1 = none
@@ -149,6 +149,9 @@ export interface Soldier {
   meleeId: number;
   meleePhase: number; // 0..1 strike cycle, advances only in strike range; strike lands at wrap
   meleeTempo: number; // cycles/s, re-jittered each swing
+  // height: floor level and stair transition
+  level: number; // floor level, 0-based. vehicles/emplacements always 0
+  climbLeft: number; // ticks remaining of a stair climb; >0 = on stairs transitioning
 }
 
 export interface Vehicle {
@@ -318,42 +321,10 @@ function crewClassOf(w: WeaponDef): CrewClass | null {
 
 // Formation offsets around a squad destination, meters. Exported for the
 // move-order cover preview, which must show the real spots men will take.
-export const OFFSETS: [number, number][] = [
+export const OFFSETS = [
   [0, 0], [1.5, 0], [-1.5, 0], [0, 1.5], [0, -1.5],
   [2.2, 1.5], [-2.2, 1.5], [2.2, -1.5], [-2.2, -1.5], [0, 3],
 ];
-
-// Fan-out spacing for team destinations (orderSquad legacy, 8m between teams)
-// and multi-squad fan (plain-click, 12m between squads).
-export const TEAM_FAN = 8;
-export const SQUAD_FAN = 12;
-
-// Centered offsets: n items spread across `spacing` meters, centered on zero.
-export function fanOffsets(n: number, spacing: number): number[] {
-  return Array.from({ length: n }, (_, i) => (i - (n - 1) / 2) * spacing);
-}
-
-// Per-soldier formation slots relative to a destination point.
-// - facing === undefined: OFFSETS[i % OFFSETS.length] (current behavior).
-// - facing set: rank-and-file grid whose long axis runs ALONG facing.
-export function formationSlots(count: number, facing?: number, width?: number): [number, number][] {
-  if (facing === undefined) {
-    return Array.from({ length: count }, (_, i) => OFFSETS[i % OFFSETS.length]);
-  }
-  const cols = Math.max(2, Math.round((width ?? count * 1.5) / 1.5));
-  const rows = Math.ceil(count / cols);
-  const cos = Math.cos(facing);
-  const sin = Math.sin(facing);
-  const slots: [number, number][] = [];
-  for (let i = 0; i < count; i++) {
-    const col = i % cols;
-    const row = Math.floor(i / cols);
-    const lx = (col - (cols - 1) / 2) * 1.5;
-    const ly = (row - (rows - 1) / 2) * 1.5;
-    slots.push([lx * cos - ly * sin, lx * sin + ly * cos]);
-  }
-  return slots;
-}
 
 function isOpenTop(kind: VehicleKey): boolean {
   const def: VehicleDef = VEHICLES[kind];
@@ -374,8 +345,8 @@ function distToSegment(px: number, py: number, x0: number, y0: number, x1: numbe
 // route through: same as map.ts's los(), plus smoke. map.ts's signature stays
 // untouched — this only adds smoke's contribution on top of its result. Each
 // puff within 1.5m of the ray adds 0.5 opacity; >=1 blocks same as terrain.
-export function sightBetween(sim: Sim, x0: number, y0: number, x1: number, y1: number): LosResult {
-  const base = los(sim.map, x0, y0, x1, y1);
+export function sightBetween(sim: Sim, x0: number, y0: number, x1: number, y1: number, l0 = 0, l1 = 0): LosResult {
+  const base = los(sim.map, x0, y0, x1, y1, l0, l1);
   if (!base.visible || sim.smoke.length === 0) return base;
   let opacity = 0;
   for (const p of sim.smoke) {
@@ -396,8 +367,8 @@ export function sightBetween(sim: Sim, x0: number, y0: number, x1: number, y1: n
 // no RNG. Every soldier-target sense (acquire, live fire, ambush trigger,
 // honest vision, fog-of-war spotting) routes through this; sight to a map
 // point stays on sightBetween.
-export function sightToSoldier(sim: Sim, x0: number, y0: number, t: Soldier): LosResult {
-  const sight = sightBetween(sim, x0, y0, t.x, t.y);
+export function sightToSoldier(sim: Sim, x0: number, y0: number, t: Soldier, l0 = 0): LosResult {
+  const sight = sightBetween(sim, x0, y0, t.x, t.y, l0, t.level);
   const order = sim.teams[t.teamId].orderState.order;
   if (
     sight.visible &&
@@ -532,6 +503,8 @@ export class Sim {
       meleeId: -1,
       meleePhase: 0,
       meleeTempo: 0,
+      level: 0,
+      climbLeft: 0,
     };
     s.morale = 0.7 + s.courage * 0.3;
     this.soldiers.push(s);
@@ -1181,22 +1154,24 @@ export class Sim {
     this.moveSoldiersTo(team.soldierIds, wx, wy);
   }
 
-  private moveSoldiersTo(soldierIds: number[], wx: number, wy: number, facing?: number, width?: number): void {
-    const eligibleIds = soldierIds.filter((id) => this.eligible(this.soldiers[id]));
-    const slots = formationSlots(eligibleIds.length, facing, width);
+  private moveSoldiersTo(soldierIds: number[], wx: number, wy: number, gl = 0): void {
     const used = new Set<number>();
-    let si = 0;
-    for (const sid of eligibleIds) {
+    let slot = 0;
+    for (const sid of soldierIds) {
       const s = this.soldiers[sid];
-      const [ox, oy] = slots[si];
-      si++;
+      if (!this.eligible(s)) continue;
+      const [ox, oy] = OFFSETS[slot % OFFSETS.length];
+      slot++;
       const spot = this.findSpot(Math.floor(wx + ox), Math.floor(wy + oy), used);
       if (!spot) continue;
       used.add(spot.y * this.map.w + spot.x);
-      const path = astar(this.map, Math.floor(s.x), Math.floor(s.y), spot.x, spot.y);
+      let path = astar(this.map, Math.floor(s.x), Math.floor(s.y), spot.x, spot.y, 'foot', s.level, gl);
+      if (!path && gl > 0) {
+        path = astar(this.map, Math.floor(s.x), Math.floor(s.y), spot.x, spot.y, 'foot', s.level, 0);
+      }
       if (path && path.length > 1) {
         if (s.task) this.dropTask(s); // direct orders override a rescue/ammo run
-        s.path = path.slice(1).map((p) => ({ x: p.x + 0.5, y: p.y + 0.5 }));
+        s.path = path.slice(1).map((p) => ({ x: p.x + 0.5, y: p.y + 0.5, l: p.l }));
         s.pathI = 0;
         s.fleeing = false;
       }
@@ -1238,13 +1213,15 @@ export class Sim {
     } else if (effective.kind === 'move' || effective.kind === 'fast' || effective.kind === 'sneak' || effective.kind === 'assault') {
       team.orderState = { order: effective, phase: 'executing', reason };
       if (effective.kind === 'sneak') this.sneakBaseline[team.id] = this.woundCount(team);
-      this.moveSoldiersTo(team.soldierIds, effective.x, effective.y, effective.facing, effective.width);
+      this.moveSoldiersTo(team.soldierIds, effective.x, effective.y, effective.l ?? 0);
     } else if (effective.kind === 'smoke') {
       team.orderState = { order: effective, phase: 'executing', reason };
       this.deploySmoke(team, effective);
     } else if (effective.kind === 'defend' || effective.kind === 'ambush') {
       team.orderState = { order: effective, phase: 'executing', reason };
-      this.moveSoldiersTo(team.soldierIds, effective.x, effective.y, effective.facing, effective.width);
+      const st = this.map.storiesAt(Math.floor(effective.x), Math.floor(effective.y));
+      const gl = effective.l ?? (st >= 2 ? st - 1 : 0);
+      this.moveSoldiersTo(team.soldierIds, effective.x, effective.y, gl);
     } else {
       // fire: no movement, members engage per updateSoldier's combat section
       team.orderState = { order: effective, phase: 'executing', reason };
@@ -1261,24 +1238,10 @@ export class Sim {
     const isMoveKind = order.kind === 'move' || order.kind === 'fast' || order.kind === 'sneak' || order.kind === 'assault';
     this.squadDest[squadId] = isMoveKind ? { x: order.x, y: order.y } : null;
     const n = squad.teamIds.length;
-    if (order.facing === undefined) {
-      // Legacy: fan teams along y axis only
-      const offs = fanOffsets(n, TEAM_FAN);
-      squad.teamIds.forEach((teamId, ti) => {
-        this.orderTeam(teamId, { ...order, y: order.y + offs[ti] });
-      });
-    } else {
-      // Formation: fan teams along the facing axis within order.width
-      const share = (order.width ?? n * TEAM_FAN) / n;
-      const offs = fanOffsets(n, share);
-      const cos = Math.cos(order.facing);
-      const sin = Math.sin(order.facing);
-      squad.teamIds.forEach((teamId, ti) => {
-        const dx = cos * offs[ti];
-        const dy = sin * offs[ti];
-        this.orderTeam(teamId, { ...order, x: order.x + dx, y: order.y + dy, width: share });
-      });
-    }
+    squad.teamIds.forEach((teamId, ti) => {
+      const oy = (ti - (n - 1) / 2) * 8;
+      this.orderTeam(teamId, { ...order, y: order.y + oy });
+    });
   }
 
   private teamUnderFire(team: Team): boolean {
@@ -1391,7 +1354,7 @@ export class Sim {
         if (!e.alive || e.downed || e.side !== enemySide) continue;
         if (order.arc && !this.inArc(s.x, s.y, e.x, e.y, order.arc)) continue;
         const d = Math.hypot(e.x - s.x, e.y - s.y);
-        if (d <= thresh && sightToSoldier(this, s.x, s.y, e).visible) {
+        if (d <= thresh && sightToSoldier(this, s.x, s.y, e, s.level).visible) {
           triggered = true;
           break outer;
         }
@@ -1718,7 +1681,7 @@ export class Sim {
       for (const s of this.soldiers) {
         if (!s.alive || s.downed || s.side === v.side || s.inVehicle >= 0) continue;
         const d = Math.hypot(s.x - v.x, s.y - v.y);
-        if (d < 30 && sightBetween(this, v.x, v.y, s.x, s.y).visible) {
+        if (d < 30 && sightBetween(this, v.x, v.y, s.x, s.y, 0, s.level).visible) {
           s.suppression = Math.min(1, s.suppression + 0.05 * (1.3 - s.courage * 0.6));
         }
       }
@@ -1764,7 +1727,7 @@ export class Sim {
       return;
     }
     if (t) {
-      if (!sightToSoldier(this, v.x, v.y, t).visible) {
+      if (!sightToSoldier(this, v.x, v.y, t, 0).visible) {
         v.targetSoldierId = -1;
         return;
       }
@@ -1810,7 +1773,7 @@ export class Sim {
   // "members only acquire targets inside arc"). Vehicle crew are normally
   // hull-protected and untargetable — except an open-top vehicle's pintle
   // gunner, who's standing up in the back exposed to small arms.
-  private acquireSoldierTarget(x: number, y: number, side: Side, range: number, arc?: [number, number]): number {
+  private acquireSoldierTarget(x: number, y: number, side: Side, range: number, arc?: [number, number], l0 = 0): number {
     const candidates: { id: number; d: number }[] = [];
     for (const e of this.soldiers) {
       if (!e.alive || e.downed || e.side === side) continue;
@@ -1825,7 +1788,7 @@ export class Sim {
     for (const c of candidates) {
       const e = this.soldiers[c.id];
       if (arc && !this.inArc(x, y, e.x, e.y, arc)) continue;
-      if (sightToSoldier(this, x, y, e).visible) return c.id;
+      if (sightToSoldier(this, x, y, e, l0).visible) return c.id;
     }
     return -1;
   }
@@ -1885,8 +1848,8 @@ export class Sim {
 
   // The exact accuracy math live fire uses, exposed for hit-chance previews —
   // the UI must never re-derive (and drift from) this formula.
-  shotPreview(fx: number, fy: number, weapon: WeaponKey, t: Soldier, shooterMoving: boolean, aim: number): ShotPreview {
-    const sight = sightToSoldier(this, fx, fy, t);
+  shotPreview(fx: number, fy: number, weapon: WeaponKey, t: Soldier, shooterMoving: boolean, aim: number, l0 = 0): ShotPreview {
+    const sight = sightToSoldier(this, fx, fy, t, l0);
     const d = Math.hypot(t.x - fx, t.y - fy);
     if (!sight.visible) return { visible: false, dist: d, cover: 0, acc: 0, concealed: sight.concealed };
     const w = WEAPONS[weapon];
@@ -1917,8 +1880,8 @@ export class Sim {
   }
 
   // Shared small-arms resolution used by soldiers and vehicle MGs.
-  private resolveSmallArmsShot(fx: number, fy: number, weapon: WeaponKey, t: Soldier, shooterMoving: boolean, aim: number): { fired: boolean; kill: boolean } {
-    const p = this.shotPreview(fx, fy, weapon, t, shooterMoving, aim);
+  private resolveSmallArmsShot(fx: number, fy: number, weapon: WeaponKey, t: Soldier, shooterMoving: boolean, aim: number, l0 = 0): { fired: boolean; kill: boolean } {
+    const p = this.shotPreview(fx, fy, weapon, t, shooterMoving, aim, l0);
     if (!p.visible) return { fired: false, kill: false };
     const w = WEAPONS[weapon];
     const hit = this.rng.next() < p.acc;
@@ -1936,7 +1899,7 @@ export class Sim {
 
   // Infantry small-arms fire: consumes the shooter's mag and builds barrel heat.
   private fireSmallArms(shooter: Soldier, t: Soldier, shooterMoving: boolean, aim = 1): boolean {
-    const r = this.resolveSmallArmsShot(shooter.x, shooter.y, shooter.weapon, t, shooterMoving, aim);
+    const r = this.resolveSmallArmsShot(shooter.x, shooter.y, shooter.weapon, t, shooterMoving, aim, shooter.level);
     if (!r.fired) return false;
     shooter.magLeft--;
     const w: WeaponDef = WEAPONS[shooter.weapon];
@@ -2083,7 +2046,7 @@ export class Sim {
       } else if (!s.path) {
         const path = astar(this.map, Math.floor(s.x), Math.floor(s.y), Math.floor(v.x), Math.floor(v.y));
         if (path && path.length > 1) {
-          s.path = path.slice(1).map((p) => ({ x: p.x + 0.5, y: p.y + 0.5 }));
+          s.path = path.slice(1).map((p) => ({ x: p.x + 0.5, y: p.y + 0.5, l: p.l }));
           s.pathI = 0;
         } else {
           s.mountTarget = -1; // unreachable: give up rather than loop forever
@@ -2176,7 +2139,7 @@ export class Sim {
       for (const v of this.vehicles) {
         if (!v.alive || v.side === s.side) continue;
         const d = Math.hypot(v.x - s.x, v.y - s.y);
-        if (d <= w.range && d < bestD && sightBetween(this, s.x, s.y, v.x, v.y).visible) {
+        if (d <= w.range && d < bestD && sightBetween(this, s.x, s.y, v.x, v.y, s.level, 0).visible) {
           bestD = d;
           bestV = v;
         }
@@ -2199,7 +2162,7 @@ export class Sim {
       for (const v of this.vehicles) {
         if (!v.alive || v.side === s.side) continue;
         const d = Math.hypot(v.x - s.x, v.y - s.y);
-        if (d <= faust.range && d < bestD && sightBetween(this, s.x, s.y, v.x, v.y).visible) {
+        if (d <= faust.range && d < bestD && sightBetween(this, s.x, s.y, v.x, v.y, s.level, 0).visible) {
           bestD = d;
           bestV = v;
         }
@@ -2253,6 +2216,24 @@ export class Sim {
     let drainRate = order?.kind === 'fast' ? 0.02 : order?.kind === 'assault' ? 0.015 : 0.004;
     if (s.carries.length > 0) drainRate *= Math.max(...s.carries.map((l) => LOADS[l].staminaMult));
     s.stamina = Math.max(0, s.stamina - drainRate * DT);
+
+    // stair climb: decrement timer, flip level on completion
+    if (s.climbLeft > 0) {
+      s.climbLeft--;
+      if (s.climbLeft <= 0) {
+        if (s.path && s.pathI < s.path.length) {
+          s.level = s.path[s.pathI].l ?? 0;
+        }
+        s.pathI++;
+        if (s.pathI >= (s.path?.length ?? 0)) {
+          s.path = null;
+          s.pathI = 0;
+          s.fleeing = false;
+        }
+      }
+      return;
+    }
+
     const cost = this.map.terrainAt(Math.floor(s.x), Math.floor(s.y)).moveCost;
     let remaining = (speed / cost) * DT;
     while (remaining > 0 && s.path) {
@@ -2264,6 +2245,16 @@ export class Sim {
         s.x = wp.x;
         s.y = wp.y;
         remaining -= d;
+        // check for stair climb: reached a stair tile, next waypoint has different level
+        if (this.map.isStair(Math.floor(s.x), Math.floor(s.y)) && s.pathI + 1 < s.path.length) {
+          const nextL = s.path[s.pathI + 1].l ?? 0;
+          if (nextL !== s.level) {
+            s.climbLeft = 30;
+            s.pathI++;
+            remaining = 0;
+            break;
+          }
+        }
         s.pathI++;
         if (s.pathI >= s.path.length) {
           s.path = null;
@@ -2335,7 +2326,7 @@ export class Sim {
             this.dropTask(s);
             return;
           }
-          s.path = path.slice(1).map((p) => ({ x: p.x + 0.5, y: p.y + 0.5 }));
+          s.path = path.slice(1).map((p) => ({ x: p.x + 0.5, y: p.y + 0.5, l: p.l }));
           s.pathI = 0;
         }
         this.advance(s, this.moveSpeed(s));
@@ -2358,7 +2349,7 @@ export class Sim {
           task.timer = this.aidTimer(s);
           return;
         }
-        s.path = path.slice(1).map((p) => ({ x: p.x + 0.5, y: p.y + 0.5 }));
+        s.path = path.slice(1).map((p) => ({ x: p.x + 0.5, y: p.y + 0.5, l: p.l }));
         s.pathI = 0;
         task.phase = 'drag';
         c.carriedBy = s.id;
@@ -2448,7 +2439,7 @@ export class Sim {
             this.dropTask(s);
             return;
           }
-          s.path = path.slice(1).map((p) => ({ x: p.x + 0.5, y: p.y + 0.5 }));
+          s.path = path.slice(1).map((p) => ({ x: p.x + 0.5, y: p.y + 0.5, l: p.l }));
           s.pathI = 0;
         }
         this.advance(s, this.moveSpeed(s));
@@ -2473,7 +2464,7 @@ export class Sim {
       task.phase = 'return';
       const path = astar(this.map, Math.floor(s.x), Math.floor(s.y), Math.floor(task.returnX), Math.floor(task.returnY));
       if (path && path.length > 1) {
-        s.path = path.slice(1).map((p) => ({ x: p.x + 0.5, y: p.y + 0.5 }));
+        s.path = path.slice(1).map((p) => ({ x: p.x + 0.5, y: p.y + 0.5, l: p.l }));
         s.pathI = 0;
       }
       return;
@@ -2592,7 +2583,7 @@ export class Sim {
             this.dropTask(s);
             return;
           }
-          s.path = path.slice(1).map((p) => ({ x: p.x + 0.5, y: p.y + 0.5 }));
+          s.path = path.slice(1).map((p) => ({ x: p.x + 0.5, y: p.y + 0.5, l: p.l }));
           s.pathI = 0;
         }
         this.advance(s, this.moveSpeed(s));
@@ -2638,22 +2629,22 @@ export class Sim {
   sideSeesPoint(side: Side, x: number, y: number): boolean {
     for (const s of this.soldiers) {
       if (!s.alive || s.downed || s.side !== side || s.inVehicle >= 0) continue;
-      if (Math.hypot(s.x - x, s.y - y) <= SPOT_RANGE && sightBetween(this, s.x, s.y, x, y).visible) return true;
+      if (Math.hypot(s.x - x, s.y - y) <= SPOT_RANGE && sightBetween(this, s.x, s.y, x, y, s.level, 0).visible) return true;
     }
     for (const v of this.vehicles) {
       if (!v.alive || v.side !== side) continue;
-      if (Math.hypot(v.x - x, v.y - y) <= SPOT_RANGE && sightBetween(this, v.x, v.y, x, y).visible) return true;
+      if (Math.hypot(v.x - x, v.y - y) <= SPOT_RANGE && sightBetween(this, v.x, v.y, x, y, 0, 0).visible) return true;
     }
     return false;
   }
 
   private updateSpotting(side: Side): void {
     const enemySide: Side = side === 'blue' ? 'red' : 'blue';
-    const spotters: { x: number; y: number }[] = [];
+    const spotters: { x: number; y: number; l: number }[] = [];
     for (const s of this.soldiers) {
-      if (s.alive && !s.downed && s.side === side && s.inVehicle < 0) spotters.push(s);
+      if (s.alive && !s.downed && s.side === side && s.inVehicle < 0) spotters.push({ x: s.x, y: s.y, l: s.level });
     }
-    for (const v of this.vehicles) if (v.alive && v.side === side) spotters.push(v);
+    for (const v of this.vehicles) if (v.alive && v.side === side) spotters.push({ x: v.x, y: v.y, l: 0 });
     const spotted = this.spotted[side];
     const spottedV = this.spottedVehicles[side];
     const seen = this.seenStatic[side];
@@ -2675,7 +2666,7 @@ export class Sim {
         contacts.delete(key); // and any foot-position ghost is moot
       } else if (t.alive) {
         const now = meleeContact.has(t.id) ||
-          spotters.some((p) => Math.hypot(t.x - p.x, t.y - p.y) <= SPOT_RANGE && sightToSoldier(this, p.x, p.y, t).visible);
+          spotters.some((p) => Math.hypot(t.x - p.x, t.y - p.y) <= SPOT_RANGE && sightToSoldier(this, p.x, p.y, t, p.l).visible);
         if (now) {
           spotted.set(t.id, { x: t.x, y: t.y });
           contacts.delete(key);
@@ -2809,7 +2800,7 @@ export class Sim {
     if (!spot) return;
     const path = astar(this.map, Math.floor(s.x), Math.floor(s.y), spot.x, spot.y);
     if (path && path.length > 1) {
-      s.path = path.slice(1).map((p) => ({ x: p.x + 0.5, y: p.y + 0.5 }));
+      s.path = path.slice(1).map((p) => ({ x: p.x + 0.5, y: p.y + 0.5, l: p.l }));
       s.pathI = 0;
       s.fleeing = true;
     }
@@ -2823,7 +2814,7 @@ export class Sim {
     for (const e of this.soldiers) {
       if (!e.alive || e.downed || e.side === s.side || e.inVehicle >= 0) continue;
       if (Math.hypot(e.x - order.x, e.y - order.y) > ASSAULT_RADIUS) continue;
-      if (sightToSoldier(this, s.x, s.y, e).visible) out.push(e);
+      if (sightToSoldier(this, s.x, s.y, e, s.level).visible) out.push(e);
     }
     return out;
   }
@@ -2854,7 +2845,7 @@ export class Sim {
     for (const goal of candidates) {
       const path = astar(this.map, Math.floor(s.x), Math.floor(s.y), Math.floor(goal.x), Math.floor(goal.y));
       if (path && path.length > 1) {
-        s.path = path.slice(1).map((p) => ({ x: p.x + 0.5, y: p.y + 0.5 }));
+        s.path = path.slice(1).map((p) => ({ x: p.x + 0.5, y: p.y + 0.5, l: p.l }));
         s.pathI = 0;
         return;
       }
@@ -2863,7 +2854,7 @@ export class Sim {
     if (!s.path && Math.hypot(order.x - s.x, order.y - s.y) > 4) {
       const path = astar(this.map, Math.floor(s.x), Math.floor(s.y), Math.floor(order.x), Math.floor(order.y));
       if (path && path.length > 1) {
-        s.path = path.slice(1).map((p) => ({ x: p.x + 0.5, y: p.y + 0.5 }));
+        s.path = path.slice(1).map((p) => ({ x: p.x + 0.5, y: p.y + 0.5, l: p.l }));
         s.pathI = 0;
       }
     }
@@ -3013,11 +3004,11 @@ export class Sim {
   private acquire(s: Soldier): number {
     const order = this.teams[s.teamId].orderState.order;
     const arc = (order?.kind === 'defend' || order?.kind === 'ambush') ? order.arc : undefined;
-    return this.acquireSoldierTarget(s.x, s.y, s.side, WEAPONS[s.weapon].range, arc);
+    return this.acquireSoldierTarget(s.x, s.y, s.side, WEAPONS[s.weapon].range, arc, s.level);
   }
 
   private fire(s: Soldier, t: Soldier): void {
-    if (!sightToSoldier(this, s.x, s.y, t).visible) {
+    if (!sightToSoldier(this, s.x, s.y, t, s.level).visible) {
       s.targetId = -1;
       return;
     }
@@ -3149,6 +3140,8 @@ export class Sim {
         Math.round((s.crewSkill.mg ?? 0) * 1e6),
         Math.round((s.crewSkill.mortar ?? 0) * 1e6),
         Math.round((s.crewSkill.gun ?? 0) * 1e6),
+        s.level,
+        s.climbLeft,
       ]),
       vehicles: this.vehicles.map((v) => [
         v.id,
