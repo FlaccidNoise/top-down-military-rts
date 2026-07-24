@@ -108,8 +108,8 @@
 **Legibility (phase E).** Floor badge chip over upper-floor sprites + white ring at dot zoom; floor-aware draw order (upper floors paint last within each category); `F` cycles a floor-focus filter (non-focused floors at 40% alpha, HUD chip; plain keydown until the parked controls pass lands keymap integration); shot-preview re-runs the sight check with observer level forced to the target's and reports `floor-blocked` / "blocked by floor/ceiling" when vertical separation is the only block.
 
 **Accepted approximations (recorded, deliberately not modeled):**
-- Smoke is a 2D column — blinds every floor equally.
-- Blast/frag is 2D — a grenade upstairs hits downstairs.
 - Gable-above-wall geometry unmodeled (roofs are visual only).
 - Per-story windows on shared edges unmodeled (windows pass sight at any level).
-- The buildingId ceiling test is a heuristic for floor/ceiling planes (no continuous z, no slab geometry).
+- Continuous soldier z rejected — discrete levels + `climbLeft` express every between-floors state (stair tiles) at zero gameplay delta.
+
+**3D evolution (landed 2026-07-23, plan: [../plans/2026-07-23-3d-height-sim.md](../plans/2026-07-23-3d-height-sim.md)):** three of the original approximations were replaced incrementally — smoke is now a 3D column (`Smoke.z0/h`, 3.5 m: upstairs sees over ground smoke); the buildingId ceiling heuristic is retired in favor of DERIVED floor/ceiling slab planes in `los()` (`z_k = elev + k*FLOOR_H`, stair tiles are the openings — stairwell sightlines work); blast is floor-aware (`explode` takes a detonation level; frag respects slabs, suppression attenuates ×0.25 per slab; grenades carry their target's floor in `pendingGrenades.l`). Perf guarded by a load-invariant los() building/flat ratio benchmark (pinned ~0.64) + a height-stress 600-tick scenario in tests/perf.test.ts.
