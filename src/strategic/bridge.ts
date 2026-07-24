@@ -418,7 +418,10 @@ export function applyEngagementOutcome(
   const attackerWon = sim.winner === attacker.side;
   const record = applyBattleResults(c, sim, sim.winner === 'blue');
   const redLosses = sim.soldiers.filter((s) => s.side === 'red' && (!s.alive || s.downed)).length;
-  defender.strength = Math.max(0, defender.strength - redLosses);
+  // Attrite whichever chit is RED — attacker or defender. (Blue chit
+  // strength is recomputed from the roster by syncStrengths below.)
+  const redChit = attacker.side === 'red' ? attacker : defender;
+  redChit.strength = Math.max(0, redChit.strength - redLosses);
   let cellTaken = false;
   if (attackerWon) {
     if (defender.strength > 0) retreat(front, defender);
