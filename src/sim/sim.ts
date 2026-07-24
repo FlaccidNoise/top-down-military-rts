@@ -509,7 +509,7 @@ export class Sim {
   private leaderVacantSince = new Map<number, number>(); // teamId -> tick its leader died, pending the 10s promotion
   // Mortar rounds in flight: 3s from trigger to impact (spec: indirect fire).
   private mortarShells: { tick: number; x: number; y: number; smoke: boolean }[] = [];
-  private pendingGrenades: { x: number; y: number; fuse: number }[] = [];
+  private pendingGrenades: { x: number; y: number; fuse: number; l: number }[] = [];
   // Staggered dismount: one passenger every 0.5s (spec: "1 per 0.5s").
   private dismountQueue: { vehicleId: number; soldierId: number; tick: number }[] = [];
 
@@ -1645,7 +1645,7 @@ export class Sim {
     for (let i = this.pendingGrenades.length - 1; i >= 0; i--) {
       const g = this.pendingGrenades[i];
       if (--g.fuse <= 0) {
-        this.explode(g.x, g.y, GRENADE_BLAST);
+        this.explode(g.x, g.y, GRENADE_BLAST, g.l);
         this.pendingGrenades.splice(i, 1);
       }
     }
@@ -3029,7 +3029,7 @@ export class Sim {
     s.grenadeCooldownUntil = this.tick + GRENADE_COOLDOWN_TICKS;
     const angle = this.rng.next() * Math.PI * 2;
     const dist = this.rng.next() * GRENADE_SCATTER;
-    this.pendingGrenades.push({ x: best.x + Math.cos(angle) * dist, y: best.y + Math.sin(angle) * dist, fuse: GRENADE_FUSE_TICKS });
+    this.pendingGrenades.push({ x: best.x + Math.cos(angle) * dist, y: best.y + Math.sin(angle) * dist, fuse: GRENADE_FUSE_TICKS, l: best.level });
   }
 
   // Can a man physically get at (bx, by) from (ax, ay) at melee distance?
@@ -3380,7 +3380,7 @@ export class Sim {
         e.smokeRoundsLeft,
       ]),
       smoke: this.smoke.map((p) => [Math.round(p.x * 1e6), Math.round(p.y * 1e6), Math.round(p.z0 * 1e6), Math.round(p.h * 1e6), Math.round(p.ttl * 1e6)]),
-      pendingGrenades: this.pendingGrenades.map((g) => [Math.round(g.x * 1e6), Math.round(g.y * 1e6), g.fuse]),
+      pendingGrenades: this.pendingGrenades.map((g) => [Math.round(g.x * 1e6), Math.round(g.y * 1e6), g.fuse, g.l]),
       droppedKit: this.droppedKit.map((k) => [
         k.side,
         Math.round(k.x * 1e6),
