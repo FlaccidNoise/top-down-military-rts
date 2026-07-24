@@ -465,6 +465,11 @@ describe('teams and data-driven squads', () => {
     const sim = new Sim(new GameMap(60, 40), 62);
     const squad = sim.addSquadFromDef('blue', 'us_rifle', 5, 20);
     sim.orderSquad(squad.id, { kind: 'move', x: 50, y: 20 });
+    // A squad's worth of A* exceeds the per-tick path budget, so the tail of
+    // the order is serviced over the next few ticks (see PATH_BUDGET_PER_TICK).
+    // The contract is that EVERY team ends up moving, not that every path
+    // exists in the same microsecond as the click.
+    for (let i = 0; i < 5; i++) sim.step();
     const moving = (teamId: number) => sim.teams[teamId].soldierIds.some((id) => sim.soldiers[id].path !== null);
     expect(squad.teamIds.every(moving)).toBe(true);
   });

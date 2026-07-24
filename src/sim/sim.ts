@@ -48,6 +48,11 @@ const MELEE_INTERVAL = 1.4; // s between strikes, jittered per swing
 // defenders — the charge redirects onto them and completes when none remain visible.
 const ASSAULT_RADIUS = 20; // m
 const ASSAULT_REPATH_TICKS = 15; // per-soldier redirect cadence (0.5 s)
+// Full-map A* searches serviced per tick. A select-all move order wants ~140
+// at once; at ~3 ms each that is a quarter-second freeze. 6/tick keeps the
+// pathing cost under ~20 ms and drains a full-company order in ~0.6 s, which
+// reads as squads stepping off in sequence rather than as a stall.
+const PATH_BUDGET_PER_TICK = 6;
 // Grenades: the assault's room-clearing opener (decision log 2026-07-23).
 const GRENADE_RANGE = 12; // m
 const GRENADE_FUSE_TICKS = 30; // ~1 s
@@ -512,6 +517,8 @@ export class Sim {
   private pendingGrenades: { x: number; y: number; fuse: number; l: number }[] = [];
   // Staggered dismount: one passenger every 0.5s (spec: "1 per 0.5s").
   private dismountQueue: { vehicleId: number; soldierId: number; tick: number }[] = [];
+  private pathBudget = PATH_BUDGET_PER_TICK;
+  private pendingPaths = new Map<number, { spot: { x: number; y: number }; gl: number }>();
 
   constructor(readonly map: GameMap, seed: number) {
     this.rng = mulberry32(seed);
@@ -1240,16 +1247,44 @@ export class Sim {
       const spot = this.findSpot(Math.floor(wx + ox), Math.floor(wy + oy), used);
       if (!spot) continue;
       used.add(spot.y * this.map.w + spot.x);
-      let path = astar(this.map, Math.floor(s.x), Math.floor(s.y), spot.x, spot.y, 'foot', s.level, gl);
-      if (!path && gl > 0) {
-        path = astar(this.map, Math.floor(s.x), Math.floor(s.y), spot.x, spot.y, 'foot', s.level, 0);
+      // Select-all + one order is ~140 full-map A* searches in a single tick
+      // (~250 ms, a visible freeze). Over budget, the search is deferred to a
+      // later tick — the assigned formation spot is reserved now, so the
+      // resulting path is the same one it would have got, just later. A
+      // pending entry keyed by soldier means a re-order overwrites rather
+      // than queues twice. No rng is involved in pathing, so deferral cannot
+      // perturb the shared rng stream.
+      if (this.pathBudget > 0) {
+        this.pathBudget--;
+        this.pathTo(s, spot, gl);
+      } else {
+        this.pendingPaths.set(sid, { spot, gl });
       }
-      if (path && path.length > 1) {
-        if (s.task) this.dropTask(s); // direct orders override a rescue/ammo run
-        s.path = path.slice(1).map((p) => ({ x: p.x + 0.5, y: p.y + 0.5, l: p.l }));
-        s.pathI = 0;
-        s.fleeing = false;
-      }
+    }
+  }
+
+  private pathTo(s: Soldier, spot: { x: number; y: number }, gl: number): void {
+    let path = astar(this.map, Math.floor(s.x), Math.floor(s.y), spot.x, spot.y, 'foot', s.level, gl);
+    if (!path && gl > 0) {
+      path = astar(this.map, Math.floor(s.x), Math.floor(s.y), spot.x, spot.y, 'foot', s.level, 0);
+    }
+    if (path && path.length > 1) {
+      if (s.task) this.dropTask(s); // direct orders override a rescue/ammo run
+      s.path = path.slice(1).map((p) => ({ x: p.x + 0.5, y: p.y + 0.5, l: p.l }));
+      s.pathI = 0;
+      s.fleeing = false;
+    }
+  }
+
+  private drainPendingPaths(): void {
+    if (this.pendingPaths.size === 0) return;
+    for (const [sid, req] of this.pendingPaths) {
+      if (this.pathBudget <= 0) return;
+      this.pendingPaths.delete(sid);
+      const s = this.soldiers[sid];
+      if (!this.eligible(s)) continue; // died/broke while queued: drop it
+      this.pathBudget--;
+      this.pathTo(s, req.spot, req.gl);
     }
   }
 
@@ -1538,6 +1573,8 @@ export class Sim {
 
   step(): void {
     this.tick++;
+    this.pathBudget = PATH_BUDGET_PER_TICK;
+    this.drainPendingPaths();
     this.stepWaypoints();
     this.stepBarrages();
     this.stepStrafes();
