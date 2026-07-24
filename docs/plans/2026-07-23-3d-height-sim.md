@@ -1,6 +1,6 @@
 # 3D / Height Simulation Evolution — Implementation Plan
 
-**Date:** 2026-07-23 · **Status:** PROPOSED (awaiting sign-off — no code in this document)
+**Date:** 2026-07-23 · **Status:** IMPLEMENTED 2026-07-23 (steps 1–4 landed: 800cb6e, 5951634, a025930, 40d7b14 + grenade wiring 010bab2)
 **Builds on:** `docs/plans/2026-07-23-height-rebuild.md` (landed), `docs/decisions/architecture.md` [APPROVED] Height section.
 
 Goal: evolve the landed 2.5D height system toward physical-style interactions —
