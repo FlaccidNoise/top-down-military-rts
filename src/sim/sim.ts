@@ -401,6 +401,38 @@ function closestT(px: number, py: number, x0: number, y0: number, x1: number, y1
   return len2 > 0 ? Math.max(0, Math.min(1, ((px - x0) * dx + (py - y0) * dy) / len2)) : 0;
 }
 
+// --- Stance and eye heights (verticality design §3) ---
+// Between two men on level ground the eye-line is horizontal, so a rise only
+// discriminates by stance at exactly 1 m: it blocks prone (0.4) and passes
+// crouch (1.1) and stand (1.6). 2 m and up blocks everybody. That is why the
+// relief work puts its tactical payload in 1 m features (hedge banks, road
+// verges, sunken-lane shoulders) and treats a 3 m embankment as a hard wall.
+export type Stance = 'stand' | 'crouch' | 'prone';
+export const EYE_STAND = EYE_H; // 1.6 — the engine's existing eye; moving it would rewrite every legacy LOS result
+export const EYE_CROUCH = 1.1;
+export const EYE_PRONE = 0.4;
+// A vehicle sights from the commander's cupola and is itself a hull-sized
+// target: a bank that hides a man does not hide a tank.
+export const EYE_VEHICLE = 2.2;
+export const HULL_VEHICLE = 2.0;
+
+// Stance is DERIVED, never stored: no field on Soldier, no bytes in snapshot().
+// This is the renderer's own pose predicate hoisted sim-side so the two cannot
+// drift — renderer.ts calls this function rather than re-testing `mental`.
+// V8 adds the doctrine stances (ambush && !path -> prone, defend && !path ->
+// crouch); they are balance-bearing and ship separately.
+export function stanceOf(s: Soldier): Stance {
+  if (!s.alive || s.downed || s.captured) return 'prone';
+  if (s.mental === 'pinned' || (s.mental === 'broken' && !s.path)) return 'prone';
+  if (s.path) return 'stand';
+  return s.targetId >= 0 && s.suppression > 0.15 ? 'crouch' : 'stand';
+}
+
+export function eyeOf(s: Soldier): number {
+  const st = stanceOf(s);
+  return st === 'prone' ? EYE_PRONE : st === 'crouch' ? EYE_CROUCH : EYE_STAND;
+}
+
 // The one LOS wrapper every soldier-vision (and vehicle-sight) call site must
 // route through: same as map.ts's los(), plus smoke. map.ts's signature stays
 // untouched — this only adds smoke's contribution on top of its result. Each
@@ -408,13 +440,15 @@ function closestT(px: number, py: number, x0: number, y0: number, x1: number, y1
 // the crossing point falls inside the puff's z-interval [z0, z0+h] — so an
 // upstairs observer sees over a ground smoke column. >=1 blocks same as
 // terrain.
-export function sightBetween(sim: Sim, x0: number, y0: number, x1: number, y1: number, l0 = 0, l1 = 0): LosResult {
-  const base = los(sim.map, x0, y0, x1, y1, l0, l1);
+// e0/e1 are the observer's and target's heights above their feet; they feed
+// both los()'s profile check and the smoke z-line below, so the two agree.
+export function sightBetween(sim: Sim, x0: number, y0: number, x1: number, y1: number, l0 = 0, l1 = 0, e0 = EYE_H, e1 = EYE_H): LosResult {
+  const base = los(sim.map, x0, y0, x1, y1, l0, l1, e0, e1);
   if (!base.visible || sim.smoke.length === 0) return base;
   const dx = x1 - x0;
   const dy = y1 - y0;
-  const zEye0 = sim.map.elevAt(Math.floor(x0), Math.floor(y0)) + l0 * FLOOR_H + EYE_H;
-  const zEye1 = sim.map.elevAt(Math.floor(x1), Math.floor(y1)) + l1 * FLOOR_H + EYE_H;
+  const zEye0 = sim.map.elevAt(Math.floor(x0), Math.floor(y0)) + l0 * FLOOR_H + e0;
+  const zEye1 = sim.map.elevAt(Math.floor(x1), Math.floor(y1)) + l1 * FLOOR_H + e1;
   let opacity = 0;
   for (const p of sim.smoke) {
     const t = closestT(p.x, p.y, x0, y0, x1, y1);
@@ -440,8 +474,13 @@ export function sightBetween(sim: Sim, x0: number, y0: number, x1: number, y1: n
 // no RNG. Every soldier-target sense (acquire, live fire, ambush trigger,
 // honest vision, fog-of-war spotting) routes through this; sight to a map
 // point stays on sightBetween.
-export function sightToSoldier(sim: Sim, x0: number, y0: number, t: Soldier, l0 = 0): LosResult {
-  const sight = sightBetween(sim, x0, y0, t.x, t.y, l0, t.level);
+// The target's eye is derived here, never passed: no caller may disagree with
+// stanceOf about how tall the man it is looking at is. (V6 keeps the trailing
+// EYE_H so the plumbing commit is provably inert; V7 swaps it for eyeOf(t) in
+// the same commit that threads observer eyes, so the whole balance change
+// bisects to one revision.)
+export function sightToSoldier(sim: Sim, x0: number, y0: number, t: Soldier, l0 = 0, e0 = EYE_H): LosResult {
+  const sight = sightBetween(sim, x0, y0, t.x, t.y, l0, t.level, e0, EYE_H);
   const order = sim.teams[t.teamId].orderState.order;
   if (
     sight.visible &&

@@ -157,7 +157,11 @@ export interface LosResult {
 // 2.5D LOS: extends Amanatides & Woo with elevation profile check.
 // l0,l1 are floor levels (0-based). With all elev=0 and l0=l1=0, behavior
 // is byte-identical to the legacy los() — edge tops of 0 mean full-height block.
-export function los(map: GameMap, x0: number, y0: number, x1: number, y1: number, l0 = 0, l1 = 0): LosResult {
+// e0,e1 are eye/target heights above the feet in metres (see sim.ts's
+// EYE_STAND/EYE_CROUCH/EYE_PRONE and EYE_VEHICLE/HULL_VEHICLE). They enter the
+// z-line only, outside the traversal loop: defaulting both to EYE_H reproduces
+// the legacy result instruction-for-instruction.
+export function los(map: GameMap, x0: number, y0: number, x1: number, y1: number, l0 = 0, l1 = 0, e0 = EYE_H, e1 = EYE_H): LosResult {
   const tx0 = Math.floor(x0);
   const ty0 = Math.floor(y0);
   let tx = tx0;
@@ -187,8 +191,8 @@ export function los(map: GameMap, x0: number, y0: number, x1: number, y1: number
   let tMaxY = dy !== 0 ? (stepY > 0 ? ty + 1 - y0 : y0 - ty) * tDeltaY : Infinity;
 
   // eye-to-eye z line
-  const z0 = map.elevAt(tx0, ty0) + l0 * FLOOR_H + EYE_H;
-  const z1 = map.elevAt(tx1, ty1) + l1 * FLOOR_H + EYE_H;
+  const z0 = map.elevAt(tx0, ty0) + l0 * FLOOR_H + e0;
+  const z1 = map.elevAt(tx1, ty1) + l1 * FLOOR_H + e1;
   const dz = z1 - z0;
 
   // Slab test for the observer's own tile (never "entered" by the traversal
