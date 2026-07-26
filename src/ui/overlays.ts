@@ -1,4 +1,5 @@
 import type { Camera } from '../render/camera';
+import { view } from '../render/view';
 import { compliance, dangerSamples, dangerScore, type OrderKind } from '../sim/orders';
 import { fanOffsets, formationSlots, OFFSETS, TEAM_FAN, SQUAD_FAN, type Side, type Sim, type UnitEvent } from '../sim/sim';
 import { TEAM } from './hud';
@@ -25,8 +26,8 @@ function teamCentroid(sim: Sim, soldierIds: number[]): { x: number; y: number } 
 
 // World-anchored order feedback, drawn on the canvas after the scene.
 export function drawOverlays(ctx: CanvasRenderingContext2D, cam: Camera, sim: Sim, st: OverlayState, pings: EventPings): void {
-  const cw = ctx.canvas.width;
-  const ch = ctx.canvas.height;
+  const cw = view.w;
+  const ch = view.h;
 
   // Selection rectangle (screen-space, normalized so w/h always positive).
   if (st.selectRect) {

@@ -4,6 +4,7 @@ import { AudioEngine } from './render/audio';
 import { Camera } from './render/camera';
 import { Renderer } from './render/renderer';
 import { StrategicView, TERRAIN_LABELS } from './render/strategic';
+import { MOBILE, view, viewSize } from './render/view';
 import type { RedCommander } from './sim/ai';
 import { WEAPONS } from './sim/data';
 import type { OrderKind, TeamOrder } from './sim/orders';
@@ -25,13 +26,42 @@ import './ui/ui.css';
 
 const canvas = document.createElement('canvas');
 document.body.appendChild(canvas);
-const ctx = canvas.getContext('2d')!;
-const resize = () => {
-  canvas.width = window.innerWidth;
-  canvas.height = window.innerHeight;
+// Both modes clear the whole canvas every frame, so an opaque context is
+// behavior-neutral and drops a per-frame compositing blend.
+const ctx = canvas.getContext('2d', { alpha: false })!;
+if (MOBILE) document.documentElement.classList.add('mobile');
+// The backing store carries the DPR; the base transform puts every draw call
+// back in CSS pixels, so cam.scale, PAN_PX_PER_SEC and every pick radius keep
+// the meaning they had before retina existed.
+let resizePending = false;
+const resize = (): void => {
+  resizePending = false;
+  const w = Math.round(window.visualViewport?.width ?? window.innerWidth);
+  const h = Math.round(window.visualViewport?.height ?? window.innerHeight);
+  const v = viewSize(w, h, window.devicePixelRatio || 1);
+  canvas.style.width = `${w}px`;
+  canvas.style.height = `${h}px`;
+  canvas.width = Math.round(w * v.dpr);
+  canvas.height = Math.round(h * v.dpr);
+  ctx.setTransform(v.dpr, 0, 0, v.dpr, 0, 0);
+  view.w = v.w;
+  view.h = v.h;
+  view.dpr = v.dpr;
+};
+// iOS fires resize repeatedly while the URL bar collapses — coalesce every
+// source through one rAF-pending flag.
+const queueResize = (): void => {
+  if (resizePending) return;
+  resizePending = true;
+  requestAnimationFrame(resize);
 };
 resize();
-window.addEventListener('resize', resize);
+window.addEventListener('resize', queueResize);
+window.visualViewport?.addEventListener('resize', queueResize);
+window.addEventListener('orientationchange', queueResize);
+// WebKit-only, inert elsewhere: stops iOS Safari page zoom from stealing the
+// two-finger pinch the battle camera needs.
+document.addEventListener('gesturestart', (e) => e.preventDefault());
 
 const debriefEl = document.createElement('div');
 debriefEl.id = 'debrief';
@@ -294,7 +324,7 @@ function viewportInset(): { left: number; top: number; bottom: number } {
   return {
     left: squads ? squads.right : 0,
     top: strip ? strip.bottom : 0,
-    bottom: hint ? window.innerHeight - hint.top : 0,
+    bottom: hint ? view.h - hint.top : 0,
   };
 }
 
@@ -359,7 +389,7 @@ function startEngagementBattle(e: Engagement): void {
   battleCompany = battle.companyIndex;
   renderer = new Renderer(sim);
   battleTitle = `Day ${front.day} ${front.hhmm} — ${battle.name}`;
-  const boot = bootCamera(sim, canvas.width, canvas.height);
+  const boot = bootCamera(sim, view.w, view.h);
   cam.x = boot.x;
   cam.y = boot.y;
   cam.scale = boot.scale;
@@ -468,7 +498,7 @@ canvas.addEventListener('mousedown', (e) => {
   }
   if (e.button === 2) {
     rmbDown = true;
-    const [wx, wy] = cam.screenToWorld(e.clientX, e.clientY, canvas.width, canvas.height);
+    const [wx, wy] = cam.screenToWorld(e.clientX, e.clientY, view.w, view.h);
     rmbAnchor = { sx: e.clientX, sy: e.clientY, wx, wy };
   }
 });
@@ -501,7 +531,7 @@ canvas.addEventListener('mouseup', (e) => {
   if (e.button !== 0) return;
   
   if (mode === 'strategic') {
-    const cell = stratView.cellAtScreen(e.clientX, e.clientY, canvas.width, canvas.height);
+    const cell = stratView.cellAtScreen(e.clientX, e.clientY, view.w, view.h);
     const chit = cell >= 0 ? front.chitAt(cell, 'blue') : undefined;
     selectedChit = chit ? chit.id : -1;
     if (chit) {
@@ -515,8 +545,8 @@ canvas.addEventListener('mouseup', (e) => {
   
   if (boxRect && dragged) {
     // Box-select completion
-    const [wx0, wy0] = cam.screenToWorld(boxRect.x, boxRect.y, canvas.width, canvas.height);
-    const [wx1, wy1] = cam.screenToWorld(boxRect.x + boxRect.w, boxRect.y + boxRect.h, canvas.width, canvas.height);
+    const [wx0, wy0] = cam.screenToWorld(boxRect.x, boxRect.y, view.w, view.h);
+    const [wx1, wy1] = cam.screenToWorld(boxRect.x + boxRect.w, boxRect.y + boxRect.h, view.w, view.h);
     const minX = Math.min(wx0, wx1), maxX = Math.max(wx0, wx1);
     const minY = Math.min(wy0, wy1), maxY = Math.max(wy0, wy1);
     const found: number[] = [];
@@ -539,7 +569,7 @@ canvas.addEventListener('mouseup', (e) => {
   }
   
   if (!dragged) {
-    const [wx, wy] = cam.screenToWorld(e.clientX, e.clientY, canvas.width, canvas.height);
+    const [wx, wy] = cam.screenToWorld(e.clientX, e.clientY, view.w, view.h);
     if (targetMode === 'barrage' && !aiControl) {
       if (sim.callBarrage('blue', wx, wy)) {
         setTargetMode('');
@@ -609,7 +639,7 @@ canvas.addEventListener('contextmenu', (e) => {
   e.preventDefault();
   if (mode === 'strategic') {
     if (selectedChit >= 0) {
-      const cell = stratView.cellAtScreen(e.clientX, e.clientY, canvas.width, canvas.height);
+      const cell = stratView.cellAtScreen(e.clientX, e.clientY, view.w, view.h);
       if (cell >= 0 && !front.orderMove(selectedChit, cell) && front.sector.cells[cell].terrain === 'river')
         stratView.flash("Can't hold open water — ford across to the far bank");
     }
@@ -629,7 +659,7 @@ window.addEventListener('mouseup', (e) => {
   }
   if (targetMode !== '') { rmbAnchor = null; return; }
   if (aiControl) { rmbAnchor = null; return; }
-  const [wx, wy] = cam.screenToWorld(e.clientX, e.clientY, canvas.width, canvas.height);
+  const [wx, wy] = cam.screenToWorld(e.clientX, e.clientY, view.w, view.h);
   if (e.altKey && selectedSquads.length > 0 && sim.map.storiesAt(Math.floor(wx), Math.floor(wy)) >= 2) {
     showFloorMenu(document.body, sim, wx, wy, e.clientX, e.clientY, (level) => {
       const order: TeamOrder = { kind: armedOrder ?? 'move', x: wx, y: wy, l: level };
@@ -700,7 +730,7 @@ canvas.addEventListener('wheel', (e) => {
   // scroll = zoom (trackpad two-finger scroll, pinch, and mouse wheel alike);
   // ~1.003^px: a trackpad flick ramps fast, a mouse notch (dy≈100) ≈1.35×
   const dy = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;
-  cam.zoom(Math.pow(1.003, -dy), e.clientX, e.clientY, canvas.width, canvas.height);
+  cam.zoom(Math.pow(1.003, -dy), e.clientX, e.clientY, view.w, view.h);
 });
 
 // WASD camera pan: held-key set keyed by event.code so a keyup always clears
@@ -881,7 +911,7 @@ function frame(now: number): void {
     }
     stratHud.update(front, campaign, selectedChit, stratPaused);
     stratView.stagedCell = pendingEngagement ? pendingEngagement.cell : -1;
-    stratView.draw(ctx, front, selectedChit, stratPaused, SPEEDS[speedIdx], canvas.width, canvas.height);
+    stratView.draw(ctx, front, selectedChit, stratPaused, SPEEDS[speedIdx], view.w, view.h);
   } else {
     acc += dtReal;
     if (!paused) {
@@ -894,8 +924,8 @@ function frame(now: number): void {
     } else {
       acc = 0;
     }
-    const cw = canvas.width;
-    const chh = canvas.height;
+    const cw = view.w;
+    const chh = view.h;
     const shots = sim.takeEvents();
     const melee = sim.takeMeleeEvents();
     const booms = sim.takeBooms();
@@ -911,9 +941,9 @@ function frame(now: number): void {
     pings.add(unitEvents, sim.tick);
     audio.addUnitEvents(unitEvents);
 
-    const pick = mouse.onCanvas && !targetMode ? pickAt(sim, cam, mouse.x, mouse.y, canvas.width, canvas.height) : null;
+    const pick = mouse.onCanvas && !targetMode ? pickAt(sim, cam, mouse.x, mouse.y, view.w, view.h) : null;
     const shot = computeShot(sim, getPrimary(), selectedVehicle, pick);
-    const cursor = mouse.onCanvas ? cam.screenToWorld(mouse.x, mouse.y, canvas.width, canvas.height) : null;
+    const cursor = mouse.onCanvas ? cam.screenToWorld(mouse.x, mouse.y, view.w, view.h) : null;
     const primary = getPrimary();
     const primarySquad = sim.squads[primary];
     const focusTeams = primary < 0 ? [] : selectedTeam >= 0 ? [selectedTeam] : primarySquad?.teamIds ?? [];
@@ -921,7 +951,7 @@ function frame(now: number): void {
     // Formation drag state for overlays
     let formationDrag: { ax: number; ay: number; facing: number; width: number } | null = null;
     if (rmbDown && rmbAnchor) {
-      const [cx, cy] = cam.screenToWorld(mouse.x, mouse.y, canvas.width, canvas.height);
+      const [cx, cy] = cam.screenToWorld(mouse.x, mouse.y, view.w, view.h);
       const wdx = cx - rmbAnchor.wx;
       const wdy = cy - rmbAnchor.wy;
       const len = Math.hypot(wdx, wdy);
@@ -972,7 +1002,7 @@ function frame(now: number): void {
     // the roster panel silently fails to inset the view.
     if (needsBootFrame) {
       needsBootFrame = false;
-      const b = bootCamera(sim, canvas.width, canvas.height);
+      const b = bootCamera(sim, view.w, view.h);
       cam.x = b.x;
       cam.y = b.y;
       cam.scale = b.scale;

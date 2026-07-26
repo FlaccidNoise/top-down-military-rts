@@ -2,11 +2,31 @@
 <html>
   <head>
     <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#1a1d1a" />
     <link rel="icon" href="data:," />
     <title>Close Combat-like</title>
     <style>
-      body { margin: 0; overflow: hidden; background: #1a1d1a; }
-      canvas { display: block; }
+      html, body {
+        height: 100%;
+        margin: 0;
+        overflow: hidden;
+        overscroll-behavior: none;
+        background: #1a1d1a;
+        -webkit-text-size-adjust: 100%;
+        -webkit-tap-highlight-color: transparent;
+      }
+      /* touch-action stays scoped to the canvas: a global rule would kill
+         scrolling in the roster, chit panel, pause menu and debrief. */
+      canvas {
+        display: block;
+        position: fixed;
+        inset: 0;
+        touch-action: none;
+        user-select: none;
+        -webkit-user-select: none;
+        -webkit-touch-callout: none;
+      }
     </style>
   </head>
   <body>

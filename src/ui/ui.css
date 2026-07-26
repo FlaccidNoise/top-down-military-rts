@@ -134,6 +134,7 @@ button.hbtn.active { background: var(--chip-active-bg); border-color: var(--ambe
 /* ---- squad panel ---- */
 #squads {
   position: absolute;
+  touch-action: pan-y;
   left: var(--sp-2);
   top: 48px;
   width: 258px;
@@ -295,7 +296,7 @@ button.hbtn.active { background: var(--chip-active-bg); border-color: var(--ambe
   font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
   color: var(--paper);
 }
-#pausemenu .db-scroll { overflow-y: auto; min-height: 0; }
+#pausemenu .db-scroll { overflow-y: auto; min-height: 0; touch-action: pan-y; }
 #pausemenu .db { max-width: 640px; margin: 48px auto 0; padding: 0 var(--sp-5); }
 #pausemenu h1 { letter-spacing: 6px; font-size: 26px; margin: 0 0 var(--sp-1); }
 #pausemenu .pm-panel { margin: var(--sp-5) 0; }
@@ -346,7 +347,7 @@ button.hbtn.active { background: var(--chip-active-bg); border-color: var(--ambe
   font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
   color: var(--paper);
 }
-#debrief .db-scroll { overflow-y: auto; min-height: 0; }
+#debrief .db-scroll { overflow-y: auto; min-height: 0; touch-action: pan-y; }
 #debrief .db { max-width: 640px; margin: 48px auto 0; padding: 0 var(--sp-5); }
 #debrief h1 { letter-spacing: 6px; font-size: 26px; margin: 0 0 var(--sp-1); }
 #debrief h1.win { color: var(--state-steady); }
@@ -694,6 +695,7 @@ button.hbtn:focus-visible,
 /* ---- chit detail panel ---- */
 #st-chit-panel {
   position: absolute;
+  touch-action: pan-y;
   bottom: var(--sp-2);
   left: var(--sp-2);
   width: 260px;
