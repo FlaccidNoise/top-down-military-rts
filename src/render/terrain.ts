@@ -33,6 +33,7 @@ import { hash, vec } from './noise';
 import { stamp, stampRect } from './stamps';
 import { canopySprite, drawLog } from './canopy';
 import { PatchIndex, type BuildingBox } from './patches';
+import { buildYards, drawYardGround, drawYardStructures, type Yard } from './yards';
 
 // Bilinear value noise on an 8m lattice — smooth patches, no hard square edges.
 function coarse(x: number, y: number): number {
@@ -1068,6 +1069,7 @@ export class TerrainLayer {
   private hasStairs: boolean;
   private bakeBudget = 0;
   private patches: PatchIndex;
+  private yards: Yard[];
 
   constructor(private map: GameMap) {
     // Flat maps (all elev 0, no stairs) early-out everywhere below, so their
@@ -1075,6 +1077,7 @@ export class TerrainLayer {
     this.hasElev = map.elev.some((e) => e !== 0);
     this.hasStairs = map.stairs.some((s) => s !== 0);
     this.patches = new PatchIndex(map);
+    this.yards = buildYards(map, this.patches);
   }
 
   private chunk(cx: number, cy: number, band: number): HTMLCanvasElement {
@@ -1107,7 +1110,9 @@ export class TerrainLayer {
     drawPaving(g, this.map, this.patches, tx0, ty0, tx1, ty1, band, d);
     drawRoadWear(g, this.map, tx0, ty0, tx1, ty1, d, (x, y) => this.patches.pavedAt(x, y));
     drawWaterBanks(g, this.map, tx0, ty0, tx1, ty1);
+    drawYardGround(g, this.map, this.patches, this.yards, tx0, ty0, tx1, ty1, d);
     drawDoorTrails(g, this.map, tx0, ty0, tx1, ty1);
+    drawYardStructures(g, this.map, this.patches, this.yards, tx0, ty0, tx1, ty1, d);
     drawHedgeRun(g, this.map, tx0, ty0, tx1, ty1, d);
     if (d >= 1) {
       // Fallen trunks, deep inside a stand only, ~1 per 50 woods tiles. Drawn
