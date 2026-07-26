@@ -49,13 +49,19 @@ export class Coach {
     el.style.transform = 'translateX(-50%)';
     el.style.zIndex = '20';
     document.body.appendChild(el);
-    // clamp horizontally on next frame
+    // clamp horizontally, and flip above the target when anchoring below would
+    // push the bubble off the bottom — which is every coachmark on a phone,
+    // where the thing being explained is the bottom touch bar.
     requestAnimationFrame(() => {
       const cr = el.getBoundingClientRect();
       const vw = window.innerWidth;
       const l = parseFloat(el.style.left);
       if (cr.left < 8) el.style.left = `${l + 8 - cr.left}px`;
       if (cr.right > vw - 8) el.style.left = `${l - (cr.right - (vw - 8))}px`;
+      if (cr.bottom > window.innerHeight - 8) {
+        el.classList.add('above');
+        el.style.top = `${r.top + window.scrollY - cr.height - 8}px`;
+      }
     });
     this.currentEl = el;
   }

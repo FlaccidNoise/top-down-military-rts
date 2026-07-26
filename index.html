@@ -4,7 +4,17 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="theme-color" content="#1a1d1a" />
-    <link rel="icon" href="data:," />
+    <!-- The pair that makes viewport-fit=cover plus the env(safe-area-inset-*)
+         padding in ui.css actually pay off on a notched iPhone. -->
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Normandy" />
+    <!-- RELATIVE, matching the 2026-07-24 `base: './'` deploy decision: an
+         absolute /manifest.webmanifest 404s on every subpath host. -->
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="icon" href="./icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="./icon-512.png" />
     <title>Close Combat-like</title>
     <style>
       html, body {

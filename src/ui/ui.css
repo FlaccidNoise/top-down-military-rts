@@ -956,7 +956,7 @@ html.mobile .st-wp-cancel { width: 32px; height: 32px; font-size: 18px; }
 .coach {
   position: absolute;
   z-index: 20;
-  max-width: 280px;
+  max-width: min(280px, calc(100vw - 24px));
   padding: 10px var(--sp-3);
   background: var(--paper);
   color: var(--ink);
@@ -976,6 +976,13 @@ html.mobile .st-wp-cancel { width: 32px; height: 32px; font-size: 18px; }
   border-left: 6px solid transparent;
   border-right: 6px solid transparent;
   border-bottom: 6px solid var(--paper);
+}
+/* Flipped above its target (bottom-anchored chrome — the phone touch bar). */
+.coach.above::before {
+  top: auto;
+  bottom: -6px;
+  border-bottom: none;
+  border-top: 6px solid var(--paper);
 }
 .coach-text {
   display: block;
@@ -1168,6 +1175,46 @@ html.mobile #tip {
   max-height: 34dvh;
   overflow-y: auto;
 }
+
+/* ---- portrait guidance ----
+   Shown by CSS alone, so there is no resize plumbing to get wrong. The copy
+   names the reason rather than scolding, and the escape hatch is real: the
+   phone layout does work in portrait, it just shows a third of the frontage. */
+#rotate { display: none; }
+@media (orientation: portrait) {
+  html.mobile #rotate:not(.dismissed) {
+    display: flex;
+    position: fixed;
+    inset: 0;
+    z-index: 30;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: var(--sp-4);
+    padding: var(--sp-5);
+    text-align: center;
+    background: #0d0f0b;
+    color: var(--paper);
+    font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+    font-size: var(--fs-lg);
+    line-height: 1.5;
+  }
+}
+#rotate .rot-glyph { font-size: 44px; color: var(--amber); line-height: 1; }
+#rotate h2 { margin: 0; font-size: var(--fs-lg); letter-spacing: 2px; color: var(--amber-bright); font-weight: var(--fw-head); }
+#rotate p { margin: 0; max-width: 30ch; color: var(--muted); }
+#rotate button {
+  font: inherit;
+  min-height: 44px;
+  padding: var(--sp-2) 22px;
+  cursor: pointer;
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  letter-spacing: 1px;
+}
+#rotate button:focus-visible { outline: 2px solid var(--amber); outline-offset: 1px; }
 
 /* ---- floor menu ---- */
 #floormenu {

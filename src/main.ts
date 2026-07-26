@@ -69,6 +69,27 @@ const debriefEl = document.createElement('div');
 debriefEl.id = 'debrief';
 document.body.appendChild(debriefEl);
 
+// Portrait guidance. Visibility is pure CSS (@media (orientation: portrait)
+// under html.mobile), so there is no resize plumbing to get wrong; the only
+// state is the dismissal, which persists so a player who chose portrait is
+// never nagged again.
+const ROTATE_KEY = 'rts.portrait.dismissed';
+const rotateEl = document.createElement('div');
+rotateEl.id = 'rotate';
+rotateEl.innerHTML =
+  '<div class="rot-glyph">⟳</div>' +
+  '<h2>TURN THE PHONE</h2>' +
+  '<p>The battlefield is 320 m wide. In portrait you see about a third of the frontage a company needs to manoeuvre across.</p>' +
+  '<button id="rotate-anyway">Play in portrait anyway</button>';
+document.body.appendChild(rotateEl);
+try {
+  if (localStorage.getItem(ROTATE_KEY) === '1') rotateEl.classList.add('dismissed');
+} catch { /* private mode */ }
+document.getElementById('rotate-anyway')!.addEventListener('click', () => {
+  rotateEl.classList.add('dismissed');
+  try { localStorage.setItem(ROTATE_KEY, '1'); } catch { /* quota */ }
+});
+
 // debug: ?camp=N pins the campaign seed and disables saving (screenshot
 // harness reproducibility — a pinned campaign must never clobber a real save)
 const urlCamp = new URLSearchParams(location.search).get('camp');
@@ -1215,6 +1236,12 @@ function frame(now: number): void {
       cam.x = b.x;
       cam.y = b.y;
       cam.scale = b.scale;
+      // Same frame, same reason: the touch bar the coachmark points at only
+      // exists once the HUD has rendered once.
+      if (MOBILE) {
+        const t = document.getElementById('touchbar');
+        if (t) coach.maybeShow('touch-basics', t, 'Drag to pan · pinch to zoom · press and hold to give an order');
+      }
     }
 
     if (sim.winner && winnerAt < 0) winnerAt = now;

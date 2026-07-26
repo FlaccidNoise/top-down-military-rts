@@ -18,6 +18,21 @@ const resp = await page.goto(`${URL}?camp=42`, { waitUntil: 'load' });
 console.log(`GET ${URL} -> ${resp.status()}`);
 await page.waitForFunction(() => '__game' in window, null, { timeout: 8000 });
 
+// PWA assets are the one part of the deploy contract vite's dev server hides:
+// it rewrites './x' to '/x', so only a built bundle served from a subpath can
+// prove the manifest and icons resolve rather than 404ing at the domain root.
+const pwa = await page.evaluate(() => ({
+  manifest: document.querySelector('link[rel=manifest]')?.getAttribute('href'),
+  icon: document.querySelector('link[rel="apple-touch-icon"]')?.getAttribute('href'),
+}));
+for (const [name, href] of Object.entries(pwa)) {
+  if (!href) { errors.push(`missing ${name} link`); continue; }
+  if (href.startsWith('/')) errors.push(`${name} href is root-absolute (${href}) — it 404s on every subpath host`);
+  const r = await page.request.get(new globalThis.URL(href, `${URL}?camp=42`).href);
+  if (!r.ok()) errors.push(`${name} ${href} -> ${r.status()}`);
+}
+console.log(`pwa ${JSON.stringify(pwa)}`);
+
 const boot = await page.evaluate(() => {
   const g = window.__game;
   const f = g.front;

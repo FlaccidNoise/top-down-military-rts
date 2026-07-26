@@ -136,6 +136,33 @@ async function phoneRun(device) {
   await page.waitForTimeout(500);
 
   check(await page.evaluate(() => window.__game.MOBILE === true), `${device} boots with MOBILE on`);
+
+  // (0) PWA + portrait guidance. The banner is CSS-only, so "does it show in
+  // portrait and hide in landscape" is a real assertion, not a formality.
+  const meta = await page.evaluate(() => ({
+    manifest: document.querySelector('link[rel=manifest]')?.getAttribute('href'),
+    appleCapable: document.querySelector('meta[name="apple-mobile-web-app-capable"]')?.content,
+    statusBar: document.querySelector('meta[name="apple-mobile-web-app-status-bar-style"]')?.content,
+    themeColor: document.querySelector('meta[name="theme-color"]')?.content,
+    rotateVisible: getComputedStyle(document.getElementById('rotate')).display !== 'none',
+    portrait: matchMedia('(orientation: portrait)').matches,
+  }));
+  // Vite's dev HTML transform rewrites './x' to '/x', so the relative-path
+  // half of the deploy contract is only checkable against a real build —
+  // scripts/smoke-dist.mjs asserts it there, under a subpath URL.
+  check(!!meta.manifest, `${device} manifest link present (${meta.manifest})`);
+  check(meta.appleCapable === 'yes' && meta.statusBar === 'black-translucent', `${device} apple standalone meta present`);
+  check(meta.rotateVisible === meta.portrait, `${device} rotate banner shows exactly in portrait (visible=${meta.rotateVisible}, portrait=${meta.portrait})`);
+  const manifestRes = await page.request.get(`http://[::1]:${PORT}/manifest.webmanifest`);
+  const manifest = manifestRes.ok() ? await manifestRes.json() : null;
+  check(!!manifest && manifest.display === 'standalone' && manifest.orientation === 'landscape' && manifest.icons.length > 0, `${device} manifest serves and declares standalone/landscape + an icon`);
+  if (meta.rotateVisible) {
+    await shot('rotate-banner');
+    await page.click('#rotate-anyway');
+    await page.waitForTimeout(150);
+    check(await page.evaluate(() => getComputedStyle(document.getElementById('rotate')).display === 'none'), `${device} rotate banner dismisses`);
+  }
+
   await shot('strategic-boot');
   await noOverflow('strategic boot');
 

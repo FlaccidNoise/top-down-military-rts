@@ -123,7 +123,7 @@ export class Hud {
       <div id="banner"></div>
       <div id="hint">
         <span class="hg">scroll zoom · WASD pan · drag box-select · ⇧click add · right-click move · right-drag formation</span>
-        <span class="hg">${fb(b.squad1)}-${fb(b.squad9)} squad · ${fb(b.order1)}-${fb(b.order8)} order kind, right-click issues · shift+right-click waypoint · ${fb(b.barrage)} barrage · ${fb(b.airstrike)} airstrike · ${fb(b.pause)} pause · ${fb(b.cancel)} widen/cancel · ${fb(b.menu)} menu</span>
+        <span class="hg">${fb(b.squad1)}-${fb(b.squad9)} squad · ${fb(b.order1)}-${fb(b.order8)} order kind, right-click issues · ${fb(b.barrage)} barrage · ${fb(b.airstrike)} airstrike · ${fb(b.pause)} pause · ${fb(b.cancel)} widen/cancel · ${fb(b.menu)} menu</span>
       </div>`;
     document.body.appendChild(this.root);
 
@@ -372,7 +372,7 @@ export class Hud {
     const b = this.km.bindings;
     this.q('#hint').innerHTML =
       `<span class="hg">scroll zoom · ${fb(b.panUp)}${fb(b.panLeft)}${fb(b.panDown)}${fb(b.panRight)} pan · drag box-select · ⇧click add · right-click move · right-drag formation</span>` +
-      `<span class="hg">${fb(b.squad1)}-${fb(b.squad9)} squad · ${fb(b.order1)}-${fb(b.order8)} order kind, right-click issues · shift+right-click waypoint · ${fb(b.barrage)} barrage · ${fb(b.airstrike)} airstrike · ${fb(b.pause)} pause · ${fb(b.cancel)} widen/cancel · ${fb(b.menu)} menu</span>`;
+      `<span class="hg">${fb(b.squad1)}-${fb(b.squad9)} squad · ${fb(b.order1)}-${fb(b.order8)} order kind, right-click issues · ${fb(b.barrage)} barrage · ${fb(b.airstrike)} airstrike · ${fb(b.pause)} pause · ${fb(b.cancel)} widen/cancel · ${fb(b.menu)} menu</span>`;
   }
 
   private renderTouchbar(sim: Sim, st: HudState): void {
