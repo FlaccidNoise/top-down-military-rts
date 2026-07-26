@@ -1,6 +1,7 @@
 import { VEHICLES, type VehicleKey } from '../sim/data';
 import type { Side } from '../sim/sim';
 import { SHADOW_ALPHA, shadowOffset } from './light';
+import { SpriteCache } from './spritecache';
 
 // Parametric vector tank, drawn facing +X in meter units, baked per
 // (kind, side, state, zoom band) — same scheme as dudes.ts.
@@ -10,6 +11,12 @@ const BANDS = [6, 12, 24, 48];
 
 export function vehicleBandFor(scale: number): number {
   return BANDS.find((b) => b >= scale) ?? 48;
+}
+
+// One device pixel in metres: the vehicle bake ctx is scaled by band alone
+// (no DUDE_SCALE oversize), so panel lines clamp against this.
+function hair(band: number): number {
+  return 1 / band;
 }
 
 type State = 'ok' | 'dead';
@@ -389,7 +396,12 @@ function drawHalftrack(g: Ctx, c: Palette, wreck: boolean, long: number, wide: n
   }
 }
 
-const cache = new Map<string, HTMLCanvasElement>();
+const VEHICLE_BUDGET = 24 << 20; // bytes; a band-48 hull canvas is ~590 KB, so this is a real ceiling
+const cache = new SpriteCache(VEHICLE_BUDGET);
+
+export function vehicleCacheStats(): { entries: number; bytes: number } {
+  return cache.stats();
+}
 
 export function getVehicleSprite(kind: VehicleKey, side: Side, state: State, band: number): HTMLCanvasElement {
   const key = `${kind}|${side}|${state}|${band}`;

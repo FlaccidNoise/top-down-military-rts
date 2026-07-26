@@ -1,6 +1,7 @@
 import { WEAPONS, type WeaponKey } from '../sim/data';
 import type { Side } from '../sim/sim';
 import { SHADOW_SOFT_ALPHA } from './light';
+import { SpriteCache } from './spritecache';
 
 // Parametric vector soldier, drawn facing +X in meter units, baked into a
 // per-(pose, frame, weapon, side, zoom-band) sprite cache. The renderer draws
@@ -11,13 +12,27 @@ export type Pose = 'idle' | 'walk' | 'aim' | 'kneel' | 'prone' | 'downed' | 'dea
 export const WALK_FRAMES = 6;
 export const MELEE_FRAMES = 4; // 0 guard, 1 windup, 2 thrust, 3 recover
 export const SPRITE_SPAN = 3.6; // meters covered by the (square) sprite canvas
-const DUDE_SCALE = 1.35; // genre-standard oversize so figures read at tactical zoom
+export const DUDE_SCALE = 1.35; // genre-standard oversize so figures read at tactical zoom
 export const SPRITE_MIN_SCALE = 5; // px/m; below this the renderer uses dot LOD
 
 const BANDS = [6, 12, 24, 48]; // bake resolutions (px/m); never upscale on screen
 
 export function bandFor(scale: number): number {
   return BANDS.find((b) => b >= scale) ?? 48;
+}
+
+// Detail tier per bake band — the one gate every piece of kit detail asks.
+// 0: silhouette + team rim only (band 6: a strap is a third of a pixel there,
+//    so drawing it is mush AND cost). 1: the historical look. 2: webbing,
+//    per-weapon geometry, role marks. 3: netting, lacing, weathering.
+export function tier(band: number): 0 | 1 | 2 | 3 {
+  return band >= 48 ? 3 : band >= 24 ? 2 : band >= 12 ? 1 : 0;
+}
+
+// One device pixel in body units: the dude bake ctx is scaled by band*DUDE_SCALE,
+// so a 0.02-unit tick is sub-pixel at band 24 unless it is clamped through here.
+function hair(band: number): number {
+  return 1 / (band * DUDE_SCALE);
 }
 
 type Ctx = CanvasRenderingContext2D;
@@ -110,7 +125,8 @@ function gun(g: Ctx, weapon: WeaponKey, x: number, y: number, angle: number): vo
 // Faction helmet silhouette (S5): US M1 "pot" helmet reads as a clean dome +
 // thin brim ring; German stahlhelm reads elliptical with a flared rear
 // (-X) skirt hint.
-function helmet(g: Ctx, k: Kit, x: number, y: number): void {
+function helmet(g: Ctx, k: Kit, x: number, y: number, band: number): void {
+  const t = tier(band);
   if (k.side === 'blue') {
     dot(g, x, y, 0.175, k.helmet);
     g.strokeStyle = 'rgba(0,0,0,0.3)';
@@ -129,8 +145,9 @@ function helmet(g: Ctx, k: Kit, x: number, y: number): void {
     g.arc(x - 0.05, y, 0.19, Math.PI * 0.6, Math.PI * 1.4); // flared rear skirt
     g.stroke();
   }
+  if (t === 0) return; // band 6: the dome IS the helmet; every ring below is sub-pixel
   g.strokeStyle = 'rgba(0,0,0,0.35)';
-  g.lineWidth = 0.035;
+  g.lineWidth = Math.max(0.035, hair(band));
   g.beginPath();
   g.arc(x, y, 0.165, 0, Math.PI * 2);
   g.stroke();
@@ -206,7 +223,7 @@ function standing(g: Ctx, k: Kit, w: WeaponKey, gunAngle: number, legSwing: numb
   gun(g, w, gx, gy, gunAngle);
   dot(g, gx, gy, 0.055, k.skin);
   dot(g, fx, fy, 0.055, k.skin);
-  helmet(g, k, 0.04 + lean, -bob);
+  helmet(g, k, 0.04 + lean, -bob, band);
 }
 
 // Kneeling, between idle and prone: one leg tucked, torso compressed, weapon
@@ -225,7 +242,7 @@ function kneel(g: Ctx, k: Kit, w: WeaponKey, band: number): void {
   gun(g, w, gx, gy, 0);
   dot(g, gx, gy, 0.055, k.skin);
   dot(g, fx, gy, 0.055, k.skin);
-  helmet(g, k, 0.06, 0);
+  helmet(g, k, 0.06, 0, band);
 }
 
 function proneBody(g: Ctx, k: Kit, legs: [number, number, number, number][], band: number): void {
@@ -236,6 +253,7 @@ function proneBody(g: Ctx, k: Kit, legs: [number, number, number, number][], ban
   const m = haloMult(band);
   cap(g, -0.5, 0, 0.28, 0, 0.42 + 0.1 * m, withAlpha(k.outline, m));
   cap(g, -0.5, 0, 0.28, 0, 0.42, k.uniform);
+  if (tier(band) === 0) return;
   cap(g, -0.28, -0.14, -0.05, -0.1, 0.05, 'rgba(42,36,24,0.5)');
   cap(g, -0.28, 0.14, -0.05, 0.1, 0.05, 'rgba(42,36,24,0.5)');
 }
@@ -250,7 +268,7 @@ function prone(g: Ctx, k: Kit, w: WeaponKey, band: number): void {
   gun(g, w, 0.5, 0.05, 0);
   dot(g, 0.5, 0.1, 0.055, k.skin);
   dot(g, 0.58, -0.04, 0.055, k.skin);
-  helmet(g, k, 0.42, 0);
+  helmet(g, k, 0.42, 0, band);
 }
 
 function downed(g: Ctx, k: Kit, w: WeaponKey, band: number): void {
@@ -261,7 +279,7 @@ function downed(g: Ctx, k: Kit, w: WeaponKey, band: number): void {
   ], band);
   cap(g, 0.12, -0.2, 0.52, -0.28, 0.12, k.uniform); // one arm reaching out
   dot(g, 0.52, -0.28, 0.055, k.skin);
-  helmet(g, k, 0.42, 0.05);
+  helmet(g, k, 0.42, 0.05, band);
 }
 
 function dead(g: Ctx, k: Kit, w: WeaponKey): void {
@@ -294,8 +312,9 @@ function torso(g: Ctx, k: Kit, rx: number, ry: number, band: number, weapon: Wea
   g.ellipse(0, 0, rx, ry, 0, 0, Math.PI * 2);
   g.fill();
   g.strokeStyle = 'rgba(0,0,0,0.25)';
-  g.lineWidth = 0.035;
+  g.lineWidth = Math.max(0.035, hair(band));
   g.stroke();
+  if (tier(band) === 0) return; // silhouette + rim only at band 6
   torsoStraps(g);
   torsoGear(g, k, weapon);
 }
@@ -309,7 +328,7 @@ function drag(g: Ctx, k: Kit, w: WeaponKey, band: number): void {
   cap(g, 0.02, -0.24, -0.36, -0.15, 0.12, k.sleeve);
   dot(g, -0.36, 0.15, 0.055, k.skin);
   dot(g, -0.36, -0.15, 0.055, k.skin);
-  helmet(g, k, 0.1, 0);
+  helmet(g, k, 0.1, 0, band);
 }
 
 // Kneeling over the casualty, hands working, weapon slung.
@@ -322,7 +341,7 @@ function aid(g: Ctx, k: Kit, w: WeaponKey, band: number): void {
   cap(g, 0.04, -0.22, 0.4, -0.12, 0.12, k.sleeve);
   dot(g, 0.4, 0.12, 0.055, k.skin);
   dot(g, 0.4, -0.12, 0.055, k.skin);
-  helmet(g, k, 0.13, 0);
+  helmet(g, k, 0.13, 0, band);
 }
 
 // Casualty on his back, arms overhead toward the dragger, weapon left behind.
@@ -338,7 +357,7 @@ function dragged(g: Ctx, k: Kit, band: number): void {
   cap(g, 0.08, -0.15, 0.52, -0.17, 0.12, k.sleeve);
   dot(g, 0.52, 0.17, 0.055, k.skin);
   dot(g, 0.52, -0.17, 0.055, k.skin);
-  helmet(g, k, 0.32, 0);
+  helmet(g, k, 0.32, 0, band);
 }
 
 // Hands up: standing, arms raised forward and out, no weapon in hands.
@@ -348,7 +367,7 @@ function surrendered(g: Ctx, k: Kit, band: number): void {
   cap(g, 0.02, -0.24, 0.32, -0.38, 0.12, k.sleeve);
   dot(g, 0.32, 0.38, 0.055, k.skin);
   dot(g, 0.32, -0.38, 0.055, k.skin);
-  helmet(g, k, 0.04, 0);
+  helmet(g, k, 0.04, 0, band);
 }
 
 // Close combat: braced lunge stance, both hands working the weapon as a
@@ -383,7 +402,7 @@ function melee(g: Ctx, k: Kit, w: WeaponKey, frame: number, band: number): void 
   }
   dot(g, p.gx, gy, 0.055, k.skin);
   dot(g, fx, fy, 0.055, k.skin);
-  helmet(g, k, 0.05 + p.lean, 0);
+  helmet(g, k, 0.05 + p.lean, 0, band);
 }
 
 function drawDude(g: Ctx, side: Side, weapon: WeaponKey, pose: Pose, frame: number, band: number): void {
@@ -432,10 +451,19 @@ function drawDude(g: Ctx, side: Side, weapon: WeaponKey, pose: Pose, frame: numb
   }
 }
 
-const cache = new Map<string, HTMLCanvasElement>();
+const DUDE_BUDGET = 48 << 20; // bytes of baked canvas; a band-48 dude is ~117 KB
+const cache = new SpriteCache(DUDE_BUDGET);
+
+export function spriteCacheStats(): { entries: number; bytes: number } {
+  return cache.stats();
+}
 
 export function getSprite(side: Side, weapon: WeaponKey, pose: Pose, frame: number, band: number): HTMLCanvasElement {
-  const key = `${side}|${weapon}|${pose}|${frame}|${band}`;
+  // Key hygiene: a pose that never draws the weapon must not mint one canvas
+  // per weapon. Collapse the dimension here, in the key builder — never at the
+  // draw site, or far bands quietly multiply the keyspace.
+  const wk: WeaponKey = pose === 'surrendered' || pose === 'dragged' ? 'garand' : weapon;
+  const key = `${side}|${wk}|${pose}|${frame}|${band}`;
   let c = cache.get(key);
   if (c) return c;
   c = document.createElement('canvas');
@@ -447,7 +475,7 @@ export function getSprite(side: Side, weapon: WeaponKey, pose: Pose, frame: numb
   g.scale(band * DUDE_SCALE, band * DUDE_SCALE);
   g.lineCap = 'round';
   g.lineJoin = 'round';
-  drawDude(g, side, weapon, pose, frame, band);
+  drawDude(g, side, wk, pose, frame, band);
   cache.set(key, c);
   return c;
 }

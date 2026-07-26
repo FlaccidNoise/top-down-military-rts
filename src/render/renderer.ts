@@ -169,6 +169,7 @@ export class Renderer {
     ctx.save();
     ctx.translate(shx, shy);
 
+    this.prewarm(cam.scale);
     this.terrain.draw(ctx, cam, cw, ch);
     const [mx0, my0] = cam.worldToScreen(0, 0, cw, ch);
     const [mx1, my1] = cam.worldToScreen(this.sim.map.w, this.sim.map.h, cw, ch);
@@ -236,6 +237,36 @@ export class Renderer {
     this.drawPlanes(ctx, cam, now, cw, ch);
     this.drawBarrageMarks(ctx, cam, now, cw, ch);
     ctx.restore();
+  }
+
+  // Band-change prewarm: bakes are lazy and inside the frame, so crossing a
+  // zoom band would otherwise hitch on the first frame that needs every new
+  // sprite at once. Bake the poses a live army actually holds (idle, aim, the
+  // walk cycle) plus every present vehicle on an idle callback, and bail if the
+  // zoom has moved on again by the time it runs.
+  private warmBand = -1;
+  private prewarm(scale: number): void {
+    if (scale < SPRITE_MIN_SCALE) return;
+    const band = bandFor(scale);
+    if (band === this.warmBand) return;
+    this.warmBand = band;
+    const vband = vehicleBandFor(scale);
+    const run = (): void => {
+      if (this.warmBand !== band) return; // a later band change owns the queue now
+      const seen = new Set<string>();
+      for (const s of this.sim.soldiers) {
+        if (!s.alive) continue;
+        const key = `${s.side}|${s.weapon}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        getSprite(s.side, s.weapon, 'idle', 0, band);
+        getSprite(s.side, s.weapon, 'aim', 0, band);
+        for (let f = 0; f < WALK_FRAMES; f++) getSprite(s.side, s.weapon, 'walk', f, band);
+      }
+      for (const v of this.sim.vehicles) getVehicleSprite(v.kind, v.side, v.alive ? 'ok' : 'dead', vband);
+    };
+    if (typeof requestIdleCallback === 'function') requestIdleCallback(run, { timeout: 400 });
+    else setTimeout(run, 0);
   }
 
   // Screen-shake offset in pixels. Booms dominate (near-full-screen impact →

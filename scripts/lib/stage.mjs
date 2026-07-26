@@ -106,11 +106,41 @@ export function deriveTargets(page, { seed, kind }) {
         bocage: { ...bocage, scale: 24 },
         units: { ...squadCentroid('blue'), scale: 32 },
         enemy: { ...squadCentroid('red'), scale: 32 },
+        soldiers48: { ...squadCentroid('blue'), scale: 48 },
       };
       if (kind === 'bridge' || kind === 'river') t.bridge = { ...plan.objectives[plan.objectives.length - 1], scale: 16 };
       return t;
     },
     { seed, kind }
+  );
+}
+
+// Vehicle art gate: one of every kind, side by side, on FOUR DIFFERENT
+// HEADINGS. The heading spread is the whole point — a shadow or highlight
+// baked inside the rotating sprite looks fine on a row of tanks all facing
+// east and obviously wrong the moment they don't. Mutates the sim, so it is
+// opt-in (never part of deriveTargets, which every other crop shares).
+export function stageVehicles(page, { x, y }) {
+  return page.evaluate(
+    ({ x, y }) => {
+      const sim = window.__game.sim;
+      const row = [
+        ['blue', 'sherman', 0],
+        ['red', 'panzer4', Math.PI / 2],
+        ['red', 'stug3', Math.PI],
+        ['blue', 'm3_halftrack', (3 * Math.PI) / 4],
+        ['red', 'sdkfz251', Math.PI / 4],
+      ];
+      const cx = Math.max(16, Math.min(sim.map.w - 16, x));
+      const cy = Math.max(12, Math.min(sim.map.h - 12, y));
+      row.forEach(([side, kind, facing], i) => {
+        const vx = cx + ((i % 3) - 1) * 9;
+        const vy = cy + (((i / 3) | 0) - 0.5) * 9;
+        sim.addVehicle(side, kind, vx, vy, facing);
+      });
+      return { x: cx - 2, y: cy, scale: 32 }; // nudge east so the left column clears the HUD sidebar
+    },
+    { x, y }
   );
 }
 
