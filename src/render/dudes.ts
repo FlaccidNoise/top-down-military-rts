@@ -1,4 +1,4 @@
-import { WEAPONS, type WeaponKey } from '../sim/data';
+import { WEAPONS, type Role, type WeaponKey } from '../sim/data';
 import type { Side } from '../sim/sim';
 import { AO_ALPHA, SUN } from './light';
 import { SpriteCache } from './spritecache';
@@ -113,6 +113,30 @@ let mono = false;
 function paint(c: string): string {
   return mono ? SHADOW_INK : c;
 }
+
+// --- Kit variant (U4) -------------------------------------------------------
+// Role and veterancy marks ride a small bit field rather than new cache
+// dimensions per attribute: bits 0-1 the role bucket, bit 2 veteran. Set once
+// per bake by getSprite, read by torso()/helmet(); same single-threaded bake
+// contract as `mono`.
+const V_ROLE = 3;
+const V_AIDMAN = 1;
+const V_LEADER = 2;
+const V_GUNNER = 3;
+const V_VET = 4;
+let kitBits = 0;
+
+export function kitVariant(role: Role, xp: number, band: number): number {
+  const t = tier(band);
+  if (t < 2) return 0; // far bands must not mint extra cache entries
+  const roleBits = role === 'aidman' ? V_AIDMAN : role === 'leader' ? V_LEADER : role === 'gunner' || role === 'assistant' ? V_GUNNER : 0;
+  return roleBits | (t >= 3 && xp >= 3 ? V_VET : 0);
+}
+
+// Poses that actually show a torso and a helmet from above. A corpse or a man
+// with his hands up carries no role marks — and, more to the point, must not
+// multiply the keyspace with variants nobody can see.
+const VARIANT_POSES = new Set<Pose>(['idle', 'walk', 'crawl', 'aim', 'reload', 'kneel', 'prone', 'melee']);
 
 function cap(g: Ctx, x0: number, y0: number, x1: number, y1: number, w: number, color: string): void {
   g.strokeStyle = paint(color);
@@ -286,7 +310,7 @@ function gun(g: Ctx, weapon: WeaponKey, x: number, y: number, angle: number, ban
     }
   }
   if (s.can && t >= 2) {
-    g.fillStyle = mix('#3c3f36', '#000', 0.25); // olive can, not a black brick — it must not out-value the helmet
+    g.fillStyle = mix('#3c3f36', '#000000', 0.25); // olive can, not a black brick — it must not out-value the helmet
     g.fillRect(-0.1, 0.11, 0.24, 0.15); // ammo can at the loader's side
     g.strokeStyle = METAL;
     g.lineWidth = Math.max(0.03, hw);
@@ -325,19 +349,84 @@ function helmet(g: Ctx, k: Kit, x: number, y: number, band: number): void {
     g.stroke();
   }
   if (t === 0) return; // band 6: the dome IS the helmet; every ring below is sub-pixel
+  const hw = hair(band);
   g.strokeStyle = 'rgba(0,0,0,0.35)';
-  g.lineWidth = Math.max(0.035, hair(band));
+  g.lineWidth = Math.max(0.035, hw);
   g.beginPath();
   g.arc(x, y, 0.165, 0, Math.PI * 2);
   g.stroke();
   // A highlight baked into the sprite points wherever the man happens to face.
   // From tier 2 the renderer lays a world-aligned glint quad on the head
   // instead; only the far bands, where that quad is sub-pixel, keep the blob.
-  if (t >= 2) return;
-  g.fillStyle = 'rgba(255,255,255,0.14)';
+  if (t < 2) {
+    g.fillStyle = 'rgba(255,255,255,0.14)';
+    g.beginPath();
+    g.arc(x - 0.045, y - 0.045, 0.1, 0, Math.PI * 2);
+    g.fill();
+    return;
+  }
+
+  // Shell thickness: a dark rim just inside the outline. Cheap, and it stops
+  // the helmet reading as a flat disc.
+  g.strokeStyle = mix(k.helmet, '#000000', 0.4);
+  g.lineWidth = Math.max(0.02, hw);
   g.beginPath();
-  g.arc(x - 0.045, y - 0.045, 0.1, 0, Math.PI * 2);
-  g.fill();
+  g.arc(x, y, 0.15, 0, Math.PI * 2);
+  g.stroke();
+  // Chinstrap under the jaw — the front (+X) quarter is all you see from above.
+  g.strokeStyle = 'rgba(0,0,0,0.3)';
+  g.lineWidth = Math.max(0.03, hw);
+  g.beginPath();
+  g.arc(x, y, 0.155, -0.55, 0.55);
+  g.stroke();
+
+  const role = kitBits & V_ROLE;
+  if (t >= 3 && role !== V_LEADER) {
+    // Netting on a 23 px helmet is exactly the texture the bake budget exists
+    // for. US scrim net; German cloth cover with two splinter dabs.
+    g.save();
+    g.beginPath();
+    g.arc(x, y, 0.16, 0, Math.PI * 2);
+    g.clip();
+    if (k.side === 'blue') {
+      g.strokeStyle = 'rgba(0,0,0,0.16)';
+      g.lineWidth = Math.max(0.018, hw);
+      g.beginPath();
+      for (let i = -1; i <= 1; i++) {
+        g.moveTo(x - 0.18, y + i * 0.07);
+        g.lineTo(x + 0.18, y + i * 0.07);
+        g.moveTo(x + i * 0.07, y - 0.18);
+        g.lineTo(x + i * 0.07, y + 0.18);
+      }
+      g.stroke();
+    } else {
+      g.fillStyle = 'rgba(70,74,52,0.5)';
+      g.fillRect(x - 0.18, y - 0.05, 0.36, 0.1); // cover band
+      dot(g, x + 0.06, y - 0.09, 0.045, 'rgba(70,74,52,0.5)');
+      dot(g, x - 0.07, y + 0.07, 0.038, 'rgba(70,74,52,0.5)');
+    }
+    if (kitBits & V_VET) {
+      // Foliage tucked under the net — the veteran tell, three dabs, no badge.
+      dot(g, x - 0.06, y - 0.06, 0.03, 'rgba(58,70,44,0.6)');
+      dot(g, x + 0.05, y - 0.02, 0.024, 'rgba(58,70,44,0.6)');
+      dot(g, x - 0.01, y + 0.07, 0.028, 'rgba(58,70,44,0.6)');
+    }
+    g.restore();
+  }
+  if (role === V_AIDMAN) {
+    // Top-down we see the crown, so that is where the red cross goes.
+    dot(g, x, y, 0.09, '#e8e4d8');
+    g.strokeStyle = '#8c2018';
+    g.lineWidth = Math.max(0.035, hw);
+    g.beginPath();
+    g.moveTo(x - 0.06, y);
+    g.lineTo(x + 0.06, y);
+    g.moveTo(x, y - 0.06);
+    g.lineTo(x, y + 0.06);
+    g.stroke();
+  } else if (role === V_LEADER) {
+    cap(g, x - 0.16, y - 0.03, x - 0.16, y + 0.03, Math.max(0.055, hw), 'rgba(224,218,196,0.55)'); // rank tick, rear edge
+  }
 }
 
 function torsoStraps(g: Ctx): void {
@@ -370,6 +459,142 @@ function torsoGear(g: Ctx, k: Kit, weapon: WeaponKey): void {
   }
 }
 
+// --- Webbing (U4, tier >= 2) ------------------------------------------------
+// Everything below is inside the torso outline except the medic's brassard, so
+// the silhouette pillar survives: a kitted man, not a noisy one. Body axes seen
+// from above: +X is his front, +Y his right, -X the pack edge.
+function rrect(g: Ctx, x: number, y: number, w: number, h: number, r: number, fill: string): void {
+  g.fillStyle = fill;
+  g.beginPath();
+  g.moveTo(x + r, y);
+  g.arcTo(x + w, y, x + w, y + r, r);
+  g.arcTo(x + w, y + h, x + w - r, y + h, r);
+  g.arcTo(x, y + h, x, y + h - r, r);
+  g.arcTo(x, y, x + r, y, r);
+  g.closePath();
+  g.fill();
+}
+
+function webbingUS(g: Ctx, k: Kit, band: number): void {
+  const t = tier(band);
+  const hw = hair(band);
+  // Haversack riding the back, bedroll horseshoe over its top
+  rrect(g, -0.26, -0.11, 0.13, 0.22, 0.035, mix(k.uniform, '#000000', 0.42));
+  g.strokeStyle = mix(k.uniform, '#3a3020', 0.55);
+  g.lineWidth = Math.max(0.05, hw);
+  g.beginPath();
+  g.arc(-0.13, 0, 0.16, 2.0, 4.28); // bedroll wrapped over the pack
+  g.stroke();
+  if (t >= 3) {
+    g.strokeStyle = 'rgba(28,24,16,0.5)';
+    g.lineWidth = Math.max(0.018, hw);
+    g.beginPath();
+    for (const ly of [-0.08, 0, 0.08]) {
+      g.moveTo(-0.27, ly);
+      g.lineTo(-0.12, ly); // lashing straps
+    }
+    g.stroke();
+  }
+  // M1923 cartridge belt across the waist, five pouches
+  cap(g, 0.05, -0.2, 0.05, 0.2, Math.max(0.055, hw), 'rgba(52,45,30,0.55)');
+  g.strokeStyle = 'rgba(24,20,14,0.5)';
+  g.lineWidth = Math.max(0.022, hw);
+  g.beginPath();
+  for (let i = -2; i <= 2; i++) {
+    g.moveTo(0.02, i * 0.08);
+    g.lineTo(0.08, i * 0.08);
+  }
+  g.stroke();
+  g.fillStyle = 'rgba(46,40,26,0.6)';
+  g.beginPath();
+  g.ellipse(-0.02, 0.21, 0.06, 0.05, 0, 0, Math.PI * 2); // canteen on the right hip
+  g.fill();
+  cap(g, -0.14, -0.15, -0.26, -0.19, Math.max(0.03, hw), 'rgba(36,30,20,0.6)'); // entrenching tool
+}
+
+function webbingGE(g: Ctx, k: Kit, band: number): void {
+  const t = tier(band);
+  const hw = hair(band);
+  // Y-straps converging on the belt buckle
+  const yw = Math.max(0.035, hw);
+  cap(g, -0.06, -0.2, 0.11, -0.02, yw, 'rgba(30,26,18,0.5)');
+  cap(g, -0.06, 0.2, 0.11, 0.02, yw, 'rgba(30,26,18,0.5)');
+  dot(g, 0.13, 0, 0.05, 'rgba(38,33,22,0.75)'); // buckle
+  g.fillStyle = 'rgba(34,29,20,0.6)';
+  g.fillRect(0.06, -0.13, 0.07, 0.05); // ammo pouches flanking it
+  g.fillRect(0.06, 0.08, 0.07, 0.05);
+  g.fillStyle = 'rgba(50,42,28,0.5)';
+  g.beginPath();
+  g.ellipse(-0.13, -0.15, 0.07, 0.05, 0, 0, Math.PI * 2); // breadbag, left rear
+  g.fill();
+  if (t >= 3) cap(g, -0.16, -0.19, -0.1, -0.19, Math.max(0.02, hw), 'rgba(26,22,15,0.5)'); // bag flap
+  rrect(g, -0.17, 0.08, 0.06, 0.11, 0.025, 'rgba(28,26,20,0.65)'); // gas-mask canister, right rear
+  if (t >= 3) {
+    g.strokeStyle = 'rgba(60,58,48,0.45)';
+    g.lineWidth = Math.max(0.016, hw);
+    g.beginPath();
+    for (const ry of [0.11, 0.135, 0.16]) {
+      g.moveTo(-0.17, ry);
+      g.lineTo(-0.11, ry); // ribbing
+    }
+    g.stroke();
+  }
+  g.fillStyle = 'rgba(40,36,26,0.55)';
+  g.fillRect(-0.22, -0.05, 0.07, 0.09); // mess tin on the pack
+}
+
+// Webbing + role marks, replacing the two flat strap strokes at tier 2+.
+function kitDetail(g: Ctx, k: Kit, weapon: WeaponKey, band: number): void {
+  const t = tier(band);
+  const hw = hair(band);
+  // shoulder seam across the upper third, and a collar tick at the front edge
+  g.strokeStyle = 'rgba(0,0,0,0.18)';
+  g.lineWidth = Math.max(0.025, hw);
+  g.beginPath();
+  g.arc(-0.02, 0, 0.19, -1.15, 1.15);
+  g.stroke();
+  cap(g, 0.17, -0.03, 0.17, 0.03, Math.max(0.06, hw), mix(k.uniform, '#000000', 0.35)); // collar
+  if (k.side === 'blue') webbingUS(g, k, band);
+  else webbingGE(g, k, band);
+
+  const role = kitBits & V_ROLE;
+  const mg = gunClass(weapon) === 'mg';
+  if (mg || role === V_GUNNER) {
+    // a real belt, not a fleck: six perpendicular ticks along the diagonal
+    cap(g, -0.05, -0.2, 0.12, 0.18, Math.max(0.05, hw), 'rgba(60,55,30,0.55)');
+    g.strokeStyle = 'rgba(20,18,12,0.5)';
+    g.lineWidth = Math.max(0.018, hw);
+    g.beginPath();
+    for (let i = 0; i < 6; i++) {
+      const f = (i + 0.5) / 6;
+      const bx = -0.05 + 0.17 * f;
+      const by = -0.2 + 0.38 * f;
+      g.moveTo(bx - 0.035, by + 0.016);
+      g.lineTo(bx + 0.035, by - 0.016);
+    }
+    g.stroke();
+  }
+  if (role === V_GUNNER) {
+    g.fillStyle = mix('#3c3f36', '#000000', 0.3);
+    g.fillRect(-0.24, -0.05, 0.1, 0.07); // spare ammo can riding the pack
+  } else if (role === V_LEADER) {
+    rrect(g, -0.04, -0.24, 0.09, 0.13, 0.02, 'rgba(46,38,24,0.7)'); // map case on the left hip
+    g.fillStyle = 'rgba(30,26,18,0.7)';
+    g.fillRect(0.09, -0.03, 0.06, 0.05); // binocular case on the chest
+  } else if (role === V_AIDMAN) {
+    cap(g, 0.0, -0.27, 0.06, -0.27, Math.max(0.05, hw), 'rgba(232,228,214,0.8)'); // brassard, left upper arm
+  }
+}
+
+// Boot, and at the closest band the legging + heel that stop a leg reading as
+// a pipe with a dot on the end.
+function boot(g: Ctx, k: Kit, x: number, y: number, r: number, band: number): void {
+  dot(g, x, y, r, '#3a3128');
+  if (tier(band) < 3 || mono) return;
+  cap(g, x - 0.1, y, x - 0.05, y, 0.05, mix(k.trousers, '#000000', 0.2)); // canvas legging
+  cap(g, x - 0.13, y, x - 0.1, y, Math.max(0.03, hair(band)), '#2a231c'); // heel
+}
+
 // Contact AO only — the dark pinch where a body meets the ground. It is not a
 // cast shadow and carries no direction or elongation: the world-aligned cast
 // pass (renderer.drawUnitShadows) owns both, off the one sun in light.ts.
@@ -389,7 +614,7 @@ function standing(g: Ctx, k: Kit, w: WeaponKey, gunAngle: number, legSwing: numb
     for (const side of [-1, 1] as const) {
       const lx = side * legSwing * 0.34;
       cap(g, lx * 0.35, side * 0.13, lx, side * 0.13, 0.13, k.trousers);
-      dot(g, lx, side * 0.13, 0.07, '#3a3128');
+      boot(g, k, lx, side * 0.13, 0.07, band);
     }
   }
   g.save();
@@ -463,7 +688,7 @@ function crawl(g: Ctx, k: Kit, w: WeaponKey, frame: number, band: number): void 
 // Kneeling, between idle and prone: one leg tucked, torso compressed, weapon
 // aimed level (S8).
 function kneel(g: Ctx, k: Kit, w: WeaponKey, band: number): void {
-  dot(g, -0.1, 0.16, 0.075, '#3a3128'); // planted boot
+  boot(g, k, -0.1, 0.16, 0.075, band); // planted boot
   if (tier(band) >= 2) cap(g, -0.16, 0.18, -0.1, 0.16, 0.045, '#2c261f'); // rear heel up off the ground
   dot(g, -0.14, -0.12, 0.075, '#3a3128'); // tucked knee
   cap(g, -0.14, -0.12, 0.05, -0.05, 0.13, k.trousers); // bent leg up to the hip
@@ -614,10 +839,29 @@ function torso(g: Ctx, k: Kit, rx: number, ry: number, band: number, weapon: Wea
   g.ellipse(0, 0, rx, ry, 0, 0, Math.PI * 2);
   g.fill();
   if (mono) return;
+  const t = tier(band);
+  if (t >= 2) {
+    // Edge-darkening gradient: a rounded back from any facing, and
+    // rotation-invariant by construction — the directional signal lives in the
+    // world-aligned glint and cast shadow, never in a baked highlight.
+    g.save();
+    g.clip();
+    g.scale(1, ry / rx);
+    const vol = g.createRadialGradient(0, 0, 0, 0, 0, rx * 1.05);
+    vol.addColorStop(0.55, k.uniform);
+    vol.addColorStop(1, mix(k.uniform, '#000000', 0.28));
+    g.fillStyle = vol;
+    g.fillRect(-rx * 1.2, -rx * 1.2, rx * 2.4, rx * 2.4);
+    g.restore();
+  }
   g.strokeStyle = 'rgba(0,0,0,0.25)';
   g.lineWidth = Math.max(0.035, hair(band));
   g.stroke();
-  if (tier(band) === 0) return; // silhouette + rim only at band 6
+  if (t === 0) return; // silhouette + rim only at band 6
+  if (t >= 2) {
+    kitDetail(g, k, weapon, band);
+    return;
+  }
   torsoStraps(g);
   torsoGear(g, k, weapon);
 }
@@ -675,7 +919,7 @@ function melee(g: Ctx, k: Kit, w: WeaponKey, frame: number, band: number): void 
   ][frame];
   // front foot toward the enemy, rear foot planted
   cap(g, 0.05, 0.13, p.lunge, 0.17, 0.13, k.trousers);
-  dot(g, p.lunge, 0.17, 0.07, '#3a3128');
+  boot(g, k, p.lunge, 0.17, 0.07, band);
   cap(g, -0.05, -0.13, -0.28 - p.lunge * 0.4, -0.18, 0.13, k.trousers);
   dot(g, -0.28 - p.lunge * 0.4, -0.18, 0.07, '#3a3128');
   torso(g, k, 0.22, 0.31, band, w);
@@ -766,12 +1010,14 @@ export function spriteCacheStats(): { entries: number; bytes: number } {
   return cache.stats();
 }
 
-export function getSprite(side: Side, weapon: WeaponKey, pose: Pose, frame: number, band: number): HTMLCanvasElement {
+export function getSprite(side: Side, weapon: WeaponKey, pose: Pose, frame: number, band: number, variant = 0): HTMLCanvasElement {
   // Key hygiene: a pose that never draws the weapon must not mint one canvas
-  // per weapon. Collapse the dimension here, in the key builder — never at the
-  // draw site, or far bands quietly multiply the keyspace.
+  // per weapon, and a pose that shows no kit must not mint one per variant.
+  // Collapse both dimensions here, in the key builder — never at the draw
+  // site, or far bands quietly multiply the keyspace.
   const wk: WeaponKey = pose === 'surrendered' || pose === 'surrender2' || pose === 'dragged' ? 'garand' : weapon;
-  const key = `${side}|${wk}|${pose}|${frame}|${band}`;
+  const v = VARIANT_POSES.has(pose) ? variant : 0;
+  const key = `${side}|${wk}|${pose}|${frame}|${band}|${v}`;
   let c = cache.get(key);
   if (c) return c;
   c = document.createElement('canvas');
@@ -783,7 +1029,9 @@ export function getSprite(side: Side, weapon: WeaponKey, pose: Pose, frame: numb
   g.scale(band * DUDE_SCALE, band * DUDE_SCALE);
   g.lineCap = 'round';
   g.lineJoin = 'round';
+  kitBits = v;
   drawDude(g, side, wk, pose, frame, band);
+  kitBits = 0;
   cache.set(key, c);
   return c;
 }
@@ -817,6 +1065,7 @@ export function getShadowSprite(pose: Pose, frame: number, cls: 'rifle' | 'smg' 
   g.lineCap = 'round';
   g.lineJoin = 'round';
   mono = true;
+  kitBits = 0; // a shadow carries no kit, so it carries no role marks either
   drawDude(g, 'blue', SHADOW_WEAPON[cls], pose, frame, sb);
   mono = false;
   shadowCache.set(key, c);

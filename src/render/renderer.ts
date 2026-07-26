@@ -2,7 +2,7 @@ import type { Emplacement } from '../sim/emplacement';
 import { MELEE_STRIKE_RANGE, type MeleeEvent, type ShotEvent, type Side, type Sim, type Soldier, type Vehicle } from '../sim/sim';
 import type { Camera } from './camera';
 import { DecalLayer } from './decals';
-import { bandFor, CRAWL_FRAMES, DUDE_SCALE, getShadowSprite, getSprite, glintSprite, headOffset, SPRITE_MIN_SCALE, SPRITE_SPAN, tier, WALK_FRAMES, weaponClass, type Pose } from './dudes';
+import { bandFor, CRAWL_FRAMES, DUDE_SCALE, getShadowSprite, getSprite, glintSprite, headOffset, kitVariant, SPRITE_MIN_SCALE, SPRITE_SPAN, tier, WALK_FRAMES, weaponClass, type Pose } from './dudes';
 import { ballistic, blit, FLASH, flashClass, fxDetail, hotPass, SPIKE_SIDES, traceOvershoot, WIND, type FlashSpec, type FxKind, type Overshoot } from './fx';
 import { SHADOW_SOFT_ALPHA, SUN } from './light';
 import { MarkLayer } from './marks';
@@ -358,12 +358,13 @@ export class Renderer {
       const seen = new Set<string>();
       for (const s of this.sim.soldiers) {
         if (!s.alive) continue;
-        const key = `${s.side}|${s.weapon}`;
+        const v = kitVariant(s.role, s.xp, band);
+        const key = `${s.side}|${s.weapon}|${v}`;
         if (seen.has(key)) continue;
         seen.add(key);
-        getSprite(s.side, s.weapon, 'idle', 0, band);
-        getSprite(s.side, s.weapon, 'aim', 0, band);
-        for (let f = 0; f < WALK_FRAMES; f++) getSprite(s.side, s.weapon, 'walk', f, band);
+        getSprite(s.side, s.weapon, 'idle', 0, band, v);
+        getSprite(s.side, s.weapon, 'aim', 0, band, v);
+        for (let f = 0; f < WALK_FRAMES; f++) getSprite(s.side, s.weapon, 'walk', f, band, v);
       }
       for (const v of this.sim.vehicles) getVehicleSprite(v.kind, v.side, v.alive ? 'ok' : 'dead', vband);
     };
@@ -740,7 +741,7 @@ export class Renderer {
       ctx.stroke();
     }
 
-    const spr = getSprite(s.side, s.weapon, pose, frame, band);
+    const spr = getSprite(s.side, s.weapon, pose, frame, band, kitVariant(s.role, s.xp, band));
     const facing = s.alive ? (dragFacing ?? st.facing) : st.facing + ((s.id * 2654435761) % 100) / 100 - 0.5;
     st.pose = pose;
     st.frame = frame;
