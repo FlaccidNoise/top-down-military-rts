@@ -180,6 +180,14 @@ export function deriveBuilding(page, { x, y }) {
   );
 }
 
+// Staging for a round that misses into masonry: aim short of a building's west
+// wall so the overshoot ray lands on stone, and centre the camera ON the wall
+// so a tightened ROI scores the strike rather than the muzzle flash behind it.
+export function wallStage(b) {
+  const my = b.y + b.h / 2;
+  return { anchor: { x: b.x, y: my }, aim: { fx: b.x - 7, fy: my, tx: b.x - 1.2, ty: my } };
+}
+
 // Trigger a transient VFX and capture it from inside the page. `trigger`:
 //   { type:'shot', hit, kill, weapon } — enqueues a ShotEvent (muzzle + tracer
 //                                 + impact); weapon picks the muzzle signature
@@ -209,8 +217,11 @@ export function burst(page, { x, y, scale, trigger, dur, buckets, roiFrac = 0.6 
       g.cam.y = y;
       g.cam.scale = scale;
       const raf = () => new Promise((r) => requestAnimationFrame(r));
-      await raf();
-      await raf(); // render the quiescent scene at this camera before baselining
+      // Settle before baselining. Two frames used to be enough; the roof fade
+      // now lerps at dt*6, so a camera move keeps repainting whole buildings
+      // for ~0.7 s and every changed-pixel score after it is measuring the
+      // fade, not the effect (a rifle miss scored 95k that way).
+      for (let i = 0; i < 45; i++) await raf();
 
       // ROI defaults to the centre 60% — covers muzzle→impact span and the rising smoke column
       const rw = Math.round(canvas.width * roiFrac);
