@@ -923,6 +923,9 @@ window.addEventListener('keydown', (e) => {
   get front() {
     return front;
   },
+  get renderer() {
+    return renderer;
+  },
   commanders,
   cam,
   audio,

@@ -2,13 +2,14 @@ import type { Emplacement } from '../sim/emplacement';
 import { MELEE_STRIKE_RANGE, type MeleeEvent, type ShotEvent, type Side, type Sim, type Soldier, type Vehicle } from '../sim/sim';
 import type { Camera } from './camera';
 import { DecalLayer } from './decals';
-import { bandFor, getSprite, SPRITE_MIN_SCALE, SPRITE_SPAN, WALK_FRAMES, type Pose } from './dudes';
+import { bandFor, DUDE_SCALE, getShadowSprite, getSprite, glintSprite, headOffset, SPRITE_MIN_SCALE, SPRITE_SPAN, tier, WALK_FRAMES, weaponClass, type Pose } from './dudes';
 import { ballistic, blit, FLASH, flashClass, fxDetail, hotPass, SPIKE_SIDES, traceOvershoot, WIND, type FlashSpec, type FxKind, type Overshoot } from './fx';
+import { SHADOW_SOFT_ALPHA, SUN } from './light';
 import { MarkLayer } from './marks';
 import { RoofLayer } from './roofs';
 import { TerrainLayer } from './terrain';
 import { view } from './view';
-import { getVehicleSprite, vehicleBandFor, VEHICLE_SPAN } from './vehicles';
+import { getVehicleShadow, getVehicleSprite, turretBlob, turretCenter, vehicleBandFor, VEHICLE_SPAN } from './vehicles';
 
 interface Tracer extends ShotEvent {
   at: number; // ms timestamp
@@ -36,6 +37,16 @@ interface RState {
   smx: number; // last blood-smear deposit position (dragged casualties)
   smy: number;
   wasAlive: boolean; // latches the permanent death blood-pool stamp to a single transition
+  // What drawSoldier last actually drew. The cast-shadow pass runs BEFORE it
+  // (shadows must fall under every body, not on one), and re-deriving the pose
+  // there would advance the gait phase twice per frame — so it reads these
+  // instead. One frame of lag on a shadow is invisible; a double-speed walk
+  // cycle is not.
+  pose: Pose;
+  frame: number;
+  wx: number; // drawn position (a dragged casualty trails behind his rescuer)
+  wy: number;
+  dfacing: number; // drawn facing, including the dead man's per-id jitter
 }
 
 interface Boom {
@@ -68,6 +79,27 @@ const IMPACT_MS = 250; // impact dust lifetime, starts at TRAVEL_MS (E5)
 const CHUNKS: FxKind[] = ['chunk0', 'chunk1', 'chunk2', 'chunk3'];
 
 const TEAM = { blue: '#5b9bd5', red: '#d05c50' } as const;
+
+// Sun azimuth in screen space, and how far each body's shadow steps down-sun.
+// The house convention (roofs.ts: 0.71 m of offset per 3 m story) is a heavily
+// foreshortened cast, so a 1.75 m man throws 0.42 m and a 2.4 m hull 0.58 m —
+// not the geometric length a 40-degree sun would imply.
+const SUN_A = Math.atan2(SUN.dy, SUN.dx);
+const HULL_SHADOW_OFF = 0.58;
+const SHADOW_OFF: Record<Pose, number> = {
+  idle: 0.42,
+  walk: 0.42,
+  aim: 0.42,
+  melee: 0.42,
+  surrendered: 0.42,
+  drag: 0.42,
+  kneel: 0.3,
+  aid: 0.3,
+  prone: 0.12,
+  downed: 0.12,
+  dead: 0.12,
+  dragged: 0.12,
+};
 
 import { hash } from './noise';
 
@@ -183,6 +215,9 @@ export class Renderer {
     this.roofs.drawWalls(ctx, cam, cw, ch);
     // stair glyphs only where the roof fade reveals the interior
     this.terrain.drawStairs(ctx, cam, cw, ch, (x, y) => this.roofs.interiorVisibleAt(x, y));
+    // One sun (U2): cast shadows go down after the decals they fall across and
+    // before every unit, so no man's shadow lands on another man's back.
+    this.drawUnitShadows(ctx, cam, cw, ch, floorFocus);
 
     // Fog of war: everything below asks the sim's *VisibleTo helpers from the
     // player's side — the renderer never re-derives vision.
@@ -237,6 +272,66 @@ export class Renderer {
     this.drawPlanes(ctx, cam, now, cw, ch);
     this.drawBarrageMarks(ctx, cam, now, cw, ch);
     ctx.restore();
+  }
+
+  // Cast-shadow pass (U2). Every shadow in the world is thrown by the one sun
+  // in light.ts: the silhouette is baked in body space, but its DIRECTION comes
+  // from the draw matrix, so a man facing east and a man facing west throw
+  // their shadows the same way. Length follows the house convention set by
+  // roofs.ts — heavily foreshortened, ~0.24x height, not the geometric cast.
+  private drawUnitShadows(ctx: CanvasRenderingContext2D, cam: Camera, cw: number, ch: number, floorFocus: number): void {
+    if (cam.scale < 10) return; // sub-pixel: the AO under each sprite is enough
+    const band = bandFor(cam.scale);
+    const pad = SPRITE_SPAN * cam.scale;
+    for (const s of this.sim.soldiers) {
+      if (s.inVehicle >= 0 || s.level > 0) continue; // upper-floor men don't shadow the street
+      if (!this.sim.soldierVisibleTo(PLAYER_SIDE, s)) continue;
+      const st = this.rs.get(s.id);
+      if (!st) continue; // never drawn yet — no pose to cast
+      const [x, y] = cam.worldToScreen(st.wx, st.wy, cw, ch);
+      if (x < -pad || y < -pad || x > cw + pad || y > ch + pad) continue;
+      const off = SHADOW_OFF[st.pose];
+      ctx.save();
+      ctx.globalAlpha = floorFocus >= 0 && s.level !== floorFocus ? SHADOW_SOFT_ALPHA * 0.4 : SHADOW_SOFT_ALPHA;
+      ctx.translate(x, y);
+      ctx.rotate(SUN_A);
+      ctx.translate(off * cam.scale, 0);
+      ctx.scale(off > 0.2 ? 1.18 : 1.05, 1); // elongation along the sun axis only
+      ctx.rotate(-SUN_A);
+      ctx.rotate(st.dfacing);
+      ctx.drawImage(getShadowSprite(st.pose, st.frame, weaponClass(s.weapon), band), -pad / 2, -pad / 2, pad, pad);
+      ctx.restore();
+    }
+    const vband = vehicleBandFor(cam.scale);
+    const vpad = VEHICLE_SPAN * cam.scale;
+    for (const v of this.sim.vehicles) {
+      if (!this.sim.vehicleVisibleTo(PLAYER_SIDE, v)) continue;
+      const [x, y] = cam.worldToScreen(v.x, v.y, cw, ch);
+      if (x < -vpad || y < -vpad || x > cw + vpad || y > ch + vpad) continue;
+      ctx.save();
+      ctx.globalAlpha = SHADOW_SOFT_ALPHA;
+      ctx.translate(x, y);
+      ctx.rotate(SUN_A);
+      ctx.translate(HULL_SHADOW_OFF * cam.scale, 0);
+      ctx.scale(1.3, 1);
+      ctx.rotate(-SUN_A);
+      ctx.rotate(v.facing);
+      ctx.drawImage(getVehicleShadow(v.kind, v.alive ? 'ok' : 'dead', vband), -vpad / 2, -vpad / 2, vpad, vpad);
+      ctx.restore();
+      // The turret rides a metre above the deck and the sun does not rotate
+      // with the hull: its own drop shadow is what makes it read as sitting ON
+      // the tank rather than painted onto it.
+      const t = v.alive && tier(vband) >= 2 ? turretCenter(v.kind) : null;
+      if (!t) continue;
+      const [tcx, tcy, tr] = t;
+      const cs = Math.cos(v.facing);
+      const sn = Math.sin(v.facing);
+      const [bx, by] = cam.worldToScreen(v.x + tcx * cs - tcy * sn + SUN.dx * 0.7, v.y + tcx * sn + tcy * cs + SUN.dy * 0.7, cw, ch);
+      const br = tr * 1.05 * cam.scale;
+      ctx.globalAlpha = 0.24;
+      ctx.drawImage(turretBlob(), bx - br, by - br, br * 2, br * 2);
+      ctx.globalAlpha = 1;
+    }
   }
 
   // Band-change prewarm: bakes are lazy and inside the frame, so crossing a
@@ -517,7 +612,7 @@ export class Renderer {
   private state(s: Soldier): RState {
     let st = this.rs.get(s.id);
     if (!st) {
-      st = { facing: s.side === 'blue' ? 0 : Math.PI, phase: 0, px: s.x, py: s.y, smx: s.x, smy: s.y, wasAlive: true };
+      st = { facing: s.side === 'blue' ? 0 : Math.PI, phase: 0, px: s.x, py: s.y, smx: s.x, smy: s.y, wasAlive: true, pose: 'idle', frame: 0, wx: s.x, wy: s.y, dfacing: s.side === 'blue' ? 0 : Math.PI };
       this.rs.set(s.id, st);
     }
     return st;
@@ -629,6 +724,11 @@ export class Renderer {
     const band = bandFor(cam.scale);
     const spr = getSprite(s.side, s.weapon, pose, frame, band);
     const facing = s.alive ? (dragFacing ?? st.facing) : st.facing + ((s.id * 2654435761) % 100) / 100 - 0.5;
+    st.pose = pose;
+    st.frame = frame;
+    st.wx = wx;
+    st.wy = wy;
+    st.dfacing = facing;
     ctx.save();
     ctx.translate(x, y);
     ctx.rotate(facing);
@@ -636,6 +736,17 @@ export class Renderer {
     const lvl = s.level > 0 ? 1.06 : 1;
     ctx.drawImage(spr, (-pad / 2) * lvl, (-pad / 2) * lvl, pad * lvl, pad * lvl);
     ctx.restore();
+    // Helmet glint (U2): one unrotated quad on the head, so every man in the
+    // company is lit from the same side. The baked highlight it replaces
+    // pointed wherever the soldier happened to be facing.
+    if (tier(band) >= 2 && pose !== 'dead') {
+      const [hx, hy] = headOffset(pose);
+      const u = DUDE_SCALE * cam.scale * lvl;
+      const gs = 0.42 * u;
+      const gx = x + (hx * Math.cos(facing) - hy * Math.sin(facing)) * u;
+      const gy = y + (hx * Math.sin(facing) + hy * Math.cos(facing)) * u;
+      ctx.drawImage(glintSprite(), gx - gs / 2, gy - gs / 2, gs, gs);
+    }
 
     if (!s.alive) return;
     if (s.downed && s.stabilized) {

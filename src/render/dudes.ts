@@ -1,6 +1,6 @@
 import { WEAPONS, type WeaponKey } from '../sim/data';
 import type { Side } from '../sim/sim';
-import { SHADOW_SOFT_ALPHA } from './light';
+import { AO_ALPHA, SUN } from './light';
 import { SpriteCache } from './spritecache';
 
 // Parametric vector soldier, drawn facing +X in meter units, baked into a
@@ -86,8 +86,18 @@ function deadKit(k: Kit): Kit {
   };
 }
 
+// Monochrome pass. The cast-shadow bake re-runs the *same* pose code with
+// every colour collapsed to one ink and every non-silhouette flourish skipped,
+// so a man's shadow can never drift from the man throwing it. Bakes are
+// synchronous, so a module flag is enough — nothing re-enters mid-pose.
+const SHADOW_INK = 'rgba(20,16,10,1)';
+let mono = false;
+function paint(c: string): string {
+  return mono ? SHADOW_INK : c;
+}
+
 function cap(g: Ctx, x0: number, y0: number, x1: number, y1: number, w: number, color: string): void {
-  g.strokeStyle = color;
+  g.strokeStyle = paint(color);
   g.lineWidth = w;
   g.beginPath();
   g.moveTo(x0, y0);
@@ -96,7 +106,7 @@ function cap(g: Ctx, x0: number, y0: number, x1: number, y1: number, w: number, 
 }
 
 function dot(g: Ctx, x: number, y: number, r: number, color: string): void {
-  g.fillStyle = color;
+  g.fillStyle = paint(color);
   g.beginPath();
   g.arc(x, y, r, 0, Math.PI * 2);
   g.fill();
@@ -129,16 +139,18 @@ function helmet(g: Ctx, k: Kit, x: number, y: number, band: number): void {
   const t = tier(band);
   if (k.side === 'blue') {
     dot(g, x, y, 0.175, k.helmet);
+    if (mono) return;
     g.strokeStyle = 'rgba(0,0,0,0.3)';
     g.lineWidth = 0.03;
     g.beginPath();
     g.arc(x, y, 0.2, 0, Math.PI * 2); // brim peeking past the dome
     g.stroke();
   } else {
-    g.fillStyle = k.helmet;
+    g.fillStyle = paint(k.helmet);
     g.beginPath();
     g.ellipse(x, y, 0.19, 0.165, 0, 0, Math.PI * 2);
     g.fill();
+    if (mono) return;
     g.strokeStyle = 'rgba(0,0,0,0.3)';
     g.lineWidth = 0.04;
     g.beginPath();
@@ -151,6 +163,10 @@ function helmet(g: Ctx, k: Kit, x: number, y: number, band: number): void {
   g.beginPath();
   g.arc(x, y, 0.165, 0, Math.PI * 2);
   g.stroke();
+  // A highlight baked into the sprite points wherever the man happens to face.
+  // From tier 2 the renderer lays a world-aligned glint quad on the head
+  // instead; only the far bands, where that quad is sub-pixel, keep the blob.
+  if (t >= 2) return;
   g.fillStyle = 'rgba(255,255,255,0.14)';
   g.beginPath();
   g.arc(x - 0.045, y - 0.045, 0.1, 0, Math.PI * 2);
@@ -187,15 +203,14 @@ function torsoGear(g: Ctx, k: Kit, weapon: WeaponKey): void {
   }
 }
 
-// Ground contact shadow (S3), drawn first so every pose sits on the earth.
-// The whole sprite rotates with facing at draw time, so the sun's SE bias
-// (light.ts) doesn't survive as a directional cast — an ambient blob is the
-// documented tradeoff (architecture.md, art-direction decision).
-function contactShadow(g: Ctx, elongated: boolean): void {
-  g.fillStyle = `rgba(20,16,10,${SHADOW_SOFT_ALPHA})`;
+// Contact AO only — the dark pinch where a body meets the ground. It is not a
+// cast shadow and carries no direction or elongation: the world-aligned cast
+// pass (renderer.drawUnitShadows) owns both, off the one sun in light.ts.
+function contactShadow(g: Ctx): void {
+  if (mono) return; // a shadow must not bake its own shadow
+  g.fillStyle = `rgba(20,16,10,${AO_ALPHA * 0.5})`;
   g.beginPath();
-  if (elongated) g.ellipse(-0.05, 0.05, 0.55, 0.22, 0, 0, Math.PI * 2);
-  else g.ellipse(0, 0.06, 0.26, 0.19, 0, 0, Math.PI * 2);
+  g.ellipse(0, 0.04, 0.18, 0.13, 0, 0, Math.PI * 2);
   g.fill();
 }
 
@@ -251,9 +266,9 @@ function proneBody(g: Ctx, k: Kit, legs: [number, number, number, number][], ban
     dot(g, x1, y1, 0.075, '#3a3128');
   }
   const m = haloMult(band);
-  cap(g, -0.5, 0, 0.28, 0, 0.42 + 0.1 * m, withAlpha(k.outline, m));
+  if (!mono) cap(g, -0.5, 0, 0.28, 0, 0.42 + 0.1 * m, withAlpha(k.outline, m));
   cap(g, -0.5, 0, 0.28, 0, 0.42, k.uniform);
-  if (tier(band) === 0) return;
+  if (mono || tier(band) === 0) return;
   cap(g, -0.28, -0.14, -0.05, -0.1, 0.05, 'rgba(42,36,24,0.5)');
   cap(g, -0.28, 0.14, -0.05, 0.1, 0.05, 'rgba(42,36,24,0.5)');
 }
@@ -303,14 +318,17 @@ function dead(g: Ctx, k: Kit, w: WeaponKey): void {
 
 function torso(g: Ctx, k: Kit, rx: number, ry: number, band: number, weapon: WeaponKey): void {
   const m = haloMult(band);
-  g.fillStyle = withAlpha(k.outline, m);
-  g.beginPath();
-  g.ellipse(0, 0, rx + 0.05 * m, ry + 0.06 * m, 0, 0, Math.PI * 2);
-  g.fill();
-  g.fillStyle = k.uniform;
+  if (!mono) {
+    g.fillStyle = withAlpha(k.outline, m);
+    g.beginPath();
+    g.ellipse(0, 0, rx + 0.05 * m, ry + 0.06 * m, 0, 0, Math.PI * 2);
+    g.fill();
+  }
+  g.fillStyle = paint(k.uniform);
   g.beginPath();
   g.ellipse(0, 0, rx, ry, 0, 0, Math.PI * 2);
   g.fill();
+  if (mono) return;
   g.strokeStyle = 'rgba(0,0,0,0.25)';
   g.lineWidth = Math.max(0.035, hair(band));
   g.stroke();
@@ -351,7 +369,7 @@ function dragged(g: Ctx, k: Kit, band: number): void {
     dot(g, -0.95, side * 0.13, 0.075, '#3a3128');
   }
   const m = haloMult(band);
-  cap(g, -0.4, 0, 0.15, 0, 0.42 + 0.1 * m, withAlpha(k.outline, m));
+  if (!mono) cap(g, -0.4, 0, 0.15, 0, 0.42 + 0.1 * m, withAlpha(k.outline, m));
   cap(g, -0.4, 0, 0.15, 0, 0.42, k.uniform);
   cap(g, 0.08, 0.15, 0.52, 0.17, 0.12, k.sleeve);
   cap(g, 0.08, -0.15, 0.52, -0.17, 0.12, k.sleeve);
@@ -407,8 +425,7 @@ function melee(g: Ctx, k: Kit, w: WeaponKey, frame: number, band: number): void 
 
 function drawDude(g: Ctx, side: Side, weapon: WeaponKey, pose: Pose, frame: number, band: number): void {
   const k = KITS[side];
-  const elongated = pose === 'prone' || pose === 'downed' || pose === 'dead' || pose === 'dragged';
-  contactShadow(g, elongated);
+  contactShadow(g);
   switch (pose) {
     case 'idle':
       standing(g, k, weapon, -0.55, 0, 0, band);
@@ -478,4 +495,93 @@ export function getSprite(side: Side, weapon: WeaponKey, pose: Pose, frame: numb
   drawDude(g, side, wk, pose, frame, band);
   cache.set(key, c);
   return c;
+}
+
+// --- One sun on units (U2) -------------------------------------------------
+
+// Cast-shadow silhouettes carry no side, weapon or kit dimension — three gun
+// classes and a pose-frame is the whole keyspace, so the entire army shares a
+// handful of textures.
+const SHADOW_BUDGET = 6 << 20;
+const shadowCache = new SpriteCache(SHADOW_BUDGET);
+const SHADOW_WEAPON: Record<'rifle' | 'smg' | 'mg', WeaponKey> = { rifle: 'garand', smg: 'mp40', mg: 'mg42' };
+const SHADOW_BAKE_BAND = 24; // never bake finer: the upscale at band 48 IS the feathering
+
+export function weaponClass(w: WeaponKey): 'rifle' | 'smg' | 'mg' {
+  return gunClass(w);
+}
+
+export function getShadowSprite(pose: Pose, frame: number, cls: 'rifle' | 'smg' | 'mg', band: number): HTMLCanvasElement {
+  const sb = Math.min(SHADOW_BAKE_BAND, band);
+  const key = `${pose}|${frame}|${cls}|${sb}`;
+  let c = shadowCache.get(key);
+  if (c) return c;
+  c = document.createElement('canvas');
+  const px = Math.ceil(SPRITE_SPAN * sb);
+  c.width = px;
+  c.height = px;
+  const g = c.getContext('2d')!;
+  g.translate(px / 2, px / 2);
+  g.scale(sb * DUDE_SCALE, sb * DUDE_SCALE);
+  g.lineCap = 'round';
+  g.lineJoin = 'round';
+  mono = true;
+  drawDude(g, 'blue', SHADOW_WEAPON[cls], pose, frame, sb);
+  mono = false;
+  shadowCache.set(key, c);
+  return c;
+}
+
+// Where the head sits in body units for each pose — read straight off the
+// helmet() call sites. The renderer needs it to put the world-aligned glint on
+// the head without unbaking the sprite.
+const HEAD_OFFSET: Record<Pose, [number, number]> = {
+  idle: [0.04, 0],
+  aim: [0.04, 0],
+  walk: [0.04, 0],
+  kneel: [0.06, 0],
+  prone: [0.42, 0],
+  downed: [0.42, 0.05],
+  dead: [0.42, 0.12],
+  drag: [0.1, 0],
+  aid: [0.13, 0],
+  dragged: [0.32, 0],
+  melee: [0.05, 0],
+  surrendered: [0.04, 0],
+};
+
+export function headOffset(pose: Pose): [number, number] {
+  return HEAD_OFFSET[pose];
+}
+
+// One shared helmet glint: a NW-lit highlight with a matching SE shade limb,
+// drawn UNROTATED on the head so 247 men are lit by the same sun. Baked once —
+// the frame loop only ever pays for one small textured quad.
+let glint: HTMLCanvasElement | null = null;
+export function glintSprite(): HTMLCanvasElement {
+  if (glint) return glint;
+  const px = 32;
+  const r = px / 2;
+  glint = document.createElement('canvas');
+  glint.width = px;
+  glint.height = px;
+  const g = glint.getContext('2d')!;
+  g.beginPath();
+  g.arc(r, r, r * 0.94, 0, Math.PI * 2);
+  g.clip(); // the light lives on the dome, never past its edge
+  const lx = r - SUN.dx * r * 0.35;
+  const ly = r - SUN.dy * r * 0.35;
+  const lit = g.createRadialGradient(lx, ly, 0, lx, ly, r * 0.62);
+  lit.addColorStop(0, 'rgba(255,255,255,0.18)');
+  lit.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = lit;
+  g.fillRect(0, 0, px, px);
+  const dx = r + SUN.dx * r * 0.55;
+  const dy = r + SUN.dy * r * 0.55;
+  const shade = g.createRadialGradient(dx, dy, 0, dx, dy, r * 0.6);
+  shade.addColorStop(0, 'rgba(0,0,0,0.10)');
+  shade.addColorStop(1, 'rgba(0,0,0,0)');
+  g.fillStyle = shade;
+  g.fillRect(0, 0, px, px);
+  return glint;
 }
