@@ -3,7 +3,7 @@ import { MELEE_STRIKE_RANGE, type MeleeEvent, type ShotEvent, type Side, type Si
 import type { Camera } from './camera';
 import { DecalLayer } from './decals';
 import { bandFor, getSprite, SPRITE_MIN_SCALE, SPRITE_SPAN, WALK_FRAMES, type Pose } from './dudes';
-import { ballistic, blit, FLASH, flashClass, fxDetail, hotPass, SPIKE_SIDES, traceOvershoot, WIND, type FlashSpec, type FxKind, type Overshoot } from './fx';
+import { ballistic, blit, FLASH, flashClass, fxDetail, hazeBand, hotPass, SPIKE_SIDES, traceOvershoot, WIND, type FlashSpec, type FxKind, type Overshoot } from './fx';
 import { MarkLayer } from './marks';
 import { RoofLayer } from './roofs';
 import { TerrainLayer } from './terrain';
@@ -60,6 +60,36 @@ interface Plane {
   at: number;
 }
 
+// A thing on fire. One record serves both causes: a building stoked by booms
+// that landed inside it (key = buildingId), and a vehicle the sim says is
+// burning (key = -1000 - vehicle id, `vid` >= 0). There is no fire in the sim
+// — a building fire is purely cosmetic, render-derived from blasts the player
+// could see land, and it always burns itself out.
+//
+// Two clocks, deliberately: LIFETIME runs on sim.tick (like barrageMarks), so
+// pausing the game cannot burn a house down; FLICKER runs on wall-clock `now`,
+// because 30 Hz sampling makes a flame visibly step.
+interface Fire {
+  key: number; // buildingId, or -1000 - vehicle id — also the per-fire hash stream
+  x: number;
+  y: number;
+  vid: number; // >= 0 → vehicle brew-up; -1 → building
+  born: number; // sim tick of first ignition
+  tick: number; // sim tick of the most recent stoke
+  hits: number; // blasts feeding it — sets the ceiling on intensity
+  seen: boolean; // fog-of-war result, re-tested on a throttle (LOS is not free)
+  seenTick: number;
+}
+
+const FIRE_LIFE_S = 90; // sim seconds a building burns after its last stoke
+const FIRE_FADE_S = 25; // ...of which the last N are a dying smolder
+const FIRE_CAP = 12; // a barraged village must not light every house at once
+const FIRE_SEEN_TICKS = 15; // 0.5 s between fog re-tests per fire
+const FIRE_POOL_ALPHA = 0.09; // warm ground pool — zero this to revoke the second light source
+const BREWUP_FULL_S = 14; // a brewed-up tank rages this long...
+const BREWUP_SETTLE_S = 45; // ...then settles to a smoking hulk by here
+const BREWUP_FLOOR = 0.3;
+
 const PLANE_MS = 2600;
 const BOOM_MS = 2600; // longest sub-effect (smoke column) sets total lifetime
 const FADE_MS = 150; // faint thread lifetime
@@ -97,11 +127,25 @@ export class Renderer {
   private strafeMarks: { x: number; y: number; tick: number }[] = [];
   private planes: Plane[] = [];
   private smokeMaxTtl = new Map<number, number>(); // per-entry spawn ttl, keyed by its (stable) x,y — lets alpha envelope derive from sim time alone
+  private fires = new Map<number, Fire>();
+  private lit: Fire[] = []; // this frame's visible fires, shared by the cool and hot passes
+  private licks: number[] = []; // flat (x, y, r, alpha) quads — flame cores queued for the fire hot pass
+  private haze: { x: number; y: number; len: number; hgt: number; a: number }[];
+  hazeOn = true; // ?haze=0, matching the ?fow=0 debug-switch pattern
   selectedVehicle = -1;
 
   constructor(private sim: Sim) {
     this.terrain = new TerrainLayer(sim.map);
     this.decals = new DecalLayer(sim.map.w, sim.map.h);
+    // Five world-anchored haze bands, generated once from the map dimensions
+    // so the same map always breathes the same way.
+    this.haze = Array.from({ length: 5 }, (_, i) => ({
+      x: hash(sim.map.w, sim.map.h, 300 + i) * (sim.map.w + 140),
+      y: hash(sim.map.w, sim.map.h, 310 + i) * sim.map.h,
+      len: 70 + hash(sim.map.w, sim.map.h, 320 + i) * 70,
+      hgt: 9 + hash(sim.map.w, sim.map.h, 330 + i) * 15,
+      a: 0.035 + hash(sim.map.w, sim.map.h, 340 + i) * 0.04,
+    }));
   }
 
   addEvents(events: ShotEvent[], now: number): void {
@@ -136,7 +180,38 @@ export class Renderer {
     for (const b of booms) {
       this.booms.push({ ...b, at: now, landed: 0 });
       this.decals.scorch(b.x, b.y, boomScale(b.r));
+      // Ignition is render-derived: a blast inside a building footprint is the
+      // only cause of a building fire, because that is the only cause the
+      // player watched happen.
+      const bid = this.sim.map.buildingIdAt(Math.floor(b.x), Math.floor(b.y));
+      if (bid >= 0) this.stoke(bid, b.x, b.y, -1);
     }
+  }
+
+  // Light or feed a fire. The ignition point never moves once set: a second
+  // shell in the same house makes the fire angrier, not relocated.
+  private stoke(key: number, x: number, y: number, vid: number): void {
+    const f = this.fires.get(key);
+    if (f) {
+      f.tick = this.sim.tick;
+      f.hits = Math.min(3, f.hits + 1);
+      if (vid >= 0) {
+        f.x = x;
+        f.y = y;
+      }
+      return;
+    }
+    this.fires.set(key, { key, x, y, vid, born: this.sim.tick, tick: this.sim.tick, hits: 1, seen: false, seenTick: -1e9 });
+    if (this.fires.size <= FIRE_CAP) return;
+    let oldest = -1;
+    let oldestTick = Infinity;
+    for (const [k, e] of this.fires) {
+      if (k !== key && e.tick < oldestTick) {
+        oldestTick = e.tick;
+        oldest = k;
+      }
+    }
+    if (oldest !== -1) this.fires.delete(oldest);
   }
 
   // Call-in feedback: rounds take 20 s (barrage) / 25 s (strafe) of SIM time
@@ -187,7 +262,7 @@ export class Renderer {
     // player's side — the renderer never re-derives vision.
     const vis = (s: Soldier) => this.sim.soldierVisibleTo(PLAYER_SIDE, s);
     const visV = (v: Vehicle) => this.sim.vehicleVisibleTo(PLAYER_SIDE, v);
-    for (const v of this.sim.vehicles) if (!v.alive && visV(v)) this.drawVehicle(ctx, cam, v, now, cw, ch);
+    for (const v of this.sim.vehicles) if (!v.alive && visV(v)) this.drawVehicle(ctx, cam, v, cw, ch);
     // Floor-aware draw order: within each category pass, lower floors first
     // so upper floors paint on top. maxStories===0 collapses to the exact
     // prior single level-0 pass (no per-soldier level check) — byte-identical
@@ -225,12 +300,13 @@ export class Renderer {
         }
       }
     }
-    for (const v of this.sim.vehicles) if (v.alive && visV(v)) this.drawVehicle(ctx, cam, v, now, cw, ch);
+    for (const v of this.sim.vehicles) if (v.alive && visV(v)) this.drawVehicle(ctx, cam, v, cw, ch);
     for (const e of this.sim.emplacements) if (this.sim.emplacementVisibleTo(PLAYER_SIDE, e)) this.drawEmplacement(ctx, cam, e, selectedSquads, cw, ch);
 
     this.drawFire(ctx, cam, now, cw, ch);
     this.roofs.drawTops(ctx, cam, cw, ch);
     this.roofs.drawChimneySmoke(ctx, cam, cw, ch);
+    this.drawFires(ctx, cam, now, cw, ch); // over the roof it is consuming, under the smoke screens
     this.drawSmoke(ctx, cam, cw, ch);
     this.drawContacts(ctx, cam, cw, ch);
     this.drawPlanes(ctx, cam, now, cw, ch);
@@ -310,6 +386,140 @@ export class Renderer {
     for (const key of this.smokeMaxTtl.keys()) if (!seen.has(key)) this.smokeMaxTtl.delete(key);
   }
 
+  // How hard a fire is burning, 0-1. Buildings peak at their stoke count and
+  // die on the sim clock; a brewed-up vehicle rages, then settles to a hulk
+  // that smokes for as long as the sim says it is burning.
+  private intensity(f: Fire): number {
+    if (f.vid >= 0) {
+      const t = (this.sim.tick - f.born) / 30;
+      if (t <= BREWUP_FULL_S) return 1;
+      const k = Math.min(1, (t - BREWUP_FULL_S) / (BREWUP_SETTLE_S - BREWUP_FULL_S));
+      return 1 - k * (1 - BREWUP_FLOOR);
+    }
+    const age = (this.sim.tick - f.tick) / 30;
+    return Math.min(1, 0.7 + 0.15 * (f.hits - 1)) * Math.max(0, Math.min(1, (FIRE_LIFE_S - age) / FIRE_FADE_S));
+  }
+
+  // A burning house the player has never seen is an intel leak — flames draw
+  // over roofs, so they would shine straight through the fog. Vehicles reuse
+  // the wreck's own visibility (permanent once seen); buildings pay for a real
+  // LOS test, throttled to twice a sim second.
+  private fireSeen(f: Fire): boolean {
+    if (this.sim.fowDisabled) return true;
+    if (f.vid >= 0) return this.sim.vehicleVisibleTo(PLAYER_SIDE, this.sim.vehicles[f.vid]);
+    if (this.sim.tick - f.seenTick >= FIRE_SEEN_TICKS) {
+      f.seenTick = this.sim.tick;
+      f.seen = this.sim.sideSeesPoint(PLAYER_SIDE, f.x, f.y);
+    }
+    return f.seen;
+  }
+
+  // Burning buildings and vehicle brew-ups. Drawn after the roof tops so a
+  // flame sits over the roof it is consuming, and before the smoke screens.
+  //
+  // The value pair is the whole trick: every bright lick carries a soot blit
+  // directly above it. Bright-alone on pale Normandy ground reads as a glowing
+  // dot; bright-under-dark reads as fire.
+  private drawFires(ctx: CanvasRenderingContext2D, cam: Camera, now: number, cw: number, ch: number): void {
+    for (const v of this.sim.vehicles) {
+      if (!v.burning) continue;
+      const key = -1000 - v.id;
+      const f = this.fires.get(key);
+      if (f) {
+        f.tick = this.sim.tick; // sim still says it burns — never let it time out
+        f.x = v.x;
+        f.y = v.y;
+      } else this.stoke(key, v.x, v.y, v.id);
+    }
+    if (this.fires.size === 0) return;
+
+    const S = cam.scale;
+    const tier = fxDetail(S);
+    const pad = 9 * S;
+    this.lit.length = 0;
+    this.licks.length = 0;
+    for (const [key, f] of this.fires) {
+      if (f.vid < 0 && (this.sim.tick - f.tick) / 30 >= FIRE_LIFE_S) {
+        this.fires.delete(key);
+        continue;
+      }
+      const [x, y] = cam.worldToScreen(f.x, f.y, cw, ch);
+      if (x < -pad || y < -pad || x > cw + pad || y > ch + pad) continue;
+      if (!this.fireSeen(f)) continue;
+      this.lit.push(f);
+
+      const it = this.intensity(f);
+      const b = f.vid < 0 ? this.sim.buildings[key] : undefined;
+
+      // Plume first: it rises behind its own flames. A vehicle's column starts
+      // near-black — a brewed-up tank is the sootiest thing on a WW2 field, and
+      // that column is free readability below the sprite LOD threshold.
+      for (let i = 0; i < 6; i++) {
+        const ph = (((now * 0.0003125 + i / 6 + hash(key + 3000, i, 230)) % 1) + 1) % 1;
+        const lean = WIND.speed * ph * 3.4 * S;
+        const px = x + WIND.dx * lean;
+        const py = y - ph * 6.5 * S + WIND.dy * lean;
+        const pr = (1.1 + ph * 2.3) * S;
+        const pa = 0.68 * (1 - ph * 0.7) * it;
+        // Burning fuel and rubber never greys out the way burning timber does:
+        // a tank's column stays sooty to the top, it just thins.
+        const sootF = f.vid >= 0 ? Math.max(0.4, 1 - ph / 0.8) : Math.max(0, 1 - ph / 0.45);
+        blit(ctx, 'soot', px, py, pr, pa * sootF);
+        blit(ctx, 'smoke', px, py, pr, pa * (1 - sootF));
+      }
+      // Charred base: the fire's own shadow, so the licks sit in something
+      // burnt instead of floating on clean floor.
+      blit(ctx, 'soot', x, y, (1.4 + 0.9 * it) * S, 0.26 * it);
+
+      // Licks spread as the fire takes hold: one shell smoulders in a corner, a
+      // fully involved house burns end to end (still clamped to its footprint).
+      const spread = 0.9 + 1.5 * it;
+      const n = 2 + Math.round(2 * it * tier);
+      for (let i = 0; i < n; i++) {
+        const hs = hash(key + 1000, i, 212);
+        const size = 0.7 + hash(key + 1000, i, 213) * 0.6; // no two licks the same height
+        let lx = f.x + (hash(key + 1000, i, 210) - 0.5) * spread * 2;
+        let ly = f.y + (hash(key + 1000, i, 211) - 0.5) * spread * 2;
+        if (b) {
+          lx = Math.max(b.x + 0.6, Math.min(b.x + b.w - 0.6, lx));
+          ly = Math.max(b.y + 0.6, Math.min(b.y + b.h - 0.6, ly));
+        }
+        const [sx, sy0] = cam.worldToScreen(lx, ly, cw, ch);
+        const flick = 0.5 + 0.5 * Math.sin(now * 0.0075 * (7 + hs * 4) + hs * 6.28);
+        const r = (0.5 + 0.34 * flick) * size * it * S;
+        const sy = sy0 - (0.35 + 0.5 * flick) * S;
+        blit(ctx, 'fire', sx, sy, r * 2.2, 0.2); // warm halo — merges neighbouring licks into one body of flame
+        blit(ctx, 'fire', sx, sy, r, 0.9);
+        blit(ctx, 'soot', sx, sy - r * 1.2, r * 1.7, 0.34);
+        this.licks.push(sx, sy, r * 0.45, 0.5 + 0.3 * flick); // hot cores, drawn in the frame's fire hot pass
+      }
+    }
+    if (this.lit.length === 0) return;
+
+    hotPass(ctx, () => {
+      for (let i = 0; i < this.licks.length; i += 4) blit(ctx, 'flash', this.licks[i], this.licks[i + 1], this.licks[i + 2], this.licks[i + 3]);
+      for (const f of this.lit) {
+        const it = this.intensity(f);
+        const [x, y] = cam.worldToScreen(f.x, f.y, cw, ch);
+        // Warm ground pool: a light POOL, not a light DIRECTION — no cast
+        // shadow anywhere changes, so the one-sun rule still holds.
+        blit(ctx, 'fire', x, y, 3.2 * it * S, FIRE_POOL_ALPHA);
+        if (tier < 1) continue;
+        // Embers: a fixed pool per fire on staggered wrapping phases, riding
+        // the one wind up and downwind. They die — nothing here accumulates.
+        const ne = Math.max(2, Math.round(8 * it));
+        for (let i = 0; i < ne; i++) {
+          const hs = hash(f.key + 2000, i, 220);
+          const life = 1.6 + hs * 1.2;
+          const t = ((now * 0.001 + i * 0.37) % life) / life;
+          const ex = x + (WIND.dx * WIND.speed * 1.9 * t + (hash(f.key + 2000, i, 221) - 0.5) * 1.6) * S;
+          const ey = y + (WIND.dy * WIND.speed * 1.9 * t + (hash(f.key + 2000, i, 222) - 0.5) * 1.2) * S - t * 2.6 * S;
+          blit(ctx, 'spark', ex, ey, Math.max(0.6, (0.05 - 0.03 * t) * S), Math.pow(1 - t, 1.6) * 0.8 * it);
+        }
+      }
+    });
+  }
+
   // Last-known ghosts: intel markers, not world objects — drawn above roofs,
   // fading with age until the contact expires or is resolved.
   private drawContacts(ctx: CanvasRenderingContext2D, cam: Camera, cw: number, ch: number): void {
@@ -379,7 +589,7 @@ export class Renderer {
     }
   }
 
-  private drawVehicle(ctx: CanvasRenderingContext2D, cam: Camera, v: Vehicle, now: number, cw: number, ch: number): void {
+  private drawVehicle(ctx: CanvasRenderingContext2D, cam: Camera, v: Vehicle, cw: number, ch: number): void {
     const [x, y] = cam.worldToScreen(v.x, v.y, cw, ch);
     const pad = VEHICLE_SPAN * cam.scale;
     if (x < -pad || y < -pad || x > cw + pad || y > ch + pad) return;
@@ -400,22 +610,8 @@ export class Renderer {
       ctx.arc(x, y, cam.scale * 3.2, 0, Math.PI * 2);
       ctx.stroke();
     }
-    if (v.burning) {
-      // drifting smoke: three staggered puffs on a slower clock (~half the
-      // prior spawn rate), warm ember tint fading to cool smoke as they age
-      for (let i = 0; i < 3; i++) {
-        const t = ((now / 1000 + i * 1.6 + v.id) % 4.8) / 4.8;
-        const r = (0.8 + t * 2.2) * cam.scale;
-        const ember = Math.max(0, 1 - t / 0.35) * 0.6;
-        const cr = Math.round(30 + (120 - 30) * ember);
-        const cg = Math.round(28 + (55 - 28) * ember);
-        const cb = Math.round(25 + (28 - 25) * ember);
-        ctx.fillStyle = `rgba(${cr}, ${cg}, ${cb}, ${(1 - t) * 0.4})`;
-        ctx.beginPath();
-        ctx.arc(x + t * cam.scale * 3 * Math.sin(v.id + i), y - t * cam.scale * 4, r, 0, Math.PI * 2);
-        ctx.fill();
-      }
-    }
+    // v.burning is drawn by drawFires (shared with building fires), not here —
+    // a brew-up has to sit above the roofs a wreck can be parked against.
   }
 
   // Simple crewed-weapon glyph — follows drawVehicle's scheme (team-colored

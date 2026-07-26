@@ -163,12 +163,33 @@ export function place(page, x, y, scale) {
   );
 }
 
+// The building footprint nearest a point, straight out of sim.buildings — the
+// anchor for anything that needs real masonry (wall strikes, building fires).
+export function deriveBuilding(page, { x, y }) {
+  return page.evaluate(
+    ({ x, y }) => {
+      const bs = window.__game.sim.buildings;
+      if (!bs.length) throw new Error('no buildings in this scenario — pick a village/hamlet seed');
+      return bs.reduce((best, b) => {
+        const d = (b.x + b.w / 2 - x) ** 2 + (b.y + b.h / 2 - y) ** 2;
+        return d < best.d ? { d, b } : best;
+      }, { d: Infinity, b: null }).b;
+    },
+    { x, y }
+  );
+}
+
 // Trigger a transient VFX and capture it from inside the page. `trigger`:
 //   { type:'shot', hit, kill, weapon } — enqueues a ShotEvent (muzzle + tracer
 //                                 + impact); weapon picks the muzzle signature
-//                                 and defaults to a rifle
-//   { type:'boom' }             — enqueues a boom (fireball + ejecta + smoke column)
+//                                 and defaults to a rifle. fx/fy/tx/ty override
+//                                 the default 12 m span across the anchor, which
+//                                 is how a miss gets aimed into known masonry
+//   { type:'boom', r }          — enqueues a boom (fireball + ejecta + smoke
+//                                 column); r is the blast radius in metres
+//                                 (grenade ~3, mortar/barrage ~9)
 // Both enqueue exactly like the sim does; main.ts drains them next frame.
+// `roiFrac` tightens the scored/diffed region for deliberately quiet effects.
 //
 // Scoring isolates the effect: score = count of ROI pixels whose peak channel
 // changed >30 vs a pre-fire baseline frame. A flat static scene scores ~0, so
@@ -177,9 +198,9 @@ export function place(page, x, y, scale) {
 // into a per-bucket canvas; toDataURL runs once per bucket at the end, so the
 // rAF loop stays fast enough to fill every bucket.
 // Returns [{ bucket, ageMs, score, dataUrl }] — most-changed frame per bucket.
-export function burst(page, { x, y, scale, trigger, dur, buckets }) {
+export function burst(page, { x, y, scale, trigger, dur, buckets, roiFrac = 0.6 }) {
   return page.evaluate(
-    async ({ x, y, scale, trigger, dur, buckets }) => {
+    async ({ x, y, scale, trigger, dur, buckets, roiFrac }) => {
       const g = window.__game;
       const sim = g.sim;
       const canvas = document.querySelector('canvas');
@@ -190,7 +211,7 @@ export function burst(page, { x, y, scale, trigger, dur, buckets }) {
       await raf();
       await raf(); // render the quiescent scene at this camera before baselining
 
-      const roiFrac = 0.6; // ROI = centre 60% — covers muzzle→impact span and the rising smoke column
+      // ROI defaults to the centre 60% — covers muzzle→impact span and the rising smoke column
       const rw = Math.round(canvas.width * roiFrac);
       const rh = Math.round(canvas.height * roiFrac);
       const rx = Math.round((canvas.width - rw) / 2);
@@ -206,8 +227,17 @@ export function burst(page, { x, y, scale, trigger, dur, buckets }) {
       const maxch = (d, i) => Math.max(d[i], d[i + 1], d[i + 2]);
       const base = roi();
 
-      if (trigger.type === 'shot') sim.pendingEvents.push({ fx: x - 6, fy: y, tx: x + 6, ty: y, hit: trigger.hit, kill: trigger.kill, weapon: trigger.weapon ?? 'garand' });
-      else if (trigger.type === 'boom') sim.pendingBooms.push({ x, y });
+      if (trigger.type === 'shot')
+        sim.pendingEvents.push({
+          fx: trigger.fx ?? x - 6,
+          fy: trigger.fy ?? y,
+          tx: trigger.tx ?? x + 6,
+          ty: trigger.ty ?? y,
+          hit: trigger.hit,
+          kill: trigger.kill,
+          weapon: trigger.weapon ?? 'garand',
+        });
+      else if (trigger.type === 'boom') sim.pendingBooms.push(trigger.r === undefined ? { x, y } : { x, y, r: trigger.r });
 
       const snap = Array.from({ length: buckets }, () => null); // per-bucket best canvas
       const meta = Array.from({ length: buckets }, () => null);
@@ -235,6 +265,6 @@ export function burst(page, { x, y, scale, trigger, dur, buckets }) {
         .map((m, b) => (m ? { ...m, dataUrl: snap[b].toDataURL('image/png') } : null))
         .filter(Boolean);
     },
-    { x, y, scale, trigger, dur, buckets }
+    { x, y, scale, trigger, dur, buckets, roiFrac }
   );
 }
