@@ -114,15 +114,50 @@ export function deriveTargets(page, { seed, kind }) {
   );
 }
 
-// Point the camera and settle two frames (deterministic for static scenes).
+// Point the camera and settle until the frame stops changing. Two frames used
+// to be enough, but bake work is now amortized across frames (terrain chunks
+// rebake on a band change), so a fixed settle captures a half-drawn world.
+// Poll a downscaled centre crop — UI chrome excluded — and stop once two
+// consecutive frames are pixel-identical. Static scenes reach that in a few
+// frames; the cap bounds a scene that never quiesces.
 export function place(page, x, y, scale) {
   return page.evaluate(
-    ({ x, y, scale }) => {
+    async ({ x, y, scale }) => {
       const g = window.__game;
       g.cam.x = x;
       g.cam.y = y;
       g.cam.scale = scale;
-      return new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const canvas = document.querySelector('canvas');
+      const raf = () => new Promise((r) => requestAnimationFrame(r));
+      const roi = 0.6;
+      const probe = document.createElement('canvas');
+      probe.width = 220;
+      probe.height = 140;
+      const pg = probe.getContext('2d', { willReadFrequently: true });
+      const sw = Math.round(canvas.width * roi);
+      const sh = Math.round(canvas.height * roi);
+      const sx = Math.round((canvas.width - sw) / 2);
+      const sy = Math.round((canvas.height - sh) / 2);
+      const snap = () => {
+        pg.drawImage(canvas, sx, sy, sw, sh, 0, 0, probe.width, probe.height);
+        return pg.getImageData(0, 0, probe.width, probe.height).data;
+      };
+      await raf();
+      await raf();
+      let prev = snap();
+      for (let i = 0, stable = 0; i < 120 && stable < 2; i++) {
+        await raf();
+        const cur = snap();
+        let same = true;
+        for (let k = 0; k < cur.length; k += 4) {
+          if (Math.abs(cur[k] - prev[k]) > 1 || Math.abs(cur[k + 1] - prev[k + 1]) > 1 || Math.abs(cur[k + 2] - prev[k + 2]) > 1) {
+            same = false;
+            break;
+          }
+        }
+        stable = same ? stable + 1 : 0;
+        prev = cur;
+      }
     },
     { x, y, scale }
   );

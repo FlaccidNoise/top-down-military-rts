@@ -11,7 +11,28 @@ const CHUNK = 16; // tiles per side
 const BANDS = [4, 8, 16, 32, 48];
 const PIXEL_BUDGET = 24_000_000; // ~96 MB of cached RGBA
 
-import { hash } from './noise';
+// Detail tier per zoom band. A band-4 chunk covers 4x the ground of a band-16
+// one, so drawing the same micro-detail there is pure waste that also aliases
+// into fizz; a band-48 chunk starves without it. Every pass takes `d` and
+// scales its op count off it — this is the budget lever the ground detail
+// below is paid for with.
+export type Detail = 0 | 1 | 2;
+const detailFor = (band: number): Detail => (band >= 32 ? 2 : band >= 16 ? 1 : 0);
+
+// A chunk bake costs 2-5 ms and a band change invalidates the whole keyspace,
+// so one zoom step used to rebake every visible chunk in a single frame (~70
+// chunks, ~300 ms). Amortization is only free when there is something correct
+// to show meanwhile: a chunk already baked at another band downscales/upscales
+// to the right content at the wrong sharpness. So the budget throttles only
+// the chunks that HAVE such a fallback — which is exactly the band-change
+// case — and a chunk with nothing cached at any band still bakes immediately
+// rather than flashing a hole.
+const BAKES_PER_FRAME = 3;
+
+import { hash, vec } from './noise';
+import { stamp, stampRect } from './stamps';
+import { canopySprite, drawLog } from './canopy';
+import { PatchIndex, type BuildingBox } from './patches';
 
 // Bilinear value noise on an 8m lattice — smooth patches, no hard square edges.
 function coarse(x: number, y: number): number {
@@ -59,8 +80,6 @@ const GRASS_DRY: [number, number, number] = [104, 108, 66]; // macro-drift patch
 const ROAD: [number, number, number] = [124, 103, 76]; // warm dirt
 const WOODS_GROUND: [number, number, number] = [61, 74, 51]; // #3d4a33
 const HEDGE_GREEN: [number, number, number] = [72, 90, 48]; // yellower, denser than woods
-const CANOPY_A: [number, number, number] = [52, 78, 42];
-const CANOPY_B: [number, number, number] = [44, 68, 46];
 const FLOOR: [number, number, number] = [160, 145, 122];
 const FLOOR_DARK: [number, number, number] = [141, 120, 95];
 const WATER: [number, number, number] = [70, 90, 99]; // desaturated slate, muted-Normandy — not postcard blue
@@ -71,6 +90,110 @@ const FIELD_VARIANTS: [number, number, number][] = [
 ];
 
 type Ctx = CanvasRenderingContext2D;
+
+// Grass is the largest surface in the frame, so its cost per tile has to be
+// one blit. A tuft stamp carries everything the old 5-rect speckle loop could
+// not afford: soft mottle bands running along the local mowing direction,
+// 3-4 clumps of tapered blades leaning the same way, and a dark contact tick
+// under each clump so tufts sit ON the ground instead of floating. All
+// geometry stays inside 0.05..0.95 m — a blade crossing the stamp edge would
+// make the 1 m lattice visible as a grid, which rule 3 forbids.
+const GRASS_VARIANTS = 12;
+
+function grassStamp(v: number, axis: number, bloom: boolean, band: number): HTMLCanvasElement {
+  return stamp(`grass:${bloom ? 'bloom' : 'tuft'}:${v}:${axis}`, band, 1, (g) => {
+    const ax = axis === 0 ? 1 : 0;
+    const ay = axis === 0 ? 0 : 1;
+    // Bands sit anywhere across the stamp, not on a fixed pitch: three evenly
+    // spaced bands per tile line up tile-to-tile into a visible 0.3 m stripe
+    // rhythm across a whole field, which is the grid rule 3 forbids.
+    const bands = 2 + ((hash(v, 1, 207) * 2) | 0);
+    for (let i = 0; i < bands; i++) {
+      const len = 0.5 + hash(v * 5 + i, 1, 206) * 0.4;
+      const wid = 0.1 + hash(v * 5 + i, 2, 206) * 0.08;
+      const off = 0.05 + hash(v * 5 + i, 3, 206) * (0.9 - len);
+      const t = 0.1 + hash(v * 5 + i, 0, 206) * 0.8;
+      const a = 0.05 + hash(v * 5 + i, 4, 206) * 0.04;
+      g.fillStyle = i % 2 ? `rgba(206,216,164,${a.toFixed(3)})` : `rgba(26,34,18,${a.toFixed(3)})`;
+      g.fillRect(ax * off + ay * (t - wid / 2), ay * off + ax * (t - wid / 2), ax * len + ay * wid, ay * len + ax * wid);
+    }
+    const clumps = 3 + ((hash(v, 0, 207) * 2) | 0);
+    for (let c = 0; c < clumps; c++) {
+      const cx = 0.16 + hash(v * 7 + c, 0, 208) * 0.68;
+      const cy = 0.16 + hash(v * 7 + c, 1, 208) * 0.68;
+      g.fillStyle = 'rgba(18,22,14,0.25)';
+      g.fillRect(cx - 0.05, cy - 0.014, 0.1, 0.028);
+      const n = 4 + ((hash(v * 7 + c, 2, 208) * 3) | 0);
+      for (let i = 0; i < n; i++) {
+        const k = v * 97 + c * 11 + i;
+        const ang = (axis === 0 ? 0 : Math.PI / 2) + (hash(k, 0, 209) - 0.5) * 0.7;
+        const len = 0.1 + hash(k, 1, 209) * 0.12;
+        const sx = Math.min(0.9, Math.max(0.08, cx + (hash(k, 2, 209) - 0.5) * 0.18));
+        const sy = Math.min(0.9, Math.max(0.08, cy + (hash(k, 3, 209) - 0.5) * 0.18));
+        const tone = hash(k, 4, 209);
+        g.strokeStyle = tone > 0.66 ? shade(GRASS, 1.22) : tone > 0.33 ? shade(GRASS_DRY, 1.1) : shade(GRASS, 0.72);
+        g.lineWidth = 0.03 + hash(k, 5, 209) * 0.025;
+        g.beginPath();
+        g.moveTo(sx, sy);
+        g.lineTo(Math.min(0.95, Math.max(0.05, sx + Math.cos(ang) * len)), Math.min(0.95, Math.max(0.05, sy + Math.sin(ang) * len)));
+        g.stroke();
+      }
+    }
+    if (!bloom) return;
+    // Meadow bloom: cream / pale ochre / dusty mauve, all under the muted
+    // ceiling. Deliberately tiny and never at d<2 — a red dot at mid zoom
+    // reads as a unit marker.
+    const petals = 5 + ((hash(v, 0, 215) * 5) | 0);
+    for (let i = 0; i < petals; i++) {
+      const k = v * 13 + i;
+      const px = 0.1 + hash(k, 0, 215) * 0.8;
+      const py = 0.1 + hash(k, 1, 215) * 0.8;
+      const t = hash(k, 2, 215);
+      g.fillStyle = t > 0.6 ? 'rgba(228,224,198,0.60)' : t > 0.3 ? 'rgba(208,188,122,0.50)' : 'rgba(162,142,158,0.45)';
+      g.beginPath();
+      g.arc(px, py, 0.015 + hash(k, 3, 215) * 0.01, 0, Math.PI * 2);
+      g.fill();
+    }
+  });
+}
+
+// Verge strip for the grass side of a road edge: tufts leaning out over the
+// running surface plus a couple of bare-earth scuffs, which is what breaks the
+// razor-straight tile boundary the road used to end on. Baked per side so the
+// frame loop never rotates. `side` 0/1/2/3 = road to the N/S/W/E; (u, t) is
+// canonical — u runs along the edge, t runs from the grass side (0) to the
+// road side (0.5).
+function vergeStamp(v: number, side: number, band: number): HTMLCanvasElement {
+  const horiz = side < 2;
+  return stampRect(`grass:verge:${v}:${side}`, band, horiz ? 1 : 0.5, horiz ? 0.5 : 1, (g) => {
+    const px = (u: number, t: number) => (side === 0 ? u : side === 1 ? u : side === 2 ? 0.5 - t : t);
+    const py = (u: number, t: number) => (side === 0 ? 0.5 - t : side === 1 ? t : u);
+    for (let i = 0; i < 2; i++) {
+      const k = v * 11 + i;
+      const u = 0.15 + hash(k, 0, 218) * 0.7;
+      const t = 0.22 + hash(k, 1, 218) * 0.2;
+      const r = 0.075 + hash(k, 2, 218) * 0.075;
+      g.fillStyle = 'rgba(146,122,84,0.22)';
+      g.beginPath();
+      g.ellipse(px(u, t), py(u, t), r * (horiz ? 1.5 : 1), r * (horiz ? 1 : 1.5), 0, 0, Math.PI * 2);
+      g.fill();
+    }
+    const n = 3 + ((hash(v, 0, 219) * 3) | 0);
+    for (let i = 0; i < n; i++) {
+      const k = v * 11 + i;
+      const u = 0.1 + hash(k, 0, 219) * 0.8;
+      const t0 = 0.06 + hash(k, 1, 219) * 0.1;
+      const dl = 0.14 + hash(k, 2, 219) * 0.16;
+      const du = (hash(k, 3, 219) - 0.5) * 0.16;
+      g.strokeStyle = hash(k, 4, 219) > 0.5 ? shade(GRASS, 1.15) : shade(GRASS_DRY, 0.95);
+      g.lineWidth = 0.035 + hash(k, 5, 219) * 0.02;
+      g.beginPath();
+      g.moveTo(px(u, t0), py(u, t0));
+      g.lineTo(px(u + du, Math.min(0.48, t0 + dl)), py(u + du, Math.min(0.48, t0 + dl)));
+      g.stroke();
+    }
+  });
+}
 
 // One-sun hillshade (height phase D): lambertian shade per elev tile from the
 // shared NW sun. Direction TO the sun is the opposite of the SE shadow
@@ -134,7 +257,7 @@ function hedgePath(g: Ctx, x: number, y: number, n: boolean, s: boolean, w: bool
 // ALL hedge tiles (AO → cast shadow → green mass → sun rim → foliage dabs).
 // Width/shade vary via the smooth 8m/28m noise fields, not per-tile hash, so
 // adjacent tiles never show a width or value step at the boundary.
-function drawHedgeRun(g: Ctx, map: GameMap, tx0: number, ty0: number, tx1: number, ty1: number): void {
+function drawHedgeRun(g: Ctx, map: GameMap, tx0: number, ty0: number, tx1: number, ty1: number, d: Detail): void {
   const isHedge = (tx: number, ty: number) => map.inBounds(tx, ty) && map.terrainKeyAt(tx, ty) === 'hedge';
   const tiles: { x: number; y: number; n: boolean; s: boolean; w: boolean; e: boolean; width: number }[] = [];
   for (let y = ty0; y < ty1; y++) {
@@ -158,20 +281,438 @@ function drawHedgeRun(g: Ctx, map: GameMap, tx0: number, ty0: number, tx1: numbe
   // soft two-layer SE cast shadow
   pass((t) => t.width * 1.15, () => `rgba(10,14,8,${SHADOW_SOFT_ALPHA})`, sdx * 1.6, sdy * 1.6);
   pass((t) => t.width * 1.1, () => `rgba(10,14,8,${SHADOW_ALPHA})`, sdx, sdy);
+  // earth bank under the foliage: a bocage hedge grows out of a raised bank,
+  // and without it the run reads as a green sausage lying on the lawn
+  pass((t) => t.width * 1.25, () => 'rgba(72,58,38,0.35)', 0.06, 0.08);
+  pass((t) => 0.05, () => 'rgba(14,18,10,0.4)', 0.06 + sdx * 0.5, 0.08 + sdy * 0.5);
   // hedge mass — yellower, denser green than woods
   pass((t) => t.width, (t) => shade(HEDGE_GREEN, 0.82 + macro(t.x, t.y) * 0.3), 0, 0);
   // NW rim catching the sun
   pass((t) => t.width * 0.3, (t) => `rgba(190,215,150,${0.1 + coarse(t.x, t.y) * 0.12})`, -sdx * 0.3, -sdy * 0.3);
   // foliage dabs: the per-tile lumpiness the old hash width/shade jitter gave,
   // without the boundary steps — small blobs never cross a tile seam visibly
+  const dabs = d === 0 ? 0 : d === 1 ? 3 : 6;
   for (const t of tiles) {
-    for (let i = 0; i < 3; i++) {
-      const dx = t.x + 0.28 + hash(t.x, t.y, 54 + i) * 0.44;
-      const dy = t.y + 0.28 + hash(t.x, t.y, 57 + i) * 0.44;
-      g.fillStyle = hash(t.x, t.y, 60 + i) > 0.5 ? shade(HEDGE_GREEN, 0.64) : shade(HEDGE_GREEN, 1.22);
+    const vertical = (t.n || t.s) && !(t.w || t.e);
+    for (let i = 0; i < dabs; i++) {
+      const k = t.x * 8 + i;
+      let dx = t.x + 0.28 + hash(k, t.y, 54) * 0.44;
+      let dy = t.y + 0.28 + hash(k, t.y, 55) * 0.44;
+      // two dabs ride the silhouette so the run's outline goes ragged instead
+      // of staying a smooth capsule; they stay near the mass tone, because a
+      // dark blob half-off the hedge reads as a floating speck on the grass
+      const rim = i < 2;
+      if (rim) {
+        const s = i === 0 ? 1 : -1;
+        const u = 0.2 + hash(k, t.y, 58) * 0.6;
+        dx = vertical ? t.x + 0.5 + s * t.width * 0.5 : t.x + u;
+        dy = vertical ? t.y + u : t.y + 0.5 + s * t.width * 0.5;
+      }
+      const light = hash(k, t.y, 56) > 0.5;
+      g.fillStyle = shade(HEDGE_GREEN, rim ? (light ? 1.05 : 0.78) : light ? 1.22 : 0.64);
       g.beginPath();
-      g.arc(dx, dy, 0.06 + hash(t.x, t.y, 63 + i) * 0.08, 0, Math.PI * 2);
+      g.arc(dx, dy, 0.06 + hash(k, t.y, 57) * 0.08, 0, Math.PI * 2);
       g.fill();
+    }
+  }
+  if (d < 2) return;
+  // bare twigs where a run stops — the cut end of a hedgerow is sticks, not foliage
+  g.strokeStyle = 'rgba(58,50,34,0.5)';
+  g.lineWidth = 0.035;
+  for (const t of tiles) {
+    if (Number(t.n) + Number(t.s) + Number(t.w) + Number(t.e) > 1) continue;
+    for (let i = 0; i < 3; i++) {
+      const k = t.x * 4 + i;
+      const a = hash(k, t.y, 59) * Math.PI * 2;
+      const sx = t.x + 0.35 + hash(k, t.y, 60) * 0.3;
+      const sy = t.y + 0.35 + hash(k, t.y, 61) * 0.3;
+      const l = 0.2 + hash(k, t.y, 62) * 0.2;
+      g.beginPath();
+      g.moveTo(sx, sy);
+      g.lineTo(sx + Math.cos(a) * l, sy + Math.sin(a) * l);
+      g.stroke();
+    }
+  }
+}
+
+// Woods floor: leaf flecks, twigs, a surface root, and at the closest tier
+// fern fronds and a moss patch. Replaces the four per-tile litter ellipses,
+// which were the whole of the forest floor.
+function litterStamp(v: number, d: Detail, band: number): HTMLCanvasElement {
+  return stamp(`woods:litter:${v}:${d >= 2 ? 2 : 1}`, band, 1, (g) => {
+    if (d >= 2) {
+      g.fillStyle = 'rgba(74,92,56,0.18)';
+      g.beginPath();
+      g.ellipse(0.2 + hash(v, 0, 266) * 0.6, 0.2 + hash(v, 1, 266) * 0.6, 0.16, 0.12, hash(v, 2, 266) * Math.PI, 0, Math.PI * 2);
+      g.fill();
+    }
+    g.strokeStyle = 'rgba(58,44,28,0.35)';
+    g.lineWidth = 0.05;
+    g.beginPath();
+    g.arc(0.5 + (hash(v, 0, 267) - 0.5) * 0.6, 1.1 + hash(v, 1, 267) * 0.3, 0.55, Math.PI * 1.15, Math.PI * 1.85);
+    g.stroke();
+    for (let i = 0; i < 10; i++) {
+      const k = v * 13 + i;
+      g.fillStyle = hash(k, 0, 268) > 0.45 ? 'rgba(20,24,14,0.22)' : 'rgba(120,110,70,0.16)';
+      g.beginPath();
+      g.ellipse(0.08 + hash(k, 1, 268) * 0.84, 0.08 + hash(k, 2, 268) * 0.84, 0.03 + hash(k, 3, 268) * 0.025, 0.018 + hash(k, 4, 268) * 0.016, hash(k, 5, 268) * Math.PI, 0, Math.PI * 2);
+      g.fill();
+    }
+    g.strokeStyle = 'rgba(46,38,24,0.4)';
+    g.lineWidth = 0.03;
+    for (let i = 0; i < 3; i++) {
+      const k = v * 7 + i;
+      const sx = 0.1 + hash(k, 0, 269) * 0.7;
+      const sy = 0.1 + hash(k, 1, 269) * 0.7;
+      const a = hash(k, 2, 269) * Math.PI * 2;
+      const l = 0.15 + hash(k, 3, 269) * 0.15;
+      g.beginPath();
+      g.moveTo(sx, sy);
+      g.lineTo(sx + Math.cos(a) * l, sy + Math.sin(a) * l);
+      g.stroke();
+    }
+    if (d < 2) return;
+    const fx = 0.2 + hash(v, 3, 266) * 0.6;
+    const fy = 0.2 + hash(v, 4, 266) * 0.6;
+    g.strokeStyle = 'rgba(96,116,66,0.35)';
+    g.lineWidth = 0.028;
+    for (let i = 0; i < 3; i++) {
+      const a = -Math.PI / 2 + (i - 1) * 0.6 + (hash(v, i, 266) - 0.5) * 0.3;
+      g.beginPath();
+      g.moveTo(fx, fy);
+      g.lineTo(fx + Math.cos(a) * 0.2, fy + Math.sin(a) * 0.2);
+      g.stroke();
+    }
+  });
+}
+
+function gravelStamp(v: number, band: number): HTMLCanvasElement {
+  return stamp(`road:gravel:${v}`, band, 1, (g) => {
+    const n = 12 + ((hash(v, 0, 236) * 5) | 0);
+    for (let i = 0; i < n; i++) {
+      const k = v * 17 + i;
+      const t = hash(k, 3, 236);
+      g.fillStyle = t > 0.66 ? 'rgba(198,186,158,0.35)' : t > 0.33 ? 'rgba(44,36,26,0.30)' : 'rgba(120,102,74,0.30)';
+      const r = 0.0125 + hash(k, 2, 236) * 0.01;
+      g.beginPath();
+      g.ellipse(0.06 + hash(k, 0, 236) * 0.88, 0.06 + hash(k, 1, 236) * 0.88, r * 1.3, r, 0, 0, Math.PI * 2);
+      g.fill();
+    }
+  });
+}
+
+// Road wear as a whole-run post-pass over finished tile bases. A rut is built
+// from each road tile's centre out to each orthogonal road neighbour's centre,
+// which is what makes runs continuous across tile and chunk seams and makes
+// corners bend — the old per-tile rut rects inferred the axis from `w || e`,
+// which is simply wrong at every junction and every bend. Lateral wobble is
+// averaged at the shared edge midpoint so neighbouring tiles agree on where
+// the rut crosses, and the lateral basis is world-fixed (+y for E-W runs,
+// +x for N-S) so the two tiles do not mirror each other's wobble.
+function drawRoadWear(g: Ctx, map: GameMap, tx0: number, ty0: number, tx1: number, ty1: number, d: Detail, paved: (x: number, y: number) => number): void {
+  const roadAt = (tx: number, ty: number) => map.inBounds(tx, ty) && map.terrainKeyAt(tx, ty) === 'road' && !map.isBridge(tx, ty);
+  const wob = (tx: number, ty: number) => (coarse(tx * 3, ty * 3) - 0.5) * 0.18;
+  // How far the road reaches along one axis through this tile, capped — the
+  // longer axis is the run direction.
+  const extent = (tx: number, ty: number, dx: number, dy: number) => {
+    let n = 1;
+    for (let i = 1; i <= 8 && roadAt(tx - dx * i, ty - dy * i); i++) n++;
+    for (let i = 1; i <= 8 && roadAt(tx + dx * i, ty + dy * i); i++) n++;
+    return n;
+  };
+  // Perpendicular band through this tile: [centre in world m, width in tiles].
+  const band = (tx: number, ty: number, ew: boolean): [number, number] => {
+    const dx = ew ? 0 : 1;
+    const dy = ew ? 1 : 0;
+    let a = 0;
+    let b = 0;
+    while (a < 3 && roadAt(tx - dx * (a + 1), ty - dy * (a + 1))) a++;
+    while (b < 3 && roadAt(tx + dx * (b + 1), ty + dy * (b + 1))) b++;
+    const n = a + b + 1;
+    return [(ew ? ty : tx) - a + n / 2, n];
+  };
+  type Seg = [number, number, number, number];
+  const ruts: Seg[] = [];
+  const crown: Seg[] = [];
+  const turns: [number, number, number, number][] = []; // cx, cy, r, quadrant
+  const worn: [number, number][] = [];
+  const DIRS: [number, number][] = [[0, -1], [0, 1], [-1, 0], [1, 0]];
+  for (let y = ty0; y < ty1; y++) {
+    for (let x = tx0; x < tx1; x++) {
+      // Paved tiles keep no wear at all: cobbles own the surface, and the
+      // square is a plaza rather than a lane, so the centreline every wear
+      // feature is built from is not even well defined there.
+      if (!roadAt(x, y) || paved(x, y) > 0.3) continue;
+      worn.push([x, y]);
+      const nbs = DIRS.filter(([dx, dy]) => roadAt(x + dx, y + dy));
+      if (nbs.length >= 3) {
+        // Traffic cuts the corner, so add one scuff arc round each inner
+        // corner between two perpendicular arms. One jittered radius, not a
+        // pair — concentric rings read as a crop circle. The corner only
+        // exists where the DIAGONAL is off-road: mapgen's arterial is 3 tiles
+        // wide, so every tile in its interior has 4 road neighbours and a
+        // degree test alone would stamp arcs down the whole run.
+        const has = (dx: number, dy: number) => nbs.some(([a, b]) => a === dx && b === dy);
+        const quads: [number, number, number, boolean][] = [
+          [x + 1, y, 0, has(0, -1) && has(1, 0) && !roadAt(x + 1, y - 1)],
+          [x + 1, y + 1, 1, has(1, 0) && has(0, 1) && !roadAt(x + 1, y + 1)],
+          [x, y + 1, 2, has(0, 1) && has(-1, 0) && !roadAt(x - 1, y + 1)],
+          [x, y, 3, has(-1, 0) && has(0, -1) && !roadAt(x - 1, y - 1)],
+        ];
+        for (const [qx, qy, q, ok] of quads) {
+          if (ok) turns.push([qx, qy, 0.72 + hash(x, y * 4 + q, 240) * 0.34, q]);
+        }
+      }
+      // Which way does the run go, and where is its centreline? mapgen's
+      // arterial is 3 tiles wide, so "one rut pair per tile toward every road
+      // neighbour" lays down a 0.5 m mesh over the whole surface. Ruts belong
+      // to the ROAD, not the tile: measure the run axis by which direction the
+      // road reaches further, then let only the tile on the band's centreline
+      // carry the pair, spread to suit the band's width.
+      const extH = extent(x, y, 1, 0);
+      const extV = extent(x, y, 0, 1);
+      if (extH === extV) continue; // inside an intersection box (or a lone tile) — the turn arcs own it
+      const ew = extH > extV;
+      const [c, H] = band(x, y, ew);
+      // mapgen never lays a road wider than 3 tiles, so a wider band means an
+      // open paved area, not a lane. Its capped scan hands every interior row
+      // its own "centreline" and the ruts come out as a mesh.
+      if (H > 3) continue;
+      if (Math.floor(c) !== (ew ? y : x)) continue;
+      const sep = Math.min(0.72, 0.26 * H);
+      const w0 = wob(x, y);
+      for (const dir of [-1, 1]) {
+        const nx = ew ? x + dir : x;
+        const ny = ew ? y : y + dir;
+        if (!roadAt(nx, ny)) continue;
+        const cN = band(nx, ny, ew)[0];
+        const wN = ew ? wob(nx, Math.floor(cN)) : wob(Math.floor(cN), ny);
+        const cE = (c + cN) / 2;
+        const wE = (w0 + wN) / 2;
+        const a = ew ? x + 0.5 : c + w0;
+        const b = ew ? c + w0 : y + 0.5;
+        const ea = ew ? x + (dir > 0 ? 1 : 0) : cE + wE;
+        const eb = ew ? cE + wE : y + (dir > 0 ? 1 : 0);
+        for (const s of [-1, 1]) {
+          if (ew) ruts.push([a, b + s * sep, ea, eb + s * sep]);
+          else ruts.push([a + s * sep, b, ea + s * sep, eb]);
+        }
+        crown.push([a, b, ea, eb]);
+      }
+    }
+  }
+  const strokeAll = (segs: Seg[], width: number, style: string, odx = 0, ody = 0) => {
+    if (segs.length === 0) return;
+    g.lineWidth = width;
+    g.strokeStyle = style;
+    g.beginPath();
+    for (const [ax, ay, bx, by] of segs) {
+      g.moveTo(ax + odx, ay + ody);
+      g.lineTo(bx + odx, by + ody);
+    }
+    g.stroke();
+  };
+  strokeAll(crown, 0.06, 'rgba(184,160,112,0.08)');
+  strokeAll(ruts, 0.13, 'rgba(58,44,30,0.16)');
+  strokeAll(ruts, 0.06, 'rgba(40,30,20,0.10)');
+  strokeAll(ruts, 0.05, 'rgba(196,172,120,0.10)', -0.05, -0.06); // NW dust lip — the groove reads as a depression under the one sun
+  if (turns.length) {
+    g.lineWidth = 0.14;
+    g.strokeStyle = 'rgba(52,40,26,0.09)';
+    g.beginPath();
+    for (const [ax, ay, r, q] of turns) {
+      const a0 = (q * Math.PI) / 2 + Math.PI / 2;
+      g.moveTo(ax + Math.cos(a0) * r, ay + Math.sin(a0) * r);
+      g.arc(ax, ay, r, a0, a0 + Math.PI / 2);
+    }
+    g.stroke();
+  }
+  if (d < 1) return;
+  for (const [x, y] of worn) {
+    if (hash(x, y, 230) >= 0.13) continue;
+    const px = x + 0.2 + hash(x, y, 237) * 0.6;
+    const py = y + 0.2 + hash(x, y, 238) * 0.6;
+    const rx = 0.1 + hash(x, y, 239) * 0.12;
+    const puddle = d >= 2 && hash(x, y, 231) < 0.05;
+    g.fillStyle = 'rgba(150,126,86,0.25)';
+    g.beginPath();
+    g.ellipse(px - 0.03, py - 0.035, rx, rx * 0.7, 0, 0, Math.PI * 2);
+    g.fill();
+    g.fillStyle = puddle ? 'rgba(92,104,104,0.50)' : 'rgba(34,26,18,0.40)';
+    g.beginPath();
+    g.ellipse(px, py, rx, rx * 0.7, 0, 0, Math.PI * 2);
+    g.fill();
+    if (!puddle) continue;
+    // the frame's only specular, and it points at the same NW sun
+    g.strokeStyle = 'rgba(228,232,224,0.30)';
+    g.lineWidth = 0.04;
+    g.beginPath();
+    g.ellipse(px, py, rx * 0.66, rx * 0.46, 0, Math.PI * 1.11, Math.PI * 1.78);
+    g.stroke();
+  }
+}
+
+// Village cobbles: setts on a 3x3 cell grid with a running-bond stagger,
+// jittered corners and sizes, desaturated grey-tan stone values kept near the
+// road's own value (a brighter stone becomes the most luminous thing in the
+// frame), dark joints, and a lit top edge on each stone's two NW sides so the
+// whole surface catches the one sun.
+//
+// Coarse and irregular on purpose: a fine regular lattice beats against the
+// screen pixel grid when the chunk is downscaled from its bake band and the
+// joints turn into long diagonal moiré cracks.
+const COBBLE_N = 3;
+
+function cobbleStamp(v: number, band: number): HTMLCanvasElement {
+  return stamp(`village:cobble:${v}`, band, 1, (g) => {
+    g.fillStyle = 'rgba(40,34,26,0.45)';
+    g.fillRect(0, 0, 1, 1);
+    const cell = 1 / COBBLE_N;
+    const j = (k: number, f: number) => (hash(k, f, 271) - 0.5) * 0.055;
+    for (let r = 0; r < COBBLE_N; r++) {
+      for (let c = 0; c < COBBLE_N; c++) {
+        const k = v * 37 + r * COBBLE_N + c;
+        const stagger = r % 2 ? cell * 0.28 : 0;
+        const w = cell * (0.7 + hash(k, 9, 271) * 0.16);
+        const h = cell * (0.7 + hash(k, 10, 271) * 0.16);
+        const x0 = Math.min(1 - w - 0.01, c * cell + stagger + (cell - w) / 2 + j(k, 11) * 0.5);
+        const y0 = r * cell + (cell - h) / 2 + j(k, 12) * 0.5;
+        const x1 = x0 + w;
+        const y1 = y0 + h;
+        const pts: [number, number][] = [
+          [x0 + j(k, 0), y0 + j(k, 1)],
+          [x1 + j(k, 2), y0 + j(k, 3)],
+          [x1 + j(k, 4), y1 + j(k, 5)],
+          [x0 + j(k, 6), y1 + j(k, 7)],
+        ];
+        const t = 0.88 + hash(k, 8, 271) * 0.24;
+        g.fillStyle = `rgb(${Math.round(112 * t)},${Math.round(106 * t)},${Math.round(95 * t)})`;
+        g.beginPath();
+        g.moveTo(pts[0][0], pts[0][1]);
+        for (let i = 1; i < 4; i++) g.lineTo(pts[i][0], pts[i][1]);
+        g.closePath();
+        g.fill();
+        g.strokeStyle = 'rgba(198,190,168,0.16)';
+        g.lineWidth = 0.04;
+        g.beginPath();
+        g.moveTo(pts[3][0], pts[3][1]);
+        g.lineTo(pts[0][0], pts[0][1]);
+        g.lineTo(pts[1][0], pts[1][1]);
+        g.stroke();
+      }
+    }
+  });
+}
+
+// Civic and yard surfacing: a gravel apron round every building, packed earth
+// in the yard between a close building pair, and cobbles over the village
+// square with an alpha ramp at its rim. Buildings used to grow straight out of
+// lawn and the crossroads was bare dirt road; this is what makes the village
+// read as a built place.
+function drawPaving(g: Ctx, map: GameMap, patches: PatchIndex, tx0: number, ty0: number, tx1: number, ty1: number, band: number, d: Detail): void {
+  for (const b of patches.buildings) {
+    if (b.maxX + 1 < tx0 || b.minX - 1 > tx1 || b.maxY + 1 < ty0 || b.minY - 1 > ty1) continue;
+    g.strokeStyle = 'rgba(150,138,112,0.22)';
+    g.lineWidth = 0.6;
+    g.strokeRect(b.minX - 0.3, b.minY - 0.3, b.maxX - b.minX + 0.6, b.maxY - b.minY + 0.6);
+    if (d < 2) continue;
+    g.fillStyle = 'rgba(96,88,68,0.22)';
+    const per = 2 * (b.maxX - b.minX + b.maxY - b.minY);
+    for (let i = 0; i < per; i++) {
+      const u = hash(b.id * 64 + i, 0, 272);
+      const side = (hash(b.id * 64 + i, 1, 272) * 4) | 0;
+      const t = 0.05 + hash(b.id * 64 + i, 2, 272) * 0.5;
+      const px = side === 0 || side === 1 ? b.minX + u * (b.maxX - b.minX) : side === 2 ? b.minX - t : b.maxX + t;
+      const py = side === 0 ? b.minY - t : side === 1 ? b.maxY + t : b.minY + u * (b.maxY - b.minY);
+      g.fillRect(px, py, 0.05, 0.05);
+    }
+  }
+  // farm yard: mapgen puts a house and a barn a few metres apart and they
+  // share the ground between them
+  for (let i = 0; i < patches.buildings.length; i++) {
+    for (let k = i + 1; k < patches.buildings.length; k++) {
+      const a = patches.buildings[i];
+      const b = patches.buildings[k];
+      const gapX = Math.max(0, Math.max(a.minX - b.maxX, b.minX - a.maxX));
+      const gapY = Math.max(0, Math.max(a.minY - b.maxY, b.minY - a.maxY));
+      if (Math.hypot(gapX, gapY) > 4) continue;
+      const x0 = Math.max(tx0, Math.min(a.minX, b.minX));
+      const y0 = Math.max(ty0, Math.min(a.minY, b.minY));
+      const x1 = Math.min(tx1, Math.max(a.maxX, b.maxX));
+      const y1 = Math.min(ty1, Math.max(a.maxY, b.maxY));
+      const outside = (bb: BuildingBox, x: number, y: number) =>
+        Math.hypot(Math.max(bb.minX - x - 0.5, 0, x + 0.5 - bb.maxX), Math.max(bb.minY - y - 0.5, 0, y + 0.5 - bb.maxY));
+      for (let y = y0; y < y1; y++) {
+        for (let x = x0; x < x1; x++) {
+          if (map.buildingIdAt(x, y) >= 0) continue;
+          const key = map.terrainKeyAt(x, y);
+          if (key !== 'grass' && key !== 'field' && key !== 'road') continue;
+          const dist = Math.min(outside(a, x, y), outside(b, x, y));
+          const al = 0.35 * (1 - dist / 2);
+          if (al <= 0.01) continue;
+          g.fillStyle = `rgba(128,110,80,${al.toFixed(3)})`;
+          g.fillRect(x, y, 1, 1);
+          if (d < 1) continue;
+          g.fillStyle = 'rgba(196,178,124,0.28)';
+          for (let s = 0; s < 4; s++) {
+            const kk = x * 13 + y * 7 + s;
+            g.fillRect(x + hash(kk, 0, 273) * 0.9, y + hash(kk, 1, 273) * 0.9, 0.07, 0.02);
+          }
+          if (hash(x, y, 274) > 0.7) {
+            g.strokeStyle = 'rgba(70,56,36,0.14)';
+            g.lineWidth = 0.07;
+            g.beginPath();
+            g.arc(x + hash(x, y, 275), y + hash(x, y, 276), 0.5 + hash(x, y, 277) * 0.4, 0, Math.PI);
+            g.stroke();
+          }
+        }
+      }
+    }
+  }
+  if (patches.squares.length === 0) return;
+  const roadAt = (x: number, y: number) => map.inBounds(x, y) && map.terrainKeyAt(x, y) === 'road';
+  const pavable = (x: number, y: number) => {
+    if (!map.inBounds(x, y)) return false;
+    const key = map.terrainKeyAt(x, y);
+    if (map.isBridge(x, y)) return false;
+    if (key === 'road') return true;
+    if (key !== 'grass' && key !== 'field') return false;
+    return roadAt(x - 1, y) || roadAt(x + 1, y) || roadAt(x, y - 1) || roadAt(x, y + 1);
+  };
+  const weight = (x: number, y: number) => (pavable(x, y) ? patches.pavedAt(x, y) : 0);
+  for (let y = ty0; y < ty1; y++) {
+    for (let x = tx0; x < tx1; x++) {
+      const a = weight(x, y);
+      if (a <= 0.01) continue;
+      g.globalAlpha = a;
+      if (d >= 1) g.drawImage(cobbleStamp((hash(x, y, 278) * 6) | 0, band), x, y, 1, 1);
+      else {
+        g.fillStyle = 'rgb(122,115,102)';
+        g.fillRect(x, y, 1, 1);
+      }
+      g.globalAlpha = 1;
+    }
+  }
+  // kerb: hard civic boundary wherever paving meets unpaved ground
+  for (let y = ty0; y < ty1; y++) {
+    for (let x = tx0; x < tx1; x++) {
+      if (weight(x, y) <= 0.35) continue;
+      const sides: [number, number, number, number, number, number][] = [
+        [0, -1, x, y, 1, 0.1],
+        [0, 1, x, y + 0.9, 1, 0.1],
+        [-1, 0, x, y, 0.1, 1],
+        [1, 0, x + 0.9, y, 0.1, 1],
+      ];
+      for (const [dx, dy, rx, ry, rw, rh] of sides) {
+        if (weight(x + dx, y + dy) > 0.35) continue;
+        // only where paving meets soft ground — a kerb across the open road
+        // where the ramp happens to fade would cut the run in half
+        if (roadAt(x + dx, y + dy)) continue;
+        g.fillStyle = 'rgba(158,150,132,0.50)';
+        g.fillRect(rx, ry, rw, rh);
+        g.fillStyle = 'rgba(30,26,20,0.30)';
+        g.fillRect(rx + dx * 0.1, ry + dy * 0.1, dx !== 0 ? 0.04 : rw, dy !== 0 ? 0.04 : rh);
+      }
     }
   }
 }
@@ -310,42 +851,50 @@ function drawSubTileGround(g: Ctx, x: number, y: number, darken = 1): void {
   }
 }
 
-function drawTileBase(g: Ctx, map: GameMap, x: number, y: number): void {
+// 2x2 sub-tile sampling — each quadrant gets its own coarse() read instead of
+// one flat value per tile, which is what made the grass read as a visible 1m
+// checkerboard at high zoom.
+function drawGrassBase(g: Ctx, x: number, y: number): void {
+  const base = blendPalette([GRASS, GRASS_DRY], macro(x, y));
+  for (let sub = 0; sub < 4; sub++) {
+    const sx = x + (sub & 1) * 0.5;
+    const sy = y + (sub >> 1) * 0.5;
+    g.fillStyle = shade(base, 0.88 + coarse(sx + 0.25, sy + 0.25) * 0.16 + hash(x, y, sub) * 0.05);
+    g.fillRect(sx, sy, 0.5, 0.5);
+  }
+}
+
+function drawTileBase(g: Ctx, map: GameMap, x: number, y: number, band: number, d: Detail): void {
   const t = map.terrainKeyAt(x, y);
   const v = 0.93 + coarse(x, y) * 0.1 + hash(x, y) * 0.04;
   if (t === 'grass') {
-    const base = blendPalette([GRASS, GRASS_DRY], macro(x, y));
-    // 2x2 sub-tile sampling — each quadrant gets its own coarse() read
-    // instead of one flat value per tile, which is what made the grass
-    // read as a visible 1m checkerboard at high zoom.
-    for (let sub = 0; sub < 4; sub++) {
-      const ox = sub & 1;
-      const oy = sub >> 1;
-      const sx = x + ox * 0.5;
-      const sy = y + oy * 0.5;
-      const sv = 0.88 + coarse(sx + 0.25, sy + 0.25) * 0.16 + hash(x, y, sub) * 0.05;
-      g.fillStyle = shade(base, sv);
-      g.fillRect(sx, sy, 0.5, 0.5);
-    }
-    for (let i = 0; i < 5; i++) {
-      const h1 = hash(x, y, 10 + i);
-      const h2 = hash(x, y, 20 + i);
-      const sz = 0.05 + hash(x, y, 35 + i) * 0.05;
-      g.fillStyle = hash(x, y, 30 + i) > 0.7 ? shade(GRASS_DRY, 1.15) : shade(GRASS, h1 > 0.5 ? 1.18 : 0.78);
-      g.fillRect(x + h1, y + h2, sz, sz);
+    drawGrassBase(g, x, y);
+    if (d >= 1) {
+      const [fdx, fdy] = vec(x + 0.5, y + 0.5, 205, 34);
+      const axis = Math.abs(fdx) > Math.abs(fdy) ? 0 : 1;
+      // offset lattice so flower patches are uncorrelated with the hue drift
+      const bloom = d >= 2 && macro(x + 411, y + 87) > 0.63;
+      g.drawImage(grassStamp((hash(x, y, 201) * GRASS_VARIANTS) | 0, axis, bloom, band), x, y, 1, 1);
     }
     // dusty verge where grass meets road: half-tile strips of jittered depth,
     // so traffic wear bleeds past the road's own shoulder without a hard line
     const roadAt = (tx: number, ty: number) => map.inBounds(tx, ty) && map.terrainKeyAt(tx, ty) === 'road';
     for (let h = 0; h < 2; h++) {
-      const d = 0.14 + hash(x * 2 + h, y, 140) * 0.24;
+      const dp = 0.14 + hash(x * 2 + h, y, 140) * 0.24;
       g.fillStyle = `rgba(168,140,92,${0.1 + hash(x * 2 + h, y, 141) * 0.1})`;
-      if (roadAt(x, y - 1)) g.fillRect(x + h * 0.5, y, 0.5, d);
-      if (roadAt(x, y + 1)) g.fillRect(x + h * 0.5, y + 1 - d, 0.5, d);
+      if (roadAt(x, y - 1)) g.fillRect(x + h * 0.5, y, 0.5, dp);
+      if (roadAt(x, y + 1)) g.fillRect(x + h * 0.5, y + 1 - dp, 0.5, dp);
       const dv = 0.14 + hash(x, y * 2 + h, 142) * 0.24;
       g.fillStyle = `rgba(168,140,92,${0.1 + hash(x, y * 2 + h, 143) * 0.1})`;
       if (roadAt(x - 1, y)) g.fillRect(x, y + h * 0.5, dv, 0.5);
       if (roadAt(x + 1, y)) g.fillRect(x + 1 - dv, y + h * 0.5, dv, 0.5);
+    }
+    if (d >= 1) {
+      const vv = (hash(x, y, 202) * 6) | 0;
+      if (roadAt(x, y - 1)) g.drawImage(vergeStamp(vv, 0, band), x, y, 1, 0.5);
+      if (roadAt(x, y + 1)) g.drawImage(vergeStamp(vv, 1, band), x, y + 0.5, 1, 0.5);
+      if (roadAt(x - 1, y)) g.drawImage(vergeStamp(vv, 2, band), x, y, 0.5, 1);
+      if (roadAt(x + 1, y)) g.drawImage(vergeStamp(vv, 3, band), x + 0.5, y, 0.5, 1);
     }
   } else if (t === 'road') {
     // a road tile that overwrote water is a bridge deck (map.bridges, set by
@@ -359,54 +908,57 @@ function drawTileBase(g: Ctx, map: GameMap, x: number, y: number): void {
     }
     g.fillStyle = shade(ROAD, v);
     g.fillRect(x, y, 1, 1);
-    g.fillStyle = 'rgba(0,0,0,0.07)';
-    for (let i = 0; i < 2; i++) {
-      g.beginPath();
-      g.arc(x + hash(x, y, 3 + i), y + hash(x, y, 5 + i), 0.05 + hash(x, y, 7 + i) * 0.08, 0, Math.PI * 2);
-      g.fill();
-    }
+    if (d >= 2) g.drawImage(gravelStamp((hash(x, y, 233) * 8) | 0, band), x, y, 1, 1);
     const roadAt = (tx: number, ty: number) => map.inBounds(tx, ty) && map.terrainKeyAt(tx, ty) === 'road';
-    const n = roadAt(x, y - 1);
-    const s = roadAt(x, y + 1);
-    const w = roadAt(x - 1, y);
-    const e = roadAt(x + 1, y);
-    // shoulders on every edge that isn't road, dust-tan hue bleeding inward
-    g.fillStyle = 'rgba(0,0,0,0.15)';
-    if (!n) g.fillRect(x, y, 1, 0.12);
-    if (!s) g.fillRect(x, y + 0.88, 1, 0.12);
-    if (!w) g.fillRect(x, y, 0.12, 1);
-    if (!e) g.fillRect(x + 0.88, y, 0.12, 1);
-    g.fillStyle = 'rgba(168,140,92,0.12)';
-    if (!n) g.fillRect(x, y + 0.12, 1, 0.1);
-    if (!s) g.fillRect(x, y + 0.78, 1, 0.1);
-    if (!w) g.fillRect(x + 0.12, y, 0.1, 1);
-    if (!e) g.fillRect(x + 0.78, y, 0.1, 1);
-    // twin wheel ruts along the road's running direction
-    g.fillStyle = 'rgba(0,0,0,0.1)';
-    if (w || e) {
-      g.fillRect(x, y + 0.22, 1, 0.09);
-      g.fillRect(x, y + 0.69, 1, 0.09);
-    } else {
-      g.fillRect(x + 0.22, y, 0.09, 1);
-      g.fillRect(x + 0.69, y, 0.09, 1);
+    // Crumbled shoulder on every edge that isn't road: four 0.25 m sub-steps
+    // of jittered depth instead of one straight strip, plus a couple of grass
+    // scallops biting inward. A dirt lane never ends on a ruled line, and the
+    // straight version was the most synthetic edge in the frame.
+    const edgeRect = (s: number, u0: number, du: number, t0: number, dt: number) => {
+      if (s === 0) g.fillRect(x + u0, y + t0, du, dt);
+      else if (s === 1) g.fillRect(x + u0, y + 1 - t0 - dt, du, dt);
+      else if (s === 2) g.fillRect(x + t0, y + u0, dt, du);
+      else g.fillRect(x + 1 - t0 - dt, y + u0, dt, du);
+    };
+    const nb: [number, number][] = [[0, -1], [0, 1], [-1, 0], [1, 0]];
+    for (let s = 0; s < 4; s++) {
+      const [nx, ny] = [x + nb[s][0], y + nb[s][1]];
+      if (roadAt(nx, ny)) continue;
+      for (let i = 0; i < 4; i++) {
+        const dep = 0.06 + hash(x * 4 + i, y * 4 + s, 232) * 0.14;
+        g.fillStyle = 'rgba(0,0,0,0.15)';
+        edgeRect(s, i * 0.25, 0.25, 0, dep);
+        g.fillStyle = 'rgba(168,140,92,0.12)';
+        edgeRect(s, i * 0.25, 0.25, dep, 0.1);
+      }
+      const nk = map.inBounds(nx, ny) ? map.terrainKeyAt(nx, ny) : 'grass';
+      const tone =
+        nk === 'grass' ? shade(blendPalette([GRASS, GRASS_DRY], macro(nx, ny)), 0.95)
+        : nk === 'field' ? shade(blendPalette(FIELD_VARIANTS, macro(nx, ny)), 0.95)
+        : null;
+      if (!tone || d < 1) continue;
+      g.fillStyle = tone;
+      for (let i = 0; i < 2; i++) {
+        const u = 0.15 + hash(x * 2 + i, y * 4 + s, 234) * 0.7;
+        const r = 0.09 + hash(x * 2 + i, y * 4 + s, 235) * 0.02;
+        const cx = s === 0 ? x + u : s === 1 ? x + u : s === 2 ? x : x + 1;
+        const cy = s === 0 ? y : s === 1 ? y + 1 : y + u;
+        g.beginPath();
+        g.ellipse(cx, cy, r, r, 0, 0, Math.PI * 2);
+        g.fill();
+      }
     }
   } else if (t === 'woods') {
     drawSubTileGround(g, x, y);
-    // leaf litter / undergrowth texture
-    for (let i = 0; i < 4; i++) {
-      const lx = x + hash(x, y, 80 + i);
-      const ly = y + hash(x, y, 85 + i);
-      g.fillStyle = hash(x, y, 90 + i) > 0.45 ? 'rgba(20,24,14,0.22)' : 'rgba(120,110,70,0.16)';
-      g.beginPath();
-      g.ellipse(lx, ly, 0.09 + hash(x, y, 95 + i) * 0.08, 0.05 + hash(x, y, 96 + i) * 0.05, hash(x, y, 97 + i) * Math.PI, 0, Math.PI * 2);
-      g.fill();
-    }
+    if (d >= 1) g.drawImage(litterStamp((hash(x, y, 265) * 8) | 0, d, band), x, y, 1, 1);
   } else if (t === 'hedge') {
-    // ground under the hedge only — the capsule strokes are drawn by
+    // Ground under the hedge only — the capsule strokes are drawn by
     // drawHedgeRun in whole-run passes (per-tile stroke stacks let a tile's
     // dark AO/shadow overpaint the neighbor's green mass, which is what read
-    // as per-tile capsule segmentation at 24 px/m)
-    drawSubTileGround(g, x, y, 0.88);
+    // as per-tile capsule segmentation at 24 px/m). It is the ordinary grass
+    // base, not the dark woods floor: a hedge run is narrower than its tiles,
+    // and the dark tone left a 1 m square halo around every hedge tile.
+    drawGrassBase(g, x, y);
   } else if (t === 'field') {
     const bx = x >> 3; // 8m parcel block — furrow geometry only, color stays smooth
     const by = y >> 3;
@@ -414,7 +966,9 @@ function drawTileBase(g: Ctx, map: GameMap, x: number, y: number): void {
     g.fillStyle = shade(base, v);
     g.fillRect(x, y, 1, 1);
     const horizontal = hash(bx, by, 71) < 0.5;
-    const spacing = 0.4 + hash(bx, by, 73) * 0.25;
+    // far LOD keeps the macro row structure but at <=1 row/tile — the full
+    // 0.4-0.65 m pitch aliases into moiré below 8 px/m
+    const spacing = (0.4 + hash(bx, by, 73) * 0.25) * (d === 0 ? 2.6 : 1);
     const phase = hash(bx, by, 72) * spacing;
     g.fillStyle = 'rgba(0,0,0,0.1)';
     if (horizontal) {
@@ -460,7 +1014,7 @@ function drawTileBase(g: Ctx, map: GameMap, x: number, y: number): void {
   }
 }
 
-function drawTree(g: Ctx, map: GameMap, x: number, y: number): void {
+function drawTree(g: Ctx, map: GameMap, x: number, y: number, band: number, d: Detail): void {
   const wooded = (tx: number, ty: number) => map.inBounds(tx, ty) && map.terrainKeyAt(tx, ty) === 'woods';
   // Canopy-gap culling is only safe deep inside a stand, where the bare (darker)
   // woods floor sits under surrounding canopy. On an edge tile — any non-woods
@@ -471,22 +1025,17 @@ function drawTree(g: Ctx, map: GameMap, x: number, y: number): void {
   const cx = x + 0.3 + hash(x, y, 41) * 0.4;
   const cy = y + 0.3 + hash(x, y, 42) * 0.4;
   const r = 0.55 + hash(x, y, 43) * 0.4; // may overhang up to ~1 tile — chunks overscan by `pad`, so this is safe
-  g.fillStyle = 'rgba(10,16,8,0.3)';
-  g.beginPath();
-  g.ellipse(cx + 0.18, cy + 0.22, r, r * 0.9, 0, 0, Math.PI * 2);
-  g.fill();
-  const canopy = hash(x, y, 45) < 0.5 ? CANOPY_A : CANOPY_B;
-  g.fillStyle = shade(canopy, 0.85 + hash(x, y, 44) * 0.35);
-  g.beginPath();
-  g.arc(cx, cy, r, 0, Math.PI * 2);
-  g.fill();
-  g.strokeStyle = 'rgba(0,0,0,0.25)';
-  g.lineWidth = 0.07;
-  g.stroke();
-  g.fillStyle = 'rgba(190,220,150,0.18)';
-  g.beginPath();
-  g.arc(cx - r * 0.25, cy - r * 0.25, r * 0.55, 0, Math.PI * 2);
-  g.fill();
+  // mapgen plants orchards on a staggered 2-tile spacing, so a woods tile with
+  // no orthogonal woods neighbour but woods two tiles out is a fruit tree, not
+  // a forest tree
+  const orchard =
+    !wooded(x - 1, y) && !wooded(x + 1, y) && !wooded(x, y - 1) && !wooded(x, y + 1) &&
+    (wooded(x - 2, y) || wooded(x + 2, y) || wooded(x, y - 2) || wooded(x, y + 2));
+  const fam: 0 | 1 | 2 = orchard ? 2 : hash(x, y, 45) < 0.5 ? 0 : 1;
+  // quantized so repeated trees reuse the same destination scale and the
+  // browser's resample of the sprite stays predictable
+  const k = Math.round((r / 0.75) * 8) / 8;
+  g.drawImage(canopySprite(fam, (hash(x, y, 46) * 12) | 0, band, d), cx - 1.5 * k, cy - 1.5 * k, 3 * k, 3 * k);
 }
 
 function drawEdge(g: Ctx, e: number, x0: number, y0: number, x1: number, y1: number): void {
@@ -517,12 +1066,15 @@ export class TerrainLayer {
   private pixels = 0;
   private hasElev: boolean;
   private hasStairs: boolean;
+  private bakeBudget = 0;
+  private patches: PatchIndex;
 
   constructor(private map: GameMap) {
     // Flat maps (all elev 0, no stairs) early-out everywhere below, so their
     // chunks stay byte-identical to the pre-height renderer.
     this.hasElev = map.elev.some((e) => e !== 0);
     this.hasStairs = map.stairs.some((s) => s !== 0);
+    this.patches = new PatchIndex(map);
   }
 
   private chunk(cx: number, cy: number, band: number): HTMLCanvasElement {
@@ -533,6 +1085,8 @@ export class TerrainLayer {
       this.cache.set(key, hit);
       return hit;
     }
+    this.bakeBudget--;
+    const d = detailFor(band);
     const c = document.createElement('canvas');
     // 1-tile gutter on all sides so downscale sampling never bleeds past the edge
     c.width = c.height = (CHUNK + 2) * band;
@@ -548,14 +1102,29 @@ export class TerrainLayer {
     const tx1 = Math.min(this.map.w, x0 + CHUNK + pad);
     const ty1 = Math.min(this.map.h, y0 + CHUNK + pad);
     for (let y = ty0; y < ty1; y++) {
-      for (let x = tx0; x < tx1; x++) drawTileBase(g, this.map, x, y);
+      for (let x = tx0; x < tx1; x++) drawTileBase(g, this.map, x, y, band, d);
     }
+    drawPaving(g, this.map, this.patches, tx0, ty0, tx1, ty1, band, d);
+    drawRoadWear(g, this.map, tx0, ty0, tx1, ty1, d, (x, y) => this.patches.pavedAt(x, y));
     drawWaterBanks(g, this.map, tx0, ty0, tx1, ty1);
     drawDoorTrails(g, this.map, tx0, ty0, tx1, ty1);
-    drawHedgeRun(g, this.map, tx0, ty0, tx1, ty1);
+    drawHedgeRun(g, this.map, tx0, ty0, tx1, ty1, d);
+    if (d >= 1) {
+      // Fallen trunks, deep inside a stand only, ~1 per 50 woods tiles. Drawn
+      // before the canopies so a tree overlaps the log rather than the log
+      // sitting on top of the leaves.
+      for (let y = ty0; y < ty1; y++) {
+        for (let x = tx0; x < tx1; x++) {
+          if (this.map.terrainKeyAt(x, y) !== 'woods' || hash(x, y, 270) >= 0.02) continue;
+          const wooded = (tx: number, ty: number) => this.map.inBounds(tx, ty) && this.map.terrainKeyAt(tx, ty) === 'woods';
+          if (!wooded(x - 1, y) || !wooded(x + 1, y) || !wooded(x, y - 1) || !wooded(x, y + 1)) continue;
+          drawLog(g, x + 0.5, y + 0.5, x * 977 + y);
+        }
+      }
+    }
     for (let y = ty0; y < ty1; y++) {
       for (let x = tx0; x < tx1; x++) {
-        if (this.map.terrainKeyAt(x, y) === 'woods') drawTree(g, this.map, x, y);
+        if (this.map.terrainKeyAt(x, y) === 'woods') drawTree(g, this.map, x, y, band, d);
       }
     }
     for (let y = ty0; y <= ty1; y++) {
@@ -579,7 +1148,21 @@ export class TerrainLayer {
     return c;
   }
 
+  // Same chunk baked at some other band — same content, wrong sharpness. Walk
+  // from the crispest down; source rect origin is always that band's own
+  // 1-tile gutter, which is what keeps the blit aligned.
+  private fallback(cx: number, cy: number, band: number): [HTMLCanvasElement, number] | null {
+    for (let i = BANDS.length - 1; i >= 0; i--) {
+      const b = BANDS[i];
+      if (b === band) continue;
+      const c = this.cache.get(`${cx},${cy},${b}`);
+      if (c) return [c, b];
+    }
+    return null;
+  }
+
   draw(ctx: Ctx, cam: Camera, cw: number, ch: number): void {
+    this.bakeBudget = BAKES_PER_FRAME;
     const band = BANDS.find((b) => b >= cam.scale) ?? 48;
     const [wx0, wy0] = cam.screenToWorld(0, 0, cw, ch);
     const [wx1, wy1] = cam.screenToWorld(cw, ch, cw, ch);
@@ -591,6 +1174,13 @@ export class TerrainLayer {
     for (let cy = cy0; cy <= cy1; cy++) {
       for (let cx = cx0; cx <= cx1; cx++) {
         const [sx, sy] = cam.worldToScreen(cx * CHUNK, cy * CHUNK, cw, ch);
+        if (this.bakeBudget <= 0 && !this.cache.has(`${cx},${cy},${band}`)) {
+          const fb = this.fallback(cx, cy, band);
+          if (fb) {
+            ctx.drawImage(fb[0], fb[1], fb[1], CHUNK * fb[1], CHUNK * fb[1], sx, sy, size, size);
+            continue;
+          }
+        }
         ctx.drawImage(this.chunk(cx, cy, band), band, band, CHUNK * band, CHUNK * band, sx, sy, size, size);
       }
     }
