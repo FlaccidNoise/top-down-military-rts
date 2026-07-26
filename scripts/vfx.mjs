@@ -22,12 +22,12 @@ const slug = (s) => s.replace(/[^a-z0-9]+/gi, '-').replace(/^-|-$/g, '').toLower
 
 // Wall-clock transient effects — must be caught in-page (burst).
 // Buckets chosen from renderer timing: shots span muzzle(0-60ms)→travel(0-90)→
-// impact(90-340); booms span fireball(0-150)→ejecta→smoke column(→2000).
+// impact(90-340); booms span flash(0-45)→fireball(30-260)→debris→column(→2600).
 const DYN = [
   { name: 'muzzle+tracer hit', trigger: { type: 'shot', hit: true, kill: false }, dur: 340, buckets: 6 },
   { name: 'tracer kill', trigger: { type: 'shot', hit: true, kill: true }, dur: 340, buckets: 6 },
   { name: 'tracer miss', trigger: { type: 'shot', hit: false, kill: false }, dur: 340, buckets: 6 },
-  { name: 'explosion smoke', trigger: { type: 'boom' }, dur: 2000, buckets: 8 },
+  { name: 'explosion smoke', trigger: { type: 'boom' }, dur: 2600, buckets: 8 },
 ];
 
 const { browser, page } = await launch();
@@ -54,8 +54,8 @@ for (const e of DYN) {
 }
 
 // Let the last burst's booms/tracers expire so they don't photobomb the static
-// sim-state captures below (BOOM_MS=2000).
-await page.waitForTimeout(2200);
+// sim-state captures below (BOOM_MS=2600).
+await page.waitForTimeout(2800);
 
 // Static sim-state effects — pause-safe, so a normal screenshot is reliable.
 // Death pose: kill the nearest blue soldier in place (renderer stamps a blood

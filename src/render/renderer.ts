@@ -3,7 +3,7 @@ import { MELEE_STRIKE_RANGE, type MeleeEvent, type ShotEvent, type Side, type Si
 import type { Camera } from './camera';
 import { DecalLayer } from './decals';
 import { bandFor, getSprite, SPRITE_MIN_SCALE, SPRITE_SPAN, WALK_FRAMES, type Pose } from './dudes';
-import { blit } from './fx';
+import { ballistic, blit, fxDetail, hotPass, WIND, type FxKind } from './fx';
 import { RoofLayer } from './roofs';
 import { TerrainLayer } from './terrain';
 import { getVehicleSprite, vehicleBandFor, VEHICLE_SPAN } from './vehicles';
@@ -28,6 +28,15 @@ interface Boom {
   x: number;
   y: number;
   at: number;
+  r?: number; // blast radius in meters; undefined = the mortar/barrage default
+  landed: number; // bitmask of debris chunks whose grit decal is already stamped
+}
+
+// Blast radius → visual multiplier. Everything in the explosion (radii,
+// particle counts, camera trauma, crater size) rides this one number, so a
+// grenade cannot read like an 81 mm shell.
+function boomScale(r: number | undefined): number {
+  return Math.min(1.2, Math.max(0.33, (r ?? 9) / 9));
 }
 
 interface Plane {
@@ -38,6 +47,8 @@ interface Plane {
 }
 
 const PLANE_MS = 2600;
+const BOOM_MS = 2600; // longest sub-effect (smoke column) sets total lifetime
+const CHUNKS: FxKind[] = ['chunk0', 'chunk1', 'chunk2', 'chunk3'];
 
 const TEAM = { blue: '#5b9bd5', red: '#d05c50' } as const;
 
@@ -90,10 +101,10 @@ export class Renderer {
     }
   }
 
-  addBooms(booms: { x: number; y: number }[], now: number): void {
+  addBooms(booms: { x: number; y: number; r?: number }[], now: number): void {
     for (const b of booms) {
-      this.booms.push({ ...b, at: now });
-      this.decals.scorch(b.x, b.y);
+      this.booms.push({ ...b, at: now, landed: 0 });
+      this.decals.scorch(b.x, b.y, boomScale(b.r));
     }
   }
 
@@ -206,7 +217,7 @@ export class Renderer {
     for (const b of this.booms) {
       const age = now - b.at;
       if (age > 350) continue;
-      trauma = Math.max(trauma, (1 - age / 350) * prox(b.x, b.y));
+      trauma = Math.max(trauma, (1 - age / 350) * prox(b.x, b.y) * (0.45 + 0.55 * boomScale(b.r)));
     }
     let fire = 0;
     for (const t of this.tracers) {
@@ -673,6 +684,7 @@ export class Renderer {
     const TRAVEL_MS = 90; // muzzle->target travel time for the bright segment (E3)
     const IMPACT_MS = 250; // impact dust lifetime, starts at TRAVEL_MS (E5)
     const MELEE_FX_MS = 250; // strike fleck / miss swish lifetime
+    const tier = fxDetail(cam.scale);
 
     // melee impacts: red fleck on a hit (bigger on a kill), white swish on a miss
     this.meleeFx = this.meleeFx.filter((m) => now - m.at < MELEE_FX_MS);
@@ -815,86 +827,155 @@ export class Renderer {
       }
     }
 
-    // explosions: fireball + earth-toned ring + dirt ejecta + ground dust +
-    // rising smoke column, all wall-clock (transient VFX, not sim state) (E2)
-    const BOOM_MS = 2000; // longest sub-effect (smoke column) sets total lifetime
     this.booms = this.booms.filter((b) => now - b.at < BOOM_MS);
-    for (const b of this.booms) {
-      const age = now - b.at;
-      const [x, y] = cam.worldToScreen(b.x, b.y, cw, ch);
-      const sx = Math.round(b.x * 100);
-      const sy = Math.round(b.y * 100);
+    for (const b of this.booms) this.drawBoom(ctx, cam, b, now, cw, ch, tier);
 
-      // earth-toned shockwave ring (kept, retoned per rule 1 — hot color
-      // budget goes to the fireball core only)
-      if (age < 600) {
-        const t = age / 600;
-        const rad = (1 + t * 8) * cam.scale;
-        ctx.strokeStyle = `rgba(150, 112, 72, ${(1 - t) * 0.75})`;
-        ctx.lineWidth = 2;
+    // One additive batch for the whole frame: the composite mode flips twice,
+    // never once per particle.
+    hotPass(ctx, () => {
+      for (const b of this.booms) this.drawBoomHot(ctx, cam, b, now, cw, ch);
+    });
+  }
+
+  // Layered explosion. Order is the whole trick: the dark beats (compression
+  // ring, soot shell) go UNDER the fireball, and the lingering dust is a RING
+  // rather than a filled disc, so nothing paints tan over the hot core the way
+  // the old single-pass draw did.
+  private drawBoom(ctx: CanvasRenderingContext2D, cam: Camera, b: Boom, now: number, cw: number, ch: number, tier: 0 | 1 | 2): void {
+    const age = now - b.at;
+    const rs = boomScale(b.r);
+    const S = cam.scale;
+    const [x, y] = cam.worldToScreen(b.x, b.y, cw, ch);
+    const pad = 12 * rs * S;
+    if (x < -pad || y < -pad || x > cw + pad || y > ch + pad) return;
+    const sx = Math.round(b.x * 100);
+    const sy = Math.round(b.y * 100);
+
+    // 30-90 ms: a beat of darkening before the dust — air being displaced
+    if (age >= 30 && age < 90) {
+      const t = (age - 30) / 60;
+      blit(ctx, 'ringDark', x, y, (0.7 + t * 2.2) * rs * S, 0.25 * (1 - t));
+    }
+
+    // 40-380 ms: shockwave, a scaled soft annulus (never a 2 px stroked circle)
+    if (age >= 40 && age < 380) {
+      const t = (age - 40) / 340;
+      blit(ctx, 'ringTan', x, y, (0.8 + t * 3.8) * rs * S, 0.55 * (1 - t));
+    }
+
+    // 150-1400 ms: lingering ground dust, a spreading ring plus a small base
+    // disc capped low enough that it can never wash out the fireball
+    if (age >= 150 && age < 1400) {
+      const t = (age - 150) / 1250;
+      blit(ctx, 'ringTan', x, y, (1.2 + t * 3.3) * rs * S, 0.3 * (1 - t));
+      blit(ctx, 'dustTan', x, y, 1.6 * rs * S, 0.14 * (1 - t));
+    }
+
+    // 60-900 ms: soot shell, drawn before the fireball every frame so the hot
+    // core punches through it — dark-around-bright is why a blast reads
+    if (age >= 60 && age < 900) {
+      const t = (age - 60) / 840;
+      for (let i = 0; i < 4; i++) {
+        const a = hash(sx, sy, 110 + i) * Math.PI * 2;
+        const d = (0.55 + 0.7 * hash(sx, sy, 120 + i)) * rs * S;
+        blit(ctx, 'soot', x + Math.cos(a) * d, y + Math.sin(a) * d, (0.9 + t * 2) * rs * S, 0.42 * Math.pow(1 - t, 0.9));
+      }
+    }
+
+    // 30-260 ms: three staggered, offset fireball lobes — the asymmetry is
+    // what stops an explosion reading as a disc
+    for (let i = 0; i < 3; i++) {
+      const start = 30 + i * 22;
+      if (age < start || age >= 260) continue;
+      const t = (age - start) / (260 - start);
+      const a = hash(sx, sy, 100 + i) * Math.PI * 2;
+      const d = (0.15 + 0.35 * hash(sx, sy, 130 + i)) * rs * S;
+      const lobe = (0.45 + hash(sx, sy, 135 + i) * 0.5 + t * 2) * rs * S;
+      blit(ctx, 'fire', x + Math.cos(a) * d, y + Math.sin(a) * d, lobe, Math.pow(1 - t, 0.7) * 0.78);
+    }
+
+    // 0-420 ms: dirt ejecta, drooping under gravity and tapering to nothing
+    if (age < 420) {
+      const t = age / 420;
+      const ea = 1 - t;
+      const n = Math.max(4, Math.round((8 + hash(sx, sy, 5) * 5) * rs));
+      ctx.lineWidth = Math.max(0.6, (0.09 - 0.07 * t) * S);
+      for (let i = 0; i < n; i++) {
+        const ang = hash(sx, sy, 10 + i) * Math.PI * 2;
+        const len = (1.5 + hash(sx, sy, 40 + i) * 2.5) * rs * S * t;
+        const tone = hash(sx, sy, 70 + i);
+        ctx.strokeStyle = `rgba(${Math.round(90 + tone * 40)},${Math.round(65 + tone * 30)},${Math.round(45 + tone * 20)},${ea * 0.7})`;
         ctx.beginPath();
-        ctx.arc(x, y, rad, 0, Math.PI * 2);
+        ctx.moveTo(x, y);
+        ctx.quadraticCurveTo(x + Math.cos(ang) * len * 0.5, y + Math.sin(ang) * len * 0.5, x + Math.cos(ang) * len, y + Math.sin(ang) * len + t * t * 0.9 * S);
         ctx.stroke();
       }
+    }
 
-      // hot fireball core, 150 ms
-      if (age < 150) {
-        const t = age / 150;
-        const fr = (0.6 + t * 2.2) * cam.scale;
-        const fa = 1 - t;
-        const grad = ctx.createRadialGradient(x, y, 0, x, y, fr);
-        grad.addColorStop(0, `rgba(255,250,225,${fa})`);
-        grad.addColorStop(0.4, `rgba(255,190,90,${fa * 0.85})`);
-        grad.addColorStop(0.75, `rgba(210,110,50,${fa * 0.5})`);
-        grad.addColorStop(1, 'rgba(180,90,40,0)');
-        ctx.fillStyle = grad;
-        ctx.beginPath();
-        ctx.arc(x, y, fr, 0, Math.PI * 2);
-        ctx.fill();
-      }
-
-      // dirt ejecta streaks, earth browns, fade ~400 ms
-      if (age < 400) {
-        const t = age / 400;
-        const ea = 1 - t;
-        const n = 8 + Math.floor(hash(sx, sy, 5) * 5); // 8-12
-        ctx.lineWidth = Math.max(1, cam.scale * 0.06);
-        for (let i = 0; i < n; i++) {
-          const ang = hash(sx, sy, 10 + i) * Math.PI * 2;
-          const len = (1.5 + hash(sx, sy, 40 + i) * 2.5) * cam.scale * t;
-          const tone = hash(sx, sy, 70 + i);
-          const r = Math.round(90 + tone * 40);
-          const gc = Math.round(65 + tone * 30);
-          const bc = Math.round(45 + tone * 20);
-          ctx.strokeStyle = `rgba(${r},${gc},${bc},${ea * 0.7})`;
-          ctx.beginPath();
-          ctx.moveTo(x, y);
-          ctx.lineTo(x + Math.cos(ang) * len, y + Math.sin(ang) * len);
-          ctx.stroke();
+    // 60-1600 ms: debris on real ballistic arcs with ground shadows — the one
+    // thing that gives a blast mass. Each chunk stamps grit where it lands.
+    if (tier >= 1 && age >= 60 && age < 1600) {
+      const ts = (age - 60) / 1000;
+      const n = Math.min(24, Math.round((6 + hash(sx, sy, 140) * 6) * rs * tier));
+      for (let i = 0; i < n; i++) {
+        const v = (3.5 + hash(sx, sy, 150 + i) * 6) * rs;
+        const vz = 3 + hash(sx, sy, 160 + i) * 3.5;
+        const [dist, z] = ballistic(ts, v, vz);
+        const ang = hash(sx, sy, 170 + i) * Math.PI * 2;
+        const gx = x + Math.cos(ang) * dist * S;
+        const gy = y + Math.sin(ang) * dist * S;
+        if (z <= 0) {
+          if (!(b.landed & (1 << i))) {
+            b.landed |= 1 << i;
+            this.decals.grit(b.x + Math.cos(ang) * dist, b.y + Math.sin(ang) * dist);
+          }
+          continue;
         }
-      }
-
-      // lingering ground dust: one soft expanding disc, ~1.5 s
-      if (age < 1500) {
-        const t = age / 1500;
-        const dr = (1.5 + t * 3.5) * cam.scale;
-        blit(ctx, 'dustTan', x, y, dr, (1 - t) * 0.28);
-      }
-
-      // rising smoke column: 3 staggered puffs climbing over ~2 s, cool grey
-      for (let i = 0; i < 3; i++) {
-        const start = i * 200;
-        if (age < start) continue;
-        const pt = (age - start) / (BOOM_MS - start);
-        const climb = pt * 3.5 * cam.scale;
-        const drift = Math.sin(sx * 0.01 + i) * pt * 0.6 * cam.scale;
-        const pr = (0.8 + pt * 1.6) * cam.scale;
-        const pa = (1 - pt) * 0.4;
-        ctx.fillStyle = `rgba(150,152,150,${pa})`;
+        ctx.fillStyle = `rgba(20,17,12,${0.18 * (1 - Math.min(1, z / 2))})`;
         ctx.beginPath();
-        ctx.arc(x + drift, y - climb, pr, 0, Math.PI * 2);
+        ctx.ellipse(gx, gy, S * 0.13, S * 0.08, 0, 0, Math.PI * 2);
         ctx.fill();
+        const cr = (0.1 + hash(sx, sy, 180 + i) * 0.08) * S;
+        blit(ctx, CHUNKS[i & 3], gx, gy - z * S * 0.9, cr, 1, ts * (4 + hash(sx, sy, 190 + i) * 8));
       }
+    }
+
+    // 200-2600 ms: smoke column, leaning on the wind instead of the old
+    // per-boom arbitrary drift, and starting sooty because fire-smoke does
+    const puffs = 4 + Math.round(2 * rs);
+    for (let i = 0; i < puffs; i++) {
+      const start = 200 + i * 180;
+      if (age < start) continue;
+      const pt = (age - start) / (BOOM_MS - start);
+      const secs = (age - start) / 1000;
+      const px = x + WIND.dx * WIND.speed * secs * S;
+      const py = y - pt * 3.4 * rs * S + WIND.dy * WIND.speed * secs * S;
+      const pr = (0.9 + pt * 2.2) * rs * S;
+      const pa = (1 - pt) * 0.3;
+      const sooty = Math.max(0, 1 - secs / 0.9); // fire-smoke starts black and greys as it cools
+      blit(ctx, 'smoke', px, py, pr, pa * (1 - sooty));
+      blit(ctx, 'soot', px, py, pr, pa * sooty);
+    }
+  }
+
+  // Additive half of the explosion: strictly the sub-260 ms hot window, so
+  // `lighter` never gets a chance to bleach the muted palette.
+  private drawBoomHot(ctx: CanvasRenderingContext2D, cam: Camera, b: Boom, now: number, cw: number, ch: number): void {
+    const age = now - b.at;
+    if (age >= 260) return;
+    const rs = boomScale(b.r);
+    const S = cam.scale;
+    const [x, y] = cam.worldToScreen(b.x, b.y, cw, ch);
+    const pad = 6 * rs * S;
+    if (x < -pad || y < -pad || x > cw + pad || y > ch + pad) return;
+    if (age < 45) {
+      const t = age / 45;
+      blit(ctx, 'flash', x, y, (0.5 + 3.2 * t) * rs * S, Math.pow(1 - t, 0.6));
+      blit(ctx, 'flash', x, y, (0.35 + 0.7 * t) * rs * S, Math.pow(1 - t, 0.35)); // hard white core
+    }
+    if (age >= 30) {
+      const t = (age - 30) / 230;
+      blit(ctx, 'fire', x, y, 0.55 * (0.7 + t * 2.4) * rs * S, Math.pow(1 - t, 0.7) * 0.85);
     }
   }
 }
