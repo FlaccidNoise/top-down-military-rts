@@ -85,6 +85,23 @@ const MAT_SPEC: Record<'tile' | 'slate', { course: number; tileW: number; jitter
 
 const BIG_ROOF_AREA = 45; // w*h threshold for weathering patch runs
 
+// --- impact damage (B8) ------------------------------------------------------
+// The sim has no building HP and must not gain one, so damage is purely a
+// render-side record of detonations the player watched land: Renderer.addBooms
+// forwards every boom to noteImpact, which files it against a footprint and
+// bumps that building's bake version. The next amortized bake paints the hole.
+const DMG_CAP = 3; // holes per building — past three a house reads as rubble the sim will not honour
+const DMG_MERGE = 0.8; // m — a second round in the same crater adds nothing
+const DMG_NEAR = 1.5; // m outside the footprint that still counts as a near miss
+const DMG_SOOT = 'rgba(24,20,16,0.30)';
+const DMG_VOID = '#16130f';
+
+interface Damage {
+  x: number; // quantized to 0.25 m: the hole must not shimmer when the band rebakes
+  y: number;
+  direct: boolean; // inside the footprint → hole; outside → scorch and slipped tiles only
+}
+
 // Fake-oblique mass. The roof blits PARALLAX metres up-sun of the footprint so
 // the SE wall face is uncovered; it stays well under OVERHANG, or the roof
 // would pull back off the NW footprint edge and break the wall-line read.
@@ -169,6 +186,7 @@ interface RoofArt {
   shadeTones: string[];
   litPatch: string;
   shadePatch: string;
+  dmgTones: string[]; // displaced-tile ramp: parent material at ±25% value
   ridgeBody: string;
   courseAlpha: number;
   ox: number; // roof sprite origin / span, world meters
@@ -396,6 +414,10 @@ function buildArt(b: Building, i: number, stories: number, smallOfPair: boolean,
     shadeTones: ramp(weathered, shadeV, shadeW, amp),
     litPatch: rgbStr(tint(weathered, litV * patchV[0], patchV[1])),
     shadePatch: rgbStr(tint(weathered, shadeV * patchV[0], patchV[1])),
+    // a thrown tile lands dirty side up and has no slope facing the sun, so the
+    // ramp is centred BELOW the mean slope value — at the mean it read as pale
+    // confetti scattered over a dark slate roof
+    dmgTones: ramp(weathered, ((litV + shadeV) / 2) * 0.85, (litW + shadeW) / 2, 0.25),
     ridgeBody: rgbStr(tint(weathered, mat === 'thatch' ? 1.05 : 0.95, 3)),
     courseAlpha: 0.1 + (hash(i, 200) - 0.5) * 0.06,
     ox: nx - PAD_NW,
@@ -777,7 +799,133 @@ function chimneyInto(g: CanvasRenderingContext2D, st: Rect, i: number, k: number
   }
 }
 
-function drawRoof(g: CanvasRenderingContext2D, art: RoofArt, i: number, band: number): void {
+// Impact damage, painted last so it cuts through courses, dormers and stacks
+// alike. Hash keys are the quantized impact in quarter-metres, so the same
+// crater comes back identical at every band and after every rebake.
+function holeKeys(d: Damage): [number, number] {
+  return [Math.round(d.x * 4), Math.round(d.y * 4)];
+}
+
+function holeRadius(d: Damage): number {
+  const [hx, hy] = holeKeys(d);
+  return 0.7 + hash(hx, hy, 289) * 0.5;
+}
+
+function holePath(g: CanvasRenderingContext2D, d: Damage): void {
+  const [hx, hy] = holeKeys(d);
+  g.beginPath();
+  for (let k = 0; k < 9; k++) {
+    const a = (k / 9) * TAU;
+    const rad = 0.7 + hash(hx, hy, 290 + k) * 0.5;
+    const px = d.x + Math.cos(a) * rad;
+    const py = d.y + Math.sin(a) * rad;
+    if (k === 0) g.moveTo(px, py);
+    else g.lineTo(px, py);
+  }
+  g.closePath();
+}
+
+// One flung tile/slate/straw wad: parent material, off-value, off-angle, with
+// its own short contact shadow so it reads as lying ON the roof, not in it.
+function shard(g: CanvasRenderingContext2D, art: RoofArt, x: number, y: number, rot: number, tone: string): void {
+  const sp = MAT_SPEC[art.mat === 'slate' ? 'slate' : 'tile'];
+  const tw = art.mat === 'thatch' || art.mat === 'iron' ? 0.26 : sp.tileW;
+  const th = art.mat === 'thatch' || art.mat === 'iron' ? 0.2 : sp.course * 0.8;
+  const [sx, sy] = shadowOffset(0.09);
+  g.save();
+  g.translate(x, y);
+  g.rotate(rot);
+  g.fillStyle = 'rgba(16,13,10,0.45)';
+  g.fillRect(-tw / 2 + sx, -th / 2 + sy, tw, th);
+  g.fillStyle = tone;
+  g.fillRect(-tw / 2, -th / 2, tw, th);
+  g.fillStyle = 'rgba(226,214,196,0.12)';
+  g.fillRect(-tw / 2, -th / 2, tw, Math.min(0.05, th * 0.3));
+  g.restore();
+}
+
+function damageInto(g: CanvasRenderingContext2D, art: RoofArt, d: Damage, band: number): void {
+  const [hx, hy] = holeKeys(d);
+  const r0 = holeRadius(d);
+
+  // soot first: it belongs under the ejecta, and it is the whole read at band 8
+  const sr = r0 * 2;
+  const soot = g.createRadialGradient(d.x, d.y, 0, d.x, d.y, sr);
+  soot.addColorStop(0, DMG_SOOT);
+  soot.addColorStop(1, 'rgba(24,20,16,0)');
+  g.fillStyle = soot;
+  g.beginPath();
+  g.arc(d.x, d.y, sr, 0, TAU);
+  g.fill();
+
+  if (!d.direct) {
+    // near miss: the blast lifted a few courses, it did not open the roof
+    if (band < 16) return;
+    const n = 3 + ((hash(hx, hy, 461) * 3) | 0);
+    for (let k = 0; k < n; k++) {
+      const a = hash(hx, hy, 300 + k) * TAU;
+      const rad = r0 * (0.4 + hash(hx, hy, 310 + k) * 0.7);
+      const sxp = d.x + Math.cos(a) * rad;
+      const syp = d.y + Math.sin(a) * rad;
+      g.fillStyle = 'rgba(20,16,12,0.5)'; // the gap the slate slid out of
+      g.fillRect(sxp - 0.13, syp - 0.1, 0.26, 0.2);
+      shard(g, art, sxp + 0.1, syp + 0.08, (10 + hash(hx, hy, 320 + k) * 15) * (Math.PI / 180), art.dmgTones[(hash(hx, hy, 330 + k) * TONE_STEPS) | 0]);
+    }
+    return;
+  }
+
+  holePath(g, d);
+  g.fillStyle = DMG_VOID;
+  g.fill();
+
+  if (band >= 16) {
+    // rafters, snapped off over the void — perpendicular to the ridge, on a
+    // world-aligned grid so two holes in one roof show the same timber run
+    g.save();
+    holePath(g, d);
+    g.clip();
+    const along = art.ridgeAlongX; // ridge runs along x → rafters run along y
+    const lo = (along ? d.x : d.y) - 1.3;
+    const hi = (along ? d.x : d.y) + 1.3;
+    const [rsx, rsy] = shadowOffset(0.18);
+    const c = along ? d.y : d.x;
+    for (let u = Math.ceil(lo / 0.42) * 0.42, j = 0; u < hi; u += 0.42, j++) {
+      // One timber in three is snapped, and the break has to land INSIDE the
+      // hole (scaled by its radius) or the clip eats it and the rank reads as
+      // an unbroken floor grille rather than a roof that was blown open.
+      const snap = hash(hx, hy, 440 + j);
+      let v0 = c - 1.3;
+      let v1 = c + 1.3;
+      if (snap < 0.3) v0 = c - r0 * (0.1 + snap * 2);
+      else if (snap > 0.8) v1 = c + r0 * (0.1 + (1 - snap) * 4);
+      const len = v1 - v0;
+      g.fillStyle = 'rgba(20,16,12,0.7)';
+      if (along) g.fillRect(u + rsx, v0 + rsy, 0.06, len);
+      else g.fillRect(v0 + rsx, u + rsy, len, 0.06);
+      g.fillStyle = 'rgba(112,92,64,0.8)';
+      if (along) g.fillRect(u, v0, 0.06, len);
+      else g.fillRect(v0, u, len, 0.06);
+    }
+    g.restore();
+
+    // the rim of tiles the blast threw clear
+    const n = 8 + ((hash(hx, hy, 460) * 7) | 0); // 290..298 is the vertex-radius stream — do not reuse it here
+    for (let k = 0; k < n; k++) {
+      const a = hash(hx, hy, 340 + k) * TAU;
+      const rad = r0 + 0.1 + hash(hx, hy, 360 + k) * 0.4;
+      const rot = (10 + hash(hx, hy, 380 + k) * 15) * (Math.PI / 180) * (hash(hx, hy, 400 + k) < 0.5 ? -1 : 1);
+      shard(g, art, d.x + Math.cos(a) * rad, d.y + Math.sin(a) * rad, rot, art.dmgTones[(hash(hx, hy, 420 + k) * TONE_STEPS) | 0]);
+    }
+  }
+
+  // charred lip: the tiles that stayed put are burnt where the round went in
+  g.strokeStyle = 'rgba(30,24,18,0.55)';
+  g.lineWidth = Math.max(0.05, 2 / band);
+  holePath(g, d);
+  g.stroke();
+}
+
+function drawRoof(g: CanvasRenderingContext2D, art: RoofArt, i: number, band: number, damage: Damage[] = []): void {
   const r = art.rr;
   const along = art.ridgeAlongX;
 
@@ -950,6 +1098,20 @@ function drawRoof(g: CanvasRenderingContext2D, art: RoofArt, i: number, band: nu
   g.restore();
   for (let k = 0; k < art.chimneys.length; k++) chimneyInto(g, art.chimneys[k], i, k, band);
 
+  // Battle damage, clipped to the roof planes. A hole that spilled past the
+  // eave would read as a breached WALL, which is a lie: the sim still gives
+  // this building full cover and a soldier can still walk the ground floor.
+  if (damage.length) {
+    g.save();
+    g.beginPath();
+    g.rect(r.x, r.y, r.w, r.h);
+    if (art.wing) g.rect(art.wing.x, art.wing.y, art.wing.w, art.wing.h);
+    if (art.lean) g.rect(art.lean.x, art.lean.y, art.lean.w, art.lean.h);
+    g.clip();
+    for (const d of damage) damageInto(g, art, d, band);
+    g.restore();
+  }
+
   // eave outline in metres-per-band so it survives the downscale; thatch gets
   // a wider, weaker one because a hard black edge is exactly what straw isn't
   const soft = art.mat === 'thatch';
@@ -964,14 +1126,14 @@ function drawRoof(g: CanvasRenderingContext2D, art: RoofArt, i: number, band: nu
   g.fillRect(r.x + r.w, r.y, 0.08, r.h);
 }
 
-function bakeRoof(art: RoofArt, i: number, band: number): HTMLCanvasElement {
+function bakeRoof(art: RoofArt, i: number, band: number, damage: Damage[]): HTMLCanvasElement {
   const c = document.createElement('canvas');
   c.width = Math.max(1, Math.round(art.ow * band));
   c.height = Math.max(1, Math.round(art.oh * band));
   const g = c.getContext('2d')!;
   g.scale(band, band);
   g.translate(-art.ox, -art.oy);
-  drawRoof(g, art, i, band);
+  drawRoof(g, art, i, band, damage);
   return c;
 }
 
@@ -1118,6 +1280,7 @@ interface Baked {
   shadow: HTMLCanvasElement;
   wallS: HTMLCanvasElement;
   wallE: HTMLCanvasElement;
+  ver: number; // damage version this was baked at — stale sprites keep serving until the rebake lands
 }
 
 export class RoofLayer {
@@ -1126,6 +1289,8 @@ export class RoofLayer {
   private art: RoofArt[] = [];
   private stories: number[] = []; // per-building story count for shadow length, min 1
   private zoomFaded = false;
+  private damage: Damage[][] = [];
+  private dmgVer: number[] = [];
   private sprites = new Map<number, (Baked | null)[]>();
   private band = 0;
   private prevBand = 0;
@@ -1147,6 +1312,10 @@ export class RoofLayer {
         return Math.max(1, m);
       });
       this.art = this.buildings.map((b, i) => buildArt(b, i, this.stories[i], this.smallOfPair(i), sim.map));
+      // Damage is per-battle render state and nothing else: a new buildings
+      // list is a new battle, and every hole goes with it.
+      this.damage = this.buildings.map(() => []);
+      this.dmgVer = this.buildings.map(() => 0);
       this.sprites.clear();
       this.band = 0;
       this.prevBand = 0;
@@ -1174,6 +1343,40 @@ export class RoofLayer {
       const a = this.alphas[i];
       this.alphas[i] = a + (target - a) * Math.min(1, dt * 6);
     });
+  }
+
+  // A detonation the player watched land, filed against the nearest roof.
+  // Render-only: no sim state is read or written, nothing persists past the
+  // battle, and the bake itself is deferred to the amortized queue — a barrage
+  // that walks across four houses must never bake four roofs inside one frame.
+  noteImpact(x: number, y: number): void {
+    let hit = -1;
+    let best = DMG_NEAR;
+    for (let i = 0; i < this.buildings.length; i++) {
+      const b = this.buildings[i];
+      const dx = Math.max(b.x - x, 0, x - (b.x + b.w));
+      const dy = Math.max(b.y - y, 0, y - (b.y + b.h));
+      const d = Math.hypot(dx, dy);
+      if (d <= best) {
+        best = d;
+        hit = i;
+      }
+    }
+    if (hit < 0) return;
+    const list = this.damage[hit];
+    if (list.length >= DMG_CAP) return;
+    // A near miss is anchored on the roof edge nearest the blast, not at the
+    // detonation itself: the damage pass is clipped to the roof planes, so a
+    // point 1 m off the wall would paint its scorch entirely into the clip and
+    // leave the roof pristine beside a crater. Clamping is also the truer
+    // read — what the overpressure did was wash over that eave.
+    const nb = this.buildings[hit];
+    const qx = Math.round(Math.max(nb.x + 0.15, Math.min(nb.x + nb.w - 0.15, x)) * 4) / 4;
+    const qy = Math.round(Math.max(nb.y + 0.15, Math.min(nb.y + nb.h - 0.15, y)) * 4) / 4;
+    for (const d of list) if (Math.hypot(d.x - qx, d.y - qy) < DMG_MERGE) return;
+    list.push({ x: qx, y: qy, direct: best === 0 });
+    this.dmgVer[hit]++;
+    if (!this.queue.includes(hit)) this.queue.push(hit);
   }
 
   // True when building i is the smaller half of a pair standing within 4 m —
@@ -1228,7 +1431,9 @@ export class RoofLayer {
     for (const k of [...this.sprites.keys()]) if (k !== this.band && k !== this.prevBand) this.sprites.delete(k);
     const cur = this.sprites.get(band)!;
     this.queue = [];
-    for (let i = 0; i < this.buildings.length; i++) if (!cur[i]) this.queue.push(i);
+    // a sprite baked before this building took a hit is stale, not missing —
+    // it keeps drawing (no blink) but has to be redrawn at the new band too
+    for (let i = 0; i < this.buildings.length; i++) if (!cur[i] || cur[i]!.ver !== this.dmgVer[i]) this.queue.push(i);
   }
 
   // Amortized bake. The first band after a buildings change drains in one go —
@@ -1245,10 +1450,13 @@ export class RoofLayer {
       const b = this.buildings[i];
       const art = this.art[i];
       cur[i] = {
-        roof: bakeRoof(art, i, this.band),
-        shadow: bakeShadow(b, art, this.stories[i], sBand),
-        wallS: bakeWall(b, art, i, this.band, true),
-        wallE: bakeWall(b, art, i, this.band, false),
+        roof: bakeRoof(art, i, this.band, this.damage[i]),
+        // walls and shadow are damage-independent; a rebake driven by a hit
+        // reuses them rather than redrawing masonry that did not change
+        shadow: cur[i]?.shadow ?? bakeShadow(b, art, this.stories[i], sBand),
+        wallS: cur[i]?.wallS ?? bakeWall(b, art, i, this.band, true),
+        wallE: cur[i]?.wallE ?? bakeWall(b, art, i, this.band, false),
+        ver: this.dmgVer[i],
       };
     }
     if (this.queue.length) return;
@@ -1337,32 +1545,50 @@ export class RoofLayer {
   drawChimneySmoke(ctx: CanvasRenderingContext2D, cam: Camera, cw: number, ch: number): void {
     if (cam.scale < 6) return;
     const t = this.tick / 30;
+    // one wisp writer for both sources: a hearth plume and a shell-hole plume
+    // differ only in origin, tone and how far they get before they thin out
+    const wisp = (cx: number, cy: number, life: number, k: number, reach: number, rad0: number, grow: number, rgb: string, peak: number): void => {
+      const wob = Math.sin(life * 6 + k) * 0.25 * life;
+      const px = cx + WIND.dx * life * reach - WIND.dy * wob;
+      const py = cy + WIND.dy * life * reach + WIND.dx * wob;
+      const rad = rad0 + life * grow;
+      // a soft core, not a disc — this has to read as haze over a roof,
+      // never as a sprite that got its ordering wrong
+      const gr = ctx.createRadialGradient(px, py, 0, px, py, rad);
+      gr.addColorStop(0, `rgba(${rgb},${(peak * (1 - life)).toFixed(3)})`);
+      gr.addColorStop(1, `rgba(${rgb},0)`);
+      ctx.fillStyle = gr;
+      ctx.beginPath();
+      ctx.arc(px, py, rad, 0, TAU);
+      ctx.fill();
+    };
     this.withWorldTransform(ctx, cam, cw, ch, () => {
       for (let i = 0; i < this.buildings.length; i++) {
         const art = this.art[i];
-        if (!art.smoke) continue;
+        const dmg = this.damage[i];
+        if (!art.smoke && !dmg.length) continue;
         if (!this.onScreen(cam, i, cw, ch, 4)) continue;
         const a = this.alphas[i];
         if (a < 0.05) continue;
-        const n = 3 + ((hash(i, 274) * 2) | 0);
-        for (const st of art.chimneys) {
-          const cx = st.x + st.w / 2;
-          const cy = st.y + st.h / 2;
-          for (let k = 0; k < n; k++) {
-            const life = (t * 0.45 + k / n + hash(i, 273 + k)) % 1;
-            const wob = Math.sin(life * 6 + k) * 0.25 * life;
-            const px = cx + WIND.dx * life * 3.2 - WIND.dy * wob;
-            const py = cy + WIND.dy * life * 3.2 + WIND.dx * wob;
-            const rad = 0.18 + life * 0.7;
-            // a soft core, not a disc — this has to read as haze over a roof,
-            // never as a sprite that got its ordering wrong
-            const gr = ctx.createRadialGradient(px, py, 0, px, py, rad);
-            gr.addColorStop(0, `rgba(196,190,178,${(0.26 * (1 - life) * a).toFixed(3)})`);
-            gr.addColorStop(1, 'rgba(196,190,178,0)');
-            ctx.fillStyle = gr;
-            ctx.beginPath();
-            ctx.arc(px, py, rad, 0, TAU);
-            ctx.fill();
+        if (art.smoke) {
+          const n = 3 + ((hash(i, 274) * 2) | 0);
+          for (const st of art.chimneys) {
+            const cx = st.x + st.w / 2;
+            const cy = st.y + st.h / 2;
+            for (let k = 0; k < n; k++) {
+              const life = (t * 0.45 + k / n + hash(i, 273 + k)) % 1;
+              wisp(cx, cy, life, k, 3.2, 0.18, 0.7, '196,190,178', 0.26 * a);
+            }
+          }
+        }
+        // A holed roof smoulders. Greyer, fatter and slower than a hearth, so a
+        // shelled village reads as damaged from across the field.
+        for (let j = 0; j < dmg.length; j++) {
+          const d = dmg[j];
+          if (!d.direct) continue;
+          for (let k = 0; k < 3; k++) {
+            const life = (t * 0.3 + k / 3 + hash(i, j, 292 + k)) % 1;
+            wisp(d.x, d.y, life, k + j * 3, 4.2, 0.4, 1.4, '140,132,120', 0.22 * a);
           }
         }
       }
