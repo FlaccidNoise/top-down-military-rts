@@ -2,6 +2,11 @@ export class Camera {
   x: number; // world center, meters
   y: number;
   scale = 8; // px per meter
+  // Zoom range in px/m. The defaults are the constants that used to be inline
+  // in zoom(); mobile relaxes the floor (pinching out to the whole 320m map
+  // needs ~1.2) and lowers the ceiling (bake memory).
+  minScale = 2;
+  maxScale = 48;
 
   constructor(x: number, y: number) {
     this.x = x;
@@ -18,9 +23,18 @@ export class Camera {
 
   zoom(factor: number, sx: number, sy: number, cw: number, ch: number): void {
     const [wx, wy] = this.screenToWorld(sx, sy, cw, ch);
-    this.scale = Math.min(48, Math.max(2, this.scale * factor));
+    this.scale = Math.min(this.maxScale, Math.max(this.minScale, this.scale * factor));
     // keep the world point under the cursor fixed
     this.x = wx - (sx - cw / 2) / this.scale;
     this.y = wy - (sy - ch / 2) / this.scale;
+  }
+
+  // Keep the viewport inside the map. Called only from the touch pan/pinch
+  // path — WASD pan stays unclamped so desktop behavior is untouched.
+  clampCenter(mapW: number, mapH: number, viewW: number, viewH: number): void {
+    const hw = viewW / 2 / this.scale;
+    const hh = viewH / 2 / this.scale;
+    this.x = hw * 2 >= mapW ? mapW / 2 : Math.max(hw, Math.min(mapW - hw, this.x));
+    this.y = hh * 2 >= mapH ? mapH / 2 : Math.max(hh, Math.min(mapH - hh, this.y));
   }
 }

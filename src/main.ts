@@ -4,6 +4,8 @@ import { AudioEngine } from './render/audio';
 import { Camera } from './render/camera';
 import { Renderer } from './render/renderer';
 import { StrategicView, TERRAIN_LABELS } from './render/strategic';
+import { bootCamera as bootCameraFor, FRAME_M_DESKTOP, FRAME_M_MOBILE } from './render/framing';
+import { MOBILE, view, viewSize } from './render/view';
 import type { RedCommander } from './sim/ai';
 import { WEAPONS } from './sim/data';
 import type { OrderKind, TeamOrder } from './sim/orders';
@@ -21,17 +23,47 @@ import { actionForEvent, loadKeymap, type Keymap } from './ui/keymap';
 import { PauseMenu } from './ui/menu';
 import { coach } from './ui/coach';
 import { showFloorMenu } from './ui/floormenu';
+import { bindTouch, drawHoldRing, type TouchHandlers } from './ui/touch';
 import './ui/ui.css';
 
 const canvas = document.createElement('canvas');
 document.body.appendChild(canvas);
-const ctx = canvas.getContext('2d')!;
-const resize = () => {
-  canvas.width = window.innerWidth;
-  canvas.height = window.innerHeight;
+// Both modes clear the whole canvas every frame, so an opaque context is
+// behavior-neutral and drops a per-frame compositing blend.
+const ctx = canvas.getContext('2d', { alpha: false })!;
+if (MOBILE) document.documentElement.classList.add('mobile');
+// The backing store carries the DPR; the base transform puts every draw call
+// back in CSS pixels, so cam.scale, PAN_PX_PER_SEC and every pick radius keep
+// the meaning they had before retina existed.
+let resizePending = false;
+const resize = (): void => {
+  resizePending = false;
+  const w = Math.round(window.visualViewport?.width ?? window.innerWidth);
+  const h = Math.round(window.visualViewport?.height ?? window.innerHeight);
+  const v = viewSize(w, h, window.devicePixelRatio || 1);
+  canvas.style.width = `${w}px`;
+  canvas.style.height = `${h}px`;
+  canvas.width = Math.round(w * v.dpr);
+  canvas.height = Math.round(h * v.dpr);
+  ctx.setTransform(v.dpr, 0, 0, v.dpr, 0, 0);
+  view.w = v.w;
+  view.h = v.h;
+  view.dpr = v.dpr;
+};
+// iOS fires resize repeatedly while the URL bar collapses — coalesce every
+// source through one rAF-pending flag.
+const queueResize = (): void => {
+  if (resizePending) return;
+  resizePending = true;
+  requestAnimationFrame(resize);
 };
 resize();
-window.addEventListener('resize', resize);
+window.addEventListener('resize', queueResize);
+window.visualViewport?.addEventListener('resize', queueResize);
+window.addEventListener('orientationchange', queueResize);
+// WebKit-only, inert elsewhere: stops iOS Safari page zoom from stealing the
+// two-finger pinch the battle camera needs.
+document.addEventListener('gesturestart', (e) => e.preventDefault());
 
 const debriefEl = document.createElement('div');
 debriefEl.id = 'debrief';
@@ -213,7 +245,10 @@ const hud = new Hud({
     if (e) sim.orderUnhitch(e.id);
   },
 });
-const stratHud = new StratHud();
+const stratHud = new StratHud({
+  togglePause: () => { stratPaused = !stratPaused; },
+  setSpeed: (i) => { speedIdx = i; },
+});
 const tooltip = new Tooltip(hud.root);
 let pauseBeforeMenu: boolean | null = null;
 const menu = new PauseMenu({
@@ -294,57 +329,19 @@ function viewportInset(): { left: number; top: number; bottom: number } {
   return {
     left: squads ? squads.right : 0,
     top: strip ? strip.bottom : 0,
-    bottom: hint ? window.innerHeight - hint.top : 0,
+    bottom: hint ? view.h - hint.top : 0,
   };
-}
-
-// Boot framing: fit the whole map when the *unobstructed* viewport allows
-// ≥WHOLE_MAP_PX_M; otherwise frame ~120m across around the blue spawn centroid.
-// Both branches frame against the clear region rather than the raw canvas:
-// fitting the raw canvas put 122 of 138 blue soldiers behind the roster panel
-// at T+0:00 — the player opened a battle unable to see their own company.
-//
-// The threshold is 2.5, not the 3 px/m ui.md quotes, precisely because it is
-// now measured against the clear region instead of the whole canvas — the same
-// 1280x800 viewport that fits 3.33 px/m of canvas only fits 2.87 of clear
-// space. Holding the old number here would flip every 320x240 map into the
-// zoomed branch, and near a west-edge spawn that branch cannot win: blue sits
-// at world x≈7, so no camera both clears the 266px panel and avoids showing
-// off-map void. The whole-map fit has no such tension.
-const WHOLE_MAP_PX_M = 2.5;
-// Place `want` at the center of the clear span, then slide it back so the
-// clear span shows no off-map void. `a`/`b` are the world distances from the
-// camera to the near/far edge of the clear span. If the map is smaller than
-// the span there is nothing to clamp against — center it instead.
-function frameAxis(want: number, a: number, b: number, worldMax: number): number {
-  const centered = worldMax / 2 + (a - b) / 2;
-  if (a > worldMax - b) return centered;
-  return Math.max(a, Math.min(worldMax - b, want + (a - b) / 2));
 }
 
 function bootCamera(s: Sim, cw: number, ch: number): { x: number; y: number; scale: number } {
-  const inset = viewportInset();
-  const vw = Math.max(1, cw - inset.left);
-  const vh = Math.max(1, ch - inset.top - inset.bottom);
-  const fit = Math.min(vw / s.map.w, vh / s.map.h);
-  let scale: number;
-  let cx: number;
-  let cy: number;
-  if (fit >= WHOLE_MAP_PX_M) {
-    scale = fit;
-    cx = s.map.w / 2;
-    cy = s.map.h / 2;
-  } else {
-    const blue = s.soldiers.filter((sd) => sd.side === 'blue');
-    cx = blue.length ? blue.reduce((a, sd) => a + sd.x, 0) / blue.length : s.map.w / 2;
-    cy = blue.length ? blue.reduce((a, sd) => a + sd.y, 0) / blue.length : s.map.h / 2;
-    scale = Math.min(48, Math.max(2, vw / 120));
-  }
-  return {
-    x: frameAxis(cx, (cw / 2 - inset.left) / scale, cw / 2 / scale, s.map.w),
-    y: frameAxis(cy, (ch / 2 - inset.top) / scale, (ch / 2 - inset.bottom) / scale, s.map.h),
-    scale,
-  };
+  return bootCameraFor(s.map, s.soldiers.filter((sd) => sd.side === 'blue'), cw, ch, viewportInset(), {
+    frameM: MOBILE ? FRAME_M_MOBILE : FRAME_M_DESKTOP,
+    // Desktop insets are borders and must keep insetting at every window
+    // width; only the phone's full-width sheets are drawers worth ignoring.
+    capFrac: MOBILE ? 0.35 : undefined,
+    maxScale: cam.maxScale,
+    minScale: 2,
+  });
 }
 
 function startEngagementBattle(e: Engagement): void {
@@ -359,7 +356,14 @@ function startEngagementBattle(e: Engagement): void {
   battleCompany = battle.companyIndex;
   renderer = new Renderer(sim);
   battleTitle = `Day ${front.day} ${front.hhmm} — ${battle.name}`;
-  const boot = bootCamera(sim, canvas.width, canvas.height);
+  if (MOBILE) {
+    // Pinching out to the whole 320m map needs ~1.2 px/m, which the desktop
+    // floor of 2 forbids; clampCenter (touch pan/pinch only) keeps the map
+    // from being flung off-screen down there.
+    cam.minScale = Math.min(2, Math.min(view.w / sim.map.w, view.h / sim.map.h));
+    cam.maxScale = 32;
+  }
+  const boot = bootCamera(sim, view.w, view.h);
   cam.x = boot.x;
   cam.y = boot.y;
   cam.scale = boot.scale;
@@ -426,10 +430,19 @@ function showDebrief(): void {
   };
 }
 
+// On a phone the fit-only sector layout solves to ~9px cells — unreadable and
+// untappable. Zoom until a chit is a real target and centre on the friendly
+// chits; desktop keeps the fit-only defaults.
+function frameStrategic(): void {
+  if (!MOBILE) return;
+  stratView.frameFor(view.w, view.h, front.chits.filter((c) => c.side === 'blue' && c.strength > 0).map((c) => c.cell));
+}
+
 function freshCampaign(): void {
   campaign = newCampaign(campSeed());
   front = newFront(campaign, makeDefaultSector());
   stratView = new StrategicView(front.sector);
+  frameStrategic();
   selectedChit = -1;
   pendingEngagement = null;
   opEnded = false;
@@ -460,178 +473,136 @@ let boxRect: { x: number; y: number; w: number; h: number } | null = null;
 let rmbDown = false;
 let rmbAnchor: { sx: number; sy: number; wx: number; wy: number } | null = null;
 
-canvas.addEventListener('mousedown', (e) => {
-  if (e.button === 0) {
-    dragStart = { x: e.clientX, y: e.clientY };
-    dragged = false;
-    boxRect = null;
+// ── Input intents ─────────────────────────────────────────────────────────
+// The bodies below used to live inline in the mouse listeners. They are named
+// so the touch layer (src/ui/touch.ts) drives the same state machine instead
+// of forking it — `additive`/`squadForce`/`floors` are the modifier keys the
+// desktop path still passes verbatim.
+
+function beginBox(sx: number, sy: number): void {
+  dragStart = { x: sx, y: sy };
+  dragged = false;
+  boxRect = null;
+}
+
+function updateBox(sx: number, sy: number): void {
+  if (!dragStart) return;
+  const dx = sx - dragStart.x;
+  const dy = sy - dragStart.y;
+  if (dragged || Math.hypot(dx, dy) > 5) {
+    if (!dragged) { dragged = true; boxRect = null; }
+    const x0 = dragStart.x;
+    const y0 = dragStart.y;
+    boxRect = { x: Math.min(x0, sx), y: Math.min(y0, sy), w: Math.abs(sx - x0), h: Math.abs(sy - y0) };
   }
-  if (e.button === 2) {
-    rmbDown = true;
-    const [wx, wy] = cam.screenToWorld(e.clientX, e.clientY, canvas.width, canvas.height);
-    rmbAnchor = { sx: e.clientX, sy: e.clientY, wx, wy };
+}
+
+function commitBox(additive: boolean): void {
+  if (!boxRect) return;
+  const [wx0, wy0] = cam.screenToWorld(boxRect.x, boxRect.y, view.w, view.h);
+  const [wx1, wy1] = cam.screenToWorld(boxRect.x + boxRect.w, boxRect.y + boxRect.h, view.w, view.h);
+  const minX = Math.min(wx0, wx1), maxX = Math.max(wx0, wx1);
+  const minY = Math.min(wy0, wy1), maxY = Math.max(wy0, wy1);
+  const found: number[] = [];
+  for (const sq of infantrySquads(sim)) {
+    const any = sq.soldierIds.some((id) => {
+      const s = sim.soldiers[id];
+      return s.alive && !s.downed && s.inVehicle < 0 && s.x >= minX && s.x <= maxX && s.y >= minY && s.y <= maxY;
+    });
+    if (any) found.push(sq.id);
   }
-});
-window.addEventListener('mousemove', (e) => {
-  mouse.x = e.clientX;
-  mouse.y = e.clientY;
-  mouse.onCanvas = e.target === canvas;
-  if (mode !== 'battle') return;
-  if (dragStart && e.buttons & 1) {
-    const dx = e.clientX - dragStart.x;
-    const dy = e.clientY - dragStart.y;
-    if (dragged || Math.hypot(dx, dy) > 5) {
-      if (!dragged) { dragged = true; boxRect = null; }
-      // Box select
-      const x0 = dragStart.x;
-      const y0 = dragStart.y;
-      const x1 = e.clientX;
-      const y1 = e.clientY;
-      boxRect = { x: Math.min(x0, x1), y: Math.min(y0, y1), w: Math.abs(x1 - x0), h: Math.abs(y1 - y0) };
-    }
+  if (additive) {
+    for (const id of found) { if (!selectedSquads.includes(id)) selectedSquads.push(id); }
+  } else {
+    selectedSquads = found;
   }
-});
-canvas.addEventListener('mouseleave', () => {
-  // window 'mousemove' only updates mouse.onCanvas on movement, so a cursor
-  // that exits the canvas and stops (e.g. leaves the browser window) would
-  // otherwise leave the tooltip frozen on stale content forever.
-  mouse.onCanvas = false;
-});
-canvas.addEventListener('mouseup', (e) => {
-  if (e.button !== 0) return;
-  
-  if (mode === 'strategic') {
-    const cell = stratView.cellAtScreen(e.clientX, e.clientY, canvas.width, canvas.height);
-    const chit = cell >= 0 ? front.chitAt(cell, 'blue') : undefined;
-    selectedChit = chit ? chit.id : -1;
-    if (chit) {
-      const t = document.getElementById('strat-hud');
-      if (t) coach.maybeShow('first-strat-chit', t, 'Chit selected — right-click a cell to move. ✕ on a waypoint cancels it.');
-    }
-    dragStart = null;
-    boxRect = null;
-    return;
-  }
-  
-  if (boxRect && dragged) {
-    // Box-select completion
-    const [wx0, wy0] = cam.screenToWorld(boxRect.x, boxRect.y, canvas.width, canvas.height);
-    const [wx1, wy1] = cam.screenToWorld(boxRect.x + boxRect.w, boxRect.y + boxRect.h, canvas.width, canvas.height);
-    const minX = Math.min(wx0, wx1), maxX = Math.max(wx0, wx1);
-    const minY = Math.min(wy0, wy1), maxY = Math.max(wy0, wy1);
-    const found: number[] = [];
-    for (const sq of infantrySquads(sim)) {
-      const any = sq.soldierIds.some((id) => {
-        const s = sim.soldiers[id];
-        return s.alive && !s.downed && s.inVehicle < 0 && s.x >= minX && s.x <= maxX && s.y >= minY && s.y <= maxY;
-      });
-      if (any) found.push(sq.id);
-    }
-    if (e.shiftKey) {
-      for (const id of found) { if (!selectedSquads.includes(id)) selectedSquads.push(id); }
-    } else {
-      selectedSquads = found;
-    }
-    selectedTeam = -1;
-    dragStart = null;
-    boxRect = null;
-    return;
-  }
-  
-  if (!dragged) {
-    const [wx, wy] = cam.screenToWorld(e.clientX, e.clientY, canvas.width, canvas.height);
-    if (targetMode === 'barrage' && !aiControl) {
-      if (sim.callBarrage('blue', wx, wy)) {
-        setTargetMode('');
-        renderer.markBarrage(wx, wy);
-      }
-    } else if (targetMode === 'air' && !aiControl) {
-      if (sim.callAirstrike('blue', wx, wy)) {
-        setTargetMode('');
-        renderer.markStrafe(wx, wy);
-      }
-    } else if (targetMode === 'wheel') {
-      const e = emplacementOf(sim, getPrimary());
-      if (e) sim.orderWheel(e.id, wx, wy);
-      setTargetMode('');
-    } else if (targetMode === 'empfire') {
-      const e = emplacementOf(sim, getPrimary());
-      if (e) sim.orderFire(e.id, wx, wy);
-      setTargetMode('');
-    } else if (targetMode === 'empsmoke') {
-      const e = emplacementOf(sim, getPrimary());
-      if (e) sim.orderSmoke(e.id, wx, wy);
-      setTargetMode('');
-    } else {
-      // vehicles first, then emplacement glyphs, then soldiers
-      let vehicle = -1;
-      for (const v of sim.vehicles) {
-        if (v.alive && v.side === 'blue' && Math.hypot(v.x - wx, v.y - wy) < 3.5) vehicle = v.id;
-      }
-      if (vehicle >= 0) {
-        selectVehicle(vehicle);
-      } else {
-        let empSquad = -1;
-        for (const e of sim.emplacements) {
-          if (e.side === 'blue' && Math.hypot(e.x - wx, e.y - wy) < 2.5) empSquad = sim.teams[e.crewTeamId].squadId;
-        }
-        if (empSquad >= 0) {
-          if (e.shiftKey) toggleSquadSelection(empSquad);
-          else selectSquad(empSquad);
-        } else {
-          let best: Soldier | null = null;
-          let bestD = 15 / cam.scale;
-          for (const s of sim.soldiers) {
-            if (!s.alive || s.side !== 'blue' || s.inVehicle >= 0) continue;
-            const d = Math.hypot(s.x - wx, s.y - wy);
-            if (d < bestD || (d === bestD && best !== null && s.level > best.level)) {
-              bestD = d;
-              best = s;
-            }
-          }
-          if (best && best.squadId === getPrimary() && selectedSquads.length === 1) {
-            selectedTeam = best.teamId;
-            lastTeamId = best.teamId;
-          } else if (best) {
-            if (e.shiftKey) toggleSquadSelection(best.squadId);
-            else selectSquad(best.squadId);
-          } else if (!e.shiftKey) {
-            selectSquad(-1);
-          }
-        }
-      }
-    }
-  }
+  selectedTeam = -1;
   dragStart = null;
   boxRect = null;
-});
-canvas.addEventListener('contextmenu', (e) => {
-  e.preventDefault();
-  if (mode === 'strategic') {
-    if (selectedChit >= 0) {
-      const cell = stratView.cellAtScreen(e.clientX, e.clientY, canvas.width, canvas.height);
-      if (cell >= 0 && !front.orderMove(selectedChit, cell) && front.sector.cells[cell].terrain === 'river')
-        stratView.flash("Can't hold open water — ford across to the far bank");
+}
+
+function tapSelect(sx: number, sy: number, additive: boolean): void {
+  const [wx, wy] = cam.screenToWorld(sx, sy, view.w, view.h);
+  if (targetMode === 'barrage' && !aiControl) {
+    if (sim.callBarrage('blue', wx, wy)) {
+      setTargetMode('');
+      renderer.markBarrage(wx, wy);
     }
-    return;
+  } else if (targetMode === 'air' && !aiControl) {
+    if (sim.callAirstrike('blue', wx, wy)) {
+      setTargetMode('');
+      renderer.markStrafe(wx, wy);
+    }
+  } else if (targetMode === 'wheel') {
+    const e = emplacementOf(sim, getPrimary());
+    if (e) sim.orderWheel(e.id, wx, wy);
+    setTargetMode('');
+  } else if (targetMode === 'empfire') {
+    const e = emplacementOf(sim, getPrimary());
+    if (e) sim.orderFire(e.id, wx, wy);
+    setTargetMode('');
+  } else if (targetMode === 'empsmoke') {
+    const e = emplacementOf(sim, getPrimary());
+    if (e) sim.orderSmoke(e.id, wx, wy);
+    setTargetMode('');
+  } else {
+    // vehicles first, then emplacement glyphs, then soldiers
+    let vehicle = -1;
+    for (const v of sim.vehicles) {
+      if (v.alive && v.side === 'blue' && Math.hypot(v.x - wx, v.y - wy) < 3.5) vehicle = v.id;
+    }
+    if (vehicle >= 0) {
+      selectVehicle(vehicle);
+    } else {
+      let empSquad = -1;
+      for (const e of sim.emplacements) {
+        if (e.side === 'blue' && Math.hypot(e.x - wx, e.y - wy) < 2.5) empSquad = sim.teams[e.crewTeamId].squadId;
+      }
+      if (empSquad >= 0) {
+        if (additive) toggleSquadSelection(empSquad);
+        else selectSquad(empSquad);
+      } else {
+        let best: Soldier | null = null;
+        let bestD = 15 / cam.scale;
+        for (const s of sim.soldiers) {
+          if (!s.alive || s.side !== 'blue' || s.inVehicle >= 0) continue;
+          const d = Math.hypot(s.x - wx, s.y - wy);
+          if (d < bestD || (d === bestD && best !== null && s.level > best.level)) {
+            bestD = d;
+            best = s;
+          }
+        }
+        if (best && best.squadId === getPrimary() && selectedSquads.length === 1) {
+          selectedTeam = best.teamId;
+          lastTeamId = best.teamId;
+        } else if (best) {
+          if (additive) toggleSquadSelection(best.squadId);
+          else selectSquad(best.squadId);
+        } else if (!additive) {
+          selectSquad(-1);
+        }
+      }
+    }
   }
-  // Right-click in battle: handling moved to mouseup on button 2 via a
-  // separate listener below.
-});
-window.addEventListener('mouseup', (e) => {
-  if (e.button !== 2) return;
-  if (!rmbDown || !rmbAnchor) { rmbDown = false; rmbAnchor = null; return; }
-  rmbDown = false;
-  
+}
+
+function beginOrderAnchor(sx: number, sy: number): void {
+  rmbDown = true;
+  const [wx, wy] = cam.screenToWorld(sx, sy, view.w, view.h);
+  rmbAnchor = { sx, sy, wx, wy };
+}
+
+function commitOrder(sx: number, sy: number, opts: { squadForce: boolean; floors: boolean }): void {
+  if (!rmbAnchor) return;
   if (mode === 'strategic') {
     rmbAnchor = null;
     return;
   }
   if (targetMode !== '') { rmbAnchor = null; return; }
   if (aiControl) { rmbAnchor = null; return; }
-  const [wx, wy] = cam.screenToWorld(e.clientX, e.clientY, canvas.width, canvas.height);
-  if (e.altKey && selectedSquads.length > 0 && sim.map.storiesAt(Math.floor(wx), Math.floor(wy)) >= 2) {
-    showFloorMenu(document.body, sim, wx, wy, e.clientX, e.clientY, (level) => {
+  const [wx, wy] = cam.screenToWorld(sx, sy, view.w, view.h);
+  if (opts.floors && selectedSquads.length > 0 && sim.map.storiesAt(Math.floor(wx), Math.floor(wy)) >= 2) {
+    showFloorMenu(document.body, sim, wx, wy, sx, sy, (level) => {
       const order: TeamOrder = { kind: armedOrder ?? 'move', x: wx, y: wy, l: level };
       if (selectedTeam >= 0) sim.orderTeam(selectedTeam, order);
       else sim.orderSquad(getPrimary(), order);
@@ -644,20 +615,20 @@ window.addEventListener('mouseup', (e) => {
   const wdy = wy - rmbAnchor.wy;
   const len = Math.hypot(wdx, wdy);
   const K = selectedSquads.length;
-  
+
   if (selectedVehicle >= 0) {
     sim.orderVehicleMove(selectedVehicle, wx, wy);
     rmbAnchor = null;
     return;
   }
-  
+
   if (K === 0) { rmbAnchor = null; return; }
-  
+
   // Move-family kinds that support formation orders
   const MOVE_FAMILY: OrderKind[] = ['move', 'fast', 'sneak', 'assault', 'defend', 'ambush'];
   const useArmed = armedOrder && MOVE_FAMILY.includes(armedOrder);
   const kind: OrderKind = useArmed ? armedOrder! : 'move';
-  
+
   if (len < 2) {
     // Plain right-click (short drag): legacy behavior with squad fan
     const offs = fanOffsets(K, SQUAD_FAN);
@@ -665,7 +636,7 @@ window.addEventListener('mouseup', (e) => {
     for (let i = 0; i < K; i++) {
       const id = selectedSquads[i];
       const order: TeamOrder = { kind, x: wx, y: wy + offs[i] };
-      if (useArmed || e.shiftKey) {
+      if (useArmed || opts.squadForce) {
         sim.orderSquad(id, order);
       } else if (selectedTeam >= 0 && id === primary) {
         sim.orderTeam(selectedTeam, order);
@@ -691,16 +662,177 @@ window.addEventListener('mouseup', (e) => {
     }
     if (useArmed) armedOrder = null;
   }
-  
+
   rmbAnchor = null;
+}
+
+function stratTapSelect(sx: number, sy: number): void {
+  const cell = stratView.cellAtScreen(sx, sy, view.w, view.h);
+  const chit = cell >= 0 ? front.chitAt(cell, 'blue') : undefined;
+  selectedChit = chit ? chit.id : -1;
+  if (chit) {
+    const t = document.getElementById('strat-hud');
+    if (t) coach.maybeShow('first-strat-chit', t, 'Chit selected — right-click a cell to move. ✕ on a waypoint cancels it.');
+  }
+}
+
+function stratOrderMove(sx: number, sy: number): void {
+  if (selectedChit < 0) return;
+  const cell = stratView.cellAtScreen(sx, sy, view.w, view.h);
+  if (cell >= 0 && !front.orderMove(selectedChit, cell) && front.sector.cells[cell].terrain === 'river')
+    stratView.flash("Can't hold open water — ford across to the far bank");
+}
+
+/** Esc's cancel ladder: targetMode → armedOrder → team → selection. */
+function escapeLadder(): boolean {
+  if (mode === 'strategic') {
+    if (selectedChit >= 0) { selectedChit = -1; return true; }
+    return false;
+  }
+  if (targetMode) { setTargetMode(''); return true; }
+  if (armedOrder) { armedOrder = null; return true; }
+  if (selectedTeam >= 0) { selectedTeam = -1; return true; }
+  if (selectedSquads.length > 0) { selectSquad(-1); return true; }
+  return false;
+}
+
+canvas.addEventListener('mousedown', (e) => {
+  if (e.button === 0) beginBox(e.clientX, e.clientY);
+  if (e.button === 2) beginOrderAnchor(e.clientX, e.clientY);
 });
+window.addEventListener('mousemove', (e) => {
+  mouse.x = e.clientX;
+  mouse.y = e.clientY;
+  mouse.onCanvas = e.target === canvas;
+  if (mode !== 'battle') return;
+  if (dragStart && e.buttons & 1) updateBox(e.clientX, e.clientY);
+});
+canvas.addEventListener('mouseleave', () => {
+  // window 'mousemove' only updates mouse.onCanvas on movement, so a cursor
+  // that exits the canvas and stops (e.g. leaves the browser window) would
+  // otherwise leave the tooltip frozen on stale content forever.
+  mouse.onCanvas = false;
+});
+canvas.addEventListener('mouseup', (e) => {
+  if (e.button !== 0) return;
+
+  if (mode === 'strategic') {
+    stratTapSelect(e.clientX, e.clientY);
+    dragStart = null;
+    boxRect = null;
+    return;
+  }
+
+  if (boxRect && dragged) {
+    commitBox(e.shiftKey);
+    return;
+  }
+
+  if (!dragged) tapSelect(e.clientX, e.clientY, e.shiftKey);
+  dragStart = null;
+  boxRect = null;
+});
+canvas.addEventListener('contextmenu', (e) => {
+  e.preventDefault();
+  if (mode === 'strategic') {
+    stratOrderMove(e.clientX, e.clientY);
+    return;
+  }
+  // Right-click in battle: handling moved to mouseup on button 2 via a
+  // separate listener below.
+});
+window.addEventListener('mouseup', (e) => {
+  if (e.button !== 2) return;
+  if (!rmbDown || !rmbAnchor) { rmbDown = false; rmbAnchor = null; return; }
+  rmbDown = false;
+  commitOrder(e.clientX, e.clientY, { squadForce: e.shiftKey, floors: e.altKey });
+});
+
+// ── Touch ─────────────────────────────────────────────────────────────────
+// Gestures drive the intent functions above; the desktop listeners are
+// untouched. `press` state is render-only (the growing hold ring).
+let touchHold: { x: number; y: number; t0: number } | null = null;
+
+const battleTouch: TouchHandlers = {
+  press: (x, y) => { touchHold = { x, y, t0: performance.now() }; },
+  release: () => { touchHold = null; },
+  tap: (x, y) => tapSelect(x, y, false),
+  pan: (dx, dy) => {
+    cam.x -= dx / cam.scale;
+    cam.y -= dy / cam.scale;
+    cam.clampCenter(sim.map.w, sim.map.h, view.w, view.h);
+  },
+  // Three assignments solve hover emulation: pickAt, the tooltip and the
+  // order-affordance cursor all resolve to the finger for free.
+  holdStart: (x, y) => {
+    beginOrderAnchor(x, y);
+    mouse.x = x;
+    mouse.y = y;
+    mouse.onCanvas = true;
+  },
+  holdMove: (x, y) => {
+    mouse.x = x;
+    mouse.y = y;
+    mouse.onCanvas = true;
+  },
+  holdEnd: (x, y) => {
+    const [wx, wy] = cam.screenToWorld(x, y, view.w, view.h);
+    rmbDown = false;
+    // No Alt key on a phone: a multi-story footprint always offers the floor menu.
+    commitOrder(x, y, { squadForce: false, floors: sim.map.storiesAt(Math.floor(wx), Math.floor(wy)) >= 2 });
+    mouse.onCanvas = false;
+  },
+  holdCancel: () => {
+    rmbDown = false;
+    rmbAnchor = null;
+    mouse.onCanvas = false;
+  },
+  pinch: (factor, mx, my, dmx, dmy) => {
+    cam.x -= dmx / cam.scale;
+    cam.y -= dmy / cam.scale;
+    cam.zoom(factor, mx, my, view.w, view.h);
+    cam.clampCenter(sim.map.w, sim.map.h, view.w, view.h);
+  },
+  // Deliberately not Esc's full ladder: a stray two-finger tap must never
+  // open the pause menu mid-battle.
+  twoTap: () => { escapeLadder(); },
+};
+
+const STRAT_ZOOM = [1, 4] as const;
+const stratTouch: TouchHandlers = {
+  press: (x, y) => { touchHold = { x, y, t0: performance.now() }; },
+  release: () => { touchHold = null; },
+  tap: (x, y) => stratTapSelect(x, y),
+  pan: (dx, dy) => {
+    stratView.panX += dx;
+    stratView.panY += dy;
+    stratView.clampPan(view.w, view.h);
+  },
+  holdStart: () => {},
+  holdMove: () => {},
+  holdEnd: (x, y) => stratOrderMove(x, y),
+  holdCancel: () => {},
+  pinch: (factor, mx, my, dmx, dmy) => {
+    const before = stratView.zoomMul;
+    stratView.zoomMul = Math.max(STRAT_ZOOM[0], Math.min(STRAT_ZOOM[1], before * factor));
+    // keep the grid point under the pinch midpoint fixed
+    const k = stratView.zoomMul / before;
+    stratView.panX = mx - k * (mx - stratView.panX) + dmx;
+    stratView.panY = my - k * (my - stratView.panY) + dmy;
+    stratView.clampPan(view.w, view.h);
+  },
+  twoTap: () => { selectedChit = -1; },
+};
+
+bindTouch(canvas, () => (mode === 'battle' ? battleTouch : stratTouch));
+frameStrategic();
 canvas.addEventListener('wheel', (e) => {
   e.preventDefault();
   if (mode !== 'battle') return;
   // scroll = zoom (trackpad two-finger scroll, pinch, and mouse wheel alike);
   // ~1.003^px: a trackpad flick ramps fast, a mouse notch (dy≈100) ≈1.35×
   const dy = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;
-  cam.zoom(Math.pow(1.003, -dy), e.clientX, e.clientY, canvas.width, canvas.height);
+  cam.zoom(Math.pow(1.003, -dy), e.clientX, e.clientY, view.w, view.h);
 });
 
 // WASD camera pan: held-key set keyed by event.code so a keyup always clears
@@ -737,16 +869,7 @@ window.addEventListener('keydown', (e) => {
   }
   if (action === 'mute') { audio.toggleMute(); return; }
   if (action === 'menu' || action === 'cancel') {
-    let consumed = false;
-    if (mode === 'strategic') {
-      if (selectedChit >= 0) { selectedChit = -1; consumed = true; }
-    } else {
-      if (targetMode) { setTargetMode(''); consumed = true; }
-      else if (armedOrder) { armedOrder = null; consumed = true; }
-      else if (selectedTeam >= 0) { selectedTeam = -1; consumed = true; }
-      else if (selectedSquads.length > 0) { selectSquad(-1); consumed = true; }
-    }
-    if (!consumed) {
+    if (!escapeLadder()) {
       pauseBeforeMenu = mode === 'strategic' ? stratPaused : paused;
       if (mode === 'strategic') stratPaused = true;
       else paused = true;
@@ -803,6 +926,9 @@ window.addEventListener('keydown', (e) => {
   commanders,
   cam,
   audio,
+  view,
+  stratView: () => stratView,
+  getSelection: () => ({ mode, squads: [...selectedSquads], team: selectedTeam, vehicle: selectedVehicle, chit: selectedChit, targetMode, armedOrder }),
   setPaused: (p: boolean) => {
     stratPaused = p;
     paused = p;
@@ -879,9 +1005,11 @@ function frame(now: number): void {
       const status = operationStatus(front);
       if (status !== 'ongoing') showOperationEnd(status);
     }
-    stratHud.update(front, campaign, selectedChit, stratPaused);
+    stratHud.update(front, campaign, selectedChit, stratPaused, speedIdx);
+    stratView.clampPan(view.w, view.h); // absorbs orientation changes; a no-op at zoomMul 1
     stratView.stagedCell = pendingEngagement ? pendingEngagement.cell : -1;
-    stratView.draw(ctx, front, selectedChit, stratPaused, SPEEDS[speedIdx], canvas.width, canvas.height);
+    stratView.draw(ctx, front, selectedChit, stratPaused, SPEEDS[speedIdx], view.w, view.h);
+    if (touchHold) drawHoldRing(ctx, touchHold, now);
   } else {
     acc += dtReal;
     if (!paused) {
@@ -894,8 +1022,8 @@ function frame(now: number): void {
     } else {
       acc = 0;
     }
-    const cw = canvas.width;
-    const chh = canvas.height;
+    const cw = view.w;
+    const chh = view.h;
     const shots = sim.takeEvents();
     const melee = sim.takeMeleeEvents();
     const booms = sim.takeBooms();
@@ -911,9 +1039,9 @@ function frame(now: number): void {
     pings.add(unitEvents, sim.tick);
     audio.addUnitEvents(unitEvents);
 
-    const pick = mouse.onCanvas && !targetMode ? pickAt(sim, cam, mouse.x, mouse.y, canvas.width, canvas.height) : null;
+    const pick = mouse.onCanvas && !targetMode ? pickAt(sim, cam, mouse.x, mouse.y, view.w, view.h) : null;
     const shot = computeShot(sim, getPrimary(), selectedVehicle, pick);
-    const cursor = mouse.onCanvas ? cam.screenToWorld(mouse.x, mouse.y, canvas.width, canvas.height) : null;
+    const cursor = mouse.onCanvas ? cam.screenToWorld(mouse.x, mouse.y, view.w, view.h) : null;
     const primary = getPrimary();
     const primarySquad = sim.squads[primary];
     const focusTeams = primary < 0 ? [] : selectedTeam >= 0 ? [selectedTeam] : primarySquad?.teamIds ?? [];
@@ -921,7 +1049,7 @@ function frame(now: number): void {
     // Formation drag state for overlays
     let formationDrag: { ax: number; ay: number; facing: number; width: number } | null = null;
     if (rmbDown && rmbAnchor) {
-      const [cx, cy] = cam.screenToWorld(mouse.x, mouse.y, canvas.width, canvas.height);
+      const [cx, cy] = cam.screenToWorld(mouse.x, mouse.y, view.w, view.h);
       const wdx = cx - rmbAnchor.wx;
       const wdy = cy - rmbAnchor.wy;
       const len = Math.hypot(wdx, wdy);
@@ -942,6 +1070,7 @@ function frame(now: number): void {
       armedOrder,
       cursor: cursor && { x: cursor[0], y: cursor[1] }
     }, pings);
+    if (touchHold) drawHoldRing(ctx, touchHold, now);
     tooltip.update(sim, pick, shot, mouse.x, mouse.y, pick?.kind === 'terrain' && (primary >= 0 || selectedVehicle >= 0));
     const km = loadKeymap(localStorage);
     let objective: HudState['objective'] = null;
@@ -972,7 +1101,7 @@ function frame(now: number): void {
     // the roster panel silently fails to inset the view.
     if (needsBootFrame) {
       needsBootFrame = false;
-      const b = bootCamera(sim, canvas.width, canvas.height);
+      const b = bootCamera(sim, view.w, view.h);
       cam.x = b.x;
       cam.y = b.y;
       cam.scale = b.scale;

@@ -90,13 +90,24 @@ const TERRAIN_SHORT: Record<CellTerrain, string> = {
 
 // ── StratHud ──────────────────────────────────────────────────────────────
 
+export interface StratHudCallbacks {
+  togglePause(): void;
+  setSpeed(idx: number): void;
+}
+
+// Strategic clock controls. Space and 1/2/3 still work; this is the only path
+// that exists at all for a mouse or a finger.
+export const SPEED_LABELS = ['1\u00d7', '10\u00d7', '60\u00d7'];
+
 export class StratHud {
   readonly root: HTMLDivElement;
   private sig = '';
   private trends = new Map<number, number[]>();
   private rosterOpen = false;
+  private paused = true;
+  private speedIdx = 1;
 
-  constructor() {
+  constructor(private readonly cb: StratHudCallbacks) {
     this.root = document.createElement('div');
     this.root.id = 'strat-hud';
     this.root.innerHTML = `
@@ -125,6 +136,13 @@ export class StratHud {
         this.sig = '';
         return;
       }
+      const clock = (e.target as HTMLElement).closest<HTMLElement>('[data-clock]');
+      if (clock) {
+        const v = clock.dataset.clock!;
+        if (v === 'pause') this.cb.togglePause();
+        else this.cb.setSpeed(Number(v));
+        this.sig = '';
+      }
     });
   }
 
@@ -132,9 +150,11 @@ export class StratHud {
   private _lastCampaign?: Campaign;
   private _lastChit?: Chit; // chit reference for waypoint cancel
 
-  update(front: Front, campaign: Campaign, selectedChit: number, paused: boolean): void {
+  update(front: Front, campaign: Campaign, selectedChit: number, paused: boolean, speedIdx = 1): void {
     this._lastFront = front;
     this._lastCampaign = campaign;
+    this.paused = paused;
+    this.speedIdx = speedIdx;
 
     // Strength trend sampling
     for (const chit of front.chits) {
@@ -156,7 +176,7 @@ export class StratHud {
       if (chit.strength > 0) strengthSig += `${chit.id}:${(chit.strength / 5) | 0},`;
     }
 
-    const sig = `${clockBucket}|${selectedChit}|${operationStatus(front)}|${paused}|${strengthSig}|${this.rosterOpen}`;
+    const sig = `${clockBucket}|${selectedChit}|${operationStatus(front)}|${paused}|${speedIdx}|${strengthSig}|${this.rosterOpen}`;
     if (sig === this.sig) return;
     this.sig = sig;
 
@@ -173,7 +193,14 @@ export class StratHud {
     const prog = operationProgress(front);
     const pct = prog.total > 0 ? Math.round((prog.held / prog.total) * 100) : 0;
     const statusClass = prog.status === 'won' ? 'st-won' : prog.status === 'lost' ? 'st-lost' : '';
+    const speeds = SPEED_LABELS.map(
+      (label, i) => `<button class="hbtn st-speed${i === this.speedIdx ? ' active' : ''}" data-clock="${i}">${label}</button>`,
+    ).join('');
     this.root.querySelector('#st-progress')!.innerHTML =
+      `<div class="st-clock-ctl">` +
+      `<button class="hbtn st-play" data-clock="pause" title="${this.paused ? 'Resume' : 'Pause'}">${this.paused ? '\u25b6' : '\u23f8'}</button>` +
+      speeds +
+      `</div>` +
       `<div class="st-progress-bar"><i style="width:${pct}%"></i></div>` +
       `<span class="st-progress-text">${prog.held}/${prog.total} objectives</span>` +
       `<span class="st-status-badge ${statusClass}">${prog.status.toUpperCase()}</span>` +

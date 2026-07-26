@@ -1,5 +1,6 @@
 import { chitEtaMinutes, formatClock, minutesToReinforcement, type Chit, type Front } from '../strategic/front';
 import { cellIndex, cellXY, type CellTerrain, type SectorMap } from '../strategic/sector';
+import { MOBILE } from './view';
 
 const TERRAIN_COLORS: Record<CellTerrain, string> = {
   open: '#5a6b4c',
@@ -65,6 +66,11 @@ export class StrategicView {
   private flashMsg: string | null = null;
   private flashUntil = 0;
   stagedCell = -1; // engagement-staging highlight; -1 = none
+  // Sector camera. Defaults reproduce the fit-only layout byte for byte; only
+  // a small viewport (or a pinch) ever moves them off the defaults.
+  zoomMul = 1;
+  panX = 0;
+  panY = 0;
 
   constructor(readonly sector: SectorMap) {}
 
@@ -74,9 +80,54 @@ export class StrategicView {
     this.flashUntil = performance.now() + 6000;
   }
 
+  // Cell edge in px with no zoom applied — the old fit-only answer.
+  fitCells(canvasW: number, canvasH: number): number {
+    return Math.max(4, Math.floor(Math.min(canvasW / this.sector.w, (canvasH - HEADER_H - FOOTER_H) / this.sector.h)));
+  }
+
   layout(canvasW: number, canvasH: number): { size: number; ox: number; oy: number } {
-    const size = Math.max(4, Math.floor(Math.min(canvasW / this.sector.w, (canvasH - HEADER_H - FOOTER_H) / this.sector.h)));
-    return { size, ox: Math.floor((canvasW - size * this.sector.w) / 2), oy: HEADER_H };
+    const size = Math.max(4, Math.floor(this.fitCells(canvasW, canvasH) * this.zoomMul));
+    return {
+      size,
+      ox: Math.floor((canvasW - size * this.sector.w) / 2) + this.panX,
+      oy: HEADER_H + this.panY,
+    };
+  }
+
+  // Keep at least a quarter of the grid inside the clear band, so a fling can
+  // never leave the player looking at empty backdrop.
+  clampPan(canvasW: number, canvasH: number): void {
+    const size = Math.max(4, Math.floor(this.fitCells(canvasW, canvasH) * this.zoomMul));
+    const gw = size * this.sector.w;
+    const gh = size * this.sector.h;
+    const bandH = canvasH - HEADER_H - FOOTER_H;
+    const slackX = Math.max(0, (gw - canvasW) / 2);
+    const slackY = Math.max(0, gh - bandH);
+    this.panX = Math.max(-slackX, Math.min(slackX, this.panX));
+    this.panY = Math.max(-slackY, Math.min(0, this.panY));
+  }
+
+  // Mobile boot: zoom until a chit is a real tap target, then centre the pan on
+  // the friendly chits so the player opens on their own force.
+  frameFor(canvasW: number, canvasH: number, chitCells: number[], minCellPx = 26): void {
+    const fit = this.fitCells(canvasW, canvasH);
+    this.zoomMul = Math.max(1, minCellPx / fit);
+    this.panX = 0;
+    this.panY = 0;
+    if (chitCells.length > 0) {
+      const size = Math.max(4, Math.floor(fit * this.zoomMul));
+      let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+      for (const i of chitCells) {
+        const { x, y } = cellXY(this.sector, i);
+        x0 = Math.min(x0, x); x1 = Math.max(x1, x);
+        y0 = Math.min(y0, y); y1 = Math.max(y1, y);
+      }
+      const cx = Math.floor((canvasW - size * this.sector.w) / 2) + ((x0 + x1) / 2 + 0.5) * size;
+      const cy = HEADER_H + ((y0 + y1) / 2 + 0.5) * size;
+      this.panX = Math.round(canvasW / 2 - cx);
+      this.panY = Math.round((HEADER_H + canvasH - FOOTER_H) / 2 - cy);
+    }
+    this.clampPan(canvasW, canvasH);
   }
 
   cellAtScreen(px: number, py: number, canvasW: number, canvasH: number): number {
@@ -148,10 +199,16 @@ export class StrategicView {
       }
     }
 
-    this.drawHeader(ctx, front, paused, speed, canvasW);
-    this.drawHintBar(ctx, canvasW, canvasH);
-    this.drawLegend(ctx, canvasW, canvasH);
-    if (selected) this.drawSelectedPanel(ctx, front, selected, canvasW);
+    // Narrow viewport: the legend is a 216x101 box and HINT_TEXT is a pure
+    // keyboard legend — both are dead weight on a phone. The selected-chit
+    // panel is dropped on touch because #st-chit-panel shows a strict superset.
+    const narrow = MOBILE || canvasW < 700 || canvasH < 480;
+    this.drawHeader(ctx, front, paused, speed, canvasW, narrow);
+    if (!narrow) {
+      this.drawHintBar(ctx, canvasW, canvasH);
+      this.drawLegend(ctx, canvasW, canvasH);
+    }
+    if (selected && !MOBILE) this.drawSelectedPanel(ctx, front, selected, canvasW);
     this.drawFlash(ctx, canvasW);
   }
 
@@ -350,7 +407,7 @@ export class StrategicView {
     ctx.stroke();
   }
 
-  private drawHeader(ctx: CanvasRenderingContext2D, front: Front, paused: boolean, speed: number, canvasW: number): void {
+  private drawHeader(ctx: CanvasRenderingContext2D, front: Front, paused: boolean, speed: number, canvasW: number, narrow = false): void {
     ctx.fillStyle = PANEL_BG;
     ctx.fillRect(0, 0, canvasW, HEADER_H);
     ctx.strokeStyle = PANEL_BORDER;
@@ -378,6 +435,7 @@ export class StrategicView {
     ctx.fillText(speedText, canvasW - 12, HEADER_H / 2);
     const speedW = ctx.measureText(speedText).width;
 
+    if (narrow) return; // #st-reinforce already carries this, and there is no room
     const hours = minutesToReinforcement(front) / 60;
     const reinforceText = hours < 1 ? 'Reinforcements <1h' : `Reinforcements in ${Math.round(hours)}h`;
     ctx.fillStyle = MUTED;

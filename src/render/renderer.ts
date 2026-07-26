@@ -7,6 +7,7 @@ import { ballistic, blit, FLASH, flashClass, fxDetail, hotPass, SPIKE_SIDES, tra
 import { MarkLayer } from './marks';
 import { RoofLayer } from './roofs';
 import { TerrainLayer } from './terrain';
+import { view } from './view';
 import { getVehicleSprite, vehicleBandFor, VEHICLE_SPAN } from './vehicles';
 
 interface Tracer extends ShotEvent {
@@ -153,8 +154,8 @@ export class Renderer {
   }
 
   draw(ctx: CanvasRenderingContext2D, cam: Camera, selectedSquads: number[], now: number, floorFocus = -1): void {
-    const cw = ctx.canvas.width;
-    const ch = ctx.canvas.height;
+    const cw = view.w;
+    const ch = view.h;
     const dt = Math.min(0.1, (now - this.lastNow) / 1000);
     this.lastNow = now;
     ctx.fillStyle = '#161510'; // darker desaturated earth tone off-map, replacing the flat void
