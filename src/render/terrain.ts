@@ -11,6 +11,24 @@ const CHUNK = 16; // tiles per side
 const BANDS = [4, 8, 16, 32, 48];
 const PIXEL_BUDGET = 24_000_000; // ~96 MB of cached RGBA
 
+// Detail tier per zoom band. A band-4 chunk covers 4x the ground of a band-16
+// one, so drawing the same micro-detail there is pure waste that also aliases
+// into fizz; a band-48 chunk starves without it. Every pass takes `d` and
+// scales its op count off it — this is the budget lever the ground detail
+// below is paid for with.
+export type Detail = 0 | 1 | 2;
+const detailFor = (band: number): Detail => (band >= 32 ? 2 : band >= 16 ? 1 : 0);
+
+// A chunk bake costs 2-5 ms and a band change invalidates the whole keyspace,
+// so one zoom step used to rebake every visible chunk in a single frame (~70
+// chunks, ~300 ms). Amortization is only free when there is something correct
+// to show meanwhile: a chunk already baked at another band downscales/upscales
+// to the right content at the wrong sharpness. So the budget throttles only
+// the chunks that HAVE such a fallback — which is exactly the band-change
+// case — and a chunk with nothing cached at any band still bakes immediately
+// rather than flashing a hole.
+const BAKES_PER_FRAME = 3;
+
 import { hash } from './noise';
 
 // Bilinear value noise on an 8m lattice — smooth patches, no hard square edges.
@@ -134,7 +152,7 @@ function hedgePath(g: Ctx, x: number, y: number, n: boolean, s: boolean, w: bool
 // ALL hedge tiles (AO → cast shadow → green mass → sun rim → foliage dabs).
 // Width/shade vary via the smooth 8m/28m noise fields, not per-tile hash, so
 // adjacent tiles never show a width or value step at the boundary.
-function drawHedgeRun(g: Ctx, map: GameMap, tx0: number, ty0: number, tx1: number, ty1: number): void {
+function drawHedgeRun(g: Ctx, map: GameMap, tx0: number, ty0: number, tx1: number, ty1: number, d: Detail): void {
   const isHedge = (tx: number, ty: number) => map.inBounds(tx, ty) && map.terrainKeyAt(tx, ty) === 'hedge';
   const tiles: { x: number; y: number; n: boolean; s: boolean; w: boolean; e: boolean; width: number }[] = [];
   for (let y = ty0; y < ty1; y++) {
@@ -164,8 +182,9 @@ function drawHedgeRun(g: Ctx, map: GameMap, tx0: number, ty0: number, tx1: numbe
   pass((t) => t.width * 0.3, (t) => `rgba(190,215,150,${0.1 + coarse(t.x, t.y) * 0.12})`, -sdx * 0.3, -sdy * 0.3);
   // foliage dabs: the per-tile lumpiness the old hash width/shade jitter gave,
   // without the boundary steps — small blobs never cross a tile seam visibly
+  const dabs = d === 0 ? 0 : d === 1 ? 3 : 6;
   for (const t of tiles) {
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < dabs; i++) {
       const dx = t.x + 0.28 + hash(t.x, t.y, 54 + i) * 0.44;
       const dy = t.y + 0.28 + hash(t.x, t.y, 57 + i) * 0.44;
       g.fillStyle = hash(t.x, t.y, 60 + i) > 0.5 ? shade(HEDGE_GREEN, 0.64) : shade(HEDGE_GREEN, 1.22);
@@ -310,7 +329,7 @@ function drawSubTileGround(g: Ctx, x: number, y: number, darken = 1): void {
   }
 }
 
-function drawTileBase(g: Ctx, map: GameMap, x: number, y: number): void {
+function drawTileBase(g: Ctx, map: GameMap, x: number, y: number, d: Detail): void {
   const t = map.terrainKeyAt(x, y);
   const v = 0.93 + coarse(x, y) * 0.1 + hash(x, y) * 0.04;
   if (t === 'grass') {
@@ -327,12 +346,14 @@ function drawTileBase(g: Ctx, map: GameMap, x: number, y: number): void {
       g.fillStyle = shade(base, sv);
       g.fillRect(sx, sy, 0.5, 0.5);
     }
-    for (let i = 0; i < 5; i++) {
-      const h1 = hash(x, y, 10 + i);
-      const h2 = hash(x, y, 20 + i);
-      const sz = 0.05 + hash(x, y, 35 + i) * 0.05;
-      g.fillStyle = hash(x, y, 30 + i) > 0.7 ? shade(GRASS_DRY, 1.15) : shade(GRASS, h1 > 0.5 ? 1.18 : 0.78);
-      g.fillRect(x + h1, y + h2, sz, sz);
+    if (d >= 1) {
+      for (let i = 0; i < 5; i++) {
+        const h1 = hash(x, y, 10 + i);
+        const h2 = hash(x, y, 20 + i);
+        const sz = 0.05 + hash(x, y, 35 + i) * 0.05;
+        g.fillStyle = hash(x, y, 30 + i) > 0.7 ? shade(GRASS_DRY, 1.15) : shade(GRASS, h1 > 0.5 ? 1.18 : 0.78);
+        g.fillRect(x + h1, y + h2, sz, sz);
+      }
     }
     // dusty verge where grass meets road: half-tile strips of jittered depth,
     // so traffic wear bleeds past the road's own shoulder without a hard line
@@ -359,11 +380,13 @@ function drawTileBase(g: Ctx, map: GameMap, x: number, y: number): void {
     }
     g.fillStyle = shade(ROAD, v);
     g.fillRect(x, y, 1, 1);
-    g.fillStyle = 'rgba(0,0,0,0.07)';
-    for (let i = 0; i < 2; i++) {
-      g.beginPath();
-      g.arc(x + hash(x, y, 3 + i), y + hash(x, y, 5 + i), 0.05 + hash(x, y, 7 + i) * 0.08, 0, Math.PI * 2);
-      g.fill();
+    if (d >= 1) {
+      g.fillStyle = 'rgba(0,0,0,0.07)';
+      for (let i = 0; i < 2; i++) {
+        g.beginPath();
+        g.arc(x + hash(x, y, 3 + i), y + hash(x, y, 5 + i), 0.05 + hash(x, y, 7 + i) * 0.08, 0, Math.PI * 2);
+        g.fill();
+      }
     }
     const roadAt = (tx: number, ty: number) => map.inBounds(tx, ty) && map.terrainKeyAt(tx, ty) === 'road';
     const n = roadAt(x, y - 1);
@@ -393,13 +416,15 @@ function drawTileBase(g: Ctx, map: GameMap, x: number, y: number): void {
   } else if (t === 'woods') {
     drawSubTileGround(g, x, y);
     // leaf litter / undergrowth texture
-    for (let i = 0; i < 4; i++) {
-      const lx = x + hash(x, y, 80 + i);
-      const ly = y + hash(x, y, 85 + i);
-      g.fillStyle = hash(x, y, 90 + i) > 0.45 ? 'rgba(20,24,14,0.22)' : 'rgba(120,110,70,0.16)';
-      g.beginPath();
-      g.ellipse(lx, ly, 0.09 + hash(x, y, 95 + i) * 0.08, 0.05 + hash(x, y, 96 + i) * 0.05, hash(x, y, 97 + i) * Math.PI, 0, Math.PI * 2);
-      g.fill();
+    if (d >= 1) {
+      for (let i = 0; i < 4; i++) {
+        const lx = x + hash(x, y, 80 + i);
+        const ly = y + hash(x, y, 85 + i);
+        g.fillStyle = hash(x, y, 90 + i) > 0.45 ? 'rgba(20,24,14,0.22)' : 'rgba(120,110,70,0.16)';
+        g.beginPath();
+        g.ellipse(lx, ly, 0.09 + hash(x, y, 95 + i) * 0.08, 0.05 + hash(x, y, 96 + i) * 0.05, hash(x, y, 97 + i) * Math.PI, 0, Math.PI * 2);
+        g.fill();
+      }
     }
   } else if (t === 'hedge') {
     // ground under the hedge only — the capsule strokes are drawn by
@@ -414,7 +439,9 @@ function drawTileBase(g: Ctx, map: GameMap, x: number, y: number): void {
     g.fillStyle = shade(base, v);
     g.fillRect(x, y, 1, 1);
     const horizontal = hash(bx, by, 71) < 0.5;
-    const spacing = 0.4 + hash(bx, by, 73) * 0.25;
+    // far LOD keeps the macro row structure but at <=1 row/tile — the full
+    // 0.4-0.65 m pitch aliases into moiré below 8 px/m
+    const spacing = (0.4 + hash(bx, by, 73) * 0.25) * (d === 0 ? 2.6 : 1);
     const phase = hash(bx, by, 72) * spacing;
     g.fillStyle = 'rgba(0,0,0,0.1)';
     if (horizontal) {
@@ -517,6 +544,7 @@ export class TerrainLayer {
   private pixels = 0;
   private hasElev: boolean;
   private hasStairs: boolean;
+  private bakeBudget = 0;
 
   constructor(private map: GameMap) {
     // Flat maps (all elev 0, no stairs) early-out everywhere below, so their
@@ -533,6 +561,8 @@ export class TerrainLayer {
       this.cache.set(key, hit);
       return hit;
     }
+    this.bakeBudget--;
+    const d = detailFor(band);
     const c = document.createElement('canvas');
     // 1-tile gutter on all sides so downscale sampling never bleeds past the edge
     c.width = c.height = (CHUNK + 2) * band;
@@ -548,11 +578,11 @@ export class TerrainLayer {
     const tx1 = Math.min(this.map.w, x0 + CHUNK + pad);
     const ty1 = Math.min(this.map.h, y0 + CHUNK + pad);
     for (let y = ty0; y < ty1; y++) {
-      for (let x = tx0; x < tx1; x++) drawTileBase(g, this.map, x, y);
+      for (let x = tx0; x < tx1; x++) drawTileBase(g, this.map, x, y, d);
     }
     drawWaterBanks(g, this.map, tx0, ty0, tx1, ty1);
     drawDoorTrails(g, this.map, tx0, ty0, tx1, ty1);
-    drawHedgeRun(g, this.map, tx0, ty0, tx1, ty1);
+    drawHedgeRun(g, this.map, tx0, ty0, tx1, ty1, d);
     for (let y = ty0; y < ty1; y++) {
       for (let x = tx0; x < tx1; x++) {
         if (this.map.terrainKeyAt(x, y) === 'woods') drawTree(g, this.map, x, y);
@@ -579,7 +609,21 @@ export class TerrainLayer {
     return c;
   }
 
+  // Same chunk baked at some other band — same content, wrong sharpness. Walk
+  // from the crispest down; source rect origin is always that band's own
+  // 1-tile gutter, which is what keeps the blit aligned.
+  private fallback(cx: number, cy: number, band: number): [HTMLCanvasElement, number] | null {
+    for (let i = BANDS.length - 1; i >= 0; i--) {
+      const b = BANDS[i];
+      if (b === band) continue;
+      const c = this.cache.get(`${cx},${cy},${b}`);
+      if (c) return [c, b];
+    }
+    return null;
+  }
+
   draw(ctx: Ctx, cam: Camera, cw: number, ch: number): void {
+    this.bakeBudget = BAKES_PER_FRAME;
     const band = BANDS.find((b) => b >= cam.scale) ?? 48;
     const [wx0, wy0] = cam.screenToWorld(0, 0, cw, ch);
     const [wx1, wy1] = cam.screenToWorld(cw, ch, cw, ch);
@@ -591,6 +635,13 @@ export class TerrainLayer {
     for (let cy = cy0; cy <= cy1; cy++) {
       for (let cx = cx0; cx <= cx1; cx++) {
         const [sx, sy] = cam.worldToScreen(cx * CHUNK, cy * CHUNK, cw, ch);
+        if (this.bakeBudget <= 0 && !this.cache.has(`${cx},${cy},${band}`)) {
+          const fb = this.fallback(cx, cy, band);
+          if (fb) {
+            ctx.drawImage(fb[0], fb[1], fb[1], CHUNK * fb[1], CHUNK * fb[1], sx, sy, size, size);
+            continue;
+          }
+        }
         ctx.drawImage(this.chunk(cx, cy, band), band, band, CHUNK * band, CHUNK * band, sx, sy, size, size);
       }
     }
