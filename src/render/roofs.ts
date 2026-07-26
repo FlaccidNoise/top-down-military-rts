@@ -3,7 +3,7 @@ import { EDGE } from '../sim/map';
 import type { GameMap } from '../sim/map';
 import type { Sim } from '../sim/sim';
 import type { Camera } from './camera';
-import { AO_ALPHA, SHADOW_ALPHA, SHADOW_SOFT_ALPHA, SUN, shadowOffset } from './light';
+import { AO_ALPHA, SHADOW_ALPHA, SHADOW_SOFT_ALPHA, SUN, WIND, shadowOffset } from './light';
 
 // Gable roofs drawn over building footprints (sim.buildings, from the map
 // plan). A roof fades out when the camera is zoomed in close or a soldier the
@@ -187,8 +187,8 @@ interface RoofArt {
   wallETones: string[];
   openS: Uint8Array; // per-tile edge type along the south / east walls
   openE: Uint8Array;
-  chimney: { x: number; y: number; s: number };
-  chimneyShadow: { x: number; y: number };
+  chimneys: Rect[];
+  smoke: boolean;
 }
 
 function roofRect(b: Building): Rect {
@@ -325,18 +325,29 @@ function buildArt(b: Building, i: number, stories: number, smallOfPair: boolean,
     }
   }
 
-  // ridge stack sits on the ridge line, biased to the gable ends
+  // Normandy stacks sit at the gable ends, so bias there and only sometimes
+  // land mid-ridge. A hipped roof's ridge is shorter, and the clamp is what
+  // keeps the stack off the hip end plane.
   const ridgeStart = (ridgeAlongX ? rr.x : rr.y) + hipInset;
   const ridgeEnd = (ridgeAlongX ? rr.x + rr.w : rr.y + rr.h) - hipInset;
-  const t = 0.22 + hash(i, 62) * 0.56;
-  const po = (hash(i, 63) - 0.5) * 0.25;
-  const s = 0.32 + hash(i, 64) * 0.14;
+  const po = (hash(i, 63) - 0.5) * 0.2;
   const cross = (ridgeAlongX ? rr.y : rr.x) + spanLen * fracNW + po;
-  const alongPos = ridgeStart + (ridgeEnd - ridgeStart) * t;
-  const cx = ridgeAlongX ? alongPos : cross;
-  const cy = ridgeAlongX ? cross : alongPos;
-  const [sdx, sdy] = shadowOffset(0.18);
-  const chimney = { x: cx - s / 2, y: cy - s / 2, s };
+  const t0 =
+    hash(i, 271) < 0.7
+      ? hash(i, 62) < 0.5
+        ? 0.06 + hash(i, 275) * 0.14
+        : 0.8 + hash(i, 275) * 0.14
+      : 0.32 + hash(i, 275) * 0.36;
+  const stackW = ridgeAlongX ? 0.5 : 0.4;
+  const stackH = ridgeAlongX ? 0.4 : 0.5;
+  const stackAt = (t: number): Rect => {
+    const p = ridgeStart + (ridgeEnd - ridgeStart) * t;
+    return ridgeAlongX
+      ? { x: p - stackW / 2, y: cross - stackH / 2, w: stackW, h: stackH }
+      : { x: cross - stackW / 2, y: p - stackH / 2, w: stackW, h: stackH };
+  };
+  const chimneys = [stackAt(t0)];
+  if (b.w * b.h >= 70) chimneys.push(stackAt(1 - t0));
 
   const wr = hash(i, 260);
   const wall: WallMat = wr < 0.15 ? 'brick' : wr < 0.5 ? 'colombage' : 'rubble';
@@ -403,8 +414,9 @@ function buildArt(b: Building, i: number, stories: number, smallOfPair: boolean,
     wallETones: ramp(wbase, FACE_E, -1, 0.09),
     openS,
     openE,
-    chimney,
-    chimneyShadow: { x: chimney.x + sdx, y: chimney.y + sdy },
+    chimneys,
+    // hash-driven ambience only — never garrison state, which would leak intel
+    smoke: mat !== 'iron' && hash(i, 272) < 0.45,
   };
 }
 
@@ -465,11 +477,15 @@ function slopeShingle(
   if (!coarse && hash(i, 1, 219) < 0.45) {
     const atEnd = hash(i, 2, 219) < 0.5;
     const n = 2 + ((hash(i, 0, 219) * 2) | 0);
-    g.fillStyle = '#211d17';
     for (let k = 0; k < n; k++) {
       const u = atEnd ? uLen - 0.15 - k * sp.tileW * 1.2 : 0.15 + k * sp.tileW * 1.2;
       const ci = (hash(i, 3 + k, 219) * 2) | 0;
-      g.fillRect(u, vLen - (ci + 1) * sp.course + 0.03, sp.tileW * 0.8, sp.course - 0.06);
+      const gv = vLen - (ci + 1) * sp.course + 0.03;
+      g.fillStyle = '#241f19';
+      g.fillRect(u, gv, sp.tileW * 0.8, sp.course - 0.06);
+      // the batten showing through the gap, so it is a hole and not a blot
+      g.fillStyle = 'rgba(126,104,74,0.45)';
+      g.fillRect(u, gv + (sp.course - 0.06) * 0.45, sp.tileW * 0.8, 0.04);
     }
   }
   if (art.mat === 'slate' && !coarse) {
@@ -724,6 +740,43 @@ function dormerInto(g: CanvasRenderingContext2D, art: RoofArt, d: Rect, along: b
   g.strokeRect(d.x, d.y, d.w, d.h);
 }
 
+// A stack with mass: the body's SE faces peek out from under an overhanging
+// cap slab, lit on its NW lip and undercut on the SE, with pots on top.
+function chimneyInto(g: CanvasRenderingContext2D, st: Rect, i: number, k: number, band: number): void {
+  const [ox, oy] = shadowOffset(0.16);
+  g.fillStyle = '#39312b';
+  g.fillRect(st.x + ox, st.y + oy, st.w, st.h);
+  if (band >= 16) {
+    g.fillStyle = 'rgba(20,17,13,0.45)';
+    for (let v = st.y + oy + 0.11; v < st.y + st.h + oy; v += 0.11) g.fillRect(st.x + ox, v, st.w, 0.022);
+    const jog = hash(i, 270 + k) * 0.08;
+    for (let u = st.x + ox + 0.12 + jog; u < st.x + st.w + ox; u += 0.17) g.fillRect(u, st.y + oy, 0.022, st.h);
+  }
+  const cap = 0.06;
+  g.fillStyle = '#4a4038';
+  g.fillRect(st.x - cap, st.y - cap, st.w + cap * 2, st.h + cap * 2);
+  g.fillStyle = 'rgba(226,214,196,0.28)';
+  g.fillRect(st.x - cap, st.y - cap, st.w + cap * 2, 0.04);
+  g.fillRect(st.x - cap, st.y - cap, 0.04, st.h + cap * 2);
+  g.fillStyle = 'rgba(12,10,8,0.45)';
+  g.fillRect(st.x - cap, st.y + st.h + cap - 0.04, st.w + cap * 2, 0.04);
+  g.fillRect(st.x + st.w + cap - 0.04, st.y - cap, 0.04, st.h + cap * 2);
+  if (band < 16) return;
+  const pots = hash(i, 276 + k) < 0.5 ? 1 : 2;
+  for (let p = 0; p < pots; p++) {
+    const px = st.x + st.w * ((p + 0.5) / pots);
+    const py = st.y + st.h / 2;
+    g.fillStyle = 'rgba(24,20,16,0.5)';
+    g.beginPath();
+    g.arc(px, py, 0.105, 0, TAU);
+    g.fill();
+    g.fillStyle = '#2a241e';
+    g.beginPath();
+    g.arc(px, py, 0.07, 0, TAU);
+    g.fill();
+  }
+}
+
 function drawRoof(g: CanvasRenderingContext2D, art: RoofArt, i: number, band: number): void {
   const r = art.rr;
   const along = art.ridgeAlongX;
@@ -872,15 +925,30 @@ function drawRoof(g: CanvasRenderingContext2D, art: RoofArt, i: number, band: nu
     g.fillRect(hx, hy, 0.5, 0.07);
   }
 
-  // chimney, above the courses, with its own short SE shadow
-  const c = art.chimney;
-  g.fillStyle = `rgba(10,12,8,${SHADOW_ALPHA})`;
-  g.fillRect(art.chimneyShadow.x, art.chimneyShadow.y, c.s, c.s);
-  g.fillStyle = '#4a4038';
-  g.fillRect(c.x, c.y, c.s, c.s);
-  g.strokeStyle = 'rgba(20,16,12,0.5)';
-  g.lineWidth = 0.02;
-  g.strokeRect(c.x, c.y, c.s, c.s);
+  // Chimney shadows are clipped to the roof planes: a stack sits 1.2 m above
+  // the slope, so its shadow is long, and unclipped it hangs off the eave onto
+  // the ground where nothing is casting it.
+  g.save();
+  g.beginPath();
+  g.rect(r.x, r.y, r.w, r.h);
+  if (art.wing) g.rect(art.wing.x, art.wing.y, art.wing.w, art.wing.h);
+  if (art.lean) g.rect(art.lean.x, art.lean.y, art.lean.w, art.lean.h);
+  g.clip();
+  const [kdx, kdy] = shadowOffset(1.2);
+  g.fillStyle = 'rgba(14,12,9,0.38)';
+  for (const st of art.chimneys) {
+    g.beginPath();
+    g.moveTo(st.x, st.y);
+    g.lineTo(st.x + st.w, st.y);
+    g.lineTo(st.x + st.w + kdx, st.y + kdy);
+    g.lineTo(st.x + st.w + kdx, st.y + st.h + kdy);
+    g.lineTo(st.x + kdx, st.y + st.h + kdy);
+    g.lineTo(st.x, st.y + st.h);
+    g.closePath();
+    g.fill();
+  }
+  g.restore();
+  for (let k = 0; k < art.chimneys.length; k++) chimneyInto(g, art.chimneys[k], i, k, band);
 
   // eave outline in metres-per-band so it survives the downscale; thatch gets
   // a wider, weaker one because a hard black edge is exactly what straw isn't
@@ -1063,6 +1131,7 @@ export class RoofLayer {
   private prevBand = 0;
   private queue: number[] = [];
   private prewarm = true;
+  private tick = 0;
 
   update(sim: Sim, cam: Camera, dt: number): void {
     if (this.buildings !== sim.buildings) {
@@ -1084,6 +1153,7 @@ export class RoofLayer {
       this.queue = [];
       this.prewarm = true;
     }
+    this.tick = sim.tick;
     if (cam.scale > FADE_SCALE) this.zoomFaded = true;
     else if (cam.scale < FADE_SCALE_RESTORE) this.zoomFaded = false;
     this.buildings.forEach((b, i) => {
@@ -1256,6 +1326,44 @@ export class RoofLayer {
         }
       }
       ctx.globalAlpha = 1;
+    });
+  }
+
+  // Hearth wisps on the shared wind. Phase comes off the sim tick, never
+  // wall-clock, so they freeze under pause exactly like sim smoke does; alpha
+  // rides the roof's own so a revealed interior gets no smoke floating over it.
+  drawChimneySmoke(ctx: CanvasRenderingContext2D, cam: Camera, cw: number, ch: number): void {
+    if (cam.scale < 6) return;
+    const t = this.tick / 30;
+    this.withWorldTransform(ctx, cam, cw, ch, () => {
+      for (let i = 0; i < this.buildings.length; i++) {
+        const art = this.art[i];
+        if (!art.smoke) continue;
+        if (!this.onScreen(cam, i, cw, ch, 4)) continue;
+        const a = this.alphas[i];
+        if (a < 0.05) continue;
+        const n = 3 + ((hash(i, 274) * 2) | 0);
+        for (const st of art.chimneys) {
+          const cx = st.x + st.w / 2;
+          const cy = st.y + st.h / 2;
+          for (let k = 0; k < n; k++) {
+            const life = (t * 0.45 + k / n + hash(i, 273 + k)) % 1;
+            const wob = Math.sin(life * 6 + k) * 0.25 * life;
+            const px = cx + WIND.dx * life * 3.2 - WIND.dy * wob;
+            const py = cy + WIND.dy * life * 3.2 + WIND.dx * wob;
+            const rad = 0.18 + life * 0.7;
+            // a soft core, not a disc — this has to read as haze over a roof,
+            // never as a sprite that got its ordering wrong
+            const gr = ctx.createRadialGradient(px, py, 0, px, py, rad);
+            gr.addColorStop(0, `rgba(196,190,178,${(0.26 * (1 - life) * a).toFixed(3)})`);
+            gr.addColorStop(1, 'rgba(196,190,178,0)');
+            ctx.fillStyle = gr;
+            ctx.beginPath();
+            ctx.arc(px, py, rad, 0, TAU);
+            ctx.fill();
+          }
+        }
+      }
     });
   }
 }

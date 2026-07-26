@@ -186,6 +186,7 @@ export class Renderer {
 
     this.drawFire(ctx, cam, now, cw, ch);
     this.roofs.drawTops(ctx, cam, cw, ch);
+    this.roofs.drawChimneySmoke(ctx, cam, cw, ch);
     this.drawSmoke(ctx, cam, cw, ch);
     this.drawContacts(ctx, cam, cw, ch);
     this.drawPlanes(ctx, cam, now, cw, ch);
