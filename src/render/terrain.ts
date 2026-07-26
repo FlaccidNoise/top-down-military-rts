@@ -1,6 +1,8 @@
+import { TERRAIN, type TerrainKey } from '../sim/data';
 import { EDGE, type GameMap } from '../sim/map';
 import type { Camera } from './camera';
 import { AO_ALPHA, SHADOW_ALPHA, SHADOW_SOFT_ALPHA, SUN, shadowOffset } from './light';
+import { MOBILE } from './view';
 
 // Terrain is rendered lazily into 16x16-tile chunk canvases at the nearest
 // zoom band >= camera scale (so it is only ever downscaled — always crisp),
@@ -8,8 +10,14 @@ import { AO_ALPHA, SHADOW_ALPHA, SHADOW_SOFT_ALPHA, SUN, shadowOffset } from './
 // which could not survive the 2-48 px/m zoom range or 500x500 m maps.
 
 const CHUNK = 16; // tiles per side
-const BANDS = [4, 8, 16, 32, 48];
-const PIXEL_BUDGET = 24_000_000; // ~96 MB of cached RGBA
+// Drop the top band on a phone: cam.maxScale is 32 there, so band 48 could
+// only ever be baked and never displayed, and its chunk canvas is (48+2)*32 =
+// 1600^2 = 2.6 Mpx against band 32's 1.1 Mpx.
+const BANDS = MOBILE ? [4, 8, 16, 32] : [4, 8, 16, 32, 48];
+// 24M px of cached RGBA is ~96 MB, on top of the dudes sprite cache and the
+// decal atlas — over iOS Safari's practical canvas-memory tolerance and the
+// most likely single cause of a killed tab.
+const PIXEL_BUDGET = MOBILE ? 6_000_000 : 24_000_000;
 
 // Detail tier per zoom band. A band-4 chunk covers 4x the ground of a band-16
 // one, so drawing the same micro-detail there is pure waste that also aliases
@@ -28,6 +36,15 @@ const detailFor = (band: number): Detail => (band >= 32 ? 2 : band >= 16 ? 1 : 0
 // case — and a chunk with nothing cached at any band still bakes immediately
 // rather than flashing a hole.
 const BAKES_PER_FRAME = 3;
+
+// The first battle frame is the one that kills a phone: nothing is cached, so
+// the visible-chunk loop below runs an unbudgeted bake per chunk — at a mobile
+// boot zoom that is ~50 chunks of hedge-capsule, tree, water-bank and
+// hillshade passes in a single frame, i.e. seconds of frozen white screen.
+// A phone therefore gets a hard per-frame cap and paints the rest flat until
+// later frames finish them. Desktop is deliberately excluded: the art gate
+// screenshots frame 1, so a desktop budget would reshoot every baseline.
+const MOBILE_BAKES_PER_FRAME = 12;
 
 import { hash, vec } from './noise';
 import { stamp, stampRect } from './stamps';
@@ -1235,6 +1252,9 @@ export class TerrainLayer {
   // 6 m past its pole), so a chunk bake pays only for the clutter it shows and
   // nothing is ever clipped off at a seam
   private props = new Map<string, Prop[]>();
+  /** Chunks painted flat this frame because the bake budget ran out (mobile). */
+  readonly pending = new Set<string>();
+  private flat = new Map<string, string>();
 
   constructor(private map: GameMap) {
     // Flat maps (all elev 0, no stairs) early-out everywhere below, so their
@@ -1351,9 +1371,33 @@ export class TerrainLayer {
     return null;
   }
 
+  // Flat stand-in for a chunk that has nothing cached at any band and no
+  // budget left to bake: the chunk's dominant terrain colour, so the hole
+  // reads as ground rather than as a white square. Tallied once per chunk.
+  private flatColor(cx: number, cy: number): string {
+    const key = `${cx},${cy}`;
+    const hit = this.flat.get(key);
+    if (hit) return hit;
+    const tally = new Map<TerrainKey, number>();
+    const x1 = Math.min(this.map.w, (cx + 1) * CHUNK);
+    const y1 = Math.min(this.map.h, (cy + 1) * CHUNK);
+    for (let y = cy * CHUNK; y < y1; y++) {
+      for (let x = cx * CHUNK; x < x1; x++) {
+        const k = this.map.terrainKeyAt(x, y);
+        tally.set(k, (tally.get(k) ?? 0) + 1);
+      }
+    }
+    let best: TerrainKey = 'grass';
+    let bestN = -1;
+    for (const [k, n] of tally) if (n > bestN) { best = k; bestN = n; }
+    const c = TERRAIN[best].color;
+    this.flat.set(key, c);
+    return c;
+  }
+
   draw(ctx: Ctx, cam: Camera, cw: number, ch: number): void {
-    this.bakeBudget = BAKES_PER_FRAME;
-    const band = BANDS.find((b) => b >= cam.scale) ?? 48;
+    this.bakeBudget = MOBILE ? MOBILE_BAKES_PER_FRAME : BAKES_PER_FRAME;
+    const band = BANDS.find((b) => b >= cam.scale) ?? BANDS[BANDS.length - 1];
     const [wx0, wy0] = cam.screenToWorld(0, 0, cw, ch);
     const [wx1, wy1] = cam.screenToWorld(cw, ch, cw, ch);
     const cx0 = Math.max(0, Math.floor(wx0 / CHUNK));
@@ -1363,14 +1407,22 @@ export class TerrainLayer {
     const size = CHUNK * cam.scale;
     for (let cy = cy0; cy <= cy1; cy++) {
       for (let cx = cx0; cx <= cx1; cx++) {
+        const key = `${cx},${cy},${band}`;
         const [sx, sy] = cam.worldToScreen(cx * CHUNK, cy * CHUNK, cw, ch);
-        if (this.bakeBudget <= 0 && !this.cache.has(`${cx},${cy},${band}`)) {
+        if (this.bakeBudget <= 0 && !this.cache.has(key)) {
           const fb = this.fallback(cx, cy, band);
           if (fb) {
             ctx.drawImage(fb[0], fb[1], fb[1], CHUNK * fb[1], CHUNK * fb[1], sx, sy, size, size);
             continue;
           }
+          if (MOBILE) {
+            this.pending.add(key);
+            ctx.fillStyle = this.flatColor(cx, cy);
+            ctx.fillRect(sx, sy, size, size);
+            continue;
+          }
         }
+        this.pending.delete(key);
         ctx.drawImage(this.chunk(cx, cy, band), band, band, CHUNK * band, CHUNK * band, sx, sy, size, size);
       }
     }

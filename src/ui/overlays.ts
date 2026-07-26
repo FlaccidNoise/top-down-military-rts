@@ -413,8 +413,12 @@ export class EventPings {
 
   draw(ctx: CanvasRenderingContext2D, sim: Sim, cam: Camera, cw: number, ch: number): void {
     this.pings = this.pings.filter((p) => sim.tick - p.tick < PING_TICKS);
-    const visible = this.pings.slice(-MAX_VISIBLE).reverse(); // newest at top
-    const x = cw - ROW_W - 12;
+    // A 190px feed hard-anchored at cw-202 is a third of a phone screen and
+    // five rows of it reach the roster sheet. Narrow it and show fewer.
+    const rw = Math.min(ROW_W, cw - 24);
+    const rows = cw < 500 ? 3 : MAX_VISIBLE;
+    const visible = this.pings.slice(-rows).reverse(); // newest at top
+    const x = cw - rw - 12;
     let y = 60; // keep clear of the top bar
     ctx.font = '11px ui-monospace, Menlo, monospace';
     ctx.textBaseline = 'middle';
@@ -423,11 +427,11 @@ export class EventPings {
       const life = (sim.tick - p.tick) / PING_TICKS; // 0..1
       ctx.globalAlpha = life < 0.6 ? 1 : 1 - (life - 0.6) / 0.4; // hold at full readability, ease out only over the tail
       ctx.fillStyle = 'rgba(18,22,15,0.85)';
-      ctx.fillRect(x, y, ROW_W, ROW_H);
+      ctx.fillRect(x, y, rw, ROW_H);
       ctx.fillStyle = TEAM[p.side]; // side-colored left border
       ctx.fillRect(x, y, 3, ROW_H);
       ctx.fillStyle = p.color;
-      ctx.fillText(clipToWidth(ctx, p.label, ROW_W - 16), x + 10, y + ROW_H / 2 + 1);
+      ctx.fillText(clipToWidth(ctx, p.label, rw - 16), x + 10, y + ROW_H / 2 + 1);
       y += ROW_H + ROW_GAP;
     }
     ctx.globalAlpha = 1;

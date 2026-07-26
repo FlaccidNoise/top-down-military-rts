@@ -1,6 +1,7 @@
 import type { WeaponKey } from '../sim/data';
 import type { Camera } from './camera';
 import type { MeleeEvent, ShotEvent, UnitEvent } from '../sim/sim';
+import { MOBILE } from './view';
 
 // Procedural WebAudio combat layer. No assets: every sound is synthesized from
 // one shared white-noise buffer + oscillator tones. Render-side only — the sim
@@ -38,7 +39,11 @@ const VOICE: Record<SoundClass, Voiced> = {
   cannon: { freq: 320, q: 0.6, decay: 0.4, gain: 1.0, body: 60 },
 };
 
-const MAX_VOICES = 28; // hard concurrent cap — a firefight is hundreds of events/frame
+// Hard concurrent cap — a firefight is hundreds of events/frame. Each voice is
+// a BufferSource plus two BiquadFilters; mobile WebAudio clips and drops out
+// well below 28, so a phone gets less than half. (Unlock itself already works
+// on touch via the pointerdown listener in main.ts — nothing to fix there.)
+const MAX_VOICES = MOBILE ? 12 : 28;
 const NEW_PER_BATCH = 12; // loudest-first budget per drained frame
 
 export class AudioEngine {

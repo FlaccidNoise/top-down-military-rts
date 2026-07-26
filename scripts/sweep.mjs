@@ -29,6 +29,18 @@ const OUT = '.screenshots/sweep';
 mkdirSync(OUT, { recursive: true });
 const { browser, page } = await launch();
 
+// Preflight: the art baselines are only comparable if the profile they were
+// shot on has not moved. An accidental DPR bump or a MOBILE flip reshoots
+// every crop at once, and a reshot baseline is an invisible regression —
+// nothing downstream would ever flag it. Cheap assert, catastrophic miss.
+{
+  await page.goto(`http://[::1]:${PORT}/?camp=${CAMP}&seed=${SEEDS[0]}`, { waitUntil: 'domcontentloaded' });
+  await page.waitForFunction(() => '__game' in window, null, { timeout: 5000 });
+  const p = await page.evaluate(() => ({ dpr: window.__game.view.dpr, mobile: document.documentElement.classList.contains('mobile') }));
+  if (p.dpr !== 1) throw new Error(`sweep preflight: view.dpr is ${p.dpr}, expected 1 — the baselines are 1280x800 @ dpr 1`);
+  if (p.mobile) throw new Error('sweep preflight: html.mobile is set — the phone layout would reshoot every art baseline');
+}
+
 const shots = []; // {seed, crop, file}
 for (const seed of SEEDS) {
   console.log(`seed ${seed}${FORCE_KIND[seed] ? ` (${FORCE_KIND[seed]})` : ''}`);
