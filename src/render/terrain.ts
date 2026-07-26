@@ -32,6 +32,7 @@ const BAKES_PER_FRAME = 3;
 import { hash, vec } from './noise';
 import { stamp, stampRect } from './stamps';
 import { canopySprite, drawLog } from './canopy';
+import { PatchIndex, type BuildingBox } from './patches';
 
 // Bilinear value noise on an 8m lattice — smooth patches, no hard square edges.
 function coarse(x: number, y: number): number {
@@ -408,7 +409,7 @@ function gravelStamp(v: number, band: number): HTMLCanvasElement {
 // averaged at the shared edge midpoint so neighbouring tiles agree on where
 // the rut crosses, and the lateral basis is world-fixed (+y for E-W runs,
 // +x for N-S) so the two tiles do not mirror each other's wobble.
-function drawRoadWear(g: Ctx, map: GameMap, tx0: number, ty0: number, tx1: number, ty1: number, d: Detail): void {
+function drawRoadWear(g: Ctx, map: GameMap, tx0: number, ty0: number, tx1: number, ty1: number, d: Detail, paved: (x: number, y: number) => number): void {
   const roadAt = (tx: number, ty: number) => map.inBounds(tx, ty) && map.terrainKeyAt(tx, ty) === 'road' && !map.isBridge(tx, ty);
   const wob = (tx: number, ty: number) => (coarse(tx * 3, ty * 3) - 0.5) * 0.18;
   // How far the road reaches along one axis through this tile, capped — the
@@ -438,7 +439,10 @@ function drawRoadWear(g: Ctx, map: GameMap, tx0: number, ty0: number, tx1: numbe
   const DIRS: [number, number][] = [[0, -1], [0, 1], [-1, 0], [1, 0]];
   for (let y = ty0; y < ty1; y++) {
     for (let x = tx0; x < tx1; x++) {
-      if (!roadAt(x, y)) continue;
+      // Paved tiles keep no wear at all: cobbles own the surface, and the
+      // square is a plaza rather than a lane, so the centreline every wear
+      // feature is built from is not even well defined there.
+      if (!roadAt(x, y) || paved(x, y) > 0.3) continue;
       worn.push([x, y]);
       const nbs = DIRS.filter(([dx, dy]) => roadAt(x + dx, y + dy));
       if (nbs.length >= 3) {
@@ -470,6 +474,10 @@ function drawRoadWear(g: Ctx, map: GameMap, tx0: number, ty0: number, tx1: numbe
       if (extH === extV) continue; // inside an intersection box (or a lone tile) — the turn arcs own it
       const ew = extH > extV;
       const [c, H] = band(x, y, ew);
+      // mapgen never lays a road wider than 3 tiles, so a wider band means an
+      // open paved area, not a lane. Its capped scan hands every interior row
+      // its own "centreline" and the ruts come out as a mesh.
+      if (H > 3) continue;
       if (Math.floor(c) !== (ew ? y : x)) continue;
       const sep = Math.min(0.72, 0.26 * H);
       const w0 = wob(x, y);
@@ -493,7 +501,6 @@ function drawRoadWear(g: Ctx, map: GameMap, tx0: number, ty0: number, tx1: numbe
       }
     }
   }
-  if (worn.length === 0) return;
   const strokeAll = (segs: Seg[], width: number, style: string, odx = 0, ody = 0) => {
     if (segs.length === 0) return;
     g.lineWidth = width;
@@ -542,6 +549,171 @@ function drawRoadWear(g: Ctx, map: GameMap, tx0: number, ty0: number, tx1: numbe
     g.beginPath();
     g.ellipse(px, py, rx * 0.66, rx * 0.46, 0, Math.PI * 1.11, Math.PI * 1.78);
     g.stroke();
+  }
+}
+
+// Village cobbles: setts on a 3x3 cell grid with a running-bond stagger,
+// jittered corners and sizes, desaturated grey-tan stone values kept near the
+// road's own value (a brighter stone becomes the most luminous thing in the
+// frame), dark joints, and a lit top edge on each stone's two NW sides so the
+// whole surface catches the one sun.
+//
+// Coarse and irregular on purpose: a fine regular lattice beats against the
+// screen pixel grid when the chunk is downscaled from its bake band and the
+// joints turn into long diagonal moiré cracks.
+const COBBLE_N = 3;
+
+function cobbleStamp(v: number, band: number): HTMLCanvasElement {
+  return stamp(`village:cobble:${v}`, band, 1, (g) => {
+    g.fillStyle = 'rgba(40,34,26,0.45)';
+    g.fillRect(0, 0, 1, 1);
+    const cell = 1 / COBBLE_N;
+    const j = (k: number, f: number) => (hash(k, f, 271) - 0.5) * 0.055;
+    for (let r = 0; r < COBBLE_N; r++) {
+      for (let c = 0; c < COBBLE_N; c++) {
+        const k = v * 37 + r * COBBLE_N + c;
+        const stagger = r % 2 ? cell * 0.28 : 0;
+        const w = cell * (0.7 + hash(k, 9, 271) * 0.16);
+        const h = cell * (0.7 + hash(k, 10, 271) * 0.16);
+        const x0 = Math.min(1 - w - 0.01, c * cell + stagger + (cell - w) / 2 + j(k, 11) * 0.5);
+        const y0 = r * cell + (cell - h) / 2 + j(k, 12) * 0.5;
+        const x1 = x0 + w;
+        const y1 = y0 + h;
+        const pts: [number, number][] = [
+          [x0 + j(k, 0), y0 + j(k, 1)],
+          [x1 + j(k, 2), y0 + j(k, 3)],
+          [x1 + j(k, 4), y1 + j(k, 5)],
+          [x0 + j(k, 6), y1 + j(k, 7)],
+        ];
+        const t = 0.88 + hash(k, 8, 271) * 0.24;
+        g.fillStyle = `rgb(${Math.round(112 * t)},${Math.round(106 * t)},${Math.round(95 * t)})`;
+        g.beginPath();
+        g.moveTo(pts[0][0], pts[0][1]);
+        for (let i = 1; i < 4; i++) g.lineTo(pts[i][0], pts[i][1]);
+        g.closePath();
+        g.fill();
+        g.strokeStyle = 'rgba(198,190,168,0.16)';
+        g.lineWidth = 0.04;
+        g.beginPath();
+        g.moveTo(pts[3][0], pts[3][1]);
+        g.lineTo(pts[0][0], pts[0][1]);
+        g.lineTo(pts[1][0], pts[1][1]);
+        g.stroke();
+      }
+    }
+  });
+}
+
+// Civic and yard surfacing: a gravel apron round every building, packed earth
+// in the yard between a close building pair, and cobbles over the village
+// square with an alpha ramp at its rim. Buildings used to grow straight out of
+// lawn and the crossroads was bare dirt road; this is what makes the village
+// read as a built place.
+function drawPaving(g: Ctx, map: GameMap, patches: PatchIndex, tx0: number, ty0: number, tx1: number, ty1: number, band: number, d: Detail): void {
+  for (const b of patches.buildings) {
+    if (b.maxX + 1 < tx0 || b.minX - 1 > tx1 || b.maxY + 1 < ty0 || b.minY - 1 > ty1) continue;
+    g.strokeStyle = 'rgba(150,138,112,0.22)';
+    g.lineWidth = 0.6;
+    g.strokeRect(b.minX - 0.3, b.minY - 0.3, b.maxX - b.minX + 0.6, b.maxY - b.minY + 0.6);
+    if (d < 2) continue;
+    g.fillStyle = 'rgba(96,88,68,0.22)';
+    const per = 2 * (b.maxX - b.minX + b.maxY - b.minY);
+    for (let i = 0; i < per; i++) {
+      const u = hash(b.id * 64 + i, 0, 272);
+      const side = (hash(b.id * 64 + i, 1, 272) * 4) | 0;
+      const t = 0.05 + hash(b.id * 64 + i, 2, 272) * 0.5;
+      const px = side === 0 || side === 1 ? b.minX + u * (b.maxX - b.minX) : side === 2 ? b.minX - t : b.maxX + t;
+      const py = side === 0 ? b.minY - t : side === 1 ? b.maxY + t : b.minY + u * (b.maxY - b.minY);
+      g.fillRect(px, py, 0.05, 0.05);
+    }
+  }
+  // farm yard: mapgen puts a house and a barn a few metres apart and they
+  // share the ground between them
+  for (let i = 0; i < patches.buildings.length; i++) {
+    for (let k = i + 1; k < patches.buildings.length; k++) {
+      const a = patches.buildings[i];
+      const b = patches.buildings[k];
+      const gapX = Math.max(0, Math.max(a.minX - b.maxX, b.minX - a.maxX));
+      const gapY = Math.max(0, Math.max(a.minY - b.maxY, b.minY - a.maxY));
+      if (Math.hypot(gapX, gapY) > 4) continue;
+      const x0 = Math.max(tx0, Math.min(a.minX, b.minX));
+      const y0 = Math.max(ty0, Math.min(a.minY, b.minY));
+      const x1 = Math.min(tx1, Math.max(a.maxX, b.maxX));
+      const y1 = Math.min(ty1, Math.max(a.maxY, b.maxY));
+      const outside = (bb: BuildingBox, x: number, y: number) =>
+        Math.hypot(Math.max(bb.minX - x - 0.5, 0, x + 0.5 - bb.maxX), Math.max(bb.minY - y - 0.5, 0, y + 0.5 - bb.maxY));
+      for (let y = y0; y < y1; y++) {
+        for (let x = x0; x < x1; x++) {
+          if (map.buildingIdAt(x, y) >= 0) continue;
+          const key = map.terrainKeyAt(x, y);
+          if (key !== 'grass' && key !== 'field' && key !== 'road') continue;
+          const dist = Math.min(outside(a, x, y), outside(b, x, y));
+          const al = 0.35 * (1 - dist / 2);
+          if (al <= 0.01) continue;
+          g.fillStyle = `rgba(128,110,80,${al.toFixed(3)})`;
+          g.fillRect(x, y, 1, 1);
+          if (d < 1) continue;
+          g.fillStyle = 'rgba(196,178,124,0.28)';
+          for (let s = 0; s < 4; s++) {
+            const kk = x * 13 + y * 7 + s;
+            g.fillRect(x + hash(kk, 0, 273) * 0.9, y + hash(kk, 1, 273) * 0.9, 0.07, 0.02);
+          }
+          if (hash(x, y, 274) > 0.7) {
+            g.strokeStyle = 'rgba(70,56,36,0.14)';
+            g.lineWidth = 0.07;
+            g.beginPath();
+            g.arc(x + hash(x, y, 275), y + hash(x, y, 276), 0.5 + hash(x, y, 277) * 0.4, 0, Math.PI);
+            g.stroke();
+          }
+        }
+      }
+    }
+  }
+  if (patches.squares.length === 0) return;
+  const roadAt = (x: number, y: number) => map.inBounds(x, y) && map.terrainKeyAt(x, y) === 'road';
+  const pavable = (x: number, y: number) => {
+    if (!map.inBounds(x, y)) return false;
+    const key = map.terrainKeyAt(x, y);
+    if (map.isBridge(x, y)) return false;
+    if (key === 'road') return true;
+    if (key !== 'grass' && key !== 'field') return false;
+    return roadAt(x - 1, y) || roadAt(x + 1, y) || roadAt(x, y - 1) || roadAt(x, y + 1);
+  };
+  const weight = (x: number, y: number) => (pavable(x, y) ? patches.pavedAt(x, y) : 0);
+  for (let y = ty0; y < ty1; y++) {
+    for (let x = tx0; x < tx1; x++) {
+      const a = weight(x, y);
+      if (a <= 0.01) continue;
+      g.globalAlpha = a;
+      if (d >= 1) g.drawImage(cobbleStamp((hash(x, y, 278) * 6) | 0, band), x, y, 1, 1);
+      else {
+        g.fillStyle = 'rgb(122,115,102)';
+        g.fillRect(x, y, 1, 1);
+      }
+      g.globalAlpha = 1;
+    }
+  }
+  // kerb: hard civic boundary wherever paving meets unpaved ground
+  for (let y = ty0; y < ty1; y++) {
+    for (let x = tx0; x < tx1; x++) {
+      if (weight(x, y) <= 0.35) continue;
+      const sides: [number, number, number, number, number, number][] = [
+        [0, -1, x, y, 1, 0.1],
+        [0, 1, x, y + 0.9, 1, 0.1],
+        [-1, 0, x, y, 0.1, 1],
+        [1, 0, x + 0.9, y, 0.1, 1],
+      ];
+      for (const [dx, dy, rx, ry, rw, rh] of sides) {
+        if (weight(x + dx, y + dy) > 0.35) continue;
+        // only where paving meets soft ground — a kerb across the open road
+        // where the ramp happens to fade would cut the run in half
+        if (roadAt(x + dx, y + dy)) continue;
+        g.fillStyle = 'rgba(158,150,132,0.50)';
+        g.fillRect(rx, ry, rw, rh);
+        g.fillStyle = 'rgba(30,26,20,0.30)';
+        g.fillRect(rx + dx * 0.1, ry + dy * 0.1, dx !== 0 ? 0.04 : rw, dy !== 0 ? 0.04 : rh);
+      }
+    }
   }
 }
 
@@ -895,12 +1067,14 @@ export class TerrainLayer {
   private hasElev: boolean;
   private hasStairs: boolean;
   private bakeBudget = 0;
+  private patches: PatchIndex;
 
   constructor(private map: GameMap) {
     // Flat maps (all elev 0, no stairs) early-out everywhere below, so their
     // chunks stay byte-identical to the pre-height renderer.
     this.hasElev = map.elev.some((e) => e !== 0);
     this.hasStairs = map.stairs.some((s) => s !== 0);
+    this.patches = new PatchIndex(map);
   }
 
   private chunk(cx: number, cy: number, band: number): HTMLCanvasElement {
@@ -930,7 +1104,8 @@ export class TerrainLayer {
     for (let y = ty0; y < ty1; y++) {
       for (let x = tx0; x < tx1; x++) drawTileBase(g, this.map, x, y, band, d);
     }
-    drawRoadWear(g, this.map, tx0, ty0, tx1, ty1, d);
+    drawPaving(g, this.map, this.patches, tx0, ty0, tx1, ty1, band, d);
+    drawRoadWear(g, this.map, tx0, ty0, tx1, ty1, d, (x, y) => this.patches.pavedAt(x, y));
     drawWaterBanks(g, this.map, tx0, ty0, tx1, ty1);
     drawDoorTrails(g, this.map, tx0, ty0, tx1, ty1);
     drawHedgeRun(g, this.map, tx0, ty0, tx1, ty1, d);
