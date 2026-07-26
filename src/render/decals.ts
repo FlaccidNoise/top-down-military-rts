@@ -21,9 +21,9 @@ export class DecalLayer {
 
   // Crater look (E6): small dark core + a distinct raised-earth rim ring,
   // short ejecta streaks, tight gradient falloff (no huge blurred starburst).
-  scorch(x: number, y: number): void {
+  scorch(x: number, y: number, mult = 1): void {
     const g = this.g;
-    const r = 0.8 + Math.random() * 0.4; // outer radius incl. rim — smaller than the old 1.2-1.8 blob
+    const r = (0.8 + Math.random() * 0.4) * mult; // outer radius incl. rim — smaller than the old 1.2-1.8 blob
 
     // raised-earth rim: lighter earth tone ring just outside the core
     const rimR = r * 0.95;
@@ -66,6 +66,23 @@ export class DecalLayer {
     g.beginPath();
     g.arc(x, y, 0.22, 0, Math.PI * 2);
     g.fill();
+  }
+
+  // Where a thrown debris chunk came down: one dark speck plus two flecks.
+  grit(x: number, y: number): void {
+    const g = this.g;
+    g.fillStyle = 'rgba(38,32,24,0.5)';
+    g.beginPath();
+    g.arc(x, y, 0.12 + Math.random() * 0.18, 0, Math.PI * 2);
+    g.fill();
+    g.fillStyle = 'rgba(52,44,33,0.35)';
+    for (let i = 0; i < 2; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const d = 0.2 + Math.random() * 0.3;
+      g.beginPath();
+      g.arc(x + Math.cos(a) * d, y + Math.sin(a) * d, 0.07, 0, Math.PI * 2);
+      g.fill();
+    }
   }
 
   // Permanent blood pool stamped once at death — earth-dark red, soft edge.

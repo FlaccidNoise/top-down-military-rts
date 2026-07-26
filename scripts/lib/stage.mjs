@@ -164,7 +164,9 @@ export function place(page, x, y, scale) {
 }
 
 // Trigger a transient VFX and capture it from inside the page. `trigger`:
-//   { type:'shot', hit, kill }  — enqueues a ShotEvent (muzzle + tracer + impact)
+//   { type:'shot', hit, kill, weapon } — enqueues a ShotEvent (muzzle + tracer
+//                                 + impact); weapon picks the muzzle signature
+//                                 and defaults to a rifle
 //   { type:'boom' }             — enqueues a boom (fireball + ejecta + smoke column)
 // Both enqueue exactly like the sim does; main.ts drains them next frame.
 //
@@ -204,7 +206,7 @@ export function burst(page, { x, y, scale, trigger, dur, buckets }) {
       const maxch = (d, i) => Math.max(d[i], d[i + 1], d[i + 2]);
       const base = roi();
 
-      if (trigger.type === 'shot') sim.pendingEvents.push({ fx: x - 6, fy: y, tx: x + 6, ty: y, hit: trigger.hit, kill: trigger.kill });
+      if (trigger.type === 'shot') sim.pendingEvents.push({ fx: x - 6, fy: y, tx: x + 6, ty: y, hit: trigger.hit, kill: trigger.kill, weapon: trigger.weapon ?? 'garand' });
       else if (trigger.type === 'boom') sim.pendingBooms.push({ x, y });
 
       const snap = Array.from({ length: buckets }, () => null); // per-bucket best canvas
