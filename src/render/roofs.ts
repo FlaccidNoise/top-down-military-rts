@@ -10,7 +10,20 @@ import { AO_ALPHA, SHADOW_ALPHA, SHADOW_SOFT_ALPHA, shadowOffset } from './light
 
 const OVERHANG = 0.35; // meters past the walls
 const FADE_SCALE = 14; // px/m at which zoom alone reveals interiors
-const PALETTES = ['#8a4b37', '#77503c', '#5a5e65'];
+// Base roof tones, muted-Normandy ceiling. Terracotta is the frame's single
+// warm accent so it sits at S~46% here (the old #8a4b37 lit to S 67%, which
+// made roofs the most saturated thing on screen); slate is near-neutral and
+// stays >=15 value points below tile on the lit slope so the two never merge.
+// hueAmp is the ±warmth jitter each base tolerates: terracotta can swing warm,
+// but slate swung the same distance turns frankly blue, which is a hue
+// statement the palette does not make.
+const MATERIALS = [
+  { base: '#6f4a3c', hueAmp: 11 }, // tuile
+  { base: '#6b5342', hueAmp: 11 }, // weathered tuile
+  { base: '#565b62', hueAmp: 6 }, // ardoise slate
+  { base: '#4e565e', hueAmp: 6 }, // cool slate
+];
+const MAX_SAT = 0.46; // HSV ceiling on the weathered base → lit slope stays ≤52%
 const BIG_ROOF_AREA = 45; // w*h threshold for weathering "patched tile" flecks
 
 // Keyed on (building index, salt) — same arithmetic as the old local copy.
@@ -36,6 +49,17 @@ function rgbStr([r, g, b]: [number, number, number]): string {
   return `rgb(${r},${g},${b})`;
 }
 
+// Pull a color toward its own value-grey until HSV saturation is at most
+// maxS. Value is untouched, so the lit/shade separation the roof reads by
+// survives — only the chroma the muted palette caps gets spent.
+function mute(rgb: [number, number, number], maxS: number): [number, number, number] {
+  const mx = Math.max(rgb[0], rgb[1], rgb[2]);
+  const mn = Math.min(rgb[0], rgb[1], rgb[2]);
+  if (mx <= 0 || mx - mn <= mx * maxS) return rgb;
+  const t = (mx * (1 - maxS) - mn) / (mx - mn);
+  return [clamp255(rgb[0] + (mx - rgb[0]) * t), clamp255(rgb[1] + (mx - rgb[1]) * t), clamp255(rgb[2] + (mx - rgb[2]) * t)];
+}
+
 interface RoofArt {
   ridgeAlongX: boolean;
   lit: string;
@@ -44,6 +68,7 @@ interface RoofArt {
   chimney: { x: number; y: number; s: number };
   chimneyShadow: { x: number; y: number };
   flecks: { x: number; y: number; s: number }[];
+  courseAlpha: number;
 }
 
 // Per-building roof look, computed once when the buildings list changes (not
@@ -56,12 +81,16 @@ function buildArt(b: Building, i: number): RoofArt {
   const w = b.w + OVERHANG * 2;
   const h = b.h + OVERHANG * 2;
 
-  const valueJitter = 1 + (hash(i, 60) - 0.5) * 0.12; // ±6%
-  const hueJitter = (hash(i, 61) - 0.5) * 16;
-  const weathered = tint(hexToRgb(PALETTES[i % PALETTES.length]), valueJitter, hueJitter);
-  const lit = rgbStr(tint(weathered, 1.22, 9));
-  const shade = rgbStr(tint(weathered, 0.7, -9));
-  const gable = rgbStr(tint(weathered, 0.5, -12));
+  const mat = MATERIALS[i % MATERIALS.length];
+  const valueJitter = 1 + (hash(i, 60) - 0.5) * 0.18; // ±9%
+  const hueJitter = (hash(i, 61) - 0.5) * 2 * mat.hueAmp;
+  const weathered = mute(tint(hexToRgb(mat.base), valueJitter, hueJitter), MAX_SAT);
+  // lit/shade value ratio stays ~1.6 — value separation is the legibility
+  // mechanism; only the hue is pulled back toward the muted ceiling.
+  const lit = rgbStr(tint(weathered, 1.14, 5));
+  const shade = rgbStr(tint(weathered, 0.72, -7));
+  const gable = rgbStr(tint(weathered, 0.55, -9));
+  const courseAlpha = 0.1 + (hash(i, 200) - 0.5) * 0.06;
 
   const t = 0.22 + hash(i, 62) * 0.56;
   const po = (hash(i, 63) - 0.5) * 0.25;
@@ -83,7 +112,7 @@ function buildArt(b: Building, i: number): RoofArt {
       });
     }
   }
-  return { ridgeAlongX, lit, shade, gable, chimney, chimneyShadow, flecks };
+  return { ridgeAlongX, lit, shade, gable, chimney, chimneyShadow, flecks, courseAlpha };
 }
 
 export class RoofLayer {
@@ -219,7 +248,7 @@ export class RoofLayer {
         }
         ctx.fill();
         // tile courses parallel to the ridge
-        ctx.strokeStyle = 'rgba(0,0,0,0.14)';
+        ctx.strokeStyle = `rgba(0,0,0,${art.courseAlpha})`;
         ctx.lineWidth = 0.045;
         ctx.beginPath();
         if (ridgeAlongX) {
@@ -235,8 +264,8 @@ export class RoofLayer {
         }
         ctx.stroke();
         // ridge cap
-        ctx.strokeStyle = 'rgba(255,235,210,0.35)';
-        ctx.lineWidth = 0.12;
+        ctx.strokeStyle = 'rgba(214,203,186,0.28)';
+        ctx.lineWidth = 0.14;
         ctx.beginPath();
         if (ridgeAlongX) {
           ctx.moveTo(x + 0.1, y + h / 2);
