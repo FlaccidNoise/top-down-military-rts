@@ -88,6 +88,9 @@ const SUN_A = Math.atan2(SUN.dy, SUN.dx);
 // Poses drawn without a helmet on the head — nothing for the glint to sit on.
 const BAREHEAD = new Set<Pose>(['dead', 'surrender2']);
 const HULL_SHADOW_OFF = 0.58;
+// A 30-tonne hull blocks more light than a man does: the soft-layer alpha the
+// soldiers use reads as a smudge under something this big.
+const HULL_SHADOW_ALPHA = 0.22;
 const SHADOW_OFF: Record<Pose, number> = {
   idle: 0.42,
   walk: 0.42,
@@ -316,7 +319,7 @@ export class Renderer {
       const [x, y] = cam.worldToScreen(v.x, v.y, cw, ch);
       if (x < -vpad || y < -vpad || x > cw + vpad || y > ch + vpad) continue;
       ctx.save();
-      ctx.globalAlpha = SHADOW_SOFT_ALPHA;
+      ctx.globalAlpha = HULL_SHADOW_ALPHA;
       ctx.translate(x, y);
       ctx.rotate(SUN_A);
       ctx.translate(HULL_SHADOW_OFF * cam.scale, 0);
