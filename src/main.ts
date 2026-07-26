@@ -196,6 +196,7 @@ function setTargetMode(m: '' | 'barrage' | 'air' | 'wheel' | 'empfire' | 'empsmo
 const urlSeed = new URLSearchParams(location.search).get('seed'); // debug: ?seed=N pins the map
 if (urlSeed !== null && !Number.isFinite(Number(urlSeed))) console.warn(`?seed=${urlSeed} is not a number; ignoring`);
 const fowOff = new URLSearchParams(location.search).get('fow') === '0'; // debug: ?fow=0 disables fog of war (render-only; never touches sim outcomes)
+const hazeOff = new URLSearchParams(location.search).get('haze') === '0'; // debug: ?haze=0 drops the ambient haze bands so the art sweep can shoot both
 const hud = new Hud({
   selectSquad,
   selectVehicle,
@@ -355,6 +356,7 @@ function startEngagementBattle(e: Engagement): void {
   aiControl = false;
   battleCompany = battle.companyIndex;
   renderer = new Renderer(sim);
+  renderer.hazeOn = !hazeOff;
   battleTitle = `Day ${front.day} ${front.hhmm} — ${battle.name}`;
   if (MOBILE) {
     // Pinching out to the whole 320m map needs ~1.2 px/m, which the desktop

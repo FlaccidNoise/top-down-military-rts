@@ -15,7 +15,7 @@
 //   node scripts/shot.mjs --list                             # presets + effects
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { arg, launch, gotoStaged, deriveTargets, place, burst, stageVehicles } from './lib/stage.mjs';
+import { arg, launch, gotoStaged, deriveTargets, deriveBuilding, wallStage, place, burst, stageVehicles } from './lib/stage.mjs';
 
 const has = (name) => process.argv.includes(`--${name}`);
 const PORT = Number(arg('port', '5198'));
@@ -27,12 +27,22 @@ const OUT = arg('out', '.screenshots/shot.png');
 const MAP_W = 320;
 const MAP_H = 240;
 const PRESETS = ['village', 'woods', 'hamlet', 'farm', 'bocage', 'units', 'enemy', 'soldiers48', 'vehicles', 'farlod', 'bridge'];
+// `anchor: 'wall'|'building'` stages against the masonry nearest the village
+// instead of the blue squad; `hold` swaps the burst for a plain screenshot
+// after N ms, which is how a sim-tick-lived effect (a building fire) is shot.
 const EFFECTS = {
   muzzle: { trigger: { type: 'shot', hit: true, kill: false }, dur: 120, buckets: 3 },
+  mg: { trigger: { type: 'shot', hit: true, kill: false, weapon: 'mg42' }, dur: 140, buckets: 4 },
+  bazooka: { trigger: { type: 'shot', hit: true, kill: false, weapon: 'bazooka' }, dur: 400, buckets: 4 },
+  cannon: { trigger: { type: 'shot', hit: true, kill: false, weapon: 'pak40_gun' }, dur: 700, buckets: 4 },
   tracer: { trigger: { type: 'shot', hit: true, kill: false }, dur: 340, buckets: 6 },
   kill: { trigger: { type: 'shot', hit: true, kill: true }, dur: 340, buckets: 6 },
   miss: { trigger: { type: 'shot', hit: false, kill: false }, dur: 120, buckets: 3 },
+  wall: { anchor: 'wall', trigger: { type: 'shot', hit: false, kill: false }, dur: 400, buckets: 4, roiFrac: 0.3 },
   boom: { trigger: { type: 'boom' }, dur: 2000, buckets: 8 },
+  grenade: { trigger: { type: 'boom', r: 3 }, dur: 2000, buckets: 8 },
+  barrage: { trigger: { type: 'boom', r: 9 }, dur: 2600, buckets: 8 },
+  fire: { anchor: 'building', trigger: { type: 'boom', r: 6 }, hold: 3000, scale: 30 },
 };
 
 if (has('list')) {
@@ -75,8 +85,38 @@ if (has('effect')) {
   const name = arg('effect', 'boom');
   const e = EFFECTS[name];
   if (!e) throw new Error(`unknown effect "${name}" — one of: ${Object.keys(EFFECTS).join(', ')}`);
-  const anchor = targets.units;
-  const frames = await burst(page, { x: anchor.x, y: anchor.y, scale: Number(arg('scale', '40')), trigger: e.trigger, dur: e.dur, buckets: e.buckets });
+  // Effects stage over the blue squad cluster by default; --preset puts the
+  // same effect anywhere named (a boom in the woods, for the startled birds).
+  let anchor = targets[arg('preset', 'units')];
+  if (!anchor) throw new Error(`unknown preset "${arg('preset')}" — one of: ${PRESETS.join(', ')}`);
+  let trigger = e.trigger;
+  if (e.anchor) {
+    const b = await deriveBuilding(page, targets.village);
+    if (e.anchor === 'wall') {
+      const w = wallStage(b);
+      anchor = w.anchor;
+      trigger = { ...e.trigger, ...w.aim };
+    } else anchor = { x: b.x + b.w / 2, y: b.y + b.h / 2 };
+  }
+  const scale = Number(arg('scale', String(e.scale ?? 40)));
+  if (e.hold) {
+    await page.evaluate(
+      ({ x, y, scale, trigger }) => {
+        const g = window.__game;
+        g.cam.x = x;
+        g.cam.y = y;
+        g.cam.scale = scale;
+        g.sim.pendingBooms.push({ x, y, r: trigger.r });
+      },
+      { x: anchor.x, y: anchor.y, scale, trigger }
+    );
+    await page.waitForTimeout(e.hold); // let the blast transient expire; what is left is the fire
+    await page.screenshot({ path: OUT });
+    console.log(`${OUT}  (effect ${name}, ${e.hold}ms after the blast)`);
+    await browser.close();
+    process.exit(0);
+  }
+  const frames = await burst(page, { x: anchor.x, y: anchor.y, scale, trigger, dur: e.dur, buckets: e.buckets, roiFrac: e.roiFrac });
   const best = frames.reduce((a, f) => (f.score > a.score ? f : a), { score: -1 });
   writeFileSync(OUT, Buffer.from(best.dataUrl.split(',')[1], 'base64'));
   console.log(`${OUT}  (effect ${name}, best frame ${best.ageMs}ms, ${best.score} changed-px)`);

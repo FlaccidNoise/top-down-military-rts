@@ -211,6 +211,55 @@ function newCanvas(px: number): [HTMLCanvasElement, Ctx] {
   return [c, c.getContext('2d')!];
 }
 
+// Ambient haze band (FX7). Not part of the square particle atlas: a band is a
+// long horizontal smear, so it bakes once at 256x64 and stretches to whatever
+// world length the band wants. A full-viewport wash would be both more fill
+// and flatter — the whole point is that the air is lumpy and only in places.
+const HAZE_W = 256;
+const HAZE_H = 64;
+const HAZE_RGB = '201,196,180';
+let hazeCache: HTMLCanvasElement | null = null;
+
+export function hazeBand(): HTMLCanvasElement {
+  if (hazeCache) return hazeCache;
+  const c = document.createElement('canvas');
+  c.width = HAZE_W;
+  c.height = HAZE_H;
+  const g = c.getContext('2d')!;
+  const body = g.createLinearGradient(0, 0, 0, HAZE_H);
+  body.addColorStop(0, `rgba(${HAZE_RGB},0)`);
+  body.addColorStop(0.5, `rgba(${HAZE_RGB},1)`);
+  body.addColorStop(1, `rgba(${HAZE_RGB},0)`);
+  g.fillStyle = body;
+  g.fillRect(0, 0, HAZE_W, HAZE_H);
+  // Lumps and thin patches, both composited against the band's own alpha so
+  // neither can put a hard edge outside the feathered envelope.
+  for (let i = 0; i < 12; i++) {
+    const bx = hash(i, 0, 250) * HAZE_W;
+    const by = (0.2 + hash(i, 1, 251) * 0.6) * HAZE_H;
+    const br = (0.12 + hash(i, 2, 252) * 0.22) * HAZE_W;
+    const thin = i % 2 === 1;
+    g.globalCompositeOperation = thin ? 'destination-out' : 'source-atop';
+    radial(g, bx, by, br, [
+      [0, `rgba(${HAZE_RGB},${thin ? 0.45 : 0.4})`],
+      [1, `rgba(${HAZE_RGB},0)`],
+    ]);
+  }
+  // Feather both ends so a drifting band never slides a vertical cut across
+  // the field.
+  g.globalCompositeOperation = 'destination-in';
+  const ends = g.createLinearGradient(0, 0, HAZE_W, 0);
+  ends.addColorStop(0, 'rgba(0,0,0,0)');
+  ends.addColorStop(0.22, 'rgba(0,0,0,1)');
+  ends.addColorStop(0.78, 'rgba(0,0,0,1)');
+  ends.addColorStop(1, 'rgba(0,0,0,0)');
+  g.fillStyle = ends;
+  g.fillRect(0, 0, HAZE_W, HAZE_H);
+  g.globalCompositeOperation = 'source-over';
+  hazeCache = c;
+  return c;
+}
+
 function radial(g: Ctx, cx: number, cy: number, r: number, stops: [number, string][]): void {
   const grad = g.createRadialGradient(cx, cy, 0, cx, cy, r);
   for (const [o, col] of stops) grad.addColorStop(o, col);

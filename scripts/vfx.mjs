@@ -10,7 +10,7 @@
 //   Dev server must already be running: npm run dev -- --port 5198 --strictPort
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { arg, launch, gotoStaged, deriveTargets, burst } from './lib/stage.mjs';
+import { arg, launch, gotoStaged, deriveTargets, deriveBuilding, wallStage, burst } from './lib/stage.mjs';
 
 const PORT = Number(arg('port', '5198'));
 const SEED = Number(arg('seed', '7'));
@@ -23,11 +23,25 @@ const slug = (s) => s.replace(/[^a-z0-9]+/gi, '-').replace(/^-|-$/g, '').toLower
 // Wall-clock transient effects — must be caught in-page (burst).
 // Buckets chosen from renderer timing: shots span muzzle(0-60ms)→travel(0-90)→
 // impact(90-340); booms span flash(0-45)→fireball(30-260)→debris→column(→2600).
+// A flash is over in 110 ms, so short effects get 4 buckets over 140 ms rather
+// than spending half their columns on an empty tail.
+//
+// `anchor:'wall'` restages the row against real masonry (a miss aimed short of
+// a building's west wall, so the overshoot ray lands on stone). `minPeak`
+// relaxes the changed-pixel bar for effects that are deliberately quiet, per
+// row — never by weakening the global assertion.
 const DYN = [
   { name: 'muzzle+tracer hit', trigger: { type: 'shot', hit: true, kill: false }, dur: 340, buckets: 6 },
   { name: 'tracer kill', trigger: { type: 'shot', hit: true, kill: true }, dur: 340, buckets: 6 },
   { name: 'tracer miss', trigger: { type: 'shot', hit: false, kill: false }, dur: 340, buckets: 6 },
+  { name: 'muzzle mg42', trigger: { type: 'shot', hit: true, kill: false, weapon: 'mg42' }, dur: 140, buckets: 4 },
+  { name: 'muzzle thompson', trigger: { type: 'shot', hit: true, kill: false, weapon: 'thompson' }, dur: 140, buckets: 4, minPeak: 15 },
+  { name: 'muzzle bazooka', trigger: { type: 'shot', hit: true, kill: false, weapon: 'bazooka' }, dur: 420, buckets: 4 },
+  { name: 'cannon blast', trigger: { type: 'shot', hit: true, kill: false, weapon: 'pak40_gun' }, dur: 720, buckets: 4 },
+  { name: 'wall strike', anchor: 'wall', trigger: { type: 'shot', hit: false, kill: false }, dur: 400, buckets: 4, roiFrac: 0.3, minPeak: 15 },
   { name: 'explosion smoke', trigger: { type: 'boom' }, dur: 2600, buckets: 8 },
+  { name: 'grenade boom', trigger: { type: 'boom', r: 3 }, dur: 2600, buckets: 8 },
+  { name: 'barrage boom', trigger: { type: 'boom', r: 9 }, dur: 2600, buckets: 8 },
 ];
 
 const { browser, page } = await launch();
@@ -35,10 +49,19 @@ const kind = await gotoStaged(page, { port: PORT, seed: SEED, camp: CAMP });
 const targets = await deriveTargets(page, { seed: SEED, kind });
 const anchor = targets.units; // stage over the US squad cluster (real units in frame)
 
+const house = await deriveBuilding(page, targets.village);
+
 const rows = [];
 let warnings = 0;
 for (const e of DYN) {
-  const frames = await burst(page, { x: anchor.x, y: anchor.y, scale: SCALE, trigger: e.trigger, dur: e.dur, buckets: e.buckets });
+  let at = anchor;
+  let trigger = e.trigger;
+  if (e.anchor === 'wall') {
+    const w = wallStage(house);
+    at = w.anchor;
+    trigger = { ...e.trigger, ...w.aim };
+  }
+  const frames = await burst(page, { x: at.x, y: at.y, scale: SCALE, trigger, dur: e.dur, buckets: e.buckets, roiFrac: e.roiFrac });
   const cells = frames.map((f) => {
     const file = `${slug(e.name)}-b${f.bucket}.png`;
     writeFileSync(join(OUT, file), Buffer.from(f.dataUrl.split(',')[1], 'base64'));
@@ -47,7 +70,7 @@ for (const e of DYN) {
   const peak = cells.reduce((a, c) => (c.score > a.score ? c : a), { score: 0, age: -1 });
   // measure, don't assume: score = ROI pixels changed vs the pre-fire frame, so
   // a peak of ~0 means we missed the effect window entirely.
-  const ok = cells.length === e.buckets && peak.score > 40;
+  const ok = cells.length === e.buckets && peak.score > (e.minPeak ?? 40);
   if (!ok) warnings++;
   console.log(`${ok ? 'ok ' : 'WARN'} ${e.name}: ${cells.length}/${e.buckets} buckets, peak ${peak.score} changed-px @ ${peak.age}ms`);
   rows.push({ name: e.name, cells });
@@ -108,7 +131,92 @@ await page.evaluate(
 await page.screenshot({ path: join(OUT, 'smoke-screen.png') });
 rows.push({ name: 'smoke screen', cells: [{ file: 'smoke-screen.png', bucket: 0, age: 0, score: 0 }] });
 
+// Pockmarks (marks.ts): twenty misses into one wall. Each target y is offset a
+// little because the 1-in-3 mark gate hashes the impact coords — twenty rounds
+// at identical coordinates would either all mark or none would.
+await page.evaluate(
+  (b) => {
+    const g = window.__game;
+    const my = b.y + b.h / 2;
+    g.cam.x = b.x; // wall on the screen centre line, so the clip below lands on it
+    g.cam.y = my;
+    g.cam.scale = 64;
+    for (let i = 0; i < 20; i++) {
+      const ty = my - 1.4 + i * 0.14;
+      g.sim.pendingEvents.push({ fx: b.x - 6, fy: ty, tx: b.x - 1.2, ty, hit: false, kill: false, weapon: 'garand' });
+    }
+  },
+  house
+);
+await page.waitForTimeout(600); // let the tracers and spall age off; the marks are permanent
+// Clipped: a 0.15 m chip is ~10 px here and would vanish in a 220 px contact
+// sheet cell, which is the one thing a regression gate cannot afford.
+await page.screenshot({ path: join(OUT, 'pockmarks.png'), clip: { x: 460, y: 220, width: 360, height: 360 } });
+rows.push({ name: 'pockmarks', cells: [{ file: 'pockmarks.png', bucket: 0, age: 0, score: 0 }] });
+
+// Building fire (FX5). Its lifetime runs on sim.tick and the game is paused, so
+// the fire survives the wait that kills the blast transient — which is the
+// point of the two-clock split, and worth asserting.
+await page.evaluate(
+  (b) => {
+    const g = window.__game;
+    const cx = b.x + b.w / 2;
+    const cy = b.y + b.h / 2;
+    g.cam.x = cx;
+    g.cam.y = cy;
+    g.cam.scale = 30;
+    g.sim.pendingBooms.push({ x: cx, y: cy, r: 6 });
+  },
+  house
+);
+await page.waitForTimeout(2900);
+await page.screenshot({ path: join(OUT, 'building-fire.png') });
+rows.push({ name: 'building fire', cells: [{ file: 'building-fire.png', bucket: 0, age: 0, score: 0 }] });
+
+// Vehicle brew-up (FX5): no vehicles in the staged garrison scenario, so add
+// one and kill it — the same wreck+burning state destroyVehicle leaves behind.
+await page.evaluate(
+  ({ x, y }) => {
+    const g = window.__game;
+    const v = g.sim.addVehicle('red', 'panzer4', x, y, 0.6);
+    v.alive = false;
+    v.burning = true;
+    g.cam.x = x;
+    g.cam.y = y;
+    g.cam.scale = 30;
+  },
+  { x: anchor.x + 6, y: anchor.y }
+);
+await page.waitForTimeout(1200);
+await page.screenshot({ path: join(OUT, 'brew-up.png') });
+rows.push({ name: 'vehicle brew-up', cells: [{ file: 'brew-up.png', bucket: 0, age: 0, score: 0 }] });
+
 await browser.close();
+
+// Haze (FX7) needs its own page: the band layer is chosen at battle start from
+// ?haze, and it only exists at the far zooms, so it gets a fresh far shot with
+// the switch both ways.
+{
+  const { browser: b2, page: p2 } = await launch();
+  const k2 = await gotoStaged(p2, { port: PORT, seed: SEED, camp: CAMP });
+  const t2 = await deriveTargets(p2, { seed: SEED, kind: k2 });
+  for (const [name, file, on] of [['haze', 'haze-on.png', 1], ['haze off', 'haze-off.png', 0]]) {
+    if (!on) await gotoStaged(p2, { port: PORT, seed: SEED, camp: CAMP, haze: 0 });
+    await p2.evaluate(
+      async ({ x, y }) => {
+        const g = window.__game;
+        g.cam.x = x;
+        g.cam.y = y;
+        g.cam.scale = 12;
+        for (let i = 0; i < 20; i++) await new Promise((r) => requestAnimationFrame(r));
+      },
+      t2.village
+    );
+    await p2.screenshot({ path: join(OUT, file) });
+    rows.push({ name, cells: [{ file, bucket: 0, age: 0, score: 0 }] });
+  }
+  await b2.close();
+}
 
 const maxCols = Math.max(...rows.map((r) => r.cells.length));
 const html = `<!doctype html><title>vfx capture — seed ${SEED}</title><style>
