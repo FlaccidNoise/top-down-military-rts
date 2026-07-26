@@ -31,6 +31,7 @@ const BAKES_PER_FRAME = 3;
 
 import { hash, vec } from './noise';
 import { stamp, stampRect } from './stamps';
+import { canopySprite, drawLog } from './canopy';
 
 // Bilinear value noise on an 8m lattice — smooth patches, no hard square edges.
 function coarse(x: number, y: number): number {
@@ -78,8 +79,6 @@ const GRASS_DRY: [number, number, number] = [104, 108, 66]; // macro-drift patch
 const ROAD: [number, number, number] = [124, 103, 76]; // warm dirt
 const WOODS_GROUND: [number, number, number] = [61, 74, 51]; // #3d4a33
 const HEDGE_GREEN: [number, number, number] = [72, 90, 48]; // yellower, denser than woods
-const CANOPY_A: [number, number, number] = [52, 78, 42];
-const CANOPY_B: [number, number, number] = [44, 68, 46];
 const FLOOR: [number, number, number] = [160, 145, 122];
 const FLOOR_DARK: [number, number, number] = [141, 120, 95];
 const WATER: [number, number, number] = [70, 90, 99]; // desaturated slate, muted-Normandy — not postcard blue
@@ -281,6 +280,10 @@ function drawHedgeRun(g: Ctx, map: GameMap, tx0: number, ty0: number, tx1: numbe
   // soft two-layer SE cast shadow
   pass((t) => t.width * 1.15, () => `rgba(10,14,8,${SHADOW_SOFT_ALPHA})`, sdx * 1.6, sdy * 1.6);
   pass((t) => t.width * 1.1, () => `rgba(10,14,8,${SHADOW_ALPHA})`, sdx, sdy);
+  // earth bank under the foliage: a bocage hedge grows out of a raised bank,
+  // and without it the run reads as a green sausage lying on the lawn
+  pass((t) => t.width * 1.25, () => 'rgba(72,58,38,0.35)', 0.06, 0.08);
+  pass((t) => 0.05, () => 'rgba(14,18,10,0.4)', 0.06 + sdx * 0.5, 0.08 + sdy * 0.5);
   // hedge mass — yellower, denser green than woods
   pass((t) => t.width, (t) => shade(HEDGE_GREEN, 0.82 + macro(t.x, t.y) * 0.3), 0, 0);
   // NW rim catching the sun
@@ -289,15 +292,97 @@ function drawHedgeRun(g: Ctx, map: GameMap, tx0: number, ty0: number, tx1: numbe
   // without the boundary steps — small blobs never cross a tile seam visibly
   const dabs = d === 0 ? 0 : d === 1 ? 3 : 6;
   for (const t of tiles) {
+    const vertical = (t.n || t.s) && !(t.w || t.e);
     for (let i = 0; i < dabs; i++) {
-      const dx = t.x + 0.28 + hash(t.x, t.y, 54 + i) * 0.44;
-      const dy = t.y + 0.28 + hash(t.x, t.y, 57 + i) * 0.44;
-      g.fillStyle = hash(t.x, t.y, 60 + i) > 0.5 ? shade(HEDGE_GREEN, 0.64) : shade(HEDGE_GREEN, 1.22);
+      const k = t.x * 8 + i;
+      let dx = t.x + 0.28 + hash(k, t.y, 54) * 0.44;
+      let dy = t.y + 0.28 + hash(k, t.y, 55) * 0.44;
+      // two dabs ride the silhouette so the run's outline goes ragged instead
+      // of staying a smooth capsule; they stay near the mass tone, because a
+      // dark blob half-off the hedge reads as a floating speck on the grass
+      const rim = i < 2;
+      if (rim) {
+        const s = i === 0 ? 1 : -1;
+        const u = 0.2 + hash(k, t.y, 58) * 0.6;
+        dx = vertical ? t.x + 0.5 + s * t.width * 0.5 : t.x + u;
+        dy = vertical ? t.y + u : t.y + 0.5 + s * t.width * 0.5;
+      }
+      const light = hash(k, t.y, 56) > 0.5;
+      g.fillStyle = shade(HEDGE_GREEN, rim ? (light ? 1.05 : 0.78) : light ? 1.22 : 0.64);
       g.beginPath();
-      g.arc(dx, dy, 0.06 + hash(t.x, t.y, 63 + i) * 0.08, 0, Math.PI * 2);
+      g.arc(dx, dy, 0.06 + hash(k, t.y, 57) * 0.08, 0, Math.PI * 2);
       g.fill();
     }
   }
+  if (d < 2) return;
+  // bare twigs where a run stops — the cut end of a hedgerow is sticks, not foliage
+  g.strokeStyle = 'rgba(58,50,34,0.5)';
+  g.lineWidth = 0.035;
+  for (const t of tiles) {
+    if (Number(t.n) + Number(t.s) + Number(t.w) + Number(t.e) > 1) continue;
+    for (let i = 0; i < 3; i++) {
+      const k = t.x * 4 + i;
+      const a = hash(k, t.y, 59) * Math.PI * 2;
+      const sx = t.x + 0.35 + hash(k, t.y, 60) * 0.3;
+      const sy = t.y + 0.35 + hash(k, t.y, 61) * 0.3;
+      const l = 0.2 + hash(k, t.y, 62) * 0.2;
+      g.beginPath();
+      g.moveTo(sx, sy);
+      g.lineTo(sx + Math.cos(a) * l, sy + Math.sin(a) * l);
+      g.stroke();
+    }
+  }
+}
+
+// Woods floor: leaf flecks, twigs, a surface root, and at the closest tier
+// fern fronds and a moss patch. Replaces the four per-tile litter ellipses,
+// which were the whole of the forest floor.
+function litterStamp(v: number, d: Detail, band: number): HTMLCanvasElement {
+  return stamp(`woods:litter:${v}:${d >= 2 ? 2 : 1}`, band, 1, (g) => {
+    if (d >= 2) {
+      g.fillStyle = 'rgba(74,92,56,0.18)';
+      g.beginPath();
+      g.ellipse(0.2 + hash(v, 0, 266) * 0.6, 0.2 + hash(v, 1, 266) * 0.6, 0.16, 0.12, hash(v, 2, 266) * Math.PI, 0, Math.PI * 2);
+      g.fill();
+    }
+    g.strokeStyle = 'rgba(58,44,28,0.35)';
+    g.lineWidth = 0.05;
+    g.beginPath();
+    g.arc(0.5 + (hash(v, 0, 267) - 0.5) * 0.6, 1.1 + hash(v, 1, 267) * 0.3, 0.55, Math.PI * 1.15, Math.PI * 1.85);
+    g.stroke();
+    for (let i = 0; i < 10; i++) {
+      const k = v * 13 + i;
+      g.fillStyle = hash(k, 0, 268) > 0.45 ? 'rgba(20,24,14,0.22)' : 'rgba(120,110,70,0.16)';
+      g.beginPath();
+      g.ellipse(0.08 + hash(k, 1, 268) * 0.84, 0.08 + hash(k, 2, 268) * 0.84, 0.03 + hash(k, 3, 268) * 0.025, 0.018 + hash(k, 4, 268) * 0.016, hash(k, 5, 268) * Math.PI, 0, Math.PI * 2);
+      g.fill();
+    }
+    g.strokeStyle = 'rgba(46,38,24,0.4)';
+    g.lineWidth = 0.03;
+    for (let i = 0; i < 3; i++) {
+      const k = v * 7 + i;
+      const sx = 0.1 + hash(k, 0, 269) * 0.7;
+      const sy = 0.1 + hash(k, 1, 269) * 0.7;
+      const a = hash(k, 2, 269) * Math.PI * 2;
+      const l = 0.15 + hash(k, 3, 269) * 0.15;
+      g.beginPath();
+      g.moveTo(sx, sy);
+      g.lineTo(sx + Math.cos(a) * l, sy + Math.sin(a) * l);
+      g.stroke();
+    }
+    if (d < 2) return;
+    const fx = 0.2 + hash(v, 3, 266) * 0.6;
+    const fy = 0.2 + hash(v, 4, 266) * 0.6;
+    g.strokeStyle = 'rgba(96,116,66,0.35)';
+    g.lineWidth = 0.028;
+    for (let i = 0; i < 3; i++) {
+      const a = -Math.PI / 2 + (i - 1) * 0.6 + (hash(v, i, 266) - 0.5) * 0.3;
+      g.beginPath();
+      g.moveTo(fx, fy);
+      g.lineTo(fx + Math.cos(a) * 0.2, fy + Math.sin(a) * 0.2);
+      g.stroke();
+    }
+  });
 }
 
 function gravelStamp(v: number, band: number): HTMLCanvasElement {
@@ -594,23 +679,24 @@ function drawSubTileGround(g: Ctx, x: number, y: number, darken = 1): void {
   }
 }
 
+// 2x2 sub-tile sampling — each quadrant gets its own coarse() read instead of
+// one flat value per tile, which is what made the grass read as a visible 1m
+// checkerboard at high zoom.
+function drawGrassBase(g: Ctx, x: number, y: number): void {
+  const base = blendPalette([GRASS, GRASS_DRY], macro(x, y));
+  for (let sub = 0; sub < 4; sub++) {
+    const sx = x + (sub & 1) * 0.5;
+    const sy = y + (sub >> 1) * 0.5;
+    g.fillStyle = shade(base, 0.88 + coarse(sx + 0.25, sy + 0.25) * 0.16 + hash(x, y, sub) * 0.05);
+    g.fillRect(sx, sy, 0.5, 0.5);
+  }
+}
+
 function drawTileBase(g: Ctx, map: GameMap, x: number, y: number, band: number, d: Detail): void {
   const t = map.terrainKeyAt(x, y);
   const v = 0.93 + coarse(x, y) * 0.1 + hash(x, y) * 0.04;
   if (t === 'grass') {
-    const base = blendPalette([GRASS, GRASS_DRY], macro(x, y));
-    // 2x2 sub-tile sampling — each quadrant gets its own coarse() read
-    // instead of one flat value per tile, which is what made the grass
-    // read as a visible 1m checkerboard at high zoom.
-    for (let sub = 0; sub < 4; sub++) {
-      const ox = sub & 1;
-      const oy = sub >> 1;
-      const sx = x + ox * 0.5;
-      const sy = y + oy * 0.5;
-      const sv = 0.88 + coarse(sx + 0.25, sy + 0.25) * 0.16 + hash(x, y, sub) * 0.05;
-      g.fillStyle = shade(base, sv);
-      g.fillRect(sx, sy, 0.5, 0.5);
-    }
+    drawGrassBase(g, x, y);
     if (d >= 1) {
       const [fdx, fdy] = vec(x + 0.5, y + 0.5, 205, 34);
       const axis = Math.abs(fdx) > Math.abs(fdy) ? 0 : 1;
@@ -692,23 +778,15 @@ function drawTileBase(g: Ctx, map: GameMap, x: number, y: number, band: number, 
     }
   } else if (t === 'woods') {
     drawSubTileGround(g, x, y);
-    // leaf litter / undergrowth texture
-    if (d >= 1) {
-      for (let i = 0; i < 4; i++) {
-        const lx = x + hash(x, y, 80 + i);
-        const ly = y + hash(x, y, 85 + i);
-        g.fillStyle = hash(x, y, 90 + i) > 0.45 ? 'rgba(20,24,14,0.22)' : 'rgba(120,110,70,0.16)';
-        g.beginPath();
-        g.ellipse(lx, ly, 0.09 + hash(x, y, 95 + i) * 0.08, 0.05 + hash(x, y, 96 + i) * 0.05, hash(x, y, 97 + i) * Math.PI, 0, Math.PI * 2);
-        g.fill();
-      }
-    }
+    if (d >= 1) g.drawImage(litterStamp((hash(x, y, 265) * 8) | 0, d, band), x, y, 1, 1);
   } else if (t === 'hedge') {
-    // ground under the hedge only — the capsule strokes are drawn by
+    // Ground under the hedge only — the capsule strokes are drawn by
     // drawHedgeRun in whole-run passes (per-tile stroke stacks let a tile's
     // dark AO/shadow overpaint the neighbor's green mass, which is what read
-    // as per-tile capsule segmentation at 24 px/m)
-    drawSubTileGround(g, x, y, 0.88);
+    // as per-tile capsule segmentation at 24 px/m). It is the ordinary grass
+    // base, not the dark woods floor: a hedge run is narrower than its tiles,
+    // and the dark tone left a 1 m square halo around every hedge tile.
+    drawGrassBase(g, x, y);
   } else if (t === 'field') {
     const bx = x >> 3; // 8m parcel block — furrow geometry only, color stays smooth
     const by = y >> 3;
@@ -764,7 +842,7 @@ function drawTileBase(g: Ctx, map: GameMap, x: number, y: number, band: number, 
   }
 }
 
-function drawTree(g: Ctx, map: GameMap, x: number, y: number): void {
+function drawTree(g: Ctx, map: GameMap, x: number, y: number, band: number, d: Detail): void {
   const wooded = (tx: number, ty: number) => map.inBounds(tx, ty) && map.terrainKeyAt(tx, ty) === 'woods';
   // Canopy-gap culling is only safe deep inside a stand, where the bare (darker)
   // woods floor sits under surrounding canopy. On an edge tile — any non-woods
@@ -775,22 +853,17 @@ function drawTree(g: Ctx, map: GameMap, x: number, y: number): void {
   const cx = x + 0.3 + hash(x, y, 41) * 0.4;
   const cy = y + 0.3 + hash(x, y, 42) * 0.4;
   const r = 0.55 + hash(x, y, 43) * 0.4; // may overhang up to ~1 tile — chunks overscan by `pad`, so this is safe
-  g.fillStyle = 'rgba(10,16,8,0.3)';
-  g.beginPath();
-  g.ellipse(cx + 0.18, cy + 0.22, r, r * 0.9, 0, 0, Math.PI * 2);
-  g.fill();
-  const canopy = hash(x, y, 45) < 0.5 ? CANOPY_A : CANOPY_B;
-  g.fillStyle = shade(canopy, 0.85 + hash(x, y, 44) * 0.35);
-  g.beginPath();
-  g.arc(cx, cy, r, 0, Math.PI * 2);
-  g.fill();
-  g.strokeStyle = 'rgba(0,0,0,0.25)';
-  g.lineWidth = 0.07;
-  g.stroke();
-  g.fillStyle = 'rgba(190,220,150,0.18)';
-  g.beginPath();
-  g.arc(cx - r * 0.25, cy - r * 0.25, r * 0.55, 0, Math.PI * 2);
-  g.fill();
+  // mapgen plants orchards on a staggered 2-tile spacing, so a woods tile with
+  // no orthogonal woods neighbour but woods two tiles out is a fruit tree, not
+  // a forest tree
+  const orchard =
+    !wooded(x - 1, y) && !wooded(x + 1, y) && !wooded(x, y - 1) && !wooded(x, y + 1) &&
+    (wooded(x - 2, y) || wooded(x + 2, y) || wooded(x, y - 2) || wooded(x, y + 2));
+  const fam: 0 | 1 | 2 = orchard ? 2 : hash(x, y, 45) < 0.5 ? 0 : 1;
+  // quantized so repeated trees reuse the same destination scale and the
+  // browser's resample of the sprite stays predictable
+  const k = Math.round((r / 0.75) * 8) / 8;
+  g.drawImage(canopySprite(fam, (hash(x, y, 46) * 12) | 0, band, d), cx - 1.5 * k, cy - 1.5 * k, 3 * k, 3 * k);
 }
 
 function drawEdge(g: Ctx, e: number, x0: number, y0: number, x1: number, y1: number): void {
@@ -861,9 +934,22 @@ export class TerrainLayer {
     drawWaterBanks(g, this.map, tx0, ty0, tx1, ty1);
     drawDoorTrails(g, this.map, tx0, ty0, tx1, ty1);
     drawHedgeRun(g, this.map, tx0, ty0, tx1, ty1, d);
+    if (d >= 1) {
+      // Fallen trunks, deep inside a stand only, ~1 per 50 woods tiles. Drawn
+      // before the canopies so a tree overlaps the log rather than the log
+      // sitting on top of the leaves.
+      for (let y = ty0; y < ty1; y++) {
+        for (let x = tx0; x < tx1; x++) {
+          if (this.map.terrainKeyAt(x, y) !== 'woods' || hash(x, y, 270) >= 0.02) continue;
+          const wooded = (tx: number, ty: number) => this.map.inBounds(tx, ty) && this.map.terrainKeyAt(tx, ty) === 'woods';
+          if (!wooded(x - 1, y) || !wooded(x + 1, y) || !wooded(x, y - 1) || !wooded(x, y + 1)) continue;
+          drawLog(g, x + 0.5, y + 0.5, x * 977 + y);
+        }
+      }
+    }
     for (let y = ty0; y < ty1; y++) {
       for (let x = tx0; x < tx1; x++) {
-        if (this.map.terrainKeyAt(x, y) === 'woods') drawTree(g, this.map, x, y);
+        if (this.map.terrainKeyAt(x, y) === 'woods') drawTree(g, this.map, x, y, band, d);
       }
     }
     for (let y = ty0; y <= ty1; y++) {
