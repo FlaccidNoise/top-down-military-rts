@@ -2,7 +2,7 @@ import type { Emplacement } from '../sim/emplacement';
 import { MELEE_STRIKE_RANGE, type MeleeEvent, type ShotEvent, type Side, type Sim, type Soldier, type Vehicle } from '../sim/sim';
 import type { Camera } from './camera';
 import { DecalLayer } from './decals';
-import { bandFor, DUDE_SCALE, getShadowSprite, getSprite, glintSprite, headOffset, SPRITE_MIN_SCALE, SPRITE_SPAN, tier, WALK_FRAMES, weaponClass, type Pose } from './dudes';
+import { bandFor, CRAWL_FRAMES, DUDE_SCALE, getShadowSprite, getSprite, glintSprite, headOffset, SPRITE_MIN_SCALE, SPRITE_SPAN, tier, WALK_FRAMES, weaponClass, type Pose } from './dudes';
 import { ballistic, blit, FLASH, flashClass, fxDetail, hotPass, SPIKE_SIDES, traceOvershoot, WIND, type FlashSpec, type FxKind, type Overshoot } from './fx';
 import { SHADOW_SOFT_ALPHA, SUN } from './light';
 import { MarkLayer } from './marks';
@@ -85,19 +85,26 @@ const TEAM = { blue: '#5b9bd5', red: '#d05c50' } as const;
 // foreshortened cast, so a 1.75 m man throws 0.42 m and a 2.4 m hull 0.58 m —
 // not the geometric length a 40-degree sun would imply.
 const SUN_A = Math.atan2(SUN.dy, SUN.dx);
+// Poses drawn without a helmet on the head — nothing for the glint to sit on.
+const BAREHEAD = new Set<Pose>(['dead', 'surrender2']);
 const HULL_SHADOW_OFF = 0.58;
 const SHADOW_OFF: Record<Pose, number> = {
   idle: 0.42,
   walk: 0.42,
   aim: 0.42,
+  reload: 0.42,
   melee: 0.42,
   surrendered: 0.42,
+  surrender2: 0.42,
   drag: 0.42,
   kneel: 0.3,
   aid: 0.3,
+  crawl: 0.12,
   prone: 0.12,
   downed: 0.12,
   dead: 0.12,
+  dead1: 0.12,
+  dead2: 0.12,
   dragged: 0.12,
 };
 
@@ -646,10 +653,14 @@ export class Renderer {
     st.px = s.x;
     st.py = s.y;
 
+    const band = bandFor(cam.scale);
     let pose: Pose;
     let frame = 0;
-    if (!s.alive) pose = 'dead';
-    else if (s.captured) pose = 'surrendered';
+    if (!s.alive) {
+      // Three sprawls, picked off a render-side hash — never the sim RNG.
+      const h = hash(s.id, 0, 7);
+      pose = h < 0.4 ? 'dead' : h < 0.75 ? 'dead1' : 'dead2';
+    } else if (s.captured) pose = hash(s.id, 0, 11) < 0.55 ? 'surrendered' : 'surrender2';
     else if (s.downed) pose = carried ? 'dragged' : 'downed';
     else if (s.task?.phase === 'drag') pose = 'drag';
     else if (s.task?.phase === 'aid') pose = 'aid';
@@ -659,11 +670,19 @@ export class Renderer {
       pose = 'melee';
       frame = s.meleePhase < 0.18 ? 2 : s.meleePhase < 0.42 ? 3 : s.meleePhase < 0.78 ? 0 : 1;
     } else if (s.mental === 'pinned' || (s.mental === 'broken' && !s.path)) pose = 'prone';
-    else if (moved > 1e-4) {
+    else if (s.suppression > 0.5 && moved > 1e-4) {
+      // A pinned man provably never advances (sim gates advance() on it), so a
+      // pinned-and-moving crawl would be dead code. `shaken` — suppressed past
+      // 0.5 but under the pin threshold — is the state that still moves.
+      pose = 'crawl';
+      st.phase += moved * 0.9;
+      frame = Math.floor((st.phase % 1) * CRAWL_FRAMES);
+    } else if (moved > 1e-4) {
       pose = 'walk';
       st.phase += moved * 1.4;
       frame = Math.floor((st.phase % 1) * WALK_FRAMES);
-    } else if (s.targetId >= 0) pose = s.suppression > 0.15 ? 'kneel' : 'aim';
+    } else if (s.reloading > 0 && s.targetId >= 0 && tier(band) >= 2) pose = 'reload';
+    else if (s.targetId >= 0) pose = s.suppression > 0.15 ? 'kneel' : 'aim';
     else pose = 'idle';
 
     if (s.alive) {
@@ -721,7 +740,6 @@ export class Renderer {
       ctx.stroke();
     }
 
-    const band = bandFor(cam.scale);
     const spr = getSprite(s.side, s.weapon, pose, frame, band);
     const facing = s.alive ? (dragFacing ?? st.facing) : st.facing + ((s.id * 2654435761) % 100) / 100 - 0.5;
     st.pose = pose;
@@ -739,7 +757,7 @@ export class Renderer {
     // Helmet glint (U2): one unrotated quad on the head, so every man in the
     // company is lit from the same side. The baked highlight it replaces
     // pointed wherever the soldier happened to be facing.
-    if (tier(band) >= 2 && pose !== 'dead') {
+    if (tier(band) >= 2 && !BAREHEAD.has(pose)) {
       const [hx, hy] = headOffset(pose);
       const u = DUDE_SCALE * cam.scale * lvl;
       const gs = 0.42 * u;

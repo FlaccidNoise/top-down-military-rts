@@ -8,8 +8,26 @@ import { SpriteCache } from './spritecache';
 // one rotated drawImage per soldier; rotation is free because top-down art has
 // a single valid view angle.
 
-export type Pose = 'idle' | 'walk' | 'aim' | 'kneel' | 'prone' | 'downed' | 'dead' | 'drag' | 'aid' | 'dragged' | 'melee' | 'surrendered';
+export type Pose =
+  | 'idle'
+  | 'walk'
+  | 'crawl'
+  | 'aim'
+  | 'reload'
+  | 'kneel'
+  | 'prone'
+  | 'downed'
+  | 'dead'
+  | 'dead1'
+  | 'dead2'
+  | 'drag'
+  | 'aid'
+  | 'dragged'
+  | 'melee'
+  | 'surrendered'
+  | 'surrender2';
 export const WALK_FRAMES = 6;
+export const CRAWL_FRAMES = 4; // 0 left knee up, 1 mid, 2 right knee up, 3 mid
 export const MELEE_FRAMES = 4; // 0 guard, 1 windup, 2 thrust, 3 recover
 export const SPRITE_SPAN = 3.6; // meters covered by the (square) sprite canvas
 export const DUDE_SCALE = 1.35; // genre-standard oversize so figures read at tactical zoom
@@ -364,7 +382,9 @@ function contactShadow(g: Ctx): void {
 }
 
 // Shared standing body: legSwing in [-1,1] (0 = feet hidden under torso).
-function standing(g: Ctx, k: Kit, w: WeaponKey, gunAngle: number, legSwing: number, lean: number, band: number): void {
+// `shouldered` brings the stock to the cheek — the difference between holding
+// a stick and firing a rifle.
+function standing(g: Ctx, k: Kit, w: WeaponKey, gunAngle: number, legSwing: number, lean: number, band: number, shouldered = false): void {
   if (legSwing !== 0) {
     for (const side of [-1, 1] as const) {
       const lx = side * legSwing * 0.34;
@@ -373,40 +393,95 @@ function standing(g: Ctx, k: Kit, w: WeaponKey, gunAngle: number, legSwing: numb
     }
   }
   g.save();
-  g.rotate(-legSwing * 0.12); // shoulder counter-sway against the leg swing (S4)
+  // shoulder counter-sway against the leg swing (S4), plus a right-shoulder
+  // bias when the stock is actually in the cheek
+  g.rotate(-legSwing * 0.12 + (shouldered ? -0.1 : 0));
   torso(g, k, 0.22, 0.31, band, w);
   g.restore();
   const bob = Math.abs(legSwing) * 0.035; // head bob, two beats per stride (S4)
-  const gx = 0.14;
-  const gy = 0.13;
+  const gx = shouldered ? 0.1 : 0.14;
+  const gy = shouldered ? 0.06 : 0.13;
   const fore = gunFore(w);
   const fx = gx + Math.cos(gunAngle) * fore;
   const fy = gy + Math.sin(gunAngle) * fore;
-  cap(g, 0.02, 0.24, gx, gy, 0.12, k.sleeve);
+  cap(g, 0.02, shouldered ? 0.2 : 0.24, gx, gy, 0.12, k.sleeve); // rear elbow tucks in behind the butt
   cap(g, 0.02, -0.24, fx, fy, 0.12, k.sleeve);
   gun(g, w, gx, gy, gunAngle, band);
   dot(g, gx, gy, 0.055, k.skin);
   dot(g, fx, fy, 0.055, k.skin);
-  helmet(g, k, 0.04 + lean, -bob, band);
+  helmet(g, k, 0.04 + lean, -bob + (shouldered ? 0.06 : 0), band); // cheek down to the stock
+}
+
+// Reload: the weapon is out of the fight and it must LOOK out of the fight —
+// canted down, pulled back to the body, support hand up at the receiver, head
+// tipped to the breech. `Soldier.reloading` was already in the sim and nobody
+// drew it; a squad where you can see who is empty is a tactical read.
+function reload(g: Ctx, k: Kit, w: WeaponKey, band: number): void {
+  torso(g, k, 0.22, 0.31, band, w);
+  const gx = 0.02;
+  const gy = 0.16;
+  cap(g, 0.02, 0.24, gx, gy, 0.12, k.sleeve);
+  cap(g, 0.02, -0.22, 0.2, -0.14, 0.12, k.sleeve); // support hand up at the breech
+  gun(g, w, gx, gy, 0.5, band);
+  dot(g, gx, gy, 0.055, k.skin);
+  dot(g, 0.2, -0.14, 0.055, k.skin);
+  if (tier(band) >= 3) cap(g, 0.22, -0.16, 0.28, -0.1, 0.05, '#6b6250'); // fresh clip in the working hand
+  helmet(g, k, 0.02, 0.03, band);
+}
+
+// Crawling under fire: the shaken (not pinned) man still advances, on his
+// belly, dragging the weapon alongside.
+function crawl(g: Ctx, k: Kit, w: WeaponKey, frame: number, band: number): void {
+  const legs: [number, number, number, number][][] = [
+    [
+      [-0.45, 0.08, -0.7, 0.28],
+      [-0.45, -0.06, -0.95, -0.14],
+    ],
+    [
+      [-0.45, 0.08, -0.88, 0.2],
+      [-0.45, -0.08, -0.88, -0.2],
+    ],
+    [
+      [-0.45, -0.08, -0.7, -0.28],
+      [-0.45, 0.06, -0.95, 0.14],
+    ],
+    [
+      [-0.45, 0.08, -0.88, 0.2],
+      [-0.45, -0.08, -0.88, -0.2],
+    ],
+  ];
+  proneBody(g, k, legs[frame], band);
+  const reach = frame === 0 || frame === 3 ? 0.62 : 0.5; // forward arm alternates
+  cap(g, 0.14, -0.22, reach, -0.1, 0.12, k.sleeve);
+  cap(g, 0.1, 0.22, 0.34, 0.2, 0.12, k.sleeve); // opposite elbow tucked under the chest
+  dot(g, reach, -0.1, 0.055, k.skin);
+  dot(g, 0.34, 0.2, 0.055, k.skin);
+  gun(g, w, 0.42, 0.14, 0.12, band); // dragged alongside, not aimed
+  helmet(g, k, 0.42, frame === 1 ? 0.02 : frame === 3 ? -0.02 : 0, band);
 }
 
 // Kneeling, between idle and prone: one leg tucked, torso compressed, weapon
 // aimed level (S8).
 function kneel(g: Ctx, k: Kit, w: WeaponKey, band: number): void {
   dot(g, -0.1, 0.16, 0.075, '#3a3128'); // planted boot
+  if (tier(band) >= 2) cap(g, -0.16, 0.18, -0.1, 0.16, 0.045, '#2c261f'); // rear heel up off the ground
   dot(g, -0.14, -0.12, 0.075, '#3a3128'); // tucked knee
   cap(g, -0.14, -0.12, 0.05, -0.05, 0.13, k.trousers); // bent leg up to the hip
+  if (tier(band) >= 2) dot(g, 0.12, -0.13, 0.075, k.trousers); // front knee forward of the boot
+  g.save();
+  g.rotate(-0.1); // same right-shoulder bias as the standing firing pose
   torso(g, k, 0.2, 0.27, band, w);
-  const gx = 0.14;
-  const gy = 0.1;
+  g.restore();
+  const gx = 0.1;
+  const gy = 0.04;
   const fore = gunFore(w);
   const fx = gx + fore;
-  cap(g, 0.02, 0.2, gx, gy, 0.12, k.sleeve);
+  cap(g, 0.02, 0.18, gx, gy, 0.12, k.sleeve);
   cap(g, 0.02, -0.2, fx, gy, 0.12, k.sleeve);
   gun(g, w, gx, gy, 0, band);
   dot(g, gx, gy, 0.055, k.skin);
   dot(g, fx, gy, 0.055, k.skin);
-  helmet(g, k, 0.06, 0, band);
+  helmet(g, k, 0.06, 0.05, band);
 }
 
 function proneBody(g: Ctx, k: Kit, legs: [number, number, number, number][], band: number): void {
@@ -463,6 +538,67 @@ function dead(g: Ctx, k: Kit, w: WeaponKey, band: number): void {
   dot(g, 0.42, 0.12, 0.14, k.skin); // bare head, helmet rolled away
   dot(g, 0.46, 0.09, 0.1, '#5a4632');
   dot(g, 0.7, -0.18, 0.16, k.helmet);
+}
+
+// A battlefield where every corpse is the same drawing rotated by a per-id
+// jitter reads as procedural at a glance. Three sprawls, picked render-side by
+// hash (never the sim RNG), kill that tell.
+// dead1: curled on his side, knees up, arms in — the commonest real posture.
+function deadCurled(g: Ctx, k: Kit, w: WeaponKey, band: number): void {
+  gun(g, w, -0.28, 0.44, -1.9, band); // weapon dropped beside him
+  for (const side of [-1, 1] as const) {
+    cap(g, -0.3, side * 0.1, -0.56, side * 0.26, 0.14, k.trousers);
+    cap(g, -0.56, side * 0.26, -0.26, side * 0.36, 0.13, k.trousers); // shin folded back under the thigh
+    dot(g, -0.26, side * 0.36, 0.075, '#3a3128');
+  }
+  cap(g, -0.4, 0.04, 0.16, 0.02, 0.44, k.uniform);
+  cap(g, 0.06, 0.16, -0.14, 0.3, 0.12, k.sleeve); // both arms drawn in to the chest
+  cap(g, 0.06, -0.14, -0.1, -0.26, 0.12, k.sleeve);
+  dot(g, -0.14, 0.3, 0.055, k.skin);
+  dot(g, -0.1, -0.26, 0.055, k.skin);
+  helmet(g, k, 0.38, -0.06, band); // head turned, helmet still on
+}
+
+// dead2: face-down, arms forward past the head, legs straight.
+function deadFaceDown(g: Ctx, k: Kit, w: WeaponKey, band: number): void {
+  gun(g, w, 0.55, 0.4, 1.1, band);
+  for (const side of [-1, 1] as const) {
+    cap(g, -0.42, side * 0.09, -0.98, side * 0.13, 0.14, k.trousers);
+    dot(g, -0.98, side * 0.13, 0.075, '#3a3128');
+  }
+  cap(g, -0.5, 0, 0.2, 0, 0.42, k.uniform);
+  cap(g, 0.1, 0.2, 0.64, 0.14, 0.12, k.sleeve); // arms thrown out past the head
+  cap(g, 0.1, -0.2, 0.6, -0.2, 0.12, k.sleeve);
+  dot(g, 0.64, 0.14, 0.055, k.skin);
+  dot(g, 0.6, -0.2, 0.055, k.skin);
+  helmet(g, k, 0.44, 0, band);
+}
+
+// Hands high, head bowed: the surrender read at a glance.
+function surrenderHigh(g: Ctx, k: Kit, band: number): void {
+  torso(g, k, 0.22, 0.31, band, 'garand');
+  cap(g, 0.02, 0.24, 0.36, 0.42, 0.12, k.sleeve);
+  cap(g, 0.02, -0.24, 0.36, -0.42, 0.12, k.sleeve);
+  dot(g, 0.36, 0.42, 0.055, k.skin);
+  dot(g, 0.36, -0.42, 0.055, k.skin);
+  g.save();
+  g.translate(0.04, 0);
+  g.scale(0.94, 0.94); // head bowed reads as a slightly smaller helmet from above
+  helmet(g, k, 0, 0, band);
+  g.restore();
+}
+
+// Helmet off, held low in one hand — the other half of the surrender read.
+function surrenderDoffed(g: Ctx, k: Kit, band: number): void {
+  torso(g, k, 0.22, 0.31, band, 'garand');
+  cap(g, 0.02, -0.24, 0.34, -0.4, 0.12, k.sleeve);
+  dot(g, 0.34, -0.4, 0.055, k.skin);
+  if (tier(band) >= 3) cap(g, 0.34, -0.42, 0.44, -0.5, 0.06, 'rgba(226,222,208,0.85)'); // white cloth
+  cap(g, 0.02, 0.22, 0.26, 0.2, 0.12, k.sleeve);
+  dot(g, 0.26, 0.2, 0.055, k.skin);
+  dot(g, 0.28, 0.24, 0.12, k.helmet); // helmet carried at the hip
+  dot(g, 0.04, 0, 0.14, k.skin); // bare head
+  dot(g, 0.0, -0.02, 0.1, '#5a4632');
 }
 
 function torso(g: Ctx, k: Kit, rx: number, ry: number, band: number, weapon: WeaponKey): void {
@@ -527,16 +663,6 @@ function dragged(g: Ctx, k: Kit, band: number): void {
   helmet(g, k, 0.32, 0, band);
 }
 
-// Hands up: standing, arms raised forward and out, no weapon in hands.
-function surrendered(g: Ctx, k: Kit, band: number): void {
-  torso(g, k, 0.22, 0.31, band, 'garand');
-  cap(g, 0.02, 0.24, 0.32, 0.38, 0.12, k.sleeve);
-  cap(g, 0.02, -0.24, 0.32, -0.38, 0.12, k.sleeve);
-  dot(g, 0.32, 0.38, 0.055, k.skin);
-  dot(g, 0.32, -0.38, 0.055, k.skin);
-  helmet(g, k, 0.04, 0, band);
-}
-
 // Close combat: braced lunge stance, both hands working the weapon as a
 // bayonet/club (SMGs read as hip-fire — the muzzle flash sells the shot).
 // The enemy is at +X. Frames: 0 guard, 1 windup (coiled back), 2 thrust, 3 recover.
@@ -581,13 +707,19 @@ function drawDude(g: Ctx, side: Side, weapon: WeaponKey, pose: Pose, frame: numb
       standing(g, k, weapon, -0.55, 0, 0, band);
       break;
     case 'aim':
-      standing(g, k, weapon, 0, 0, 0.05, band);
+      standing(g, k, weapon, 0, 0, 0.05, band, true);
+      break;
+    case 'reload':
+      reload(g, k, weapon, band);
       break;
     case 'walk': {
       const swing = Math.sin((frame / WALK_FRAMES) * Math.PI * 2);
       standing(g, k, weapon, -0.3 + swing * 0.12, swing, 0.02, band);
       break;
     }
+    case 'crawl':
+      crawl(g, k, weapon, frame, band);
+      break;
     case 'kneel':
       kneel(g, k, weapon, band);
       break;
@@ -599,6 +731,12 @@ function drawDude(g: Ctx, side: Side, weapon: WeaponKey, pose: Pose, frame: numb
       break;
     case 'dead':
       dead(g, deadKit(k), weapon, band);
+      break;
+    case 'dead1':
+      deadCurled(g, deadKit(k), weapon, band);
+      break;
+    case 'dead2':
+      deadFaceDown(g, deadKit(k), weapon, band);
       break;
     case 'drag':
       drag(g, k, weapon, band);
@@ -613,7 +751,10 @@ function drawDude(g: Ctx, side: Side, weapon: WeaponKey, pose: Pose, frame: numb
       melee(g, k, weapon, frame, band);
       break;
     case 'surrendered':
-      surrendered(g, k, band);
+      surrenderHigh(g, k, band);
+      break;
+    case 'surrender2':
+      surrenderDoffed(g, k, band);
       break;
   }
 }
@@ -629,7 +770,7 @@ export function getSprite(side: Side, weapon: WeaponKey, pose: Pose, frame: numb
   // Key hygiene: a pose that never draws the weapon must not mint one canvas
   // per weapon. Collapse the dimension here, in the key builder — never at the
   // draw site, or far bands quietly multiply the keyspace.
-  const wk: WeaponKey = pose === 'surrendered' || pose === 'dragged' ? 'garand' : weapon;
+  const wk: WeaponKey = pose === 'surrendered' || pose === 'surrender2' || pose === 'dragged' ? 'garand' : weapon;
   const key = `${side}|${wk}|${pose}|${frame}|${band}`;
   let c = cache.get(key);
   if (c) return c;
@@ -687,17 +828,22 @@ export function getShadowSprite(pose: Pose, frame: number, cls: 'rifle' | 'smg' 
 // the head without unbaking the sprite.
 const HEAD_OFFSET: Record<Pose, [number, number]> = {
   idle: [0.04, 0],
-  aim: [0.04, 0],
+  aim: [0.04, 0.06],
+  reload: [0.02, 0.03],
   walk: [0.04, 0],
-  kneel: [0.06, 0],
+  crawl: [0.42, 0],
+  kneel: [0.06, 0.05],
   prone: [0.42, 0],
   downed: [0.42, 0.05],
   dead: [0.42, 0.12],
+  dead1: [0.38, -0.06],
+  dead2: [0.44, 0],
   drag: [0.1, 0],
   aid: [0.13, 0],
   dragged: [0.32, 0],
   melee: [0.05, 0],
   surrendered: [0.04, 0],
+  surrender2: [0.04, 0],
 };
 
 export function headOffset(pose: Pose): [number, number] {
