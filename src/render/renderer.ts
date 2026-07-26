@@ -6,6 +6,7 @@ import { bandFor, CRAWL_FRAMES, DUDE_SCALE, getShadowSprite, getSprite, glintSpr
 import { ballistic, blit, FLASH, flashClass, fxDetail, hazeBand, hotPass, SPIKE_SIDES, traceOvershoot, WIND, type FlashSpec, type FxKind, type Overshoot } from './fx';
 import { SHADOW_SOFT_ALPHA, SUN } from './light';
 import { MarkLayer } from './marks';
+import { craterSpots } from './props';
 import { RoofLayer } from './roofs';
 import { TerrainLayer } from './terrain';
 import { view } from './view';
@@ -215,6 +216,9 @@ export class Renderer {
       hgt: 9 + hash(sim.map.w, sim.map.h, 330 + i) * 15,
       a: 0.06 + hash(sim.map.w, sim.map.h, 340 + i) * 0.06,
     }));
+    // Weathered shell holes from an earlier fight, under everything this
+    // battle will add — a fresh scorch still has to read as new.
+    for (const [x, y, seed] of craterSpots(sim.map, this.terrain.index)) this.decals.oldCrater(x, y, seed);
   }
 
   addEvents(events: ShotEvent[], now: number): void {
