@@ -1,5 +1,6 @@
 import type { WeaponKey } from '../sim/data';
 import { EDGE, type GameMap } from '../sim/map';
+import { WIND_SPEED } from '../sim/wind';
 import { SUN, WIND as LIGHT_WIND } from './light';
 import { hash } from './noise';
 
@@ -37,7 +38,7 @@ export type FxKind =
 // direction of *air*. They are deliberately different axes — SUN falls SE,
 // WIND blows ENE — so smoke lean and cast shadows never collapse the scene
 // into one big diagonal.
-export const WIND = { dx: LIGHT_WIND.dx, dy: LIGHT_WIND.dy, speed: 1.6 };
+export const WIND = { dx: LIGHT_WIND.dx, dy: LIGHT_WIND.dy, speed: WIND_SPEED };
 
 // Detail tier by zoom: 2 = full (pockmarks, per-lick flame), 1 = mid (chunks,
 // sparks, plumes), 0 = silhouette only (fireball + smoke mass). Every effect
