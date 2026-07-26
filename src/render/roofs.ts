@@ -9,7 +9,13 @@ import { AO_ALPHA, SHADOW_ALPHA, SHADOW_SOFT_ALPHA, shadowOffset } from './light
 // sim space).
 
 const OVERHANG = 0.35; // meters past the walls
-const FADE_SCALE = 14; // px/m at which zoom alone reveals interiors
+// Zoom-alone reveal is the CLOSE-INSPECTION band, not the tactical one: 24-32
+// px/m is normal play, so a 14 px/m trigger ghosted every roof exactly where
+// the player spends their time. Occupancy is the primary reveal; the 2 px/m
+// hysteresis band keeps scroll-wheel zoom from flickering a whole village.
+const FADE_SCALE = 26; // px/m at which zoom alone reveals interiors
+const FADE_SCALE_RESTORE = 24;
+const FADED_ALPHA = 0.18; // revealed roofs keep a readable ghost of the mass
 // Base roof tones, muted-Normandy ceiling. Terracotta is the frame's single
 // warm accent so it sits at S~46% here (the old #8a4b37 lit to S 67%, which
 // made roofs the most saturated thing on screen); slate is near-neutral and
@@ -120,6 +126,7 @@ export class RoofLayer {
   private alphas: number[] = [];
   private art: RoofArt[] = [];
   private stories: number[] = []; // per-building story count for shadow length, min 1
+  private zoomFaded = false;
 
   update(sim: Sim, cam: Camera, dt: number): void {
     if (this.buildings !== sim.buildings) {
@@ -136,19 +143,21 @@ export class RoofLayer {
         return Math.max(1, m);
       });
     }
+    if (cam.scale > FADE_SCALE) this.zoomFaded = true;
+    else if (cam.scale < FADE_SCALE_RESTORE) this.zoomFaded = false;
     this.buildings.forEach((b, i) => {
-      // Ground floor: unchanged pre-height rule (any live blue soldier inside).
-      // Upper floors: fade when a PLAYER-VISIBLE soldier occupies floor L>0 —
-      // keyed on sim.soldierVisibleTo, never re-derived vision. On flat maps
-      // every soldier is level 0, so this reduces to the old check exactly.
+      // Occupancy reveal on every floor, gated on the sim's own visibility
+      // helper — the same rule upper floors already used, extended down to the
+      // ground floor. The renderer still never re-derives vision, so a house
+      // only opens for a soldier the player can already see.
       const inside = sim.soldiers.some(
         (s) =>
           s.alive &&
           s.x >= b.x && s.x < b.x + b.w &&
           s.y >= b.y && s.y < b.y + b.h &&
-          (s.level > 0 ? sim.soldierVisibleTo('blue', s) : s.side === 'blue'),
+          sim.soldierVisibleTo('blue', s),
       );
-      const target = cam.scale > FADE_SCALE || inside ? 0.12 : 1;
+      const target = this.zoomFaded || inside ? FADED_ALPHA : 1;
       const a = this.alphas[i];
       this.alphas[i] = a + (target - a) * Math.min(1, dt * 6);
     });
