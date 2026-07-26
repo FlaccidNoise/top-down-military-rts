@@ -1,6 +1,7 @@
 import { WEAPONS, type WeaponKey } from '../sim/data';
 import type { Side } from '../sim/sim';
 import { SHADOW_SOFT_ALPHA } from './light';
+import { MOBILE } from './view';
 
 // Parametric vector soldier, drawn facing +X in meter units, baked into a
 // per-(pose, frame, weapon, side, zoom-band) sprite cache. The renderer draws
@@ -14,10 +15,13 @@ export const SPRITE_SPAN = 3.6; // meters covered by the (square) sprite canvas
 const DUDE_SCALE = 1.35; // genre-standard oversize so figures read at tactical zoom
 export const SPRITE_MIN_SCALE = 5; // px/m; below this the renderer uses dot LOD
 
-const BANDS = [6, 12, 24, 48]; // bake resolutions (px/m); never upscale on screen
+// Bake resolutions (px/m); never upscale on screen. Band 48 bakes ~90px
+// canvases per (pose x frame x weapon x side) on demand and the phone's
+// cam.maxScale is 32, so it could only ever be baked and never displayed.
+const BANDS = MOBILE ? [6, 12, 24] : [6, 12, 24, 48];
 
 export function bandFor(scale: number): number {
-  return BANDS.find((b) => b >= scale) ?? 48;
+  return BANDS.find((b) => b >= scale) ?? BANDS[BANDS.length - 1];
 }
 
 type Ctx = CanvasRenderingContext2D;

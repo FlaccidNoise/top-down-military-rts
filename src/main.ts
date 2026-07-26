@@ -1025,6 +1025,9 @@ window.addEventListener('keydown', (e) => {
   // The gesture classifier is pure; exposing it lets scripts/mobile.mjs assert
   // classification without synthesising timing-sensitive touch sequences.
   classify: classifyGesture,
+  get renderer() {
+    return renderer;
+  },
   stratView: () => stratView,
   getSelection: () => ({ mode, squads: [...selectedSquads], team: selectedTeam, vehicle: selectedVehicle, chit: selectedChit, targetMode, armedOrder }),
   setPaused: (p: boolean) => {
@@ -1111,12 +1114,21 @@ function frame(now: number): void {
   } else {
     acc += dtReal;
     if (!paused) {
-      while (acc >= DT_MS) {
+      // Catch-up guard. dtReal is capped at 250ms, which is up to 7 sim steps
+      // in one frame — on a phone that already missed its budget that
+      // guarantees it misses the next one worse, and the UI locks. Let the
+      // sim run slow instead: 3 steps, then drop the debt. Mobile-gated, so
+      // desktop determinism and the perf tests are untouched.
+      let steps = 0;
+      const maxSteps = MOBILE ? 3 : Infinity;
+      while (acc >= DT_MS && steps < maxSteps) {
         commander.update(sim);
         if (aiControl) blueCommander?.update(sim);
         sim.step();
         acc -= DT_MS;
+        steps++;
       }
+      if (acc >= DT_MS) acc = 0;
     } else {
       acc = 0;
     }

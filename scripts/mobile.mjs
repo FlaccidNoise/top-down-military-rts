@@ -3,7 +3,8 @@
 //
 // Two independent runs:
 //
-//   node scripts/mobile.mjs                     # phone + phone-landscape captures + asserts
+//   node scripts/mobile.mjs                      # phone + phone-landscape captures + asserts
+//   node scripts/mobile.mjs --perf               # 4x-throttled budget probe (M6 constants)
 //   node scripts/mobile.mjs --desktop-regression # re-shoot the desktop art presets and diff
 //
 // The phone run drives REAL touch (CDP Input.dispatchTouchEvent, the same
@@ -284,6 +285,71 @@ async function phoneRun(device) {
   await browser.close();
 }
 
+// ── budget probe (M6) ─────────────────────────────────────────────────────
+// Measured, not guessed: the constants in terrain.ts / dudes.ts / audio.ts are
+// only defensible against numbers from a throttled phone profile.
+
+async function perfRun() {
+  console.log('\n=== budget probe: phone @ 4x CPU throttle ===');
+  const { browser, page } = await launch({ device: 'phone' });
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send('Performance.enable');
+  const dir = join(OUT, 'perf');
+  mkdirSync(dir, { recursive: true });
+
+  await page.goto(`http://[::1]:${PORT}/?camp=${CAMP}&seed=${SEED}`, { waitUntil: 'domcontentloaded' });
+  await page.waitForFunction(() => '__game' in window, null, { timeout: 8000 });
+  await cdp.send('Emulation.setCPUThrottlingRate', { rate: 4 });
+  await page.waitForTimeout(400);
+
+  // First-frame bake: how many frames until nothing is painted flat?
+  await stageBattle(page);
+  const fill = await page.evaluate(async () => {
+    const g = window.__game;
+    const raf = () => new Promise((r) => requestAnimationFrame(r));
+    const trace = [];
+    for (let i = 0; i < 30; i++) {
+      await raf();
+      const t = g.renderer?.terrain;
+      trace.push(t ? t.pending.size : -1);
+      if (i >= 2 && trace[i] === 0 && trace[i - 1] === 0) break;
+    }
+    return trace;
+  });
+  const firstClean = fill.findIndex((n) => n === 0);
+  console.log(`  flat-fill trace (pending chunks per frame): ${fill.join(',')}`);
+  check(firstClean >= 0 && firstClean <= 6, `bake budget fills in within 6 frames (clean at frame ${firstClean})`);
+  await page.screenshot({ path: join(dir, 'boot-throttled.png') });
+
+  // Sustained frame rate with the full 247-soldier engagement running.
+  await page.evaluate(() => window.__game.setPaused(false));
+  const fps = await page.evaluate(async () => {
+    const raf = () => new Promise((r) => requestAnimationFrame(r));
+    await raf();
+    const t0 = performance.now();
+    let n = 0;
+    while (performance.now() - t0 < 3000) { await raf(); n++; }
+    return { fps: Math.round((n / (performance.now() - t0)) * 1000), frames: n };
+  });
+  const soldiers = await page.evaluate(() => window.__game.sim.soldiers.length);
+  console.log(`  ${fps.fps} fps over ${fps.frames} frames with ${soldiers} soldiers`);
+  check(fps.fps >= 24, `>= 24 fps at boot framing with ${soldiers} soldiers under 4x throttle (got ${fps.fps})`);
+
+  const metrics = await cdp.send('Performance.getMetrics');
+  const heap = metrics.metrics.find((m) => m.name === 'JSHeapUsedSize')?.value ?? 0;
+  // Terrain is the dominant canvas consumer and PIXEL_BUDGET caps it outright;
+  // report the live figure rather than trusting the constant.
+  const cache = await page.evaluate(() => {
+    const t = window.__game.renderer?.terrain;
+    return t ? { chunks: t.cache.size, px: t.pixels } : null;
+  });
+  console.log(`  JS heap ${(heap / 1e6).toFixed(1)} MB · terrain cache ${cache.chunks} chunks / ${(cache.px / 1e6).toFixed(2)} Mpx (~${((cache.px * 4) / 1e6).toFixed(1)} MB)`);
+  check(cache.px <= 6_000_000, `terrain cache inside the mobile pixel budget (${(cache.px / 1e6).toFixed(2)} Mpx <= 6.00)`);
+  check(heap / 1e6 + (cache.px * 4) / 1e6 < 150, `heap + terrain canvas under 150 MB (${(heap / 1e6 + (cache.px * 4) / 1e6).toFixed(1)} MB)`);
+  await page.screenshot({ path: join(dir, 'running-throttled.png') });
+  await browser.close();
+}
+
 // ── desktop regression ────────────────────────────────────────────────────
 
 async function pixelDiff(page, a, b) {
@@ -357,6 +423,8 @@ async function desktopRegression() {
 mkdirSync(OUT, { recursive: true });
 if (has('desktop-regression')) {
   await desktopRegression();
+} else if (has('perf')) {
+  await perfRun();
 } else {
   for (const d of (arg('device', 'phone,phone-landscape')).split(',')) await phoneRun(d);
 }
