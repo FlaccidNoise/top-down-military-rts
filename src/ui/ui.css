@@ -1112,6 +1112,17 @@ html.mobile #squads {
   border-top: 1px solid var(--border);
 }
 html.mobile #squads.open { display: flex; }
+/* Landscape: an 844px-wide sheet showing five one-line cards wastes half the
+   height it costs. Two columns fits the whole rifle platoon without a scroll. */
+@media (min-width: 620px) {
+  html.mobile #squads.open {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    column-gap: var(--sp-1);
+    align-content: start;
+  }
+  html.mobile #squads .wpn-divider { grid-column: 1 / -1; }
+}
 html.mobile #squads .card { padding: 6px var(--sp-2); }
 html.mobile #squads .srow { padding: 5px 0; }
 /* The touchbar owns arming; the 28x18px in-card order buttons never were a
