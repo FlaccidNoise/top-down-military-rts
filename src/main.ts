@@ -4,7 +4,7 @@ import { AudioEngine } from './render/audio';
 import { Camera } from './render/camera';
 import { Renderer } from './render/renderer';
 import { StrategicView, TERRAIN_LABELS } from './render/strategic';
-import { bootCamera as bootCameraFor, FRAME_M_DESKTOP, FRAME_M_MOBILE } from './render/framing';
+import { bootCamera as bootCameraFor, capInset, FRAME_M_DESKTOP, FRAME_M_MOBILE, type Inset } from './render/framing';
 import { MOBILE, view, viewSize } from './render/view';
 import type { RedCommander } from './sim/ai';
 import { WEAPONS } from './sim/data';
@@ -23,7 +23,7 @@ import { actionForEvent, loadKeymap, type Keymap } from './ui/keymap';
 import { PauseMenu } from './ui/menu';
 import { coach } from './ui/coach';
 import { showFloorMenu } from './ui/floormenu';
-import { bindTouch, drawHoldRing, type TouchHandlers } from './ui/touch';
+import { bindTouch, classify as classifyGesture, drawHoldRing, type TouchHandlers } from './ui/touch';
 import './ui/ui.css';
 
 const canvas = document.createElement('canvas');
@@ -146,6 +146,14 @@ let debriefShown = false;
 let needsBootFrame = false; // re-run bootCamera once the battle HUD is laid out
 const mouse = { x: 0, y: 0, onCanvas: false };
 const pings = new EventPings();
+// Touch-only sticky modes. A phone has no shift key and no second mouse
+// button, so the two modifiers the desktop path reads off the keyboard become
+// latched chips in the touch bar. Both stay false on desktop, where the
+// keyboard still supplies them per-event.
+let boxMode = false;
+let addMode = false;
+/** shift-equivalent: the real key on desktop, the latched ADD chip on touch. */
+const additiveWith = (shift: boolean): boolean => shift || addMode;
 
 function selectSquad(id: number): void {
   selectedSquads = id < 0 ? [] : [id];
@@ -155,8 +163,15 @@ function selectSquad(id: number): void {
   armedOrder = null;
   if (id >= 0) lastTeamId = sim.squads[id].teamIds[0];
   if (id >= 0 && mode === 'battle') {
-    const t = document.getElementById('squads');
-    if (t) coach.maybeShow('first-squad-select', t, 'Select a squad, then right-click to move. Shift+1-8 arms an order.');
+    const t = document.getElementById(MOBILE ? 'touchbar' : 'squads');
+    if (t)
+      coach.maybeShow(
+        MOBILE ? 'touch-order' : 'first-squad-select',
+        t,
+        MOBILE
+          ? 'Squad selected — press and hold the ground to send them. Tap an order chip first to change how.'
+          : 'Select a squad, then right-click to move. Shift+1-8 arms an order.',
+      );
   }
 }
 
@@ -176,8 +191,13 @@ function doArmOrder(kind: OrderKind): void {
   armedOrder = armedOrder === kind ? null : kind;
   if (armedOrder) {
     const btn = document.querySelector(`[data-order="${armedOrder}"]`) as HTMLElement | null;
-    const t = btn ?? document.getElementById('squads');
-    if (t) coach.maybeShow('first-order-arm', t, 'Order armed — right-click to issue. Shift+right-click queues a waypoint.');
+    const t = btn ?? document.getElementById(MOBILE ? 'touchbar' : 'squads');
+    if (t)
+      coach.maybeShow(
+        'first-order-arm',
+        t,
+        MOBILE ? 'Order armed — press and hold the ground to issue it.' : 'Order armed — right-click to issue.',
+      );
   }
 }
 
@@ -244,7 +264,35 @@ const hud = new Hud({
     const e = sim.emplacements.find((e) => e.towedBy === selectedVehicle);
     if (e) sim.orderUnhitch(e.id);
   },
+  toggleBoxMode: () => { boxMode = !boxMode; },
+  toggleAddMode: () => { addMode = !addMode; },
+  selectAll: () => {
+    selectedSquads = infantrySquads(sim).map((q) => q.id);
+    selectedTeam = -1;
+    selectedVehicle = -1;
+    if (renderer) renderer.selectedVehicle = -1;
+    armedOrder = null;
+  },
+  cancel: () => { escapeLadder(); },
+  openMenu: () => {
+    if (menu.isOpen) { menu.close(); return; }
+    pauseBeforeMenu = mode === 'strategic' ? stratPaused : paused;
+    if (mode === 'strategic') stratPaused = true;
+    else paused = true;
+    menu.setKeymap(loadKeymap(localStorage));
+    menu.open();
+  },
 });
+// Two stacked fixed bottom layers (touch bar + roster sheet) have to agree on
+// one height, and the bar's own height changes when the order-chip row comes
+// and goes. Publish the measured value rather than hard-coding it twice.
+const touchbarEl = document.getElementById('touchbar');
+if (touchbarEl && typeof ResizeObserver === 'function') {
+  const publishBarHeight = (): void =>
+    document.documentElement.style.setProperty('--touchbar-h', `${Math.round(touchbarEl.getBoundingClientRect().height)}px`);
+  new ResizeObserver(publishBarHeight).observe(touchbarEl);
+  publishBarHeight();
+}
 const stratHud = new StratHud({
   togglePause: () => { stratPaused = !stratPaused; },
   setSpeed: (i) => { speedIdx = i; },
@@ -325,20 +373,37 @@ function viewportInset(): { left: number; top: number; bottom: number } {
   };
   const squads = box('squads');
   const strip = box('obj-strip');
-  const hint = box('hint');
+  // Both bottom-edge layers, whichever exists: #hint on desktop, #touchbar on
+  // a phone. They are mutually exclusive today, but taking the max means the
+  // camera never frames blue behind whichever one is actually on screen.
+  const bottoms = ['hint', 'touchbar'].map((id) => box(id)).filter((r) => r !== null);
   return {
     left: squads ? squads.right : 0,
     top: strip ? strip.bottom : 0,
-    bottom: hint ? view.h - hint.top : 0,
+    bottom: bottoms.length ? Math.max(...bottoms.map((r) => view.h - r.top)) : 0,
   };
 }
 
+// bootCameraFor scales off the clear region's WIDTH, which is the right axis
+// on a portrait phone and the wrong one the moment it turns: 844x390 landscape
+// solves 70m across 844px at 12 px/m, and 70m of ground 22m tall showed 24 of
+// 138 men. FRAME_M_MOBILE is really "meters across the short axis" — in
+// portrait that is already the width (so this returns it unchanged), in
+// landscape it is the clear height, so convert.
+const MOBILE_CAP_FRAC = 0.35;
+function mobileFrameM(cw: number, ch: number, raw: Inset): number {
+  const vw = Math.max(1, cw - capInset(raw.left, cw, MOBILE_CAP_FRAC));
+  const vh = Math.max(1, ch - capInset(raw.top, ch, MOBILE_CAP_FRAC) - capInset(raw.bottom, ch, MOBILE_CAP_FRAC));
+  return vh < vw ? (FRAME_M_MOBILE * vw) / vh : FRAME_M_MOBILE;
+}
+
 function bootCamera(s: Sim, cw: number, ch: number): { x: number; y: number; scale: number } {
-  return bootCameraFor(s.map, s.soldiers.filter((sd) => sd.side === 'blue'), cw, ch, viewportInset(), {
-    frameM: MOBILE ? FRAME_M_MOBILE : FRAME_M_DESKTOP,
+  const raw = viewportInset();
+  return bootCameraFor(s.map, s.soldiers.filter((sd) => sd.side === 'blue'), cw, ch, raw, {
+    frameM: MOBILE ? mobileFrameM(cw, ch, raw) : FRAME_M_DESKTOP,
     // Desktop insets are borders and must keep insetting at every window
     // width; only the phone's full-width sheets are drawers worth ignoring.
-    capFrac: MOBILE ? 0.35 : undefined,
+    capFrac: MOBILE ? MOBILE_CAP_FRAC : undefined,
     maxScale: cam.maxScale,
     minScale: 2,
   });
@@ -378,6 +443,8 @@ function startEngagementBattle(e: Engagement): void {
   debriefShown = false;
   debriefEl.style.display = 'none';
   boxRect = null;
+  boxMode = false;
+  addMode = false;
   pings.reset();
   tooltip.clear();
 }
@@ -691,6 +758,7 @@ function escapeLadder(): boolean {
   }
   if (targetMode) { setTargetMode(''); return true; }
   if (armedOrder) { armedOrder = null; return true; }
+  if (boxMode || addMode) { boxMode = false; addMode = false; boxRect = null; return true; }
   if (selectedTeam >= 0) { selectedTeam = -1; return true; }
   if (selectedSquads.length > 0) { selectSquad(-1); return true; }
   return false;
@@ -724,11 +792,11 @@ canvas.addEventListener('mouseup', (e) => {
   }
 
   if (boxRect && dragged) {
-    commitBox(e.shiftKey);
+    commitBox(additiveWith(e.shiftKey));
     return;
   }
 
-  if (!dragged) tapSelect(e.clientX, e.clientY, e.shiftKey);
+  if (!dragged) tapSelect(e.clientX, e.clientY, additiveWith(e.shiftKey));
   dragStart = null;
   boxRect = null;
 });
@@ -745,19 +813,42 @@ window.addEventListener('mouseup', (e) => {
   if (e.button !== 2) return;
   if (!rmbDown || !rmbAnchor) { rmbDown = false; rmbAnchor = null; return; }
   rmbDown = false;
-  commitOrder(e.clientX, e.clientY, { squadForce: e.shiftKey, floors: e.altKey });
+  commitOrder(e.clientX, e.clientY, { squadForce: additiveWith(e.shiftKey), floors: e.altKey });
 });
 
 // ── Touch ─────────────────────────────────────────────────────────────────
 // Gestures drive the intent functions above; the desktop listeners are
 // untouched. `press` state is render-only (the growing hold ring).
 let touchHold: { x: number; y: number; t0: number } | null = null;
+// touch.ts reports pan as a delta; the box intents want an absolute point.
+// Seeding from `press` and accumulating is exact — the first delta is measured
+// from the landing point, so nothing is lost to the slop threshold.
+let touchAt = { x: 0, y: 0 };
 
 const battleTouch: TouchHandlers = {
-  press: (x, y) => { touchHold = { x, y, t0: performance.now() }; },
-  release: () => { touchHold = null; },
-  tap: (x, y) => tapSelect(x, y, false),
+  press: (x, y) => {
+    touchHold = { x, y, t0: performance.now() };
+    touchAt = { x, y };
+    if (boxMode) beginBox(x, y);
+  },
+  // The only callback touch.ts fires at the end of every gesture, whatever it
+  // turned out to be — so it is where a box drag has to be committed. SELECT
+  // is one-shot: leaving it latched would leave the player unable to pan.
+  release: () => {
+    touchHold = null;
+    if (boxMode && boxRect) {
+      commitBox(addMode);
+      boxMode = false;
+    }
+  },
+  tap: (x, y) => tapSelect(x, y, addMode),
   pan: (dx, dy) => {
+    touchAt.x += dx;
+    touchAt.y += dy;
+    if (boxMode) {
+      updateBox(touchAt.x, touchAt.y);
+      return;
+    }
     cam.x -= dx / cam.scale;
     cam.y -= dy / cam.scale;
     cam.clampCenter(sim.map.w, sim.map.h, view.w, view.h);
@@ -765,21 +856,24 @@ const battleTouch: TouchHandlers = {
   // Three assignments solve hover emulation: pickAt, the tooltip and the
   // order-affordance cursor all resolve to the finger for free.
   holdStart: (x, y) => {
+    if (boxMode) return; // a slow box drag must not turn into an order
     beginOrderAnchor(x, y);
     mouse.x = x;
     mouse.y = y;
     mouse.onCanvas = true;
   },
   holdMove: (x, y) => {
+    if (boxMode) { updateBox(x, y); return; }
     mouse.x = x;
     mouse.y = y;
     mouse.onCanvas = true;
   },
   holdEnd: (x, y) => {
+    if (boxMode) { rmbDown = false; return; }
     const [wx, wy] = cam.screenToWorld(x, y, view.w, view.h);
     rmbDown = false;
     // No Alt key on a phone: a multi-story footprint always offers the floor menu.
-    commitOrder(x, y, { squadForce: false, floors: sim.map.storiesAt(Math.floor(wx), Math.floor(wy)) >= 2 });
+    commitOrder(x, y, { squadForce: addMode, floors: sim.map.storiesAt(Math.floor(wx), Math.floor(wy)) >= 2 });
     mouse.onCanvas = false;
   },
   holdCancel: () => {
@@ -927,6 +1021,10 @@ window.addEventListener('keydown', (e) => {
   cam,
   audio,
   view,
+  MOBILE,
+  // The gesture classifier is pure; exposing it lets scripts/mobile.mjs assert
+  // classification without synthesising timing-sensitive touch sequences.
+  classify: classifyGesture,
   stratView: () => stratView,
   getSelection: () => ({ mode, squads: [...selectedSquads], team: selectedTeam, vehicle: selectedVehicle, chit: selectedChit, targetMode, armedOrder }),
   setPaused: (p: boolean) => {
@@ -1092,7 +1190,7 @@ function frame(now: number): void {
         };
       }
     }
-    hud.update(sim, { selectedSquad: primary, selectedSquads, selectedTeam, selectedVehicle, paused, aiControl, targetMode, armedOrder, title: battleTitle, keymap: km, objective, floorFocus });
+    hud.update(sim, { selectedSquad: primary, selectedSquads, selectedTeam, selectedVehicle, paused, aiControl, targetMode, armedOrder, title: battleTitle, keymap: km, objective, floorFocus, boxMode, addMode });
     hud.updateIdle('battle', targetMode !== '' || selectedSquads.length > 0 || selectedVehicle >= 0 || selectedTeam >= 0 || paused);
 
     // The boot framing has to measure the battle HUD, which does not exist

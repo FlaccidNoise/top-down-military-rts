@@ -18,9 +18,23 @@ export const arg = (name, dflt) => {
   return i >= 0 ? process.argv[i + 1] : dflt;
 };
 
-export async function launch() {
+// Device profiles. `desktop` is the historical default and must stay exactly
+// 1280x800 @ dpr 1 with no touch: every sweep / vfx / shot / demo baseline was
+// captured against it, and a silently reshot baseline is an invisible art
+// regression. The phone profiles are opt-in and are the only thing that makes
+// matchMedia('(pointer: coarse)') + '(hover: none)' true, i.e. the only thing
+// that turns MOBILE (src/render/view.ts) on.
+export const DEVICES = {
+  desktop: { viewport: { width: 1280, height: 800 }, deviceScaleFactor: 1, isMobile: false, hasTouch: false },
+  phone: { viewport: { width: 390, height: 844 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true },
+  'phone-landscape': { viewport: { width: 844, height: 390 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true },
+};
+
+export async function launch({ device = 'desktop' } = {}) {
+  const profile = DEVICES[device];
+  if (!profile) throw new Error(`unknown device "${device}" — one of: ${Object.keys(DEVICES).join(', ')}`);
   const browser = await chromium.launch({ channel: 'chrome', headless: true });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+  const page = await browser.newPage(profile);
   page.on('pageerror', (e) => console.error(`  pageerror: ${e.message}`));
   return { browser, page };
 }

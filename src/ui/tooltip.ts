@@ -4,6 +4,7 @@ import { TERRAIN, VEHICLES, WEAPONS, type TerrainDef, type TerrainKey, type Weap
 import { sightBetween, sightToSoldier, type Sim, type Soldier, type Vehicle } from '../sim/sim';
 import { STATE_COLOR } from './hud';
 import { formatCoverBreakdown, formatCoverBreakdownForFloor } from './tooltip-format';
+import { MOBILE } from '../render/view';
 
 export type Pick =
   | { kind: 'soldier'; s: Soldier }
@@ -191,6 +192,10 @@ export class Tooltip {
         : pick.kind === 'vehicle' ? vehicleCard(sim, pick.v, shot)
         : terrainCard(sim, pick.x, pick.y, moveHint);
     }
+    // No cursor to follow, and a card pinned under the finger would hide the
+    // ground the order is about to be given on: ui.css docks it above the
+    // touch bar instead, so writing inline left/top here would fight that.
+    if (MOBILE) return;
     const pad = 14;
     let x = mx + pad;
     let y = my + pad;
@@ -309,6 +314,6 @@ function terrainCard(sim: Sim, wx: number, wy: number, moveHint: boolean): strin
   let html = `<div class="tt-head"><b>${TERRAIN_NAME[k]}</b></div><div class="tt-rows">`;
   for (const l of lines) html += `<div><span>${l}</span></div>`;
   html += `<div><span>${speed}</span></div></div>`;
-  if (moveHint) html += `<div class="tt-sec">RIGHT-CLICK MOVE · RIGHT-DRAG FORMATION</div>`;
+  if (moveHint) html += `<div class="tt-sec">${MOBILE ? 'RELEASE TO MOVE · DRAG TO SET A FRONT' : 'RIGHT-CLICK MOVE · RIGHT-DRAG FORMATION'}</div>`;
   return html;
 }

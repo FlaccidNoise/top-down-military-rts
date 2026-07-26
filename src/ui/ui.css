@@ -850,8 +850,15 @@ html.mobile #st-progress {
   padding-top: calc(6px + env(safe-area-inset-top));
 }
 html.mobile .st-clock-ctl { order: -1; }
-html.mobile .st-clock-ctl .hbtn { padding: 6px 10px; min-width: 40px; }
-html.mobile .st-clock-ctl .st-play { min-width: 40px; }
+html.mobile .st-clock-ctl .hbtn {
+  padding: 6px 10px;
+  min-width: 44px;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+html.mobile .st-clock-ctl .st-play { min-width: 44px; }
 html.mobile #st-reinforce {
   top: auto;
   bottom: calc(44px + env(safe-area-inset-bottom));
@@ -1016,6 +1023,152 @@ button:hover .hk-top {
   background: var(--chip-active-bg);
 }
 
+/* ============================================================
+   M3 — phone battle HUD
+   Every rule below is scoped `html.mobile`, which only ever appears on a
+   coarse-pointer / no-hover device (src/render/view.ts MOBILE). The desktop
+   cascade is therefore untouched by construction, and scripts/mobile.mjs
+   --desktop-regression checks that mechanically rather than trusting it.
+   `--touchbar-h` is republished from main.ts after every layout, because two
+   stacked fixed bottom layers (bar + roster sheet) must agree on one number.
+   ============================================================ */
+#touchbar { display: none; }
+
+html.mobile { --touchbar-h: 60px; }
+
+html.mobile #touchbar {
+  display: flex;
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 6;
+  flex-direction: column;
+  gap: var(--sp-1);
+  padding: 6px;
+  padding-bottom: 6px;
+  padding-bottom: calc(6px + env(safe-area-inset-bottom, 0px));
+  background: rgba(var(--ink-rgb), 0.92);
+  border-top: 1px solid var(--border);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  pointer-events: auto;
+}
+/* Eight 44px chips do not fit 390px and shrinking them re-creates the
+   untappable target this whole task exists to remove — so the rows scroll.
+   The right-edge fade is the only cue that they do; without it the row reads
+   as a bar that happens to be clipped. */
+html.mobile #touchbar > div {
+  display: flex;
+  gap: var(--sp-1);
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  touch-action: pan-x;
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
+  mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
+}
+html.mobile #touchbar > div::-webkit-scrollbar { display: none; }
+html.mobile #touchbar .hbtn {
+  flex: 0 0 auto;
+  min-height: 44px;
+  min-width: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--fs-md);
+  padding: var(--sp-1) 10px;
+  white-space: nowrap;
+}
+html.mobile #touchbar .ord { text-transform: uppercase; }
+html.mobile #touchbar .ord .hk { display: none; }
+
+/* ---- roster as a bottom sheet ----
+   Closed it does not exist: the old 258px left panel covered 68% of a 390px
+   screen with pointer-events:auto and swallowed every world touch. */
+html.mobile #squads {
+  position: fixed;
+  left: 0;
+  right: 0;
+  top: auto;
+  bottom: var(--touchbar-h, 60px);
+  width: auto;
+  z-index: 6;
+  display: none;
+  gap: var(--sp-1);
+  padding: var(--sp-1) 6px;
+  max-height: 44vh;
+  max-height: 44dvh;
+  overflow-y: auto;
+  touch-action: pan-y;
+  background: rgba(var(--ink-rgb), 0.92);
+  border-top: 1px solid var(--border);
+}
+html.mobile #squads.open { display: flex; }
+html.mobile #squads .card { padding: 6px var(--sp-2); }
+html.mobile #squads .srow { padding: 5px 0; }
+/* The touchbar owns arming; the 28x18px in-card order buttons never were a
+   touch target and would only compete with it. */
+html.mobile #squads .orderbar { display: none; }
+html.mobile .ctxrow .hbtn { min-height: 44px; padding: 6px 12px; font-size: var(--fs-md); }
+
+/* ---- desktop-shaped chrome that a phone cannot carry ---- */
+html.mobile #hint { display: none; }
+html.mobile #banner { font-size: 22px; letter-spacing: 4px; }
+html.mobile #banner small { font-size: var(--fs-sm); letter-spacing: 1px; }
+html.mobile #obj-strip {
+  top: 38px;
+  top: calc(38px + env(safe-area-inset-top, 0px));
+  gap: var(--sp-2);
+}
+html.mobile #obj-strip .obj-center { display: none; }
+html.mobile #obj-strip .obj-bar { width: 40px; }
+html.mobile #topbar {
+  top: var(--sp-2);
+  top: calc(var(--sp-2) + env(safe-area-inset-top, 0px));
+  font-size: var(--fs-sm);
+}
+html.mobile #topbar .panel { padding: 2px 6px; }
+/* The action buttons moved into the touchbar; keeping both would put the only
+   copy of Pause at the far end of a thumb's reach. */
+html.mobile #tb-actions { display: none; }
+html.mobile #tb-title {
+  display: block;
+  flex: 1;
+  min-width: 0;
+  line-height: 20px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+html.mobile #tb-strength { flex: none; }
+html.mobile #tb-strength .ratio { width: 52px; }
+html.mobile #modeline {
+  top: auto;
+  bottom: calc(var(--touchbar-h, 60px) + 8px);
+  left: 6px;
+  right: 6px;
+  transform: none;
+  text-align: center;
+  font-size: var(--fs-sm);
+}
+
+/* ---- tooltip: docked, not mouse-followed (there is no mouse) ----
+   Content comes from the press-and-hold probe point, so the full aim
+   breakdown stays reachable on a phone. tooltip.ts skips its follow block
+   under MOBILE, so nothing inline ever fights these rules. */
+html.mobile #tip {
+  position: fixed;
+  left: 6px;
+  right: 6px;
+  top: auto !important;
+  bottom: calc(var(--touchbar-h, 60px) + 8px);
+  width: auto;
+  max-height: 34vh;
+  max-height: 34dvh;
+  overflow-y: auto;
+}
+
 /* ---- floor menu ---- */
 #floormenu {
   position: absolute;
@@ -1037,3 +1190,5 @@ button:hover .hk-top {
   cursor: default;
   opacity: 0.5;
 }
+html.mobile #floormenu { min-width: 160px; }
+html.mobile #floormenu .fm-row { padding: 12px 16px; }

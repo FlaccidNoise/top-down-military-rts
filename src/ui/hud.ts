@@ -5,6 +5,7 @@ import type { OrderKind } from '../sim/orders';
 import type { Sim, Soldier, Squad, Vehicle } from '../sim/sim';
 import { objectiveStripText, type ObjectiveData } from './objective-strip';
 import { formatBinding, loadKeymap, type Keymap } from './keymap';
+import { MOBILE } from '../render/view';
 
 export const STATE_COLOR = { steady: '#7fbf6a', shaken: '#e0c060', pinned: '#e08a3c', broken: '#d05c50' } as const;
 export const TEAM = { blue: '#5b9bd5', red: '#d05c50' } as const;
@@ -27,6 +28,14 @@ export interface HudCallbacks {
   dismountVehicle(): void;
   hitchVehicle(): void;
   unhitchVehicle(): void;
+  // Touch-bar only. A phone has no shift key, no drag-with-a-second-button and
+  // no Esc, so each modifier the desktop path reads off the keyboard becomes a
+  // sticky mode with a visible chip.
+  toggleBoxMode(): void;
+  toggleAddMode(): void;
+  selectAll(): void;
+  cancel(): void;
+  openMenu(): void;
 }
 
 export interface HudState {
@@ -42,6 +51,8 @@ export interface HudState {
   keymap: Keymap;
   objective: ObjectiveData | null;
   floorFocus?: number; // -1/undefined = all floors; 0..maxStories-1 = focus active
+  boxMode?: boolean; // touch: drag draws a selection box instead of panning
+  addMode?: boolean; // touch: sticky shift (add to selection / force squad order)
 }
 
 // Blue squads currently fighting on foot; mounted crews surface as vehicle cards.
@@ -88,6 +99,8 @@ export class Hud {
   private idleTicks = 0;
   private idleShown = false;
   private lastIdleMode: 'battle' | 'strategic' = 'battle';
+  private tb: HTMLDivElement | null = null; // #touchbar — mobile only
+  private lpFired = false; // a long-press opened the affordance card; swallow its click
 
   constructor(cb: HudCallbacks) {
     this.km = loadKeymap(localStorage);
@@ -158,6 +171,91 @@ export class Hud {
       if (btn) this.hideAffordance();
     });
     this.q('#squads').addEventListener('mouseleave', () => this.hideAffordance());
+    if (MOBILE) this.buildTouchbar(cb);
+  }
+
+  // The phone's whole control surface: row 1 arms an order kind (the same
+  // ORDER_KINDS / canArm / data-order contract the desktop `.orderbar` uses,
+  // so arming still flows through cb.armOrder), row 2 carries the modifiers
+  // and globals that only exist as keys on desktop. Row 1 is only rendered
+  // when a squad is selected — a phone cannot spare 44px of height to show
+  // eight chips that would do nothing if tapped.
+  private buildTouchbar(cb: HudCallbacks): void {
+    const bar = document.createElement('div');
+    bar.id = 'touchbar';
+    bar.innerHTML =
+      '<div class="tb-orders"></div>' +
+      '<div class="tb-acts">' +
+      '<button class="hbtn" data-tb="roster">☰ Roster</button>' +
+      '<button class="hbtn" data-tb="select">▭ Select</button>' +
+      '<button class="hbtn" data-tb="add">＋ Add</button>' +
+      '<button class="hbtn" data-tb="all">All</button>' +
+      '<button class="hbtn" data-tb="cancel">✕ Cancel</button>' +
+      '<button class="hbtn" data-tb="barrage"></button>' +
+      '<button class="hbtn" data-tb="air"></button>' +
+      '<button class="hbtn" data-tb="pause"></button>' +
+      '<button class="hbtn" data-tb="menu">⚙</button>' +
+      '</div>';
+    this.root.appendChild(bar);
+    this.tb = bar;
+
+    bar.addEventListener('click', (e) => {
+      if (this.lpFired) { this.lpFired = false; return; }
+      const t = e.target as HTMLElement;
+      const ord = t.closest<HTMLButtonElement>('[data-order]');
+      if (ord) { if (!ord.disabled) cb.armOrder(ord.dataset.order as OrderKind); return; }
+      const btn = t.closest<HTMLButtonElement>('[data-tb]');
+      if (!btn || btn.disabled) return;
+      switch (btn.dataset.tb) {
+        case 'roster': this.toggleRoster(); break;
+        case 'select': cb.toggleBoxMode(); break;
+        case 'add': cb.toggleAddMode(); break;
+        case 'all': cb.selectAll(); break;
+        case 'cancel': cb.cancel(); break;
+        case 'barrage': cb.callBarrage(); break;
+        case 'air': cb.callAirstrike(); break;
+        case 'pause': cb.togglePause(); break;
+        case 'menu': cb.openMenu(); break;
+      }
+    });
+
+    // Long-press an order chip for the affordance card — the mobile stand-in
+    // for the hover the desktop path uses. A finger that wanders is scrolling
+    // the chip row, not asking a question, so any move cancels it.
+    let lpTimer = 0;
+    let lpAt = { x: 0, y: 0 };
+    const cancelLp = (): void => { if (lpTimer) clearTimeout(lpTimer); lpTimer = 0; };
+    bar.addEventListener('pointerdown', (e) => {
+      this.hideAffordanceNow();
+      const btn = (e.target as HTMLElement).closest<HTMLButtonElement>('[data-order]');
+      if (!btn || btn.disabled) return;
+      this.lpFired = false;
+      lpAt = { x: e.clientX, y: e.clientY };
+      lpTimer = window.setTimeout(() => {
+        lpTimer = 0;
+        this.lpFired = true;
+        this.showAffordance(btn);
+      }, 480);
+    });
+    bar.addEventListener('pointermove', (e) => {
+      if (lpTimer && Math.hypot(e.clientX - lpAt.x, e.clientY - lpAt.y) > 10) cancelLp();
+    });
+    bar.addEventListener('pointerup', cancelLp);
+    bar.addEventListener('pointercancel', cancelLp);
+  }
+
+  /** Bottom-sheet roster: the ☰ chip is the only way in or out on a phone. */
+  toggleRoster(): void {
+    this.q('#squads').classList.toggle('open');
+    this.sig = ''; // chip active-state is part of the touchbar render
+  }
+
+  closeRoster(): void {
+    this.q('#squads').classList.remove('open');
+  }
+
+  get rosterOpen(): boolean {
+    return this.q('#squads').classList.contains('open');
   }
 
   setKeymap(km: Keymap): void {
@@ -168,16 +266,29 @@ export class Hud {
   private showAffordance(btn: HTMLElement): void {
     const kind = btn.dataset.order as OrderKind;
     const a: OrderAffordance = ORDER_AFFORDANCE[kind];
-    this.tipEl.innerHTML = `<div class="at-name">${a.name}</div><div class="at-when">${a.when}</div><div class="at-compliance">${a.complianceNote}</div><div class="at-hotkey">${a.hotkey} · right-click to issue</div>`;
+    const issue = MOBILE ? 'press and hold the ground to issue' : 'right-click to issue';
+    this.tipEl.innerHTML = `<div class="at-name">${a.name}</div><div class="at-when">${a.when}</div><div class="at-compliance">${a.complianceNote}</div><div class="at-hotkey">${MOBILE ? '' : `${a.hotkey} · `}${issue}</div>`;
     this.tipEl.style.display = 'block';
     const r = btn.getBoundingClientRect();
-    this.tipEl.style.left = `${r.left}px`;
+    // The card is a fixed 190px wide and anchors to the chip's left edge; on a
+    // 390px screen a chip scrolled to the right would hang off the viewport.
+    this.tipEl.style.left = `${Math.max(6, Math.min(r.left, innerWidth - 198))}px`;
     this.tipEl.style.top = `${r.top - this.tipEl.offsetHeight - 6}px`;
+    if (MOBILE) {
+      if (this.tipTimer) clearTimeout(this.tipTimer);
+      this.tipTimer = setTimeout(() => { this.tipEl.style.display = 'none'; }, 2600);
+    }
   }
 
   private hideAffordance(): void {
     if (this.tipTimer) clearTimeout(this.tipTimer);
     this.tipTimer = setTimeout(() => { this.tipEl.style.display = 'none'; }, 80);
+  }
+
+  private hideAffordanceNow(): void {
+    if (this.tipTimer) clearTimeout(this.tipTimer);
+    this.tipTimer = null;
+    this.tipEl.style.display = 'none';
   }
 
   private q(sel: string): HTMLElement {
@@ -187,13 +298,14 @@ export class Hud {
   update(sim: Sim, st: HudState): void {
     this.lastSim = sim;
     this.lastSt = st;
-    const sig = `${(sim.tick / 5) | 0}|${primarySquad(st)}|${st.selectedTeam}|${st.selectedVehicle}|${st.paused}|${st.targetMode}|${st.armedOrder}|${sim.winner}|${st.title}|${st.selectedSquads.join(',')}|${this.km.version}|${st.floorFocus ?? -1}|${st.aiControl}`;
+    const sig = `${(sim.tick / 5) | 0}|${primarySquad(st)}|${st.selectedTeam}|${st.selectedVehicle}|${st.paused}|${st.targetMode}|${st.armedOrder}|${sim.winner}|${st.title}|${st.selectedSquads.join(',')}|${this.km.version}|${st.floorFocus ?? -1}|${st.aiControl}|${st.boxMode ?? false}|${st.addMode ?? false}|${this.tb ? this.rosterOpen : false}`;
     if (sig === this.sig) return;
     this.sig = sig;
     this.renderTop(sim, st);
     this.renderObjectiveStrip(sim, st);
     this.renderSquads(sim, st);
     this.renderHint();
+    if (this.tb) this.renderTouchbar(sim, st);
 
     const cancelKey = formatBinding(this.km.bindings.cancel);
     if (st.targetMode) {
@@ -231,22 +343,28 @@ export class Hud {
     this.idleTicks++;
     if (this.idleTicks > 300 && !this.idleShown) {
       this.lastIdleMode = mode;
-      const fb = formatBinding;
-      const b = this.km.bindings;
-      this.ml.textContent = mode === 'battle'
-        ? `select a squad [${fb(b.squad1)}-${fb(b.squad9)}] · drag to pan · scroll to zoom · ${fb(b.barrage)} barrage`
-        : 'click a chit · right-click to move · 1/2/3 speed · Esc menu';
+      this.ml.textContent = this.idleText(mode);
       this.ml.classList.add('idle-hint');
       this.ml.style.display = 'block';
       this.idleShown = true;
     } else if (this.idleShown && this.lastIdleMode !== mode) {
       this.lastIdleMode = mode;
-      const fb = formatBinding;
-      const b = this.km.bindings;
-      this.ml.textContent = mode === 'battle'
-        ? `select a squad [${fb(b.squad1)}-${fb(b.squad9)}] · drag to pan · scroll to zoom · ${fb(b.barrage)} barrage`
-        : 'click a chit · right-click to move · 1/2/3 speed · Esc menu';
+      this.ml.textContent = this.idleText(mode);
     }
+  }
+
+  // Naming keys to a player holding a phone is worse than saying nothing.
+  private idleText(mode: 'battle' | 'strategic'): string {
+    if (MOBILE) {
+      return mode === 'battle'
+        ? 'tap a soldier to select · drag to pan · pinch to zoom · press and hold to order'
+        : 'tap a chit · press and hold a cell to move · ▶ starts the clock';
+    }
+    const fb = formatBinding;
+    const b = this.km.bindings;
+    return mode === 'battle'
+      ? `select a squad [${fb(b.squad1)}-${fb(b.squad9)}] · drag to pan · scroll to zoom · ${fb(b.barrage)} barrage`
+      : 'click a chit · right-click to move · 1/2/3 speed · Esc menu';
   }
 
   private renderHint(): void {
@@ -255,6 +373,30 @@ export class Hud {
     this.q('#hint').innerHTML =
       `<span class="hg">scroll zoom · ${fb(b.panUp)}${fb(b.panLeft)}${fb(b.panDown)}${fb(b.panRight)} pan · drag box-select · ⇧click add · right-click move · right-drag formation</span>` +
       `<span class="hg">${fb(b.squad1)}-${fb(b.squad9)} squad · ${fb(b.order1)}-${fb(b.order8)} order kind, right-click issues · shift+right-click waypoint · ${fb(b.barrage)} barrage · ${fb(b.airstrike)} airstrike · ${fb(b.pause)} pause · ${fb(b.cancel)} widen/cancel · ${fb(b.menu)} menu</span>`;
+  }
+
+  private renderTouchbar(sim: Sim, st: HudState): void {
+    const bar = this.tb!;
+    const primary = primarySquad(st);
+    const hasSquad = primary >= 0 && st.selectedVehicle < 0;
+    const orders = bar.querySelector<HTMLElement>('.tb-orders')!;
+    orders.style.display = hasSquad ? '' : 'none';
+    orders.innerHTML = hasSquad ? orderChips(st, this.km, emplacementOf(sim, primary) ? 'crew' : 'squad') : '';
+
+    const tb = (name: string) => bar.querySelector<HTMLButtonElement>(`[data-tb="${name}"]`)!;
+    const barrage = tb('barrage');
+    barrage.innerHTML = `☄ ×${sim.barragesLeft.blue}`;
+    barrage.disabled = sim.barragesLeft.blue <= 0;
+    barrage.classList.toggle('active', st.targetMode === 'barrage');
+    const air = tb('air');
+    air.innerHTML = `✈ ×${sim.airstrikesLeft.blue}`;
+    air.disabled = sim.airstrikesLeft.blue <= 0;
+    air.classList.toggle('active', st.targetMode === 'air');
+    tb('pause').textContent = st.paused ? '▶ Play' : '⏸ Pause';
+    tb('pause').classList.toggle('active', st.paused);
+    tb('select').classList.toggle('active', !!st.boxMode);
+    tb('add').classList.toggle('active', !!st.addMode);
+    tb('roster').classList.toggle('active', this.rosterOpen);
   }
 
   private renderObjectiveStrip(sim: Sim, st: HudState): void {
@@ -369,6 +511,9 @@ export class Hud {
     if (selKey !== this.lastSel) {
       this.lastSel = selKey;
       panel.querySelector('.card.sel')?.scrollIntoView({ block: 'nearest' });
+      // A phone sheet that stays open after a selection buries the ground the
+      // next order has to be given on. Selecting is the end of the roster's job.
+      if (this.tb) panel.classList.remove('open');
     }
   }
 }
@@ -435,18 +580,19 @@ function soldierRow(m: Soldier): string {
   );
 }
 
+function orderChips(st: HudState, km: Keymap, target: ArmTarget): string {
+  return ORDER_KINDS.map((k, i) => {
+    const bindingKey = `order${i + 1}` as keyof typeof km.bindings;
+    const title = formatBinding(km.bindings[bindingKey]);
+    const a = ORDER_AFFORDANCE[k];
+    const dis = !canArm(k, target) ? ' disabled' : '';
+    const armed = st.armedOrder === k ? ' armed' : '';
+    return `<button class="hbtn ord${armed}${dis}" data-order="${k}" title="${title}"${dis}>${k}<span class="hk">${a.hotkey}</span></button>`;
+  }).join('');
+}
+
 function orderBar(st: HudState, km: Keymap, target: ArmTarget): string {
-  const buttons = ORDER_KINDS.map(
-    (k, i) => {
-      const bindingKey = `order${i + 1}` as keyof typeof km.bindings;
-      const title = formatBinding(km.bindings[bindingKey]);
-      const a = ORDER_AFFORDANCE[k];
-      const dis = !canArm(k, target) ? ' disabled' : '';
-      const armed = st.armedOrder === k ? ' armed' : '';
-      return `<button class="hbtn ord${armed}${dis}" data-order="${k}" title="${title}"${dis}>${k}<span class="hk">${a.hotkey}</span></button>`;
-    },
-  ).join('');
-  return `<div class="orderbar">${buttons}</div>`;
+  return `<div class="orderbar">${orderChips(st, km, target)}</div>`;
 }
 
 function emplacementStateRow(sim: Sim, e: Emplacement): string {
