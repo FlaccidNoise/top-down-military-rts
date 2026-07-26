@@ -117,18 +117,167 @@ function gunClass(w: WeaponKey): 'rifle' | 'smg' | 'mg' {
   return WEAPONS[w].class;
 }
 
+// --- Weapon silhouettes (U3) ------------------------------------------------
+// Three lengths cannot tell a Kar98k from a bazooka. Every WeaponKey gets a
+// shape instead, differentiated by geometry rather than by scale: the overall
+// lengths stay close to the three they replace so no figure's proportions
+// shift, and the read comes from stock, magazine, jacket and muzzle.
+const WOOD = '#5d4126';
+const METAL = '#2b2b28';
+const METAL_DARK = '#232320';
+
+interface GunShape {
+  len: number; // overall length in body units (1 unit ~ 1.35 m)
+  back: number; // butt distance behind the grip
+  barrelW: number;
+  stock: 'wood' | 'folding' | 'none';
+  fore: number; // where the support hand rides along the bore — half the read
+  mag?: [number, number]; // [x along bore, depth below] box magazine
+  vmag?: number; // magazine hanging straight down (MP40)
+  bipod?: number; // half-span at the muzzle
+  scope?: number; // scope block length above the receiver
+  drum?: number; // drum/pan radius
+  jacket?: number; // cooling-jacket perforation ticks
+  tube?: boolean; // constant-diameter launcher: no stock taper, no receiver step
+  shield?: boolean; // blast shield (Panzerschreck)
+  bulb?: number; // warhead bulb radius (Panzerfaust)
+  bolt?: boolean; // straight bolt handle
+  oprod?: boolean; // op-rod tick along the underside (Garand)
+  brake?: boolean; // muzzle booster/brake
+  foregrip?: boolean;
+  can?: boolean; // ammo can + belt at the loader's side (M1919)
+  slung?: number; // carried across the back, not fired: tube of this length
+  plate?: boolean; // mortar baseplate disc
+}
+
+const GUNS: Record<WeaponKey, GunShape> = {
+  garand: { len: 1.05, back: 0.32, barrelW: 0.06, stock: 'wood', fore: 0.38, oprod: true },
+  carbine: { len: 0.82, back: 0.26, barrelW: 0.05, stock: 'wood', fore: 0.32, mag: [0.06, 0.12] },
+  springfield: { len: 1.15, back: 0.34, barrelW: 0.055, stock: 'wood', fore: 0.4, scope: 0.22 },
+  kar98k_scoped: { len: 1.15, back: 0.34, barrelW: 0.055, stock: 'wood', fore: 0.4, scope: 0.22 },
+  kar98k: { len: 1.02, back: 0.32, barrelW: 0.062, stock: 'wood', fore: 0.38, bolt: true },
+  bar: { len: 1.12, back: 0.32, barrelW: 0.075, stock: 'wood', fore: 0.42, bipod: 0.16, mag: [0.1, 0.16] },
+  thompson: { len: 0.66, back: 0.22, barrelW: 0.055, stock: 'wood', fore: 0.24, drum: 0.1, foregrip: true },
+  mp40: { len: 0.62, back: 0.2, barrelW: 0.05, stock: 'folding', fore: 0.22, vmag: 0.22 },
+  m1919: { len: 1.2, back: 0.3, barrelW: 0.05, stock: 'none', fore: 0.4, jacket: 5, can: true },
+  mg42: { len: 1.32, back: 0.32, barrelW: 0.085, stock: 'wood', fore: 0.44, jacket: 7, bipod: 0.2, drum: 0.11, brake: true },
+  bazooka: { len: 1.4, back: 0.55, barrelW: 0.09, stock: 'none', fore: 0.5, tube: true },
+  schreck: { len: 1.5, back: 0.6, barrelW: 0.095, stock: 'none', fore: 0.5, tube: true, shield: true },
+  panzerfaust: { len: 0.75, back: 0.3, barrelW: 0.06, stock: 'none', fore: 0.3, tube: true, bulb: 0.09 },
+  mortar60: { len: 0.9, back: 0, barrelW: 0.08, stock: 'none', fore: 0.3, slung: 0.9 },
+  mortar81: { len: 1.1, back: 0, barrelW: 0.09, stock: 'none', fore: 0.3, slung: 1.1, plate: true },
+  at57_gun: { len: 0.8, back: 0.26, barrelW: 0.05, stock: 'wood', fore: 0.3 },
+  pak40_gun: { len: 0.8, back: 0.26, barrelW: 0.05, stock: 'wood', fore: 0.3 },
+};
+
+// Support-hand distance along the bore: a bazooka's hand sits at 0.5, an
+// MP40's at 0.22. Hand placement is half of what makes a weapon read.
+function gunFore(w: WeaponKey): number {
+  return GUNS[w].fore;
+}
+
 // Weapon drawn with grip at (x, y), muzzle toward +X (before `angle`).
-function gun(g: Ctx, weapon: WeaponKey, x: number, y: number, angle: number): void {
+// Draw order is fixed: stock → receiver → barrel → jacket → magazine → bipod
+// → scope → muzzle device, so nothing ever paints over the part that reads.
+function gun(g: Ctx, weapon: WeaponKey, x: number, y: number, angle: number, band: number): void {
+  const s = GUNS[weapon];
+  const t = tier(band);
+  const hw = hair(band);
   g.save();
+
+  // A mortar on a man is cargo, not a weapon: tube slung across the back on
+  // the same angle as the slung rifles in drag()/aid(). Firing tubes are
+  // emplacements, not soldier sprites.
+  if (s.slung) {
+    g.translate(-0.04, 0);
+    g.rotate(2.45);
+    cap(g, -s.slung / 2, 0, s.slung / 2, 0, s.barrelW * 1.6, METAL);
+    if (t >= 2) {
+      cap(g, -s.slung / 2, 0, -s.slung / 2 + 0.1, 0, s.barrelW * 2.2, METAL_DARK); // muzzle collar
+      if (s.plate) dot(g, s.slung / 2 + 0.06, 0, 0.11, METAL_DARK); // baseplate riding the butt end
+    }
+    g.restore();
+    return;
+  }
+
   g.translate(x, y);
   g.rotate(angle);
-  const w = gunClass(weapon);
-  const len = w === 'rifle' ? 1.05 : w === 'smg' ? 0.62 : 1.25;
-  const back = w === 'smg' ? 0.2 : 0.32;
-  cap(g, -back, 0, -back * 0.25, 0, 0.1, '#5d4126'); // stock
-  cap(g, -back * 0.25, 0, len - back, 0, w === 'mg' ? 0.08 : 0.06, '#2b2b28');
-  if (w === 'smg') cap(g, 0.1, 0.04, 0.1, 0.2, 0.06, '#2b2b28'); // magazine
-  if (w === 'mg') cap(g, len - back - 0.12, -0.14, len - back - 0.12, 0.14, 0.045, '#232320'); // bipod
+  if (s.tube) g.translate(0, -0.06); // launchers ride the shoulder line, not both fists
+  const muzzle = s.len - s.back;
+
+  if (s.stock === 'wood') cap(g, -s.back, 0, -s.back * 0.25, 0, 0.1, WOOD);
+  else if (s.stock === 'folding') {
+    if (t >= 2) {
+      g.strokeStyle = METAL;
+      g.lineWidth = Math.max(0.028, hw);
+      g.strokeRect(-s.back, -0.05, s.back * 0.8, 0.1); // wire stock, folded under
+    } else cap(g, -s.back, 0, -s.back * 0.3, 0, 0.06, METAL);
+  }
+
+  if (s.tube) {
+    cap(g, -s.back, 0, muzzle, 0, s.barrelW * 2, METAL); // constant diameter, no taper
+    if (t >= 2) {
+      cap(g, -s.back * 0.35, 0.02, -s.back * 0.35, 0.12, 0.045, METAL_DARK); // shoulder rest
+      if (s.shield) {
+        g.fillStyle = METAL_DARK;
+        g.fillRect(muzzle * 0.3, -0.16, 0.06, 0.32); // blast shield, seen edge-on from above
+      }
+    }
+    if (s.bulb) dot(g, muzzle + s.bulb * 0.5, 0, s.bulb, METAL_DARK);
+  } else {
+    if (s.jacket && t >= 2) cap(g, 0.02, 0, muzzle * 0.62, 0, s.barrelW * 1.5, METAL); // cooling jacket sleeve
+    cap(g, -s.back * 0.25, 0, muzzle, 0, s.barrelW, METAL);
+  }
+
+  if (s.jacket && t >= 3) {
+    g.strokeStyle = METAL_DARK;
+    g.lineWidth = Math.max(0.02, hw);
+    g.beginPath();
+    for (let i = 0; i < s.jacket; i++) {
+      const jx = 0.06 + (muzzle * 0.55 * (i + 0.5)) / s.jacket;
+      g.moveTo(jx, -s.barrelW * 0.75);
+      g.lineTo(jx, s.barrelW * 0.75);
+    }
+    g.stroke();
+  }
+  if (s.oprod && t >= 3) cap(g, -0.05, s.barrelW * 0.7, muzzle * 0.6, s.barrelW * 0.7, Math.max(0.022, hw), METAL_DARK);
+  if (s.bolt && t >= 2) cap(g, -0.15, 0.01, -0.15, 0.13, Math.max(0.035, hw), METAL_DARK);
+  if (s.mag && t >= 2) {
+    g.fillStyle = METAL_DARK;
+    g.fillRect(s.mag[0] - 0.03, 0.02, 0.06, s.mag[1]);
+  }
+  if (s.vmag) cap(g, 0.08, 0.04, 0.08, 0.04 + s.vmag, 0.06, METAL); // straight-down stick mag: the MP40 read
+  if (s.drum && t >= 2) {
+    dot(g, 0.06, 0.09, s.drum, METAL_DARK);
+    dot(g, 0.06, 0.09, s.drum * 0.45, METAL);
+  }
+  if (s.foregrip && t >= 2) cap(g, muzzle * 0.55, 0.02, muzzle * 0.55, 0.14, 0.05, METAL_DARK);
+  if (s.bipod) cap(g, muzzle - 0.12, -s.bipod, muzzle - 0.12, s.bipod, Math.max(0.045, hw), METAL_DARK);
+  if (s.scope && t >= 2) {
+    g.fillStyle = METAL_DARK;
+    g.fillRect(-0.02, -0.075, s.scope, 0.07);
+    if (t >= 3) {
+      g.strokeStyle = METAL;
+      g.lineWidth = Math.max(0.022, hw);
+      g.beginPath();
+      for (const rx of [0.02, s.scope - 0.05]) {
+        g.moveTo(rx, -0.085);
+        g.lineTo(rx, 0.005);
+      }
+      g.stroke();
+    }
+  }
+  if (s.can && t >= 2) {
+    g.fillStyle = mix('#3c3f36', '#000', 0.25); // olive can, not a black brick — it must not out-value the helmet
+    g.fillRect(-0.1, 0.11, 0.24, 0.15); // ammo can at the loader's side
+    g.strokeStyle = METAL;
+    g.lineWidth = Math.max(0.03, hw);
+    g.beginPath();
+    g.moveTo(0.04, 0.03);
+    g.quadraticCurveTo(0.02, 0.08, 0.06, 0.1); // belt out of the feed block
+    g.stroke();
+  }
+  if (s.brake && t >= 2) cap(g, muzzle - 0.08, 0, muzzle + 0.02, 0, s.barrelW * 1.7, METAL_DARK);
   g.restore();
 }
 
@@ -230,12 +379,12 @@ function standing(g: Ctx, k: Kit, w: WeaponKey, gunAngle: number, legSwing: numb
   const bob = Math.abs(legSwing) * 0.035; // head bob, two beats per stride (S4)
   const gx = 0.14;
   const gy = 0.13;
-  const fore = gunClass(w) === 'smg' ? 0.24 : 0.38;
+  const fore = gunFore(w);
   const fx = gx + Math.cos(gunAngle) * fore;
   const fy = gy + Math.sin(gunAngle) * fore;
   cap(g, 0.02, 0.24, gx, gy, 0.12, k.sleeve);
   cap(g, 0.02, -0.24, fx, fy, 0.12, k.sleeve);
-  gun(g, w, gx, gy, gunAngle);
+  gun(g, w, gx, gy, gunAngle, band);
   dot(g, gx, gy, 0.055, k.skin);
   dot(g, fx, fy, 0.055, k.skin);
   helmet(g, k, 0.04 + lean, -bob, band);
@@ -250,11 +399,11 @@ function kneel(g: Ctx, k: Kit, w: WeaponKey, band: number): void {
   torso(g, k, 0.2, 0.27, band, w);
   const gx = 0.14;
   const gy = 0.1;
-  const fore = gunClass(w) === 'smg' ? 0.24 : 0.38;
+  const fore = gunFore(w);
   const fx = gx + fore;
   cap(g, 0.02, 0.2, gx, gy, 0.12, k.sleeve);
   cap(g, 0.02, -0.2, fx, gy, 0.12, k.sleeve);
-  gun(g, w, gx, gy, 0);
+  gun(g, w, gx, gy, 0, band);
   dot(g, gx, gy, 0.055, k.skin);
   dot(g, fx, gy, 0.055, k.skin);
   helmet(g, k, 0.06, 0, band);
@@ -280,14 +429,14 @@ function prone(g: Ctx, k: Kit, w: WeaponKey, band: number): void {
   ], band);
   cap(g, 0.12, 0.24, 0.5, 0.12, 0.12, k.sleeve);
   cap(g, 0.15, -0.24, 0.58, -0.04, 0.12, k.sleeve);
-  gun(g, w, 0.5, 0.05, 0);
+  gun(g, w, 0.5, 0.05, 0, band);
   dot(g, 0.5, 0.1, 0.055, k.skin);
   dot(g, 0.58, -0.04, 0.055, k.skin);
   helmet(g, k, 0.42, 0, band);
 }
 
 function downed(g: Ctx, k: Kit, w: WeaponKey, band: number): void {
-  gun(g, w, 0.25, 0.45, 0.5); // weapon dropped
+  gun(g, w, 0.25, 0.45, 0.5, band); // weapon dropped
   proneBody(g, k, [
     [-0.45, 0.02, -0.88, 0.06],
     [-0.45, 0.12, -0.9, 0.24],
@@ -297,8 +446,8 @@ function downed(g: Ctx, k: Kit, w: WeaponKey, band: number): void {
   helmet(g, k, 0.42, 0.05, band);
 }
 
-function dead(g: Ctx, k: Kit, w: WeaponKey): void {
-  gun(g, w, -0.05, -0.5, -2.7); // weapon flung
+function dead(g: Ctx, k: Kit, w: WeaponKey, band: number): void {
+  gun(g, w, -0.05, -0.5, -2.7, band); // weapon flung
   for (const [x0, y0, x1, y1] of [
     [-0.42, 0.08, -0.92, 0.32],
     [-0.4, -0.05, -0.82, -0.28],
@@ -341,7 +490,7 @@ function torso(g: Ctx, k: Kit, rx: number, ry: number, band: number, weapon: Wea
 // grip, weapon slung across the back.
 function drag(g: Ctx, k: Kit, w: WeaponKey, band: number): void {
   torso(g, k, 0.22, 0.31, band, w);
-  gun(g, w, -0.08, 0, 2.45); // slung
+  gun(g, w, -0.08, 0, 2.45, band); // slung
   cap(g, 0.02, 0.24, -0.36, 0.15, 0.12, k.sleeve);
   cap(g, 0.02, -0.24, -0.36, -0.15, 0.12, k.sleeve);
   dot(g, -0.36, 0.15, 0.055, k.skin);
@@ -354,7 +503,7 @@ function aid(g: Ctx, k: Kit, w: WeaponKey, band: number): void {
   dot(g, -0.26, 0.17, 0.075, '#3a3128'); // tucked boots
   dot(g, -0.26, -0.17, 0.075, '#3a3128');
   torso(g, k, 0.24, 0.29, band, w);
-  gun(g, w, -0.08, 0, 2.45);
+  gun(g, w, -0.08, 0, 2.45, band);
   cap(g, 0.04, 0.22, 0.4, 0.12, 0.12, k.sleeve);
   cap(g, 0.04, -0.22, 0.4, -0.12, 0.12, k.sleeve);
   dot(g, 0.4, 0.12, 0.055, k.skin);
@@ -405,15 +554,16 @@ function melee(g: Ctx, k: Kit, w: WeaponKey, frame: number, band: number): void 
   dot(g, -0.28 - p.lunge * 0.4, -0.18, 0.07, '#3a3128');
   torso(g, k, 0.22, 0.31, band, w);
   const gy = 0.12;
-  const fore = gunClass(w) === 'smg' ? 0.24 : 0.38;
+  const fore = gunFore(w);
   const fx = p.gx + Math.cos(p.ga) * fore;
   const fy = gy + Math.sin(p.ga) * fore;
   cap(g, 0.02, 0.24, p.gx, gy, 0.12, k.sleeve);
   cap(g, 0.02, -0.24, fx, fy, 0.12, k.sleeve);
-  gun(g, w, p.gx, gy, p.ga);
-  if (gunClass(w) === 'rifle') {
-    // fixed bayonet — the melee read at a glance
-    const len = 1.05 - 0.32;
+  gun(g, w, p.gx, gy, p.ga, band);
+  if (GUNS[w].stock === 'wood' && !GUNS[w].slung) {
+    // fixed bayonet — the melee read at a glance. Only on a rifle that has a
+    // muzzle to fix it to: data.ts files bazookas under `rifle` too.
+    const len = GUNS[w].len - GUNS[w].back;
     const mx = p.gx + Math.cos(p.ga) * len;
     const my = gy + Math.sin(p.ga) * len;
     cap(g, mx, my, mx + Math.cos(p.ga) * 0.22, my + Math.sin(p.ga) * 0.22, 0.045, '#cfd2d6');
@@ -448,7 +598,7 @@ function drawDude(g: Ctx, side: Side, weapon: WeaponKey, pose: Pose, frame: numb
       downed(g, k, weapon, band);
       break;
     case 'dead':
-      dead(g, deadKit(k), weapon);
+      dead(g, deadKit(k), weapon, band);
       break;
     case 'drag':
       drag(g, k, weapon, band);
