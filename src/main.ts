@@ -244,7 +244,10 @@ const hud = new Hud({
     if (e) sim.orderUnhitch(e.id);
   },
 });
-const stratHud = new StratHud();
+const stratHud = new StratHud({
+  togglePause: () => { stratPaused = !stratPaused; },
+  setSpeed: (i) => { speedIdx = i; },
+});
 const tooltip = new Tooltip(hud.root);
 let pauseBeforeMenu: boolean | null = null;
 const menu = new PauseMenu({
@@ -457,10 +460,19 @@ function showDebrief(): void {
   };
 }
 
+// On a phone the fit-only sector layout solves to ~9px cells — unreadable and
+// untappable. Zoom until a chit is a real target and centre on the friendly
+// chits; desktop keeps the fit-only defaults.
+function frameStrategic(): void {
+  if (!MOBILE) return;
+  stratView.frameFor(view.w, view.h, front.chits.filter((c) => c.side === 'blue' && c.strength > 0).map((c) => c.cell));
+}
+
 function freshCampaign(): void {
   campaign = newCampaign(campSeed());
   front = newFront(campaign, makeDefaultSector());
   stratView = new StrategicView(front.sector);
+  frameStrategic();
   selectedChit = -1;
   pendingEngagement = null;
   opEnded = false;
@@ -816,20 +828,34 @@ const battleTouch: TouchHandlers = {
   twoTap: () => { escapeLadder(); },
 };
 
+const STRAT_ZOOM = [1, 4] as const;
 const stratTouch: TouchHandlers = {
   press: (x, y) => { touchHold = { x, y, t0: performance.now() }; },
   release: () => { touchHold = null; },
   tap: (x, y) => stratTapSelect(x, y),
-  pan: () => {},
+  pan: (dx, dy) => {
+    stratView.panX += dx;
+    stratView.panY += dy;
+    stratView.clampPan(view.w, view.h);
+  },
   holdStart: () => {},
   holdMove: () => {},
   holdEnd: (x, y) => stratOrderMove(x, y),
   holdCancel: () => {},
-  pinch: () => {},
+  pinch: (factor, mx, my, dmx, dmy) => {
+    const before = stratView.zoomMul;
+    stratView.zoomMul = Math.max(STRAT_ZOOM[0], Math.min(STRAT_ZOOM[1], before * factor));
+    // keep the grid point under the pinch midpoint fixed
+    const k = stratView.zoomMul / before;
+    stratView.panX = mx - k * (mx - stratView.panX) + dmx;
+    stratView.panY = my - k * (my - stratView.panY) + dmy;
+    stratView.clampPan(view.w, view.h);
+  },
   twoTap: () => { selectedChit = -1; },
 };
 
 bindTouch(canvas, () => (mode === 'battle' ? battleTouch : stratTouch));
+frameStrategic();
 canvas.addEventListener('wheel', (e) => {
   e.preventDefault();
   if (mode !== 'battle') return;
@@ -1009,7 +1035,8 @@ function frame(now: number): void {
       const status = operationStatus(front);
       if (status !== 'ongoing') showOperationEnd(status);
     }
-    stratHud.update(front, campaign, selectedChit, stratPaused);
+    stratHud.update(front, campaign, selectedChit, stratPaused, speedIdx);
+    stratView.clampPan(view.w, view.h); // absorbs orientation changes; a no-op at zoomMul 1
     stratView.stagedCell = pendingEngagement ? pendingEngagement.cell : -1;
     stratView.draw(ctx, front, selectedChit, stratPaused, SPEEDS[speedIdx], view.w, view.h);
     if (touchHold) drawHoldRing(ctx, touchHold, now);

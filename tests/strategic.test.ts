@@ -311,6 +311,61 @@ describe('strategic view', () => {
     expect(view.cellAtScreen(ox + size * 4 + 1, oy + size * 15 + 1, 800, 650)).toBe(15 * 40 + 4);
     expect(view.cellAtScreen(0, 0, 800, 650)).toBe(-1);
   });
+
+  it('default camera reproduces the fit-only layout exactly', () => {
+    const view = new StrategicView(makeDefaultSector());
+    expect(view.zoomMul).toBe(1);
+    expect(view.panX).toBe(0);
+    expect(view.panY).toBe(0);
+    const size = Math.max(4, Math.floor(Math.min(1280 / 40, (800 - 34 - 24) / 30)));
+    expect(view.layout(1280, 800)).toEqual({ size, ox: Math.floor((1280 - size * 40) / 2), oy: 34 });
+  });
+
+  it('clampPan is a no-op while the grid fits — desktop pans stay at zero', () => {
+    const view = new StrategicView(makeDefaultSector());
+    const before = view.layout(1280, 800);
+    view.clampPan(1280, 800);
+    expect(view.panX).toBe(0);
+    expect(view.panY).toBe(0);
+    expect(view.layout(1280, 800)).toEqual(before);
+  });
+
+  it('a tap at a cell centre round-trips under a non-default zoom and pan', () => {
+    const view = new StrategicView(makeDefaultSector());
+    view.zoomMul = 2.75;
+    view.panX = -140;
+    view.panY = -96;
+    const { size, ox, oy } = view.layout(390, 844);
+    for (const [cx, cy] of [
+      [4, 15],
+      [20, 7],
+      [39, 29],
+      [0, 0],
+    ]) {
+      const sx = ox + (cx + 0.5) * size;
+      const sy = oy + (cy + 0.5) * size;
+      expect(view.cellAtScreen(sx, sy, 390, 844)).toBe(cy * 40 + cx);
+    }
+  });
+
+  it('frameFor zooms a phone viewport to a tappable cell and keeps the chits on screen', () => {
+    const view = new StrategicView(makeDefaultSector());
+    const cells = [cellIndex(view.sector, 4, 12), cellIndex(view.sector, 4, 15), cellIndex(view.sector, 4, 18)];
+    view.frameFor(390, 844, cells);
+    const { size, ox, oy } = view.layout(390, 844);
+    expect(size).toBeGreaterThanOrEqual(26);
+    for (const c of cells) {
+      const x = c % 40;
+      const y = (c / 40) | 0;
+      const sx = ox + (x + 0.5) * size;
+      const sy = oy + (y + 0.5) * size;
+      expect(sx).toBeGreaterThanOrEqual(0);
+      expect(sx).toBeLessThanOrEqual(390);
+      expect(sy).toBeGreaterThanOrEqual(34);
+      expect(sy).toBeLessThanOrEqual(844 - 24);
+      expect(view.cellAtScreen(sx, sy, 390, 844)).toBe(c);
+    }
+  });
 });
 
 describe('m-a loop', () => {
