@@ -135,6 +135,7 @@ export class Renderer {
     this.decals.draw(ctx, cam, cw, ch);
     this.roofs.update(this.sim, cam, dt);
     this.roofs.drawShadows(ctx, cam, cw, ch);
+    this.roofs.drawWalls(ctx, cam, cw, ch);
     // stair glyphs only where the roof fade reveals the interior
     this.terrain.drawStairs(ctx, cam, cw, ch, (x, y) => this.roofs.interiorVisibleAt(x, y));
 

@@ -1,7 +1,9 @@
 import type { Building } from '../sim/mapgen';
+import { EDGE } from '../sim/map';
+import type { GameMap } from '../sim/map';
 import type { Sim } from '../sim/sim';
 import type { Camera } from './camera';
-import { AO_ALPHA, SHADOW_ALPHA, SHADOW_SOFT_ALPHA, shadowOffset } from './light';
+import { AO_ALPHA, SHADOW_ALPHA, SHADOW_SOFT_ALPHA, SUN, shadowOffset } from './light';
 
 // Gable roofs drawn over building footprints (sim.buildings, from the map
 // plan). A roof fades out when the camera is zoomed in close or a soldier the
@@ -83,6 +85,16 @@ const MAT_SPEC: Record<'tile' | 'slate', { course: number; tileW: number; jitter
 
 const BIG_ROOF_AREA = 45; // w*h threshold for weathering patch runs
 
+// Fake-oblique mass. The roof blits PARALLAX metres up-sun of the footprint so
+// the SE wall face is uncovered; it stays well under OVERHANG, or the roof
+// would pull back off the NW footprint edge and break the wall-line read.
+const PARALLAX = 0.26;
+const H_PROJ = 0.5; // metres of wall face shown per storey
+type WallMat = 'rubble' | 'colombage' | 'brick';
+const WALL_BASES: Record<WallMat, string> = { rubble: '#8d867a', colombage: '#9a917c', brick: '#6f5041' };
+const FACE_S = 0.56; // the south face is the more backlit of the two visible sides
+const FACE_E = 0.66;
+
 // Keyed on (building index, salt) — same arithmetic as the old local copy.
 import { hash } from './noise';
 
@@ -142,10 +154,22 @@ interface RoofArt {
   shadePatch: string;
   ridgeBody: string;
   courseAlpha: number;
-  ox: number; // sprite origin / span, world meters
+  ox: number; // roof sprite origin / span, world meters
   oy: number;
   ow: number;
   oh: number;
+  sx: number; // shadow sprite rect — grown SE by the cast offset plus blur margin
+  sy: number;
+  sw: number;
+  sh: number;
+  hp: number; // wall-face projection depth, metres
+  wall: WallMat;
+  wallS: string; // the two visible faces, both in shade under a NW sun
+  wallE: string;
+  wallSTones: string[];
+  wallETones: string[];
+  openS: Uint8Array; // per-tile edge type along the south / east walls
+  openE: Uint8Array;
   chimney: { x: number; y: number; s: number };
   chimneyShadow: { x: number; y: number };
 }
@@ -174,7 +198,7 @@ function pickMat(i: number, stories: number, smallOfPair: boolean): RoofMat {
 // Per-building roof look, computed once when the buildings list changes (not
 // per frame): material, weathering jitter, lit/shade slope tints and ramps,
 // and the hash-placed chimney, so identical materials don't look cloned.
-function buildArt(b: Building, i: number, stories: number, smallOfPair: boolean): RoofArt {
+function buildArt(b: Building, i: number, stories: number, smallOfPair: boolean, map: GameMap): RoofArt {
   const ridgeAlongX = b.w >= b.h;
   const { x, y, w, h } = roofRect(b);
 
@@ -199,6 +223,20 @@ function buildArt(b: Building, i: number, stories: number, smallOfPair: boolean)
   const [sdx, sdy] = shadowOffset(0.18);
   const chimney = { x: cx - s / 2, y: cy - s / 2, s };
 
+  const wr = hash(i, 260);
+  const wall: WallMat = wr < 0.15 ? 'brick' : wr < 0.5 ? 'colombage' : 'rubble';
+  const wbase = hexToRgb(WALL_BASES[wall]);
+  // Openings come from the map, not from decoration: mapgen puts a window at
+  // every third edge tile and the door mid-span, which is what terrain.ts
+  // already strokes, so the face lines up with the walls the player sees.
+  const openS = new Uint8Array(b.w);
+  for (let k = 0; k < b.w; k++) openS[k] = map.hEdge(b.x + k, b.y + b.h);
+  const openE = new Uint8Array(b.h);
+  for (let k = 0; k < b.h; k++) openE[k] = map.vEdge(b.x + b.w, b.y + k);
+
+  const [csdx, csdy] = shadowOffset(1.1 * stories);
+  const blurPad = 0.6;
+
   return {
     mat,
     ridgeAlongX,
@@ -217,6 +255,18 @@ function buildArt(b: Building, i: number, stories: number, smallOfPair: boolean)
     oy: y - PAD_NW,
     ow: w + PAD_NW + PAD_SE,
     oh: h + PAD_NW + PAD_SE,
+    sx: x - blurPad,
+    sy: y - blurPad,
+    sw: w + csdx + blurPad * 2,
+    sh: h + csdy + blurPad * 2,
+    hp: H_PROJ * stories,
+    wall,
+    wallS: rgbStr(tint(wbase, FACE_S, -3)),
+    wallE: rgbStr(tint(wbase, FACE_E, -1)),
+    wallSTones: ramp(wbase, FACE_S, -3, 0.09),
+    wallETones: ramp(wbase, FACE_E, -1, 0.09),
+    openS,
+    openE,
     chimney,
     chimneyShadow: { x: chimney.x + sdx, y: chimney.y + sdy },
   };
@@ -504,6 +554,12 @@ function drawRoof(g: CanvasRenderingContext2D, b: Building, art: RoofArt, i: num
   g.strokeStyle = soft ? 'rgba(28,22,14,0.34)' : 'rgba(20,16,12,0.6)';
   g.lineWidth = Math.max(0.06, 1.3 / band) * (soft ? 1.8 : 1);
   g.strokeRect(x, y, w, h);
+
+  // The eave's own shadow onto the wall below it. It belongs to the roof, so
+  // it lives here and fades with the roof rather than sticking to the wall.
+  g.fillStyle = 'rgba(14,12,9,0.4)';
+  g.fillRect(x, y + h, w + 0.08, 0.08);
+  g.fillRect(x + w, y, 0.08, h);
 }
 
 function bakeRoof(b: Building, art: RoofArt, i: number, band: number): HTMLCanvasElement {
@@ -517,13 +573,152 @@ function bakeRoof(b: Building, art: RoofArt, i: number, band: number): HTMLCanva
   return c;
 }
 
+// Soft one-sun drop shadow. ctx.filter is a bake-time nicety — where it is
+// unsupported the assignment is a no-op and the edges simply stay hard, so
+// there is nothing to guard.
+function bakeShadow(b: Building, art: RoofArt, stories: number, band: number): HTMLCanvasElement {
+  const c = document.createElement('canvas');
+  c.width = Math.max(1, Math.round(art.sw * band));
+  c.height = Math.max(1, Math.round(art.sh * band));
+  const g = c.getContext('2d')!;
+  g.scale(band, band);
+  g.translate(-art.sx, -art.sy);
+  const { x, y, w, h } = roofRect(b);
+  const [sdx, sdy] = shadowOffset(0.71 * stories);
+  const [fdx, fdy] = shadowOffset(1.1 * stories);
+  g.filter = `blur(${(0.28 * band).toFixed(2)}px)`;
+  g.fillStyle = `rgba(12,15,10,${SHADOW_SOFT_ALPHA})`;
+  g.fillRect(x + fdx, y + fdy, w, h);
+  g.filter = `blur(${(0.12 * band).toFixed(2)}px)`;
+  g.fillStyle = `rgba(12,15,10,${SHADOW_ALPHA})`;
+  g.fillRect(x + sdx, y + sdy, w, h);
+  g.filter = 'none';
+  // contact occlusion sits on the true footprint and stays crisp
+  const aoW = 0.22;
+  g.strokeStyle = `rgba(8,10,7,${AO_ALPHA})`;
+  g.lineWidth = aoW;
+  g.strokeRect(b.x + aoW / 2, b.y + aoW / 2, b.w - aoW, b.h - aoW);
+  return c;
+}
+
+// One wall face in a local frame: u runs along the wall, v runs outward from
+// the footprint edge to the bottom of the projected face.
+function wallFace(
+  g: CanvasRenderingContext2D,
+  art: RoofArt,
+  i: number,
+  band: number,
+  uLen: number,
+  hp: number,
+  tones: string[],
+  flat: string,
+  open: Uint8Array,
+  openAt: number,
+  salt: number,
+): void {
+  g.fillStyle = flat;
+  g.fillRect(0, 0, uLen, hp);
+  if (art.wall === 'rubble') {
+    const row = hp / Math.max(2, Math.round(hp / 0.28));
+    for (let v = 0, r = 0; v < hp - 0.001; v += row, r++) {
+      const stag = (r & 1) * 0.22;
+      for (let u = -stag, k = 0; u < uLen; u += 0.45, k++) {
+        const u0 = Math.max(0, u);
+        const u1 = Math.min(uLen, u + 0.45 - 0.04);
+        if (u1 - u0 <= 0.001) continue;
+        g.fillStyle = tones[Math.min(TONE_STEPS - 1, (hash(i, r * 131 + k, salt) * TONE_STEPS) | 0)];
+        g.fillRect(u0, v, u1 - u0, row - 0.035);
+      }
+    }
+    g.fillStyle = 'rgba(60,54,44,0.35)';
+    for (let v = row; v < hp - 0.001; v += row) g.fillRect(0, v - 0.03, uLen, 0.03);
+  } else if (art.wall === 'colombage') {
+    g.fillStyle = '#4a3c2c';
+    for (let u = 0; u < uLen; u += 0.7) g.fillRect(u, 0, 0.1, hp);
+    g.fillRect(0, hp * 0.45, uLen, 0.08);
+  } else {
+    const row = 0.22;
+    for (let v = 0, r = 0; v < hp - 0.001; v += row, r++) {
+      const stag = (r & 1) * 0.11;
+      for (let u = -stag, k = 0; u < uLen; u += 0.22, k++) {
+        const u0 = Math.max(0, u);
+        const u1 = Math.min(uLen, u + 0.22 - 0.03);
+        if (u1 - u0 <= 0.001) continue;
+        g.fillStyle = tones[Math.min(TONE_STEPS - 1, (hash(i, r * 131 + k, salt) * TONE_STEPS) | 0)];
+        g.fillRect(u0, v, u1 - u0, row - 0.03);
+      }
+    }
+  }
+  // openings, straight off the map's edge types
+  for (let k = 0; k < open.length; k++) {
+    const e = open[k];
+    if (e !== EDGE.WINDOW && e !== EDGE.DOOR) continue;
+    const u = openAt + k;
+    if (e === EDGE.DOOR) {
+      g.fillStyle = '#5f4426';
+      g.fillRect(u + 0.18, 0, 0.64, hp);
+      g.fillStyle = 'rgba(14,11,7,0.5)';
+      g.fillRect(u + 0.18, 0, 0.64, hp * 0.28);
+      g.strokeStyle = '#3a3128';
+      g.lineWidth = Math.max(0.03, 1 / band);
+      g.strokeRect(u + 0.18, 0, 0.64, hp);
+      continue;
+    }
+    const py = hp * 0.22;
+    const ph = hp * 0.5;
+    g.fillStyle = '#39424a';
+    g.fillRect(u + 0.2, py, 0.6, ph);
+    g.fillStyle = 'rgba(226,214,190,0.35)';
+    g.fillRect(u + 0.17, py + ph, 0.66, Math.max(0.045, hp * 0.1));
+    g.strokeStyle = '#3a3128';
+    g.lineWidth = Math.max(0.03, 1 / band);
+    g.strokeRect(u + 0.2, py, 0.6, ph);
+  }
+  // the wall meets the ground here
+  g.fillStyle = 'rgba(10,12,8,0.45)';
+  g.fillRect(0, hp - 0.06, uLen, 0.06);
+}
+
+function bakeWall(b: Building, art: RoofArt, i: number, band: number, south: boolean): HTMLCanvasElement {
+  const hp = art.hp;
+  const uLen = south ? b.w + hp : b.h;
+  const c = document.createElement('canvas');
+  c.width = Math.max(1, Math.round((south ? uLen : hp) * band));
+  c.height = Math.max(1, Math.round((south ? hp : uLen) * band));
+  const g = c.getContext('2d')!;
+  g.scale(band, band);
+  if (south) g.translate(0, 0);
+  else g.transform(0, 1, 1, 0, 0, 0);
+  wallFace(
+    g,
+    art,
+    i,
+    band,
+    uLen,
+    hp,
+    south ? art.wallSTones : art.wallETones,
+    south ? art.wallS : art.wallE,
+    south ? art.openS : art.openE,
+    0,
+    south ? 261 : 262,
+  );
+  return c;
+}
+
+interface Baked {
+  roof: HTMLCanvasElement;
+  shadow: HTMLCanvasElement;
+  wallS: HTMLCanvasElement;
+  wallE: HTMLCanvasElement;
+}
+
 export class RoofLayer {
   private buildings: Building[] = [];
   private alphas: number[] = [];
   private art: RoofArt[] = [];
   private stories: number[] = []; // per-building story count for shadow length, min 1
   private zoomFaded = false;
-  private sprites = new Map<number, (HTMLCanvasElement | null)[]>();
+  private sprites = new Map<number, (Baked | null)[]>();
   private band = 0;
   private prevBand = 0;
   private queue: number[] = [];
@@ -542,7 +737,7 @@ export class RoofLayer {
         }
         return Math.max(1, m);
       });
-      this.art = this.buildings.map((b, i) => buildArt(b, i, this.stories[i], this.smallOfPair(i)));
+      this.art = this.buildings.map((b, i) => buildArt(b, i, this.stories[i], this.smallOfPair(i), sim.map));
       this.sprites.clear();
       this.band = 0;
       this.prevBand = 0;
@@ -631,67 +826,94 @@ export class RoofLayer {
     if (!this.queue.length) return;
     const cur = this.sprites.get(this.band)!;
     const n = this.prewarm ? this.queue.length : BAKES_PER_FRAME;
+    // the shadow is blurred to begin with, so half resolution is free
+    const sBand = Math.max(8, this.band / 2);
     for (let k = 0; k < n && this.queue.length; k++) {
       const i = this.queue.shift()!;
-      cur[i] = bakeRoof(this.buildings[i], this.art[i], i, this.band);
+      const b = this.buildings[i];
+      const art = this.art[i];
+      cur[i] = {
+        roof: bakeRoof(b, art, i, this.band),
+        shadow: bakeShadow(b, art, this.stories[i], sBand),
+        wallS: bakeWall(b, art, i, this.band, true),
+        wallE: bakeWall(b, art, i, this.band, false),
+      };
     }
-    if (!this.queue.length) this.prewarm = false;
+    if (this.queue.length) return;
+    this.prewarm = false;
+    // the previous band was only ever a stand-in while this one baked
+    if (this.prevBand && this.prevBand !== this.band) {
+      this.sprites.delete(this.prevBand);
+      this.prevBand = 0;
+    }
+  }
+
+  private serving(i: number): Baked | null {
+    return this.sprites.get(this.band)?.[i] ?? (this.prevBand ? this.sprites.get(this.prevBand)?.[i] ?? null : null);
   }
 
   drawShadows(ctx: CanvasRenderingContext2D, cam: Camera, cw: number, ch: number): void {
+    this.setBand(roofBandFor(cam.scale));
+    this.pump();
     this.withWorldTransform(ctx, cam, cw, ch, () => {
-      // core offset (0.71m) matches the old fixed (0.45,0.55) rect offset in
-      // magnitude; the soft layer extends further along the same sun direction.
       this.buildings.forEach((b, i) => {
         if (!this.onScreen(cam, i, cw, ch, 2 * this.stories[i])) return;
         // shadow tracks the roof fade: a faded roof (zoomed-in interior reveal)
         // must not leave a full-footprint shadow rect stranded on the ground
         // with no roof above it — it reads as a dark terrain stain.
         const a = this.alphas[i];
-        // drop shadow lengthens with height: taller building, longer shadow.
-        // stories is min 1, so 1-story/flat maps keep the old 0.71/1.1 offsets.
-        const [sdx, sdy] = shadowOffset(0.71 * this.stories[i]);
-        const [sdxSoft, sdySoft] = shadowOffset(1.1 * this.stories[i]);
-        const x = b.x - OVERHANG;
-        const y = b.y - OVERHANG;
-        const w = b.w + OVERHANG * 2;
-        const h = b.h + OVERHANG * 2;
-        // soft SE cast shadow — two nested alpha rects along the shared sun direction
-        ctx.fillStyle = `rgba(12,15,10,${SHADOW_SOFT_ALPHA * a})`;
-        ctx.fillRect(x + sdxSoft, y + sdySoft, w, h);
-        ctx.fillStyle = `rgba(12,15,10,${SHADOW_ALPHA * a})`;
-        ctx.fillRect(x + sdx, y + sdy, w, h);
-        // tight ambient-occlusion ring at the wall base — not sun-directional
-        const aoW = 0.22;
-        ctx.strokeStyle = `rgba(8,10,7,${AO_ALPHA * a})`;
-        ctx.lineWidth = aoW;
-        ctx.strokeRect(x + aoW / 2, y + aoW / 2, w - aoW, h - aoW);
+        const spr = this.serving(i);
+        if (!spr) return;
+        const art = this.art[i];
+        ctx.globalAlpha = a;
+        ctx.drawImage(spr.shadow, art.sx, art.sy, art.sw, art.sh);
       });
+      ctx.globalAlpha = 1;
+    });
+  }
+
+  // Wall faces, drawn in the shadow slot so soldiers pass in front of them.
+  // Always opaque: a revealed interior does not remove the building's walls.
+  drawWalls(ctx: CanvasRenderingContext2D, cam: Camera, cw: number, ch: number): void {
+    this.withWorldTransform(ctx, cam, cw, ch, () => {
+      for (let i = 0; i < this.buildings.length; i++) {
+        if (!this.onScreen(cam, i, cw, ch)) continue;
+        const spr = this.serving(i);
+        if (!spr) continue;
+        const b = this.buildings[i];
+        const hp = this.art[i].hp;
+        ctx.drawImage(spr.wallE, b.x + b.w, b.y, hp, b.h);
+        ctx.drawImage(spr.wallS, b.x, b.y + b.h, b.w + hp, hp);
+      }
     });
   }
 
   drawTops(ctx: CanvasRenderingContext2D, cam: Camera, cw: number, ch: number): void {
     this.setBand(roofBandFor(cam.scale));
     this.pump();
-    const cur = this.sprites.get(this.band);
-    const prev = this.prevBand ? this.sprites.get(this.prevBand) : undefined;
+    const px = -SUN.dx * PARALLAX;
+    const py = -SUN.dy * PARALLAX;
     this.withWorldTransform(ctx, cam, cw, ch, () => {
       for (let i = 0; i < this.buildings.length; i++) {
         if (!this.onScreen(cam, i, cw, ch)) continue;
         const a = this.alphas[i];
         const art = this.art[i];
-        const spr = cur?.[i] ?? prev?.[i] ?? null;
+        const spr = this.serving(i);
         if (spr && a >= 0.01) {
           ctx.globalAlpha = a;
-          ctx.drawImage(spr, art.ox, art.oy, art.ow, art.oh);
+          ctx.drawImage(spr.roof, art.ox + px, art.oy + py, art.ow, art.oh);
         }
-        // The silhouette is gameplay, not decoration: a revealed roof must
-        // still show where the building is, so the outline never fades out.
-        const b = this.buildings[i];
-        ctx.globalAlpha = Math.max(a, 0.45);
-        ctx.strokeStyle = 'rgba(20,16,12,0.55)';
-        ctx.lineWidth = 0.08;
-        ctx.strokeRect(b.x - OVERHANG, b.y - OVERHANG, b.w + OVERHANG * 2, b.h + OVERHANG * 2);
+        // The silhouette is gameplay, not decoration. It sits on the true
+        // footprint (the parallax has moved the baked eave line off it) and
+        // rises as the roof fades, so a revealed building still reads as one.
+        const ghost = 0.6 * (1 - Math.min(1, a / 0.85));
+        if (ghost > 0.02) {
+          const b = this.buildings[i];
+          ctx.globalAlpha = 1;
+          ctx.strokeStyle = `rgba(20,16,12,${ghost.toFixed(3)})`;
+          ctx.lineWidth = 0.09;
+          ctx.strokeRect(b.x, b.y, b.w, b.h);
+        }
       }
       ctx.globalAlpha = 1;
     });
