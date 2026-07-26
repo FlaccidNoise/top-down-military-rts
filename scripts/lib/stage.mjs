@@ -27,8 +27,9 @@ export async function launch() {
 
 // Navigate to a pinned campaign+seed and stage the static defend scene the art
 // gate relies on. Returns the defended cell's terrain kind (after any force).
-export async function gotoStaged(page, { port, seed, camp = 42, fow = 0, forceKind = null }) {
-  await page.goto(`http://[::1]:${port}/?seed=${seed}&camp=${camp}&fow=${fow}`, { waitUntil: 'domcontentloaded' });
+export async function gotoStaged(page, { port, seed, camp = 42, fow = 0, haze = null, forceKind = null }) {
+  const q = `seed=${seed}&camp=${camp}&fow=${fow}${haze === null ? '' : `&haze=${haze}`}`;
+  await page.goto(`http://[::1]:${port}/?${q}`, { waitUntil: 'domcontentloaded' });
   await page
     .waitForFunction(() => '__game' in window, null, { timeout: 5000 })
     .catch(() => {

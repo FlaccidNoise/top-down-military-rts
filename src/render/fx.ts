@@ -228,7 +228,7 @@ export function hazeBand(): HTMLCanvasElement {
   const g = c.getContext('2d')!;
   const body = g.createLinearGradient(0, 0, 0, HAZE_H);
   body.addColorStop(0, `rgba(${HAZE_RGB},0)`);
-  body.addColorStop(0.5, `rgba(${HAZE_RGB},0.5)`);
+  body.addColorStop(0.5, `rgba(${HAZE_RGB},1)`);
   body.addColorStop(1, `rgba(${HAZE_RGB},0)`);
   g.fillStyle = body;
   g.fillRect(0, 0, HAZE_W, HAZE_H);

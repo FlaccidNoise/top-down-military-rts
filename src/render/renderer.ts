@@ -90,6 +90,17 @@ const BREWUP_FULL_S = 14; // a brewed-up tank rages this long...
 const BREWUP_SETTLE_S = 45; // ...then settles to a smoking hulk by here
 const BREWUP_FLOOR = 0.3;
 
+const SMOKE_LEAN_MAX = 2; // m — a smoke screen streams, but never off the tile it is blocking
+const HAZE_MAX_SCALE = 22; // px/m — above this you can count boots and haze is just fog on the lens
+const MOTE_MIN_SCALE = 20;
+const MOTE_CAP = 24;
+
+// Positive modulo — the wrapping every world-anchored ambient layer needs, and
+// the thing `%` alone gets wrong the moment wind drift goes negative.
+function mod(v: number, m: number): number {
+  return ((v % m) + m) % m;
+}
+
 const PLANE_MS = 2600;
 const BOOM_MS = 2600; // longest sub-effect (smoke column) sets total lifetime
 const FADE_MS = 150; // faint thread lifetime
@@ -144,7 +155,7 @@ export class Renderer {
       y: hash(sim.map.w, sim.map.h, 310 + i) * sim.map.h,
       len: 70 + hash(sim.map.w, sim.map.h, 320 + i) * 70,
       hgt: 9 + hash(sim.map.w, sim.map.h, 330 + i) * 15,
-      a: 0.035 + hash(sim.map.w, sim.map.h, 340 + i) * 0.04,
+      a: 0.06 + hash(sim.map.w, sim.map.h, 340 + i) * 0.06,
     }));
   }
 
@@ -257,6 +268,10 @@ export class Renderer {
     this.roofs.drawWalls(ctx, cam, cw, ch);
     // stair glyphs only where the roof fade reveals the interior
     this.terrain.drawStairs(ctx, cam, cw, ch, (x, y) => this.roofs.interiorVisibleAt(x, y));
+    // Ambient air sits over the ground and under the men — a haze band in front
+    // of a soldier would read as a bug, behind him it reads as distance.
+    this.drawHaze(ctx, cam, cw, ch);
+    this.drawMotes(ctx, cam, cw, ch);
 
     // Fog of war: everything below asks the sim's *VisibleTo helpers from the
     // player's side — the renderer never re-derives vision.
@@ -365,6 +380,13 @@ export class Renderer {
       const pad = 5 * cam.scale;
       if (ox < -pad || oy < -pad || ox > cw + pad || oy > ch + pad) continue;
 
+      // Prevailing lean: a screen streams downwind instead of billowing like a
+      // flower. Derived from `elapsed` (sim-owned ttl), never `now`, so it
+      // freezes under pause with everything else — and capped, because the
+      // cloud has to keep marking the tile the sim is blocking LOS through.
+      const leanX = WIND.dx * Math.min(elapsed * WIND.speed * 0.35, SMOKE_LEAN_MAX);
+      const leanY = WIND.dy * Math.min(elapsed * WIND.speed * 0.35, SMOKE_LEAN_MAX);
+
       const n = 3 + Math.floor(hash(p.x, p.y, 9) * 3); // 3-5 puffs
       for (let i = 0; i < n; i++) {
         const angle0 = hash(p.x, p.y, 10 + i) * Math.PI * 2;
@@ -375,8 +397,8 @@ export class Renderer {
         const angle = angle0 + elapsed * spin;
         const dist = dist0 + elapsed * drift;
         const r = Math.min(baseR * 1.8, baseR + elapsed * 0.012);
-        const wx = p.x + Math.cos(angle) * dist;
-        const wy = p.y + Math.sin(angle) * dist;
+        const wx = p.x + Math.cos(angle) * dist + leanX;
+        const wy = p.y + Math.sin(angle) * dist + leanY;
         const [sx, sy] = cam.worldToScreen(wx, wy, cw, ch);
         const sr = r * cam.scale;
         const cool = hash(p.x, p.y, 60 + i);
@@ -384,6 +406,57 @@ export class Renderer {
       }
     }
     for (const key of this.smokeMaxTtl.keys()) if (!seen.has(key)) this.smokeMaxTtl.delete(key);
+  }
+
+  // Drifting haze bands. Five world-anchored smears of thin air, not a
+  // full-viewport wash: bands are cheaper (one drawImage each) and far more
+  // painterly, and they only exist at the zooms where air is what you are
+  // looking at. Above ~22 px/m you can count boots and haze is just fog on the
+  // lens. Drift is sim-time so a paused field is a still field.
+  private drawHaze(ctx: CanvasRenderingContext2D, cam: Camera, cw: number, ch: number): void {
+    if (!this.hazeOn || cam.scale > HAZE_MAX_SCALE) return;
+    const spr = hazeBand();
+    const secs = this.sim.tick / 30;
+    const dx = WIND.dx * WIND.speed * 0.06 * secs;
+    const dy = WIND.dy * WIND.speed * 0.06 * secs;
+    const mw = this.sim.map.w;
+    const mh = this.sim.map.h;
+    const n = cam.scale < 6 ? 3 : this.haze.length; // the whole map on screen needs fewer bands, not five
+    for (let i = 0; i < n; i++) {
+      const b = this.haze[i];
+      const wx = mod(b.x + dx, mw + b.len) - b.len;
+      const wy = mod(b.y + dy, mh + b.hgt) - b.hgt;
+      const [sx, sy] = cam.worldToScreen(wx, wy, cw, ch);
+      const w = b.len * cam.scale;
+      const h = b.hgt * cam.scale;
+      if (sx > cw || sy > ch || sx + w < 0 || sy + h < 0) continue;
+      ctx.globalAlpha = b.a;
+      ctx.drawImage(spr, sx, sy, w, h);
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  // Dust motes. Anchored to a world lattice sized in screen space, so the
+  // specks hold still while the camera pans (the thing that gives away a
+  // screen-space particle field) and keep a constant density at any zoom.
+  private drawMotes(ctx: CanvasRenderingContext2D, cam: Camera, cw: number, ch: number): void {
+    if (cam.scale < MOTE_MIN_SCALE) return;
+    const cell = 220 / cam.scale;
+    const secs = this.sim.tick / 30;
+    const [wx0, wy0] = cam.screenToWorld(0, 0, cw, ch);
+    const [wx1, wy1] = cam.screenToWorld(cw, ch, cw, ch);
+    const r = Math.max(1.1, 0.06 * cam.scale);
+    let n = 0;
+    for (let cy = Math.floor(wy0 / cell); cy <= Math.floor(wy1 / cell) && n < MOTE_CAP; cy++) {
+      for (let cx = Math.floor(wx0 / cell); cx <= Math.floor(wx1 / cell) && n < MOTE_CAP; cx++) {
+        n++;
+        const ph = mod(secs * (0.2 + hash(cx, cy, 262) * 0.25) + hash(cx, cy, 260), 1);
+        const mx = (cx + hash(cx, cy, 260)) * cell + WIND.dx * WIND.speed * ph * 2.4;
+        const my = (cy + hash(cx, cy, 261)) * cell + WIND.dy * WIND.speed * ph * 2.4;
+        const [sx, sy] = cam.worldToScreen(mx, my, cw, ch);
+        blit(ctx, 'dustTan', sx, sy - ph * 0.5 * cam.scale, r, 0.16 * Math.sin(ph * Math.PI));
+      }
+    }
   }
 
   // How hard a fire is burning, 0-1. Buildings peak at their stoke count and
