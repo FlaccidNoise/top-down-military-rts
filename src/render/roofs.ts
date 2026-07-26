@@ -140,9 +140,26 @@ function ramp(rgb: [number, number, number], value: number, warmth: number, amp:
   return out;
 }
 
+type RoofPlan = 'gable' | 'hip' | 'cross' | 'catslide';
+interface Rect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
 interface RoofArt {
   mat: RoofMat;
   ridgeAlongX: boolean;
+  plan: RoofPlan;
+  rr: Rect; // roof rect, after any catslide eave extension
+  fracNW: number; // ridge position across the span, from the NW eave
+  hipInset: number; // metres the ridge is pulled back from each end; 0 unless hipped
+  wing: Rect | null;
+  lean: (Rect & { side: 'n' | 's' | 'e' | 'w' }) | null;
+  dormers: Rect[];
+  ridgeU0: number; // ridge extent along its own axis, world coords (B6 clamps to it)
+  ridgeU1: number;
   lit: string;
   shade: string;
   litDeep: string; // batten gap under the tiles, so vertical seams read
@@ -174,8 +191,20 @@ interface RoofArt {
   chimneyShadow: { x: number; y: number };
 }
 
-function roofRect(b: Building): { x: number; y: number; w: number; h: number } {
+function roofRect(b: Building): Rect {
   return { x: b.x - OVERHANG, y: b.y - OVERHANG, w: b.w + OVERHANG * 2, h: b.h + OVERHANG * 2 };
+}
+
+function doorSideOf(b: Building, map: GameMap): 'n' | 's' | 'e' | 'w' | null {
+  for (let k = 0; k < b.w; k++) {
+    if (map.hEdge(b.x + k, b.y) === EDGE.DOOR) return 'n';
+    if (map.hEdge(b.x + k, b.y + b.h) === EDGE.DOOR) return 's';
+  }
+  for (let k = 0; k < b.h; k++) {
+    if (map.vEdge(b.x, b.y + k) === EDGE.DOOR) return 'w';
+    if (map.vEdge(b.x + b.w, b.y + k) === EDGE.DOOR) return 'e';
+  }
+  return null;
 }
 
 // Material from footprint + neighbours, not from the index: two-story town
@@ -215,11 +244,97 @@ function buildArt(b: Building, i: number, stories: number, smallOfPair: boolean,
   const amp = mat === 'tile' ? MAT_SPEC.tile.jitter : mat === 'slate' ? MAT_SPEC.slate.jitter : mat === 'thatch' ? 0.11 : 0.05;
   const patchV = mat === 'slate' ? MAT_SPEC.slate.patch : MAT_SPEC.tile.patch;
 
+  // --- roof PLAN. Footprints come from the sim and never move; what varies is
+  // where the ridge sits inside one, which is what stops a village reading as
+  // the same house stamped twenty times.
+  const short = Math.min(b.w, b.h);
+  const pr = hash(i, 240);
+  let plan: RoofPlan;
+  if (mat === 'iron') plan = pr < 0.72 ? 'gable' : 'catslide'; // a hipped tin barn is not a thing
+  else if (pr < 0.35) plan = 'gable';
+  else if (pr < 0.6) plan = 'hip';
+  else if (pr < 0.8 && short >= 6) plan = 'cross';
+  else plan = 'catslide';
+
+  const rr: Rect = { x, y, w, h };
+  const span0 = ridgeAlongX ? h : w;
+  const base0 = ridgeAlongX ? y : x;
+  let ridgeCross = base0 + span0 * 0.5;
+  if (plan === 'catslide') {
+    const f = hash(i, 241) < 0.5 ? 0.4 : 0.6;
+    ridgeCross = base0 + span0 * f;
+    // the long shallow slope reaches further out — the Normandy catslide read
+    const ext = 0.25;
+    if (f > 0.5) {
+      if (ridgeAlongX) {
+        rr.y -= ext;
+        rr.h += ext;
+      } else {
+        rr.x -= ext;
+        rr.w += ext;
+      }
+    } else if (ridgeAlongX) rr.h += ext;
+    else rr.w += ext;
+  }
+  const spanLen = ridgeAlongX ? rr.h : rr.w;
+  const fracNW = (ridgeCross - (ridgeAlongX ? rr.y : rr.x)) / spanLen;
+  const ridgeLen = ridgeAlongX ? rr.w : rr.h;
+  const hipInset = plan === 'hip' ? Math.min(spanLen / 2, 1.8, ridgeLen * 0.35) : 0;
+
+  let wing: Rect | null = null;
+  if (plan === 'cross') {
+    const wl = ridgeLen * (0.3 + hash(i, 242) * 0.15);
+    const start = ridgeAlongX ? rr.x : rr.y;
+    const c = start + ridgeLen * (0.28 + hash(i, 243) * 0.44);
+    const w0 = Math.max(start + 0.3, Math.min(start + ridgeLen - wl - 0.3, c - wl / 2));
+    wing = ridgeAlongX ? { x: w0, y: rr.y, w: wl, h: rr.h } : { x: rr.x, y: w0, w: rr.w, h: wl };
+  }
+
+  // lean-to annex against a wall that is not the door wall
+  let lean: (Rect & { side: 'n' | 's' | 'e' | 'w' }) | null = null;
+  if (hash(i, 244) < 0.3) {
+    const doorSide = doorSideOf(b, map);
+    const sides: ('n' | 's' | 'e' | 'w')[] = (['n', 's', 'e', 'w'] as const).filter((sd) => sd !== doorSide);
+    const side = sides[(hash(i, 246) * sides.length) | 0];
+    const d = 1.4 + hash(i, 245) * 0.8;
+    const horiz = side === 'n' || side === 's';
+    const along = horiz ? rr.w : rr.h;
+    const ll = along * (0.5 + hash(i, 247) * 0.4);
+    const l0 = (horiz ? rr.x : rr.y) + (along - ll) * hash(i, 248);
+    lean = horiz
+      ? { x: l0, y: side === 'n' ? rr.y - d : rr.y + rr.h, w: ll, h: d, side }
+      : { x: side === 'w' ? rr.x - d : rr.x + rr.w, y: l0, w: d, h: ll, side };
+  }
+
+  // dormers on the sun slope, where a real one would be
+  const dormers: Rect[] = [];
+  const nwDepth = spanLen * fracNW;
+  if (plan !== 'cross' && mat !== 'iron' && nwDepth >= 2.2 && b.w * b.h >= 45) {
+    const usable = ridgeLen - 2.4 - hipInset * 2;
+    const n = Math.min(3, 1 + ((hash(i, 250) * 3) | 0));
+    if (usable > 1.6) {
+      const v0 = nwDepth * 0.32;
+      for (let k = 0; k < n; k++) {
+        const off = 1.2 + hipInset + usable * ((k + 0.5) / n) + (hash(i, 251 + k) - 0.5) * 0.5;
+        dormers.push(
+          ridgeAlongX
+            ? { x: rr.x + off - 0.55, y: rr.y + nwDepth - v0 - 0.8, w: 1.1, h: 0.8 }
+            : { x: rr.x + nwDepth - v0 - 0.8, y: rr.y + off - 0.55, w: 0.8, h: 1.1 },
+        );
+      }
+    }
+  }
+
+  // ridge stack sits on the ridge line, biased to the gable ends
+  const ridgeStart = (ridgeAlongX ? rr.x : rr.y) + hipInset;
+  const ridgeEnd = (ridgeAlongX ? rr.x + rr.w : rr.y + rr.h) - hipInset;
   const t = 0.22 + hash(i, 62) * 0.56;
   const po = (hash(i, 63) - 0.5) * 0.25;
   const s = 0.32 + hash(i, 64) * 0.14;
-  const cx = ridgeAlongX ? x + t * w : x + w / 2 + po;
-  const cy = ridgeAlongX ? y + h / 2 + po : y + t * h;
+  const cross = (ridgeAlongX ? rr.y : rr.x) + spanLen * fracNW + po;
+  const alongPos = ridgeStart + (ridgeEnd - ridgeStart) * t;
+  const cx = ridgeAlongX ? alongPos : cross;
+  const cy = ridgeAlongX ? cross : alongPos;
   const [sdx, sdy] = shadowOffset(0.18);
   const chimney = { x: cx - s / 2, y: cy - s / 2, s };
 
@@ -237,9 +352,30 @@ function buildArt(b: Building, i: number, stories: number, smallOfPair: boolean,
   const [csdx, csdy] = shadowOffset(1.1 * stories);
   const blurPad = 0.6;
 
+  // The sprite must contain every plan feature or wings and lean-tos clip.
+  let nx = rr.x;
+  let ny = rr.y;
+  let mx = rr.x + rr.w;
+  let my = rr.y + rr.h;
+  if (lean) {
+    nx = Math.min(nx, lean.x);
+    ny = Math.min(ny, lean.y);
+    mx = Math.max(mx, lean.x + lean.w);
+    my = Math.max(my, lean.y + lean.h);
+  }
+
   return {
     mat,
     ridgeAlongX,
+    plan,
+    rr,
+    fracNW,
+    hipInset,
+    wing,
+    lean,
+    dormers,
+    ridgeU0: ridgeStart,
+    ridgeU1: ridgeEnd,
     lit: rgbStr(tint(weathered, litV, litW)),
     shade: rgbStr(tint(weathered, shadeV, shadeW)),
     litDeep: rgbStr(tint(weathered, litV * 0.78, litW * 0.6)),
@@ -251,14 +387,14 @@ function buildArt(b: Building, i: number, stories: number, smallOfPair: boolean,
     shadePatch: rgbStr(tint(weathered, shadeV * patchV[0], patchV[1])),
     ridgeBody: rgbStr(tint(weathered, mat === 'thatch' ? 1.05 : 0.95, 3)),
     courseAlpha: 0.1 + (hash(i, 200) - 0.5) * 0.06,
-    ox: x - PAD_NW,
-    oy: y - PAD_NW,
-    ow: w + PAD_NW + PAD_SE,
-    oh: h + PAD_NW + PAD_SE,
-    sx: x - blurPad,
-    sy: y - blurPad,
-    sw: w + csdx + blurPad * 2,
-    sh: h + csdy + blurPad * 2,
+    ox: nx - PAD_NW,
+    oy: ny - PAD_NW,
+    ow: mx - nx + PAD_NW + PAD_SE,
+    oh: my - ny + PAD_NW + PAD_SE,
+    sx: nx - blurPad,
+    sy: ny - blurPad,
+    sw: mx - nx + csdx + blurPad * 2,
+    sh: my - ny + csdy + blurPad * 2,
     hp: H_PROJ * stories,
     wall,
     wallS: rgbStr(tint(wbase, FACE_S, -3)),
@@ -495,48 +631,246 @@ function ridgeRun(g: CanvasRenderingContext2D, art: RoofArt, band: number, uLen:
   }
 }
 
-function drawRoof(g: CanvasRenderingContext2D, b: Building, art: RoofArt, i: number, band: number): void {
-  const { x, y, w, h } = roofRect(b);
-  const along = art.ridgeAlongX;
-  const uLen = along ? w : h;
-  const vLen = (along ? h : w) / 2;
+// One slope, in the (u, v) frame with v=0 at the ridge and v=vLen at the eave.
+function slopeInto(g: CanvasRenderingContext2D, art: RoofArt, i: number, band: number, uLen: number, vLen: number, lit: boolean): void {
+  if (vLen <= 0.02 || uLen <= 0.02) return;
+  if (art.mat === 'thatch') slopeThatch(g, art, i, band, uLen, vLen, lit);
+  else if (art.mat === 'iron') slopeIron(g, art, i, band, uLen, vLen, lit);
+  else slopeShingle(g, art, i, band, uLen, vLen, lit);
+  if (!lit && band >= 16) slopeWeather(g, i, uLen, vLen);
+}
 
+// A ridged pair of slopes over `r`. `along` picks the ridge axis, `frac` where
+// the ridge sits across the span — 0.5 is a plain gable, anything else the
+// catslide's long-and-short pair.
+function gablePair(g: CanvasRenderingContext2D, art: RoofArt, i: number, band: number, r: Rect, along: boolean, frac: number, verge: boolean): void {
+  const uLen = along ? r.w : r.h;
+  const span = along ? r.h : r.w;
+  const vNW = span * frac;
+  const vSE = span - vNW;
   for (const lit of [true, false]) {
     g.save();
     if (along) {
-      g.translate(x, y + h / 2);
+      g.translate(r.x, r.y + vNW);
       g.transform(1, 0, 0, lit ? -1 : 1, 0, 0);
     } else {
-      g.translate(x + w / 2, y);
+      g.translate(r.x + vNW, r.y);
       g.transform(0, 1, lit ? -1 : 1, 0, 0, 0);
     }
-    if (art.mat === 'thatch') slopeThatch(g, art, i, band, uLen, vLen, lit);
-    else if (art.mat === 'iron') slopeIron(g, art, i, band, uLen, vLen, lit);
-    else slopeShingle(g, art, i, band, uLen, vLen, lit);
-    if (!lit && band >= 16) slopeWeather(g, i, uLen, vLen);
+    slopeInto(g, art, i + (along ? 0 : 7), band, uLen, lit ? vNW : vSE, lit);
     g.restore();
   }
-
-  // gable verge: the barge board along each ridge end, not the old dark
-  // triangle notch cut out of the slope
-  g.fillStyle = art.gable;
-  const verge = 0.16;
-  if (along) {
-    g.fillRect(x, y, verge, h);
-    g.fillRect(x + w - verge, y, verge, h);
-  } else {
-    g.fillRect(x, y, w, verge);
-    g.fillRect(x, y + h - verge, w, verge);
+  if (verge) {
+    // the barge board along each ridge end, not a dark triangle notch
+    g.fillStyle = art.gable;
+    const vg = 0.16;
+    if (along) {
+      g.fillRect(r.x, r.y, vg, r.h);
+      g.fillRect(r.x + r.w - vg, r.y, vg, r.h);
+    } else {
+      g.fillRect(r.x, r.y, r.w, vg);
+      g.fillRect(r.x, r.y + r.h - vg, r.w, vg);
+    }
   }
-
   g.save();
-  if (along) g.translate(x, y + h / 2);
+  if (along) g.translate(r.x, r.y + vNW);
   else {
-    g.translate(x + w / 2, y);
+    g.translate(r.x + vNW, r.y);
     g.transform(0, 1, 1, 0, 0, 0);
   }
   ridgeRun(g, art, band, uLen);
   g.restore();
+}
+
+// A gabled dormer box on the sun slope: two cheeks, a window facing down-slope,
+// a valley tick where it cuts the main plane, and its own cast shadow.
+function dormerInto(g: CanvasRenderingContext2D, art: RoofArt, d: Rect, along: boolean, band: number): void {
+  const [dx, dy] = shadowOffset(0.5);
+  g.fillStyle = 'rgba(14,12,9,0.35)';
+  g.fillRect(d.x + dx, d.y + dy, d.w, d.h);
+  if (band < 16) {
+    g.fillStyle = art.shade;
+    g.fillRect(d.x, d.y, d.w, d.h);
+    g.fillStyle = art.lit;
+    if (along) g.fillRect(d.x, d.y, d.w, d.h * 0.4);
+    else g.fillRect(d.x, d.y, d.w * 0.4, d.h);
+    return;
+  }
+  // The down-slope end is the rendered FACE (it points NW, into the sun); the
+  // rest is the dormer's own little roof, split by its down-slope ridge.
+  const face = (along ? d.h : d.w) * 0.42;
+  const cheek: Rect = along ? { x: d.x, y: d.y + face, w: d.w, h: d.h - face } : { x: d.x + face, y: d.y, w: d.w - face, h: d.h };
+  g.fillStyle = art.litTones[TONE_STEPS - 3];
+  g.fillRect(cheek.x, cheek.y, cheek.w, cheek.h);
+  g.fillStyle = art.shadeTones[TONE_STEPS - 2];
+  if (along) g.fillRect(cheek.x + cheek.w / 2, cheek.y, cheek.w / 2, cheek.h);
+  else g.fillRect(cheek.x, cheek.y + cheek.h / 2, cheek.w, cheek.h / 2);
+  g.fillStyle = 'rgba(226,214,196,0.22)';
+  if (along) g.fillRect(cheek.x + cheek.w / 2 - 0.03, cheek.y, 0.06, cheek.h);
+  else g.fillRect(cheek.x, cheek.y + cheek.h / 2 - 0.03, cheek.w, 0.06);
+  g.fillStyle = '#8d8577';
+  if (along) g.fillRect(d.x, d.y, d.w, face);
+  else g.fillRect(d.x, d.y, face, d.h);
+  g.fillStyle = '#39424a';
+  const pane = along
+    ? { x: d.x + 0.16, y: d.y + 0.06, w: d.w - 0.32, h: face - 0.14 }
+    : { x: d.x + 0.06, y: d.y + 0.16, w: face - 0.14, h: d.h - 0.32 };
+  g.fillRect(pane.x, pane.y, pane.w, pane.h);
+  g.fillStyle = 'rgba(232,222,198,0.32)';
+  if (along) g.fillRect(d.x, d.y, d.w, 0.05);
+  else g.fillRect(d.x, d.y, 0.05, d.h);
+  g.strokeStyle = 'rgba(20,16,12,0.6)';
+  g.lineWidth = Math.max(0.04, 1.1 / band);
+  g.strokeRect(d.x, d.y, d.w, d.h);
+}
+
+function drawRoof(g: CanvasRenderingContext2D, art: RoofArt, i: number, band: number): void {
+  const r = art.rr;
+  const along = art.ridgeAlongX;
+
+  // lean-to first: it tucks under the main eave, so the main roof paints over
+  // the joint rather than the other way round
+  if (art.lean) {
+    const l = art.lean;
+    const lit = l.side === 'n' || l.side === 'w';
+    const uLen = l.side === 'n' || l.side === 's' ? l.w : l.h;
+    g.save();
+    if (l.side === 'n') {
+      g.translate(l.x, l.y + l.h);
+      g.transform(1, 0, 0, -1, 0, 0);
+    } else if (l.side === 's') g.translate(l.x, l.y);
+    else if (l.side === 'w') {
+      g.translate(l.x + l.w, l.y);
+      g.transform(0, 1, -1, 0, 0, 0);
+    } else {
+      g.translate(l.x, l.y);
+      g.transform(0, 1, 1, 0, 0, 0);
+    }
+    slopeInto(g, art, i + 13, band, uLen, l.side === 'n' || l.side === 's' ? l.h : l.w, lit);
+    g.restore();
+    g.strokeStyle = 'rgba(20,16,12,0.55)';
+    g.lineWidth = Math.max(0.06, 1.2 / band);
+    g.strokeRect(l.x, l.y, l.w, l.h);
+  }
+
+  gablePair(g, art, i, band, r, along, art.fracNW, art.plan !== 'hip');
+
+  if (art.plan === 'hip') {
+    // Two end planes replace the gables. They carry the same courses as the
+    // main slopes — a flat fill next to a shingled one reads as a hole — and
+    // a scrim pulls each to a value between lit and shade so four planes read.
+    const inset = art.hipInset;
+    const vNW = (along ? r.h : r.w) * art.fracNW;
+    const ends: { tri: [number, number][]; tx: number; ty: number; m: [number, number, number, number]; lit: boolean; scrim: string }[] = along
+      ? [
+          {
+            tri: [[r.x, r.y], [r.x, r.y + r.h], [r.x + inset, r.y + vNW]],
+            tx: r.x + inset,
+            ty: r.y,
+            m: [0, 1, -1, 0],
+            lit: true,
+            scrim: 'rgba(10,10,12,0.12)',
+          },
+          {
+            tri: [[r.x + r.w, r.y], [r.x + r.w, r.y + r.h], [r.x + r.w - inset, r.y + vNW]],
+            tx: r.x + r.w - inset,
+            ty: r.y,
+            m: [0, 1, 1, 0],
+            lit: false,
+            scrim: 'rgba(250,246,238,0.09)',
+          },
+        ]
+      : [
+          {
+            tri: [[r.x, r.y], [r.x + r.w, r.y], [r.x + vNW, r.y + inset]],
+            tx: r.x,
+            ty: r.y + inset,
+            m: [1, 0, 0, -1],
+            lit: true,
+            scrim: 'rgba(10,10,12,0.12)',
+          },
+          {
+            tri: [[r.x, r.y + r.h], [r.x + r.w, r.y + r.h], [r.x + vNW, r.y + r.h - inset]],
+            tx: r.x,
+            ty: r.y + r.h - inset,
+            m: [1, 0, 0, 1],
+            lit: false,
+            scrim: 'rgba(250,246,238,0.09)',
+          },
+        ];
+    for (const e of ends) {
+      g.save();
+      g.beginPath();
+      g.moveTo(e.tri[0][0], e.tri[0][1]);
+      g.lineTo(e.tri[1][0], e.tri[1][1]);
+      g.lineTo(e.tri[2][0], e.tri[2][1]);
+      g.closePath();
+      g.clip();
+      g.save();
+      g.translate(e.tx, e.ty);
+      g.transform(e.m[0], e.m[1], e.m[2], e.m[3], 0, 0);
+      slopeInto(g, art, i + (e.lit ? 21 : 29), band, along ? r.h : r.w, inset, e.lit);
+      g.restore();
+      g.fillStyle = e.scrim;
+      g.fillRect(r.x, r.y, r.w, r.h);
+      g.restore();
+      // hip rafters
+      g.strokeStyle = 'rgba(226,214,196,0.18)';
+      g.lineWidth = 0.07;
+      g.beginPath();
+      g.moveTo(e.tri[0][0], e.tri[0][1]);
+      g.lineTo(e.tri[2][0], e.tri[2][1]);
+      g.moveTo(e.tri[1][0], e.tri[1][1]);
+      g.lineTo(e.tri[2][0], e.tri[2][1]);
+      g.stroke();
+    }
+  }
+
+  if (art.wing) {
+    const wg = art.wing;
+    gablePair(g, art, i + 3, band, wg, !along, 0.5, true);
+    g.strokeStyle = 'rgba(16,14,10,0.30)';
+    g.lineWidth = 0.1;
+    g.beginPath();
+    if (along) {
+      g.moveTo(wg.x, wg.y);
+      g.lineTo(wg.x, wg.y + wg.h);
+      g.moveTo(wg.x + wg.w, wg.y);
+      g.lineTo(wg.x + wg.w, wg.y + wg.h);
+    } else {
+      g.moveTo(wg.x, wg.y);
+      g.lineTo(wg.x + wg.w, wg.y);
+      g.moveTo(wg.x, wg.y + wg.h);
+      g.lineTo(wg.x + wg.w, wg.y + wg.h);
+    }
+    g.stroke();
+  }
+
+  for (const d of art.dormers) dormerInto(g, art, d, along, band);
+
+  // barns vent the ridge instead of dormering it, and get one roof hatch
+  if (art.mat === 'iron' && band >= 16) {
+    const uLen = along ? r.w : r.h;
+    g.save();
+    if (along) g.translate(r.x, r.y + r.h * art.fracNW);
+    else {
+      g.translate(r.x + r.w * art.fracNW, r.y);
+      g.transform(0, 1, 1, 0, 0, 0);
+    }
+    g.fillStyle = art.litTones[TONE_STEPS - 1];
+    g.fillRect(uLen * 0.22, -0.14, uLen * 0.56, 0.28);
+    g.fillStyle = 'rgba(10,12,10,0.6)';
+    for (let u = uLen * 0.24; u < uLen * 0.76; u += 0.2) g.fillRect(u, -0.11, 0.08, 0.22);
+    g.fillStyle = 'rgba(12,14,12,0.5)';
+    g.fillRect(uLen * 0.22, 0.1, uLen * 0.56, 0.05);
+    g.restore();
+    const hx = along ? r.x + r.w * 0.7 : r.x + r.w * (art.fracNW + 0.22);
+    const hy = along ? r.y + r.h * (art.fracNW + 0.22) : r.y + r.h * 0.7;
+    g.fillStyle = 'rgba(28,26,22,0.85)';
+    g.fillRect(hx, hy, 0.5, 0.5);
+    g.fillStyle = 'rgba(226,214,196,0.16)';
+    g.fillRect(hx, hy, 0.5, 0.07);
+  }
 
   // chimney, above the courses, with its own short SE shadow
   const c = art.chimney;
@@ -553,23 +887,23 @@ function drawRoof(g: CanvasRenderingContext2D, b: Building, art: RoofArt, i: num
   const soft = art.mat === 'thatch';
   g.strokeStyle = soft ? 'rgba(28,22,14,0.34)' : 'rgba(20,16,12,0.6)';
   g.lineWidth = Math.max(0.06, 1.3 / band) * (soft ? 1.8 : 1);
-  g.strokeRect(x, y, w, h);
+  g.strokeRect(r.x, r.y, r.w, r.h);
 
   // The eave's own shadow onto the wall below it. It belongs to the roof, so
   // it lives here and fades with the roof rather than sticking to the wall.
   g.fillStyle = 'rgba(14,12,9,0.4)';
-  g.fillRect(x, y + h, w + 0.08, 0.08);
-  g.fillRect(x + w, y, 0.08, h);
+  g.fillRect(r.x, r.y + r.h, r.w + 0.08, 0.08);
+  g.fillRect(r.x + r.w, r.y, 0.08, r.h);
 }
 
-function bakeRoof(b: Building, art: RoofArt, i: number, band: number): HTMLCanvasElement {
+function bakeRoof(art: RoofArt, i: number, band: number): HTMLCanvasElement {
   const c = document.createElement('canvas');
   c.width = Math.max(1, Math.round(art.ow * band));
   c.height = Math.max(1, Math.round(art.oh * band));
   const g = c.getContext('2d')!;
   g.scale(band, band);
   g.translate(-art.ox, -art.oy);
-  drawRoof(g, b, art, i, band);
+  drawRoof(g, art, i, band);
   return c;
 }
 
@@ -583,15 +917,21 @@ function bakeShadow(b: Building, art: RoofArt, stories: number, band: number): H
   const g = c.getContext('2d')!;
   g.scale(band, band);
   g.translate(-art.sx, -art.sy);
-  const { x, y, w, h } = roofRect(b);
+  const r = art.rr;
+  const l = art.lean;
   const [sdx, sdy] = shadowOffset(0.71 * stories);
   const [fdx, fdy] = shadowOffset(1.1 * stories);
+  // the silhouette is whatever the roof actually is, lean-to included
+  const cast = (ox: number, oy: number): void => {
+    g.fillRect(r.x + ox, r.y + oy, r.w, r.h);
+    if (l) g.fillRect(l.x + ox, l.y + oy, l.w, l.h);
+  };
   g.filter = `blur(${(0.28 * band).toFixed(2)}px)`;
   g.fillStyle = `rgba(12,15,10,${SHADOW_SOFT_ALPHA})`;
-  g.fillRect(x + fdx, y + fdy, w, h);
+  cast(fdx, fdy);
   g.filter = `blur(${(0.12 * band).toFixed(2)}px)`;
   g.fillStyle = `rgba(12,15,10,${SHADOW_ALPHA})`;
-  g.fillRect(x + sdx, y + sdy, w, h);
+  cast(sdx, sdy);
   g.filter = 'none';
   // contact occlusion sits on the true footprint and stays crisp
   const aoW = 0.22;
@@ -833,7 +1173,7 @@ export class RoofLayer {
       const b = this.buildings[i];
       const art = this.art[i];
       cur[i] = {
-        roof: bakeRoof(b, art, i, this.band),
+        roof: bakeRoof(art, i, this.band),
         shadow: bakeShadow(b, art, this.stories[i], sBand),
         wallS: bakeWall(b, art, i, this.band, true),
         wallE: bakeWall(b, art, i, this.band, false),
