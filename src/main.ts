@@ -4,6 +4,7 @@ import { AudioEngine } from './render/audio';
 import { Camera } from './render/camera';
 import { Renderer } from './render/renderer';
 import { StrategicView, TERRAIN_LABELS } from './render/strategic';
+import { bootCamera as bootCameraFor, FRAME_M_DESKTOP, FRAME_M_MOBILE } from './render/framing';
 import { MOBILE, view, viewSize } from './render/view';
 import type { RedCommander } from './sim/ai';
 import { WEAPONS } from './sim/data';
@@ -332,53 +333,15 @@ function viewportInset(): { left: number; top: number; bottom: number } {
   };
 }
 
-// Boot framing: fit the whole map when the *unobstructed* viewport allows
-// ≥WHOLE_MAP_PX_M; otherwise frame ~120m across around the blue spawn centroid.
-// Both branches frame against the clear region rather than the raw canvas:
-// fitting the raw canvas put 122 of 138 blue soldiers behind the roster panel
-// at T+0:00 — the player opened a battle unable to see their own company.
-//
-// The threshold is 2.5, not the 3 px/m ui.md quotes, precisely because it is
-// now measured against the clear region instead of the whole canvas — the same
-// 1280x800 viewport that fits 3.33 px/m of canvas only fits 2.87 of clear
-// space. Holding the old number here would flip every 320x240 map into the
-// zoomed branch, and near a west-edge spawn that branch cannot win: blue sits
-// at world x≈7, so no camera both clears the 266px panel and avoids showing
-// off-map void. The whole-map fit has no such tension.
-const WHOLE_MAP_PX_M = 2.5;
-// Place `want` at the center of the clear span, then slide it back so the
-// clear span shows no off-map void. `a`/`b` are the world distances from the
-// camera to the near/far edge of the clear span. If the map is smaller than
-// the span there is nothing to clamp against — center it instead.
-function frameAxis(want: number, a: number, b: number, worldMax: number): number {
-  const centered = worldMax / 2 + (a - b) / 2;
-  if (a > worldMax - b) return centered;
-  return Math.max(a, Math.min(worldMax - b, want + (a - b) / 2));
-}
-
 function bootCamera(s: Sim, cw: number, ch: number): { x: number; y: number; scale: number } {
-  const inset = viewportInset();
-  const vw = Math.max(1, cw - inset.left);
-  const vh = Math.max(1, ch - inset.top - inset.bottom);
-  const fit = Math.min(vw / s.map.w, vh / s.map.h);
-  let scale: number;
-  let cx: number;
-  let cy: number;
-  if (fit >= WHOLE_MAP_PX_M) {
-    scale = fit;
-    cx = s.map.w / 2;
-    cy = s.map.h / 2;
-  } else {
-    const blue = s.soldiers.filter((sd) => sd.side === 'blue');
-    cx = blue.length ? blue.reduce((a, sd) => a + sd.x, 0) / blue.length : s.map.w / 2;
-    cy = blue.length ? blue.reduce((a, sd) => a + sd.y, 0) / blue.length : s.map.h / 2;
-    scale = Math.min(48, Math.max(2, vw / 120));
-  }
-  return {
-    x: frameAxis(cx, (cw / 2 - inset.left) / scale, cw / 2 / scale, s.map.w),
-    y: frameAxis(cy, (ch / 2 - inset.top) / scale, (ch / 2 - inset.bottom) / scale, s.map.h),
-    scale,
-  };
+  return bootCameraFor(s.map, s.soldiers.filter((sd) => sd.side === 'blue'), cw, ch, viewportInset(), {
+    frameM: MOBILE ? FRAME_M_MOBILE : FRAME_M_DESKTOP,
+    // Desktop insets are borders and must keep insetting at every window
+    // width; only the phone's full-width sheets are drawers worth ignoring.
+    capFrac: MOBILE ? 0.35 : undefined,
+    maxScale: cam.maxScale,
+    minScale: 2,
+  });
 }
 
 function startEngagementBattle(e: Engagement): void {
@@ -393,6 +356,13 @@ function startEngagementBattle(e: Engagement): void {
   battleCompany = battle.companyIndex;
   renderer = new Renderer(sim);
   battleTitle = `Day ${front.day} ${front.hhmm} — ${battle.name}`;
+  if (MOBILE) {
+    // Pinching out to the whole 320m map needs ~1.2 px/m, which the desktop
+    // floor of 2 forbids; clampCenter (touch pan/pinch only) keeps the map
+    // from being flung off-screen down there.
+    cam.minScale = Math.min(2, Math.min(view.w / sim.map.w, view.h / sim.map.h));
+    cam.maxScale = 32;
+  }
   const boot = bootCamera(sim, view.w, view.h);
   cam.x = boot.x;
   cam.y = boot.y;
