@@ -300,6 +300,166 @@ function drawHedgeRun(g: Ctx, map: GameMap, tx0: number, ty0: number, tx1: numbe
   }
 }
 
+function gravelStamp(v: number, band: number): HTMLCanvasElement {
+  return stamp(`road:gravel:${v}`, band, 1, (g) => {
+    const n = 12 + ((hash(v, 0, 236) * 5) | 0);
+    for (let i = 0; i < n; i++) {
+      const k = v * 17 + i;
+      const t = hash(k, 3, 236);
+      g.fillStyle = t > 0.66 ? 'rgba(198,186,158,0.35)' : t > 0.33 ? 'rgba(44,36,26,0.30)' : 'rgba(120,102,74,0.30)';
+      const r = 0.0125 + hash(k, 2, 236) * 0.01;
+      g.beginPath();
+      g.ellipse(0.06 + hash(k, 0, 236) * 0.88, 0.06 + hash(k, 1, 236) * 0.88, r * 1.3, r, 0, 0, Math.PI * 2);
+      g.fill();
+    }
+  });
+}
+
+// Road wear as a whole-run post-pass over finished tile bases. A rut is built
+// from each road tile's centre out to each orthogonal road neighbour's centre,
+// which is what makes runs continuous across tile and chunk seams and makes
+// corners bend — the old per-tile rut rects inferred the axis from `w || e`,
+// which is simply wrong at every junction and every bend. Lateral wobble is
+// averaged at the shared edge midpoint so neighbouring tiles agree on where
+// the rut crosses, and the lateral basis is world-fixed (+y for E-W runs,
+// +x for N-S) so the two tiles do not mirror each other's wobble.
+function drawRoadWear(g: Ctx, map: GameMap, tx0: number, ty0: number, tx1: number, ty1: number, d: Detail): void {
+  const roadAt = (tx: number, ty: number) => map.inBounds(tx, ty) && map.terrainKeyAt(tx, ty) === 'road' && !map.isBridge(tx, ty);
+  const wob = (tx: number, ty: number) => (coarse(tx * 3, ty * 3) - 0.5) * 0.18;
+  // How far the road reaches along one axis through this tile, capped — the
+  // longer axis is the run direction.
+  const extent = (tx: number, ty: number, dx: number, dy: number) => {
+    let n = 1;
+    for (let i = 1; i <= 8 && roadAt(tx - dx * i, ty - dy * i); i++) n++;
+    for (let i = 1; i <= 8 && roadAt(tx + dx * i, ty + dy * i); i++) n++;
+    return n;
+  };
+  // Perpendicular band through this tile: [centre in world m, width in tiles].
+  const band = (tx: number, ty: number, ew: boolean): [number, number] => {
+    const dx = ew ? 0 : 1;
+    const dy = ew ? 1 : 0;
+    let a = 0;
+    let b = 0;
+    while (a < 3 && roadAt(tx - dx * (a + 1), ty - dy * (a + 1))) a++;
+    while (b < 3 && roadAt(tx + dx * (b + 1), ty + dy * (b + 1))) b++;
+    const n = a + b + 1;
+    return [(ew ? ty : tx) - a + n / 2, n];
+  };
+  type Seg = [number, number, number, number];
+  const ruts: Seg[] = [];
+  const crown: Seg[] = [];
+  const turns: [number, number, number, number][] = []; // cx, cy, r, quadrant
+  const worn: [number, number][] = [];
+  const DIRS: [number, number][] = [[0, -1], [0, 1], [-1, 0], [1, 0]];
+  for (let y = ty0; y < ty1; y++) {
+    for (let x = tx0; x < tx1; x++) {
+      if (!roadAt(x, y)) continue;
+      worn.push([x, y]);
+      const nbs = DIRS.filter(([dx, dy]) => roadAt(x + dx, y + dy));
+      if (nbs.length >= 3) {
+        // Traffic cuts the corner, so add one scuff arc round each inner
+        // corner between two perpendicular arms. One jittered radius, not a
+        // pair — concentric rings read as a crop circle. The corner only
+        // exists where the DIAGONAL is off-road: mapgen's arterial is 3 tiles
+        // wide, so every tile in its interior has 4 road neighbours and a
+        // degree test alone would stamp arcs down the whole run.
+        const has = (dx: number, dy: number) => nbs.some(([a, b]) => a === dx && b === dy);
+        const quads: [number, number, number, boolean][] = [
+          [x + 1, y, 0, has(0, -1) && has(1, 0) && !roadAt(x + 1, y - 1)],
+          [x + 1, y + 1, 1, has(1, 0) && has(0, 1) && !roadAt(x + 1, y + 1)],
+          [x, y + 1, 2, has(0, 1) && has(-1, 0) && !roadAt(x - 1, y + 1)],
+          [x, y, 3, has(-1, 0) && has(0, -1) && !roadAt(x - 1, y - 1)],
+        ];
+        for (const [qx, qy, q, ok] of quads) {
+          if (ok) turns.push([qx, qy, 0.72 + hash(x, y * 4 + q, 240) * 0.34, q]);
+        }
+      }
+      // Which way does the run go, and where is its centreline? mapgen's
+      // arterial is 3 tiles wide, so "one rut pair per tile toward every road
+      // neighbour" lays down a 0.5 m mesh over the whole surface. Ruts belong
+      // to the ROAD, not the tile: measure the run axis by which direction the
+      // road reaches further, then let only the tile on the band's centreline
+      // carry the pair, spread to suit the band's width.
+      const extH = extent(x, y, 1, 0);
+      const extV = extent(x, y, 0, 1);
+      if (extH === extV) continue; // inside an intersection box (or a lone tile) — the turn arcs own it
+      const ew = extH > extV;
+      const [c, H] = band(x, y, ew);
+      if (Math.floor(c) !== (ew ? y : x)) continue;
+      const sep = Math.min(0.72, 0.26 * H);
+      const w0 = wob(x, y);
+      for (const dir of [-1, 1]) {
+        const nx = ew ? x + dir : x;
+        const ny = ew ? y : y + dir;
+        if (!roadAt(nx, ny)) continue;
+        const cN = band(nx, ny, ew)[0];
+        const wN = ew ? wob(nx, Math.floor(cN)) : wob(Math.floor(cN), ny);
+        const cE = (c + cN) / 2;
+        const wE = (w0 + wN) / 2;
+        const a = ew ? x + 0.5 : c + w0;
+        const b = ew ? c + w0 : y + 0.5;
+        const ea = ew ? x + (dir > 0 ? 1 : 0) : cE + wE;
+        const eb = ew ? cE + wE : y + (dir > 0 ? 1 : 0);
+        for (const s of [-1, 1]) {
+          if (ew) ruts.push([a, b + s * sep, ea, eb + s * sep]);
+          else ruts.push([a + s * sep, b, ea + s * sep, eb]);
+        }
+        crown.push([a, b, ea, eb]);
+      }
+    }
+  }
+  if (worn.length === 0) return;
+  const strokeAll = (segs: Seg[], width: number, style: string, odx = 0, ody = 0) => {
+    if (segs.length === 0) return;
+    g.lineWidth = width;
+    g.strokeStyle = style;
+    g.beginPath();
+    for (const [ax, ay, bx, by] of segs) {
+      g.moveTo(ax + odx, ay + ody);
+      g.lineTo(bx + odx, by + ody);
+    }
+    g.stroke();
+  };
+  strokeAll(crown, 0.06, 'rgba(184,160,112,0.08)');
+  strokeAll(ruts, 0.13, 'rgba(58,44,30,0.16)');
+  strokeAll(ruts, 0.06, 'rgba(40,30,20,0.10)');
+  strokeAll(ruts, 0.05, 'rgba(196,172,120,0.10)', -0.05, -0.06); // NW dust lip — the groove reads as a depression under the one sun
+  if (turns.length) {
+    g.lineWidth = 0.14;
+    g.strokeStyle = 'rgba(52,40,26,0.09)';
+    g.beginPath();
+    for (const [ax, ay, r, q] of turns) {
+      const a0 = (q * Math.PI) / 2 + Math.PI / 2;
+      g.moveTo(ax + Math.cos(a0) * r, ay + Math.sin(a0) * r);
+      g.arc(ax, ay, r, a0, a0 + Math.PI / 2);
+    }
+    g.stroke();
+  }
+  if (d < 1) return;
+  for (const [x, y] of worn) {
+    if (hash(x, y, 230) >= 0.13) continue;
+    const px = x + 0.2 + hash(x, y, 237) * 0.6;
+    const py = y + 0.2 + hash(x, y, 238) * 0.6;
+    const rx = 0.1 + hash(x, y, 239) * 0.12;
+    const puddle = d >= 2 && hash(x, y, 231) < 0.05;
+    g.fillStyle = 'rgba(150,126,86,0.25)';
+    g.beginPath();
+    g.ellipse(px - 0.03, py - 0.035, rx, rx * 0.7, 0, 0, Math.PI * 2);
+    g.fill();
+    g.fillStyle = puddle ? 'rgba(92,104,104,0.50)' : 'rgba(34,26,18,0.40)';
+    g.beginPath();
+    g.ellipse(px, py, rx, rx * 0.7, 0, 0, Math.PI * 2);
+    g.fill();
+    if (!puddle) continue;
+    // the frame's only specular, and it points at the same NW sun
+    g.strokeStyle = 'rgba(228,232,224,0.30)';
+    g.lineWidth = 0.04;
+    g.beginPath();
+    g.ellipse(px, py, rx * 0.66, rx * 0.46, 0, Math.PI * 1.11, Math.PI * 1.78);
+    g.stroke();
+  }
+}
+
 const DECK: [number, number, number] = [118, 96, 68]; // weathered plank
 const DECK_DARK: [number, number, number] = [94, 76, 54];
 
@@ -490,38 +650,45 @@ function drawTileBase(g: Ctx, map: GameMap, x: number, y: number, band: number, 
     }
     g.fillStyle = shade(ROAD, v);
     g.fillRect(x, y, 1, 1);
-    if (d >= 1) {
-      g.fillStyle = 'rgba(0,0,0,0.07)';
+    if (d >= 2) g.drawImage(gravelStamp((hash(x, y, 233) * 8) | 0, band), x, y, 1, 1);
+    const roadAt = (tx: number, ty: number) => map.inBounds(tx, ty) && map.terrainKeyAt(tx, ty) === 'road';
+    // Crumbled shoulder on every edge that isn't road: four 0.25 m sub-steps
+    // of jittered depth instead of one straight strip, plus a couple of grass
+    // scallops biting inward. A dirt lane never ends on a ruled line, and the
+    // straight version was the most synthetic edge in the frame.
+    const edgeRect = (s: number, u0: number, du: number, t0: number, dt: number) => {
+      if (s === 0) g.fillRect(x + u0, y + t0, du, dt);
+      else if (s === 1) g.fillRect(x + u0, y + 1 - t0 - dt, du, dt);
+      else if (s === 2) g.fillRect(x + t0, y + u0, dt, du);
+      else g.fillRect(x + 1 - t0 - dt, y + u0, dt, du);
+    };
+    const nb: [number, number][] = [[0, -1], [0, 1], [-1, 0], [1, 0]];
+    for (let s = 0; s < 4; s++) {
+      const [nx, ny] = [x + nb[s][0], y + nb[s][1]];
+      if (roadAt(nx, ny)) continue;
+      for (let i = 0; i < 4; i++) {
+        const dep = 0.06 + hash(x * 4 + i, y * 4 + s, 232) * 0.14;
+        g.fillStyle = 'rgba(0,0,0,0.15)';
+        edgeRect(s, i * 0.25, 0.25, 0, dep);
+        g.fillStyle = 'rgba(168,140,92,0.12)';
+        edgeRect(s, i * 0.25, 0.25, dep, 0.1);
+      }
+      const nk = map.inBounds(nx, ny) ? map.terrainKeyAt(nx, ny) : 'grass';
+      const tone =
+        nk === 'grass' ? shade(blendPalette([GRASS, GRASS_DRY], macro(nx, ny)), 0.95)
+        : nk === 'field' ? shade(blendPalette(FIELD_VARIANTS, macro(nx, ny)), 0.95)
+        : null;
+      if (!tone || d < 1) continue;
+      g.fillStyle = tone;
       for (let i = 0; i < 2; i++) {
+        const u = 0.15 + hash(x * 2 + i, y * 4 + s, 234) * 0.7;
+        const r = 0.09 + hash(x * 2 + i, y * 4 + s, 235) * 0.02;
+        const cx = s === 0 ? x + u : s === 1 ? x + u : s === 2 ? x : x + 1;
+        const cy = s === 0 ? y : s === 1 ? y + 1 : y + u;
         g.beginPath();
-        g.arc(x + hash(x, y, 3 + i), y + hash(x, y, 5 + i), 0.05 + hash(x, y, 7 + i) * 0.08, 0, Math.PI * 2);
+        g.ellipse(cx, cy, r, r, 0, 0, Math.PI * 2);
         g.fill();
       }
-    }
-    const roadAt = (tx: number, ty: number) => map.inBounds(tx, ty) && map.terrainKeyAt(tx, ty) === 'road';
-    const n = roadAt(x, y - 1);
-    const s = roadAt(x, y + 1);
-    const w = roadAt(x - 1, y);
-    const e = roadAt(x + 1, y);
-    // shoulders on every edge that isn't road, dust-tan hue bleeding inward
-    g.fillStyle = 'rgba(0,0,0,0.15)';
-    if (!n) g.fillRect(x, y, 1, 0.12);
-    if (!s) g.fillRect(x, y + 0.88, 1, 0.12);
-    if (!w) g.fillRect(x, y, 0.12, 1);
-    if (!e) g.fillRect(x + 0.88, y, 0.12, 1);
-    g.fillStyle = 'rgba(168,140,92,0.12)';
-    if (!n) g.fillRect(x, y + 0.12, 1, 0.1);
-    if (!s) g.fillRect(x, y + 0.78, 1, 0.1);
-    if (!w) g.fillRect(x + 0.12, y, 0.1, 1);
-    if (!e) g.fillRect(x + 0.78, y, 0.1, 1);
-    // twin wheel ruts along the road's running direction
-    g.fillStyle = 'rgba(0,0,0,0.1)';
-    if (w || e) {
-      g.fillRect(x, y + 0.22, 1, 0.09);
-      g.fillRect(x, y + 0.69, 1, 0.09);
-    } else {
-      g.fillRect(x + 0.22, y, 0.09, 1);
-      g.fillRect(x + 0.69, y, 0.09, 1);
     }
   } else if (t === 'woods') {
     drawSubTileGround(g, x, y);
@@ -690,6 +857,7 @@ export class TerrainLayer {
     for (let y = ty0; y < ty1; y++) {
       for (let x = tx0; x < tx1; x++) drawTileBase(g, this.map, x, y, band, d);
     }
+    drawRoadWear(g, this.map, tx0, ty0, tx1, ty1, d);
     drawWaterBanks(g, this.map, tx0, ty0, tx1, ty1);
     drawDoorTrails(g, this.map, tx0, ty0, tx1, ty1);
     drawHedgeRun(g, this.map, tx0, ty0, tx1, ty1, d);
