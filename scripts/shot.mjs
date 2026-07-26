@@ -85,7 +85,10 @@ if (has('effect')) {
   const name = arg('effect', 'boom');
   const e = EFFECTS[name];
   if (!e) throw new Error(`unknown effect "${name}" — one of: ${Object.keys(EFFECTS).join(', ')}`);
-  let anchor = targets.units;
+  // Effects stage over the blue squad cluster by default; --preset puts the
+  // same effect anywhere named (a boom in the woods, for the startled birds).
+  let anchor = targets[arg('preset', 'units')];
+  if (!anchor) throw new Error(`unknown preset "${arg('preset')}" — one of: ${PRESETS.join(', ')}`);
   let trigger = e.trigger;
   if (e.anchor) {
     const b = await deriveBuilding(page, targets.village);

@@ -90,6 +90,20 @@ const BREWUP_FULL_S = 14; // a brewed-up tank rages this long...
 const BREWUP_SETTLE_S = 45; // ...then settles to a smoking hulk by here
 const BREWUP_FLOOR = 0.3;
 
+// Startled birds — the cheapest "this world is alive" beat available: six
+// primitives each, only ever off a blast in or beside woods, hard-capped.
+interface Bird {
+  x: number;
+  y: number;
+  dir: number;
+  at: number; // ms, wall-clock
+  phase: number; // wingbeat offset
+}
+
+const BIRD_MS = 1900;
+const BIRD_CAP = 24;
+const BIRD_SPEED = 11; // m/s
+
 const SMOKE_LEAN_MAX = 2; // m — a smoke screen streams, but never off the tile it is blocking
 const HAZE_MAX_SCALE = 22; // px/m — above this you can count boots and haze is just fog on the lens
 const MOTE_MIN_SCALE = 20;
@@ -141,6 +155,8 @@ export class Renderer {
   private fires = new Map<number, Fire>();
   private lit: Fire[] = []; // this frame's visible fires, shared by the cool and hot passes
   private licks: number[] = []; // flat (x, y, r, alpha) quads — flame cores queued for the fire hot pass
+  private birds: Bird[] = [];
+  private boomSeq = 0;
   private haze: { x: number; y: number; len: number; hgt: number; a: number }[];
   hazeOn = true; // ?haze=0, matching the ?fow=0 debug-switch pattern
   selectedVehicle = -1;
@@ -189,6 +205,7 @@ export class Renderer {
 
   addBooms(booms: { x: number; y: number; r?: number }[], now: number): void {
     for (const b of booms) {
+      this.boomSeq++;
       this.booms.push({ ...b, at: now, landed: 0 });
       this.decals.scorch(b.x, b.y, boomScale(b.r));
       // Ignition is render-derived: a blast inside a building footprint is the
@@ -196,6 +213,73 @@ export class Renderer {
       // player watched happen.
       const bid = this.sim.map.buildingIdAt(Math.floor(b.x), Math.floor(b.y));
       if (bid >= 0) this.stoke(bid, b.x, b.y, -1);
+      this.flush(b.x, b.y, now);
+    }
+  }
+
+  // Put birds up if this blast landed in or beside woods. The 1-in-2 gate is
+  // what stops a barrage in a forest turning the sky into a flock; the boom
+  // counter is in the key so a repeatedly shelled copse is not a permanent
+  // dead zone the way a position-only hash would make it.
+  private flush(x: number, y: number, now: number): void {
+    const sx = Math.round(x * 10);
+    const sy = Math.round(y * 10);
+    if (this.birds.length >= BIRD_CAP || hash(sx, sy, 71 + (this.boomSeq % 7)) >= 0.5) return;
+    let woods = false;
+    for (let j = -7; j <= 7 && !woods; j += 3.5)
+      for (let i = -7; i <= 7; i += 3.5) {
+        if (this.sim.map.terrainKeyAt(Math.floor(x + i), Math.floor(y + j)) === 'woods') {
+          woods = true;
+          break;
+        }
+      }
+    if (!woods) return;
+    const n = 3 + Math.floor(hash(sx, sy, 72) * 4);
+    for (let i = 0; i < n && this.birds.length < BIRD_CAP; i++) {
+      this.birds.push({
+        x: x + (hash(sx, sy, 73 + i) - 0.5) * 6,
+        y: y + (hash(sx, sy, 80 + i) - 0.5) * 6,
+        dir: hash(sx, sy, 87 + i) * Math.PI * 2,
+        at: now,
+        phase: hash(sx, sy, 94 + i) * 6.28,
+      });
+    }
+  }
+
+  // Two strokes and a shrinking ground shadow. Wall-clock: a bird is not part
+  // of the sim, and freezing one mid-air under pause would look broken.
+  private drawBirds(ctx: CanvasRenderingContext2D, cam: Camera, now: number, cw: number, ch: number): void {
+    this.birds = this.birds.filter((b) => now - b.at < BIRD_MS);
+    if (this.birds.length === 0 || fxDetail(cam.scale) < 1) return;
+    const S = cam.scale;
+    const wing = Math.max(4, S * 0.45);
+    const lw = Math.max(1.2, S * 0.05);
+    for (const b of this.birds) {
+      const secs = (now - b.at) / 1000;
+      const t = secs / (BIRD_MS / 1000);
+      const [gx, gy] = cam.worldToScreen(b.x + Math.cos(b.dir) * BIRD_SPEED * secs, b.y + Math.sin(b.dir) * BIRD_SPEED * secs, cw, ch);
+      if (gx < -40 || gy < -40 || gx > cw + 40 || gy > ch + 40) continue;
+      const climb = t * 3.5 * S;
+      const fade = Math.min(1, (1 - t) * 3);
+      ctx.fillStyle = `rgba(20,17,12,${0.22 * (1 - t)})`;
+      ctx.beginPath();
+      ctx.ellipse(gx, gy, S * 0.12, S * 0.07, 0, 0, Math.PI * 2);
+      ctx.fill();
+      const half = 0.75 + 0.35 * Math.sin(now * 0.022 + b.phase);
+      const back = b.dir + Math.PI;
+      const y0 = gy - climb;
+      ctx.beginPath();
+      ctx.moveTo(gx + Math.cos(back - half) * wing, y0 + Math.sin(back - half) * wing);
+      ctx.lineTo(gx, y0);
+      ctx.lineTo(gx + Math.cos(back + half) * wing, y0 + Math.sin(back + half) * wing);
+      // Pale under-stroke then the dark bird on top: a dark chevron alone
+      // vanishes against a canopy, which is exactly where birds are flushed.
+      ctx.lineWidth = lw + 1.8;
+      ctx.strokeStyle = `rgba(228,224,208,${0.4 * fade})`;
+      ctx.stroke();
+      ctx.lineWidth = lw;
+      ctx.strokeStyle = `rgba(30,27,22,${0.9 * fade})`;
+      ctx.stroke();
     }
   }
 
@@ -322,6 +406,7 @@ export class Renderer {
     this.roofs.drawTops(ctx, cam, cw, ch);
     this.roofs.drawChimneySmoke(ctx, cam, cw, ch);
     this.drawFires(ctx, cam, now, cw, ch); // over the roof it is consuming, under the smoke screens
+    this.drawBirds(ctx, cam, now, cw, ch);
     this.drawSmoke(ctx, cam, cw, ch);
     this.drawContacts(ctx, cam, cw, ch);
     this.drawPlanes(ctx, cam, now, cw, ch);
