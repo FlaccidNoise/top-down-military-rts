@@ -29,6 +29,12 @@ export class GameMap {
   // would otherwise have to re-guess from proximity (which mislabels roads
   // merely running alongside a river as bridges).
   readonly bridges: Uint8Array;
+  // Road tiles carved through a railway embankment's footprint — same precedent
+  // as bridges. The road wins the tile (terrain stays 'road', so vehicles and
+  // A* treat a level crossing as ordinary road), which destroys the rail/road
+  // overlap the renderer needs to draw sleepers and warning posts over the
+  // deck. The sim never reads this array.
+  readonly crossings: Uint8Array;
 
   constructor(readonly w: number, readonly h: number, fill: TerrainKey = 'grass') {
     this.tiles = new Uint8Array(w * h).fill(TERRAIN_KEYS.indexOf(fill));
@@ -41,10 +47,15 @@ export class GameMap {
     this.hEdgeTops = new Uint8Array((h + 1) * w);
     this.vEdgeTops = new Uint8Array(h * (w + 1));
     this.bridges = new Uint8Array(w * h);
+    this.crossings = new Uint8Array(w * h);
   }
 
   isBridge(x: number, y: number): boolean {
     return this.inBounds(x, y) && this.bridges[y * this.w + x] === 1;
+  }
+
+  isCrossing(x: number, y: number): boolean {
+    return this.inBounds(x, y) && this.crossings[y * this.w + x] === 1;
   }
 
   inBounds(x: number, y: number): boolean {
@@ -108,12 +119,17 @@ export class GameMap {
   }
 
   // Can a unit step between two orthogonally adjacent tiles?
-  // Vehicles can't enter buildings or woods and never pass any edge feature.
+  // Vehicles can't enter buildings, woods or the batter of an embankment, and
+  // never pass any edge feature. Slope is expressed as the 'bank' terrain key
+  // rather than a grade rule over elev: every legacy map already carries
+  // multi-metre elevation steps straight against its roads (the mapgen dome
+  // pass skips road/water/floor tiles), so a global max-grade check would wall
+  // off the arterial on maps that generate fine today.
   canStep(x0: number, y0: number, x1: number, y1: number, mode: 'foot' | 'vehicle' = 'foot'): boolean {
     if (!this.inBounds(x1, y1) || !this.terrainAt(x1, y1).passable) return false;
     if (mode === 'vehicle') {
       const k = this.terrainKeyAt(x1, y1);
-      if (k === 'floor' || k === 'woods' || k === 'hedge') return false;
+      if (k === 'floor' || k === 'woods' || k === 'hedge' || k === 'bank') return false;
     }
     let e: EdgeType = EDGE.NONE;
     if (x1 === x0 + 1) e = this.vEdge(x1, y0);
