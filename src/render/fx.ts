@@ -1,4 +1,5 @@
 import type { WeaponKey } from '../sim/data';
+import { EDGE, type GameMap } from '../sim/map';
 import { SUN } from './light';
 import { hash } from './noise';
 
@@ -117,6 +118,55 @@ export function flashClass(w: WeaponKey | undefined): FlashClass {
 // Spike deflections by count — never a symmetric fan, which is what made the
 // old three-equal-spikes flash read as a UI arrowhead.
 export const SPIKE_SIDES: number[][] = [[], [0], [0.65, -1], [0, 1, -0.75]];
+
+export interface Overshoot {
+  kind: 'wall' | 'foliage' | 'ground';
+  x: number;
+  y: number;
+  nx: number; // surface normal, pointing back toward the shooter (wall only)
+  ny: number;
+}
+
+const OVER_STEP = 0.25;
+const OVER_MAX = 12;
+
+// Where a missed round actually ends up. The sim clears LOS before firing, so
+// there is never a full wall between shooter and target — a miss has to be
+// resolved PAST the target, not at its feet. Marching outward from the target
+// finds the masonry, hedge or open dirt the round really strikes.
+//
+// Edge crossings use map.ts `canStep`'s convention exactly: the vEdge between
+// columns a and a+1 is vEdge(a+1, row); the hEdge between rows b and b+1 is
+// hEdge(col, b+1). Getting this wrong lands every pockmark one tile off.
+export function traceOvershoot(map: GameMap, fx: number, fy: number, tx: number, ty: number, h: number): Overshoot {
+  const a = Math.atan2(ty - fy, tx - fx) + (h - 0.5) * 0.08;
+  const dx = Math.cos(a);
+  const dy = Math.sin(a);
+  let px = Math.floor(tx);
+  let py = Math.floor(ty);
+  for (let i = 1; i <= OVER_MAX / OVER_STEP; i++) {
+    const d = i * OVER_STEP;
+    const wx = tx + dx * d;
+    const wy = ty + dy * d;
+    const cx = Math.floor(wx);
+    const cy = Math.floor(wy);
+    if (cx !== px) {
+      const e = map.vEdge(Math.max(px, cx), py);
+      if (e === EDGE.WALL || e === EDGE.WINDOW) return { kind: 'wall', x: Math.max(px, cx), y: wy, nx: -Math.sign(dx), ny: 0 };
+    }
+    if (cy !== py) {
+      const e = map.hEdge(cx, Math.max(py, cy));
+      if (e === EDGE.WALL || e === EDGE.WINDOW) return { kind: 'wall', x: wx, y: Math.max(py, cy), nx: 0, ny: -Math.sign(dy) };
+    }
+    px = cx;
+    py = cy;
+    if (!map.inBounds(cx, cy)) break;
+    const k = map.terrainKeyAt(cx, cy);
+    if (k === 'hedge' || k === 'woods') return { kind: 'foliage', x: wx, y: wy, nx: -dx, ny: -dy };
+  }
+  const d = 1.5 + h * 2.5;
+  return { kind: 'ground', x: tx + dx * d, y: ty + dy * d, nx: -dx, ny: -dy };
+}
 
 type Ctx = CanvasRenderingContext2D;
 

@@ -3,13 +3,15 @@ import { MELEE_STRIKE_RANGE, type MeleeEvent, type ShotEvent, type Side, type Si
 import type { Camera } from './camera';
 import { DecalLayer } from './decals';
 import { bandFor, getSprite, SPRITE_MIN_SCALE, SPRITE_SPAN, WALK_FRAMES, type Pose } from './dudes';
-import { ballistic, blit, FLASH, flashClass, fxDetail, hotPass, SPIKE_SIDES, WIND, type FlashSpec, type FxKind } from './fx';
+import { ballistic, blit, FLASH, flashClass, fxDetail, hotPass, SPIKE_SIDES, traceOvershoot, WIND, type FlashSpec, type FxKind, type Overshoot } from './fx';
+import { MarkLayer } from './marks';
 import { RoofLayer } from './roofs';
 import { TerrainLayer } from './terrain';
 import { getVehicleSprite, vehicleBandFor, VEHICLE_SPAN } from './vehicles';
 
 interface Tracer extends ShotEvent {
   at: number; // ms timestamp
+  over?: Overshoot; // misses only: where the round actually came down
 }
 
 interface ShotGeom {
@@ -89,6 +91,7 @@ export class Renderer {
   private lastNow = 0;
   private booms: Boom[] = [];
   private decals: DecalLayer;
+  private marks = new MarkLayer();
   private barrageMarks: { x: number; y: number; tick: number }[] = [];
   private strafeMarks: { x: number; y: number; tick: number }[] = [];
   private planes: Plane[] = [];
@@ -101,7 +104,20 @@ export class Renderer {
   }
 
   addEvents(events: ShotEvent[], now: number): void {
-    for (const e of events) this.tracers.push({ ...e, at: now });
+    for (const e of events) {
+      const t: Tracer = { ...e, at: now };
+      // A miss has to land somewhere past the target — resolve it once, here,
+      // rather than 48 edge tests per frame for the shot's whole life.
+      if (!e.hit) {
+        const h = hash(Math.round(e.tx * 100), Math.round(e.ty * 100), 61);
+        const o = traceOvershoot(this.sim.map, e.fx, e.fy, e.tx, e.ty, h);
+        t.over = o;
+        if (o.kind === 'wall') {
+          if (h < 0.34) this.marks.add(o.x, o.y);
+        } else if (h < (o.kind === 'foliage' ? 0.17 : 0.125)) this.decals.grit(o.x, o.y);
+      }
+      this.tracers.push(t);
+    }
   }
 
   addMeleeEvents(events: MeleeEvent[], now: number): void {
@@ -159,6 +175,7 @@ export class Renderer {
     ctx.lineWidth = 2;
     ctx.strokeRect(mx0, my0, mx1 - mx0, my1 - my0);
     this.decals.draw(ctx, cam, cw, ch);
+    this.marks.draw(ctx, cam, cw, ch);
     this.roofs.update(this.sim, cam, dt);
     this.roofs.drawShadows(ctx, cam, cw, ch);
     // stair glyphs only where the roof fade reveals the interior
@@ -796,8 +813,13 @@ export class Renderer {
       }
     }
 
-    if (!impactOn || age < TRAVEL_MS) return;
+    if (age < TRAVEL_MS) return;
     const dAge = age - TRAVEL_MS;
+    if (t.over) {
+      this.drawOvershoot(ctx, cam, g, t.over, dAge, cw, ch);
+      return;
+    }
+    if (!impactOn) return;
     if (dAge < IMPACT_MS) {
       const dt = dAge / IMPACT_MS;
       for (let i = 0; i < 3; i++) {
@@ -813,6 +835,55 @@ export class Renderer {
       ctx.beginPath();
       ctx.arc(g.x1, g.y1, (0.4 + kt * 2.2) * cam.scale, 0, Math.PI * 2);
       ctx.stroke();
+    }
+  }
+
+  // What a missed round hits past the target. Masonry spall is deliberately a
+  // different value AND hue family from the earth-brown ground dust, so a
+  // player reads "that round hit the wall" without reading its position.
+  private drawOvershoot(ctx: CanvasRenderingContext2D, cam: Camera, g: ShotGeom, o: Overshoot, dAge: number, cw: number, ch: number): void {
+    const [ox, oy] = cam.worldToScreen(o.x, o.y, cw, ch);
+    if (!this.onScreen(ox, oy, cw, ch, 4 * cam.scale)) return;
+    const S = cam.scale;
+    if (o.kind === 'wall') {
+      const base = Math.atan2(o.ny, o.nx);
+      if (dAge < 260) {
+        const wt = dAge / 260;
+        const n = 3 + Math.floor(hash(g.hx, g.hy, 120) * 3);
+        for (let i = 0; i < n; i++) {
+          const ca = base + (hash(g.hx, g.hy, 130 + i) - 0.5) * 1.3;
+          const dist = (0.1 + wt * 0.5) * S;
+          blit(ctx, 'masonry', ox + Math.cos(ca) * dist, oy + Math.sin(ca) * dist, (0.1 + wt * 0.25) * S, (1 - wt) * 0.6);
+        }
+      }
+      if (dAge < 300) {
+        const secs = dAge / 1000;
+        for (let i = 0; i < 2; i++) {
+          const ca = base + (hash(g.hx, g.hy, 140 + i) - 0.5) * 1.6;
+          const [dist, z] = ballistic(secs, 3 + hash(g.hx, g.hy, 150 + i) * 3, 2 + hash(g.hx, g.hy, 160 + i) * 2);
+          if (z <= 0) continue;
+          blit(ctx, CHUNKS[i & 3], ox + Math.cos(ca) * dist * S, oy + Math.sin(ca) * dist * S - z * S * 0.9, 0.06 * S, 1, secs * 7);
+        }
+      }
+      return;
+    }
+    if (o.kind === 'foliage') {
+      if (dAge >= 400) return;
+      const ft = dAge / 400;
+      const secs = dAge / 1000;
+      for (let i = 0; i < 4; i++) {
+        const drift = (0.3 + hash(g.hx, g.hy, 170 + i) * 0.7) * secs;
+        const fall = (0.4 + hash(g.hx, g.hy, 180 + i) * 0.8) * secs; // leaves sink as they drift
+        blit(ctx, 'leaf', ox + (WIND.dx * drift + (hash(g.hx, g.hy, 190 + i) - 0.5) * 0.4) * S, oy + (WIND.dy * drift + fall) * S, 0.09 * S, (1 - ft) * 0.85, hash(g.hx, g.hy, 200 + i) * 6.28 + secs * 3);
+      }
+      return;
+    }
+    if (dAge >= IMPACT_MS) return;
+    const dt = dAge / IMPACT_MS;
+    for (let i = 0; i < 3; i++) {
+      const ang = hash(g.hx + i, g.hy, 70) * Math.PI * 2;
+      const dist = (0.12 + dt * 0.3) * S;
+      blit(ctx, 'dustTan', ox + Math.cos(ang) * dist, oy + Math.sin(ang) * dist, Math.max(1, S * 0.16), (1 - dt) * 0.5);
     }
   }
 
@@ -853,26 +924,31 @@ export class Renderer {
       blit(ctx, 'spark', px(travelT), py(travelT), Math.max(1, cam.scale * 0.1), 0.95);
     }
 
-    if (!impactOn || age < TRAVEL_MS) return;
+    if (age < TRAVEL_MS) return;
     const dAge = age - TRAVEL_MS;
-    if (t.hit && t.kill && dAge < 200) {
-      const kt = dAge / 200;
-      blit(ctx, 'flash', g.x1, g.y1, Math.max(2, (0.3 + kt * 0.9) * cam.scale), (1 - kt) * 0.8);
-    } else if (t.hit && dAge < 90) {
-      blit(ctx, 'spark', g.x1, g.y1, Math.max(1.2, cam.scale * 0.18), (1 - dAge / 90) * 0.7);
+    if (impactOn && t.hit) {
+      if (t.kill && dAge < 200) {
+        const kt = dAge / 200;
+        blit(ctx, 'flash', g.x1, g.y1, Math.max(2, (0.3 + kt * 0.9) * cam.scale), (1 - kt) * 0.8);
+      } else if (dAge < 90) {
+        blit(ctx, 'spark', g.x1, g.y1, Math.max(1.2, cam.scale * 0.18), (1 - dAge / 90) * 0.7);
+      }
     }
 
-    // Rounds finding a hard target throw sparks back toward the shooter.
-    if (tier >= 1 && t.hit && dAge < 260 && this.sim.map.terrainAt(Math.floor(t.tx), Math.floor(t.ty)).cover > 0) {
-      const secs = dAge / 1000;
-      const back = ang + Math.PI;
-      const n = 2 + Math.floor(hash(g.hx, g.hy, 88) * 3);
-      for (let i = 0; i < n; i++) {
-        const a = back + (hash(g.hx, g.hy, 90 + i) - 0.5) * 2.2;
-        const [dist, z] = ballistic(secs, 4 + hash(g.hx, g.hy, 100 + i) * 5, 2 + hash(g.hx, g.hy, 110 + i) * 3);
-        if (z <= 0) continue;
-        blit(ctx, 'spark', g.x1 + Math.cos(a) * dist * cam.scale, g.y1 + Math.sin(a) * dist * cam.scale - z * cam.scale * 0.9, Math.max(0.9, cam.scale * 0.06), 1 - dAge / 260);
-      }
+    // Rounds finding a hard surface — cover at the target, or the masonry a
+    // miss overshoots into — throw sparks back toward the shooter.
+    const hard = t.over ? t.over.kind === 'wall' : t.hit && this.sim.map.terrainAt(Math.floor(t.tx), Math.floor(t.ty)).cover > 0;
+    if (tier < 1 || !hard || dAge >= 260) return;
+    const [hx, hy] = t.over ? cam.worldToScreen(t.over.x, t.over.y, cw, ch) : [g.x1, g.y1];
+    if (!this.onScreen(hx, hy, cw, ch, pad)) return;
+    const secs = dAge / 1000;
+    const back = ang + Math.PI;
+    const n = 2 + Math.floor(hash(g.hx, g.hy, 88) * 3);
+    for (let i = 0; i < n; i++) {
+      const a = back + (hash(g.hx, g.hy, 90 + i) - 0.5) * 2.2;
+      const [dist, z] = ballistic(secs, 4 + hash(g.hx, g.hy, 100 + i) * 5, 2 + hash(g.hx, g.hy, 110 + i) * 3);
+      if (z <= 0) continue;
+      blit(ctx, 'spark', hx + Math.cos(a) * dist * cam.scale, hy + Math.sin(a) * dist * cam.scale - z * cam.scale * 0.9, Math.max(0.9, cam.scale * 0.06), 1 - dAge / 260);
     }
   }
 
