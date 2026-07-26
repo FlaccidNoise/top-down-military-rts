@@ -5,6 +5,7 @@ import { DecalLayer } from './decals';
 import { bandFor, getSprite, SPRITE_MIN_SCALE, SPRITE_SPAN, WALK_FRAMES, type Pose } from './dudes';
 import { ballistic, blit, FLASH, flashClass, fxDetail, hotPass, SPIKE_SIDES, traceOvershoot, WIND, type FlashSpec, type FxKind, type Overshoot } from './fx';
 import { MarkLayer } from './marks';
+import { craterSpots } from './props';
 import { RoofLayer } from './roofs';
 import { TerrainLayer } from './terrain';
 import { view } from './view';
@@ -102,6 +103,9 @@ export class Renderer {
   constructor(private sim: Sim) {
     this.terrain = new TerrainLayer(sim.map);
     this.decals = new DecalLayer(sim.map.w, sim.map.h);
+    // Weathered shell holes from an earlier fight, under everything this
+    // battle will add — a fresh scorch still has to read as new.
+    for (const [x, y, seed] of craterSpots(sim.map, this.terrain.index)) this.decals.oldCrater(x, y, seed);
   }
 
   addEvents(events: ShotEvent[], now: number): void {

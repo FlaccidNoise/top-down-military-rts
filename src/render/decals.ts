@@ -1,4 +1,5 @@
 import type { Camera } from './camera';
+import { hash } from './noise';
 
 // Persistent battle scarring — mortar scorches, blood smears from dragged
 // casualties. Drawn once into a world-aligned offscreen canvas and blitted
@@ -66,6 +67,36 @@ export class DecalLayer {
     g.beginPath();
     g.arc(x, y, 0.22, 0, Math.PI * 2);
     g.fill();
+  }
+
+  // A shell hole from some earlier fight, stamped at construction: grass has
+  // regrown over the rim and there is no ash left, so it never reads as a
+  // fresh `scorch()`. Deterministic (hash, not Math.random) because this is
+  // load-time art the static screenshot sweep compares across builds.
+  oldCrater(x: number, y: number, seed: number): void {
+    const g = this.g;
+    const r = 1.4 + hash(seed, 0, 280) * 1.1;
+    const rim = g.createRadialGradient(x, y, r * 0.4, x, y, r);
+    rim.addColorStop(0, 'rgba(96,110,66,0)');
+    rim.addColorStop(0.6, 'rgba(96,110,66,0.25)');
+    rim.addColorStop(1, 'rgba(96,110,66,0)');
+    g.fillStyle = rim;
+    g.beginPath();
+    g.arc(x, y, r, 0, Math.PI * 2);
+    g.fill();
+    const core = g.createRadialGradient(x, y, 0, x, y, r * 0.55);
+    core.addColorStop(0, 'rgba(40,34,26,0.35)');
+    core.addColorStop(1, 'rgba(40,34,26,0)');
+    g.fillStyle = core;
+    g.beginPath();
+    g.arc(x, y, r * 0.55, 0, Math.PI * 2);
+    g.fill();
+    // weathered lip, brightest on the NW side under the shared sun
+    g.strokeStyle = 'rgba(132,138,96,0.22)';
+    g.lineWidth = 0.14;
+    g.beginPath();
+    g.arc(x, y, r * 0.62, Math.PI * 1.02, Math.PI * 1.98);
+    g.stroke();
   }
 
   // Where a thrown debris chunk came down: one dark speck plus two flecks.

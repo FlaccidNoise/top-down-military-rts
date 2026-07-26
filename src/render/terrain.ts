@@ -34,6 +34,7 @@ import { stamp, stampRect } from './stamps';
 import { canopySprite, drawLog } from './canopy';
 import { PatchIndex, type BuildingBox, type Patch } from './patches';
 import { buildYards, drawYardGround, drawYardStructures, type Yard } from './yards';
+import { drawProp, propExtent, propsFor, type Prop } from './props';
 
 // Bilinear value noise on an 8m lattice — smooth patches, no hard square edges.
 function coarse(x: number, y: number): number {
@@ -1230,6 +1231,10 @@ export class TerrainLayer {
   private bakeBudget = 0;
   private patches: PatchIndex;
   private yards: Yard[];
+  // props bucketed by chunk key on their DRAWN extent (a telegraph wire spans
+  // 6 m past its pole), so a chunk bake pays only for the clutter it shows and
+  // nothing is ever clipped off at a seam
+  private props = new Map<string, Prop[]>();
 
   constructor(private map: GameMap) {
     // Flat maps (all elev 0, no stairs) early-out everywhere below, so their
@@ -1238,6 +1243,24 @@ export class TerrainLayer {
     this.hasStairs = map.stairs.some((s) => s !== 0);
     this.patches = new PatchIndex(map);
     this.yards = buildYards(map, this.patches);
+    for (const p of propsFor(map, this.patches)) {
+      const [ex0, ey0, ex1, ey1] = propExtent(p);
+      for (let cy = Math.floor(ey0 / CHUNK); cy <= Math.floor(ey1 / CHUNK); cy++) {
+        for (let cx = Math.floor(ex0 / CHUNK); cx <= Math.floor(ex1 / CHUNK); cx++) {
+          const k = `${cx},${cy}`;
+          const arr = this.props.get(k);
+          if (arr) arr.push(p);
+          else this.props.set(k, [p]);
+        }
+      }
+    }
+  }
+
+  // The parcel/junction index is built here and nowhere else — it costs ~1 ms
+  // per map, so anything else that needs it (old-crater picks in the renderer)
+  // borrows this instance rather than rebuilding one.
+  get index(): PatchIndex {
+    return this.patches;
   }
 
   private chunk(cx: number, cy: number, band: number): HTMLCanvasElement {
@@ -1293,6 +1316,7 @@ export class TerrainLayer {
         if (this.map.terrainKeyAt(x, y) === 'woods') drawTree(g, this.map, x, y, band, d);
       }
     }
+    for (const p of this.props.get(`${cx},${cy}`) ?? []) drawProp(g, p, band, d);
     for (let y = ty0; y <= ty1; y++) {
       for (let x = tx0; x < tx1; x++) drawEdge(g, this.map.hEdge(x, y), x, y, x + 1, y);
     }
