@@ -234,14 +234,14 @@ export class Renderer {
         }
       }
     if (!woods) return;
-    const n = 3 + Math.floor(hash(sx, sy, 72) * 4);
+    const n = 3 + Math.floor(hash(sx, sy, 78) * 4);
     for (let i = 0; i < n && this.birds.length < BIRD_CAP; i++) {
       this.birds.push({
-        x: x + (hash(sx, sy, 73 + i) - 0.5) * 6,
-        y: y + (hash(sx, sy, 80 + i) - 0.5) * 6,
-        dir: hash(sx, sy, 87 + i) * Math.PI * 2,
+        x: x + (hash(sx, sy, 400 + i) - 0.5) * 6,
+        y: y + (hash(sx, sy, 410 + i) - 0.5) * 6,
+        dir: hash(sx, sy, 420 + i) * Math.PI * 2,
         at: now,
-        phase: hash(sx, sy, 94 + i) * 6.28,
+        phase: hash(sx, sy, 430 + i) * 6.28,
       });
     }
   }
