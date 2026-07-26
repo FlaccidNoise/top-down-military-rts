@@ -163,6 +163,24 @@ async function phoneRun(device) {
     check(await page.evaluate(() => getComputedStyle(document.getElementById('rotate')).display === 'none'), `${device} rotate banner dismisses`);
   }
 
+  // The classifier is pure and exposed on the __game seam precisely so the
+  // grammar can be asserted here without synthesising timing-sensitive touch.
+  const gestures = await page.evaluate(() => {
+    const c = window.__game.classify;
+    return {
+      tap: c({ dt: 80, dist: 0, fingers: 0, maxFingers: 1 }),
+      hold: c({ dt: 500, dist: 0, fingers: 0, maxFingers: 1 }),
+      pan: c({ dt: 60, dist: 40, fingers: 1, maxFingers: 1 }),
+      holdDrag: c({ dt: 500, dist: 40, fingers: 1, maxFingers: 1 }),
+      pinch: c({ dt: 200, dist: 30, fingers: 2, maxFingers: 2 }),
+      twoTap: c({ dt: 200, dist: 2, fingers: 0, maxFingers: 2 }),
+    };
+  });
+  check(
+    Object.entries(gestures).every(([k, v]) => k === v),
+    `${device} touch grammar classifies as documented (${JSON.stringify(gestures)})`,
+  );
+
   await shot('strategic-boot');
   await noOverflow('strategic boot');
 
