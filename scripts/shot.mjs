@@ -15,7 +15,7 @@
 //   node scripts/shot.mjs --list                             # presets + effects
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { arg, launch, gotoStaged, deriveTargets, place, burst } from './lib/stage.mjs';
+import { arg, launch, gotoStaged, deriveTargets, place, burst, stageVehicles } from './lib/stage.mjs';
 
 const has = (name) => process.argv.includes(`--${name}`);
 const PORT = Number(arg('port', '5198'));
@@ -26,7 +26,7 @@ const FORCE = arg('force', null); // bridge|river|... to force the defended cell
 const OUT = arg('out', '.screenshots/shot.png');
 const MAP_W = 320;
 const MAP_H = 240;
-const PRESETS = ['village', 'woods', 'hamlet', 'farm', 'bocage', 'units', 'enemy', 'farlod', 'bridge'];
+const PRESETS = ['village', 'woods', 'hamlet', 'farm', 'bocage', 'units', 'enemy', 'soldiers48', 'vehicles', 'farlod', 'bridge'];
 const EFFECTS = {
   muzzle: { trigger: { type: 'shot', hit: true, kill: false }, dur: 120, buckets: 3 },
   tracer: { trigger: { type: 'shot', hit: true, kill: false }, dur: 340, buckets: 6 },
@@ -92,6 +92,8 @@ if (has('map')) {
 } else if (has('at')) {
   [x, y] = arg('at', '160,120').split(',').map(Number);
   scale = Number(arg('scale', '24'));
+} else if (arg('preset', 'units') === 'vehicles') {
+  ({ x, y, scale } = await stageVehicles(page, targets.units));
 } else {
   const t = targets[arg('preset', 'units')];
   if (!t) throw new Error(`unknown preset "${arg('preset')}" — one of: ${PRESETS.join(', ')}`);

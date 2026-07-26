@@ -1,6 +1,7 @@
 import { VEHICLES, type VehicleKey } from '../sim/data';
 import type { Side } from '../sim/sim';
-import { SHADOW_ALPHA, shadowOffset } from './light';
+import { AO_ALPHA } from './light';
+import { SpriteCache } from './spritecache';
 
 // Parametric vector tank, drawn facing +X in meter units, baked per
 // (kind, side, state, zoom band) — same scheme as dudes.ts.
@@ -10,6 +11,12 @@ const BANDS = [6, 12, 24, 48];
 
 export function vehicleBandFor(scale: number): number {
   return BANDS.find((b) => b >= scale) ?? 48;
+}
+
+// One device pixel in metres: the vehicle bake ctx is scaled by band alone
+// (no DUDE_SCALE oversize), so panel lines clamp against this.
+function hair(band: number): number {
+  return 1 / band;
 }
 
 type State = 'ok' | 'dead';
@@ -90,15 +97,15 @@ function roundRectPath(g: Ctx, x: number, y: number, w: number, h: number, r: nu
   g.closePath();
 }
 
-// Soft ambient blob offset toward the sun, baked as the bottom layer so it
-// rotates with the hull — an approximation, but the ground under a vehicle
-// never shows a true world-aligned shadow at this render scale.
-function hullShadow(g: Ctx, long: number, wide: number): void {
-  const [dx, dy] = shadowOffset(long * 0.22);
-  g.fillStyle = `rgba(14,13,10,${SHADOW_ALPHA})`;
-  g.beginPath();
-  g.ellipse(dx, dy, long / 2 + 0.15, wide / 2 + 0.12, 0, 0, Math.PI * 2);
-  g.fill();
+// Contact AO: a tight dark ring hugging the hull outline, the pinch of dark
+// where armour meets dirt. Directionless by design — the cast shadow is a
+// world-aligned draw pass now (renderer.drawUnitShadows), because a blob baked
+// into a rotating sprite pointed a different way for every heading.
+function hullAO(g: Ctx, long: number, wide: number, band: number): void {
+  g.strokeStyle = `rgba(14,13,10,${AO_ALPHA * 0.6})`;
+  g.lineWidth = Math.max(0.22, hair(band) * 2);
+  roundRectPath(g, -long / 2 - 0.04, -wide / 2 - 0.04, long + 0.08, wide + 0.08, 0.4);
+  g.stroke();
 }
 
 // Team-color rim: strong at close bake bands (6/12), a whisper at the far
@@ -389,7 +396,12 @@ function drawHalftrack(g: Ctx, c: Palette, wreck: boolean, long: number, wide: n
   }
 }
 
-const cache = new Map<string, HTMLCanvasElement>();
+const VEHICLE_BUDGET = 24 << 20; // bytes; a band-48 hull canvas is ~590 KB, so this is a real ceiling
+const cache = new SpriteCache(VEHICLE_BUDGET);
+
+export function vehicleCacheStats(): { entries: number; bytes: number } {
+  return cache.stats();
+}
 
 export function getVehicleSprite(kind: VehicleKey, side: Side, state: State, band: number): HTMLCanvasElement {
   const key = `${kind}|${side}|${state}|${band}`;
@@ -408,21 +420,31 @@ export function getVehicleSprite(kind: VehicleKey, side: Side, state: State, ban
   const wreck = state === 'dead';
   const pal = paletteFor(side, state);
 
-  hullShadow(g, long, wide);
+  hullAO(g, long, wide, band);
   teamRim(g, long, wide, band, pal.rim);
+  drawBody(g, kind, side, pal, wreck, long, wide, true);
+  if (wreck) ashPatches(g, long, wide);
 
+  cache.set(key, c);
+  return c;
+}
+
+// Hull geometry per kind, shared by the colour bake and the shadow bake so a
+// silhouette can never drift from the vehicle throwing it. `marks` is off for
+// the shadow pass: national insignia is paint, and paint casts nothing.
+function drawBody(g: Ctx, kind: VehicleKey, side: Side, pal: Palette, wreck: boolean, long: number, wide: number, marks: boolean): void {
   switch (kind) {
     case 'sherman':
       drawSherman(g, pal, wreck, long, wide);
-      if (!wreck) star(g, -long / 2 + 1.05, 0, 0.3, '#e7e2d4');
+      if (marks && !wreck) star(g, -long / 2 + 1.05, 0, 0.3, '#e7e2d4');
       break;
     case 'panzer4':
       drawPanzer4(g, pal, wreck, long, wide);
-      if (!wreck) balkenkreuz(g, -long / 2 + 1.05, 0, 0.34);
+      if (marks && !wreck) balkenkreuz(g, -long / 2 + 1.05, 0, 0.34);
       break;
     case 'stug3':
       drawStug(g, pal, wreck, long, wide);
-      if (!wreck) balkenkreuz(g, -long / 2 + 1.05, 0, 0.32);
+      if (marks && !wreck) balkenkreuz(g, -long / 2 + 1.05, 0, 0.32);
       break;
     case 'm3_halftrack':
       drawHalftrack(g, pal, wreck, long, wide);
@@ -436,17 +458,86 @@ export function getVehicleSprite(kind: VehicleKey, side: Side, state: State, ban
         drawHalftrack(g, pal, wreck, long, wide);
       } else if (typeof def.turret === 'number') {
         drawStug(g, pal, wreck, long, wide);
-        if (!wreck) balkenkreuz(g, -long / 2 + 1.05, 0, 0.32);
+        if (marks && !wreck) balkenkreuz(g, -long / 2 + 1.05, 0, 0.32);
       } else {
         drawPanzer4(g, pal, wreck, long, wide);
-        if (!wreck && side === 'blue') star(g, -long / 2 + 1.05, 0, 0.3, '#e7e2d4');
-        else if (!wreck) balkenkreuz(g, -long / 2 + 1.05, 0, 0.34);
+        if (marks && !wreck && side === 'blue') star(g, -long / 2 + 1.05, 0, 0.3, '#e7e2d4');
+        else if (marks && !wreck) balkenkreuz(g, -long / 2 + 1.05, 0, 0.34);
       }
     }
   }
+}
 
-  if (wreck) ashPatches(g, long, wide);
+// --- One sun on vehicles (U2) ----------------------------------------------
 
-  cache.set(key, c);
+const SHADOW_INK = 'rgba(20,16,10,1)';
+const MONO: Palette = {
+  hullTop: SHADOW_INK,
+  hullSide: SHADOW_INK,
+  deck: SHADOW_INK,
+  track: SHADOW_INK,
+  trackLink: SHADOW_INK,
+  rim: SHADOW_INK,
+  metalDark: SHADOW_INK,
+};
+const SHADOW_BAKE_BAND = 24; // the 2x upscale at band 48 is the feathering
+const shadowCache = new SpriteCache(8 << 20);
+
+// Flat-ink hull silhouette, drawn by the world-aligned cast pass. Carries no
+// side dimension — a Sherman's shadow and a Panzer's differ by hull, not paint.
+export function getVehicleShadow(kind: VehicleKey, state: State, band: number): HTMLCanvasElement {
+  const sb = Math.min(SHADOW_BAKE_BAND, band);
+  const key = `${kind}|${state}|${sb}`;
+  const hit = shadowCache.get(key);
+  if (hit) return hit;
+  const px = VEHICLE_SPAN * sb;
+  const c = document.createElement('canvas');
+  c.width = px;
+  c.height = px;
+  const g = c.getContext('2d')!;
+  g.translate(px / 2, px / 2);
+  g.scale(sb, sb);
+  const { long, wide } = dims(kind);
+  drawBody(g, kind, 'blue', MONO, state === 'dead', long, wide, false);
+  shadowCache.set(key, c);
   return c;
+}
+
+// Turret centre + radius in hull space, or null for a casemate/open top. The
+// turret sits ~1 m above the deck, so it needs its own drop shadow to read as
+// sitting ON the hull rather than painted onto it.
+export function turretCenter(kind: VehicleKey): [number, number, number] | null {
+  switch (kind) {
+    case 'sherman':
+      return [-0.15, 0, 1.0];
+    case 'panzer4':
+      return [-0.1, 0, 0.95];
+    case 'stug3':
+    case 'm3_halftrack':
+      return null;
+    default: {
+      const def = VEHICLES[kind];
+      if (def.openTop || typeof def.turret === 'number') return null;
+      return [-0.1, 0, 0.95];
+    }
+  }
+}
+
+// One shared soft ellipse for every turret drop shadow.
+let blob: HTMLCanvasElement | null = null;
+export function turretBlob(): HTMLCanvasElement {
+  if (blob) return blob;
+  const px = 32;
+  const r = px / 2;
+  blob = document.createElement('canvas');
+  blob.width = px;
+  blob.height = px;
+  const g = blob.getContext('2d')!;
+  const grad = g.createRadialGradient(r, r, 0, r, r, r);
+  grad.addColorStop(0, 'rgba(10,9,7,1)');
+  grad.addColorStop(0.62, 'rgba(10,9,7,0.85)');
+  grad.addColorStop(1, 'rgba(10,9,7,0)');
+  g.fillStyle = grad;
+  g.fillRect(0, 0, px, px);
+  return blob;
 }
