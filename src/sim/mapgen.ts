@@ -1,5 +1,4 @@
 import { EDGE, FLOOR_H, GameMap } from './map';
-import { astar } from './path';
 import { mulberry32, type Rng } from './rng';
 
 // Roads-first Normandy generator: a wandering arterial road west→east, a
@@ -368,13 +367,124 @@ function addBuilding(map: GameMap, b: Building, door: 'n' | 's' | 'e' | 'w', id:
   return stories;
 }
 
-function validate(plan: MapPlan): boolean {
+// Ground-level reachability field: one 8-connected BFS from (sx,sy) whose step
+// rules mirror astar (path.ts:102-118) exactly — the same map.canStep calls,
+// the same "all four L-paths must be steppable" no-corner-cutting rule, no
+// stair/level axis (astar's default sl=gl=0 keeps needLevels at 1). So
+// `field[i] === 1` is precisely the relation `astar(map, sx, sy, x, y, mode)
+// !== null` tests, answered once per SOURCE instead of once per query.
+//
+// Two astar quirks are reproduced deliberately:
+//  - the start tile is seeded regardless of its own passability (astar gates
+//    only on the GOAL's passability, then expands via canStep);
+//  - goal passability is therefore re-tested at lookup time, in reaches().
+//
+// canStep is INLINED here rather than called: at ~12 step tests per tile over
+// 76,800 tiles the two property chains inside terrainAt (TERRAIN[KEYS[byte]])
+// dominate, and hoisting them into a per-tile `open` bitmap plus raw edge-array
+// reads is the difference between ~8 ms and ~2 ms per pass. map.ts:112-125 is
+// the authority for the rule; `tests/mapgen.test.ts` asserts reachField against
+// astar directly so the copy cannot drift silently.
+//
+// The four orthogonal steps out of the popped tile are evaluated once and
+// reused as the first leg of each diagonal's corner test.
+export function reachField(map: GameMap, sx: number, sy: number, mode: 'foot' | 'vehicle'): Uint8Array {
+  const { w, h, hEdges, vEdges } = map;
+  const field = new Uint8Array(w * h);
+  if (!map.inBounds(sx, sy)) return field;
+
+  // per-tile enterability, memoised on the raw terrain byte (≈10 distinct values)
+  const veh = mode === 'vehicle';
+  const open = new Uint8Array(w * h);
+  const byTile = new Int8Array(256).fill(-1);
+  for (let i = 0; i < open.length; i++) {
+    const t = map.tiles[i];
+    let e = byTile[t];
+    if (e < 0) {
+      const x = i % w;
+      const y = (i / w) | 0;
+      const k = map.terrainKeyAt(x, y);
+      e = map.terrainAt(x, y).passable && (!veh || (k !== 'floor' && k !== 'woods' && k !== 'hedge')) ? 1 : 0;
+      byTile[t] = e;
+    }
+    open[i] = e;
+  }
+  // edge transit by EDGE code: vehicles pass NONE only, foot also passes DOOR
+  const passEdge = new Uint8Array(4);
+  passEdge[EDGE.NONE] = 1;
+  if (!veh) passEdge[EDGE.DOOR] = 1;
+
+  const queue = new Int32Array(w * h); // each tile is enqueued at most once
+  let head = 0;
+  let tail = 0;
+  const start = sy * w + sx;
+  field[start] = 1;
+  queue[tail++] = start;
+  while (head < tail) {
+    const cur = queue[head++];
+    const cx = cur % w;
+    const cy = (cur / w) | 0;
+    const vRow = cy * (w + 1);
+    // hEdge(x,y) = hEdges[y*w + x] → north side of (cx,cy) is hEdges[cur];
+    // vEdge(x,y) = vEdges[y*(w+1) + x] → west side of (cx,cy) is vEdges[vRow+cx].
+    const okW = cx > 0 && open[cur - 1] === 1 && passEdge[vEdges[vRow + cx]] === 1;
+    const okE = cx + 1 < w && open[cur + 1] === 1 && passEdge[vEdges[vRow + cx + 1]] === 1;
+    const okN = cy > 0 && open[cur - w] === 1 && passEdge[hEdges[cur]] === 1;
+    const okS = cy + 1 < h && open[cur + w] === 1 && passEdge[hEdges[cur + w]] === 1;
+    if (okW && !field[cur - 1]) {
+      field[cur - 1] = 1;
+      queue[tail++] = cur - 1;
+    }
+    if (okE && !field[cur + 1]) {
+      field[cur + 1] = 1;
+      queue[tail++] = cur + 1;
+    }
+    if (okN && !field[cur - w]) {
+      field[cur - w] = 1;
+      queue[tail++] = cur - w;
+    }
+    if (okS && !field[cur + w]) {
+      field[cur + w] = 1;
+      queue[tail++] = cur + w;
+    }
+    // diagonals: astar requires BOTH L-paths fully steppable (path.ts:108-114).
+    // okH/okV are the first leg of each; the two remaining legs both land on
+    // (nx,ny), so they share the one `open` test.
+    for (let dy = -1; dy <= 1; dy += 2) {
+      if (!(dy < 0 ? okN : okS)) continue;
+      for (let dx = -1; dx <= 1; dx += 2) {
+        if (!(dx < 0 ? okW : okE)) continue;
+        const ni = cur + dy * w + dx;
+        if (field[ni] || open[ni] !== 1) continue;
+        // vertical leg in column nx, then horizontal leg in row ny
+        if (passEdge[hEdges[dy > 0 ? cur + w + dx : cur + dx]] !== 1) continue;
+        if (passEdge[vEdges[(cy + dy) * (w + 1) + (dx > 0 ? cx + 1 : cx)]] !== 1) continue;
+        field[ni] = 1;
+        queue[tail++] = ni;
+      }
+    }
+  }
+  return field;
+}
+
+const reaches = (map: GameMap, field: Uint8Array, x: number, y: number): boolean =>
+  map.inBounds(x, y) && map.terrainAt(x, y).passable && field[y * map.w + x] === 1;
+
+// Layout gate. Semantically identical to the 36-A*-call version it replaced —
+// same questions, same step function — but O(1) in building count instead of
+// linear, which is what makes a 65-building bourg affordable. Draws no rng and
+// mutates nothing, so every kind's fingerprint is untouched.
+// Parity with the A* formulation is re-checkable via scripts/validate-parity.mjs.
+export function validate(plan: MapPlan): boolean {
   const { map, buildings, spawns, objectives } = plan;
-  const foot = (a: Vec, b: Vec) => astar(map, a.x, a.y, b.x, b.y) !== null;
-  for (const o of objectives) if (!foot(spawns.west, o) || !foot(spawns.east, o)) return false;
-  for (const b of buildings) if (!foot(spawns.west, { x: b.x + (b.w >> 1), y: b.y + (b.h >> 1) })) return false;
+  const west = reachField(map, spawns.west.x, spawns.west.y, 'foot');
+  for (const o of objectives) if (!reaches(map, west, o.x, o.y)) return false;
+  for (const b of buildings) if (!reaches(map, west, b.x + (b.w >> 1), b.y + (b.h >> 1))) return false;
   // every stair tile (2-story buildings) must be foot-reachable at ground level
   for (let i = 0; i < map.stairs.length; i++)
-    if (map.stairs[i] === 1 && map.stories[i] === 2 && !foot(spawns.west, { x: i % map.w, y: (i / map.w) | 0 })) return false;
-  return astar(map, spawns.west.x, spawns.west.y, spawns.east.x, spawns.east.y, 'vehicle') !== null;
+    if (map.stairs[i] === 1 && map.stories[i] === 2 && !reaches(map, west, i % map.w, (i / map.w) | 0)) return false;
+  const east = reachField(map, spawns.east.x, spawns.east.y, 'foot');
+  for (const o of objectives) if (!reaches(map, east, o.x, o.y)) return false;
+  const veh = reachField(map, spawns.west.x, spawns.west.y, 'vehicle');
+  return reaches(map, veh, spawns.east.x, spawns.east.y);
 }

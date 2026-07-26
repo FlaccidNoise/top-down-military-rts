@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { RedCommander } from '../src/sim/ai';
 import { GameMap, los } from '../src/sim/map';
-import { generateMap, type Vec } from '../src/sim/mapgen';
+import { generateMap, validate, type Vec } from '../src/sim/mapgen';
 import { Sim, type Squad } from '../src/sim/sim';
 import { COMPANY_TOE, companyHeadcount } from '../src/sim/toe';
 
@@ -141,6 +141,63 @@ describe('company TOE headcount', () => {
     expect(companyHeadcount(COMPANY_TOE.us_rifle_co)).toBe(138);
     expect(companyHeadcount(COMPANY_TOE.de_grenadier_co)).toBe(109);
   });
+});
+
+describe('perf: mapgen validation gate', () => {
+  // T1 replaced validate()'s 36 A* calls with three flood fills
+  // (docs/plans/2026-07-26-town-gen-design.md D3). Measured on this box before
+  // the swap: 'town' 320x240 mean 59.6ms, 'open' 40.9ms; after: 5.3ms / 6.6ms.
+  //
+  // Two asserts, because neither alone is enough. The first is a RATIO, for the
+  // same reason los-micro uses one — absolute ms flap under vitest contention,
+  // but the property T1 actually bought is that the gate is O(1) in building
+  // count, and that is measurable load-invariantly by re-validating one map
+  // with its building list padded 20x. Pre-T1 that padding multiplied the A*
+  // count by 20; post-T1 it adds 20x an array lookup.
+  const PADDED_MAX_RATIO = 1.5;
+  // The second is absolute, with the design's post-T1 budget doubled to absorb
+  // full-suite contention. It only fires on a real blowup, and the logged mean
+  // is the number to read.
+  const GEN_SANITY_MS = 30;
+
+  it('flood-fill gate: mapgen stays inside budget and is flat in building count', () => {
+    generateMap(1, MAP_W, MAP_H); // JIT warmup: the first call runs ~3x the steady state
+    const means: Record<string, number> = {};
+    for (const kind of ['open', 'town'] as const) {
+      const ts: number[] = [];
+      for (let seed = 1; seed <= 20; seed++) {
+        const t0 = performance.now();
+        generateMap(seed, MAP_W, MAP_H, kind);
+        ts.push(performance.now() - t0);
+      }
+      means[kind] = mean(ts);
+    }
+
+    const plan = generateMap(SEED, MAP_W, MAP_H, 'town');
+    const padded = { ...plan, buildings: Array.from({ length: 20 }, () => plan.buildings).flat() };
+    const timeValidate = (p: typeof plan): number => {
+      const t0 = performance.now();
+      for (let i = 0; i < 5; i++) expect(validate(p)).toBe(true);
+      return (performance.now() - t0) / 5;
+    };
+    timeValidate(plan); // warmup
+    const bare = timeValidate(plan);
+    const fat = timeValidate(padded);
+
+    console.log(
+      `[perf] mapgen-gate ${JSON.stringify({
+        openMean: round(means.open),
+        townMean: round(means.town),
+        validateMs: round(bare),
+        validate20xBuildingsMs: round(fat),
+        ratio: round(fat / bare),
+        buildings: plan.buildings.length,
+      })}`,
+    );
+    expect(fat / bare).toBeLessThan(PADDED_MAX_RATIO);
+    expect(means.open).toBeLessThan(GEN_SANITY_MS);
+    expect(means.town).toBeLessThan(GEN_SANITY_MS);
+  }, 60_000);
 });
 
 describe('perf: los micro-benchmark', () => {
