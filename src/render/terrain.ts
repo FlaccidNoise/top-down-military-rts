@@ -29,7 +29,8 @@ const detailFor = (band: number): Detail => (band >= 32 ? 2 : band >= 16 ? 1 : 0
 // rather than flashing a hole.
 const BAKES_PER_FRAME = 3;
 
-import { hash } from './noise';
+import { hash, vec } from './noise';
+import { stamp, stampRect } from './stamps';
 
 // Bilinear value noise on an 8m lattice — smooth patches, no hard square edges.
 function coarse(x: number, y: number): number {
@@ -89,6 +90,110 @@ const FIELD_VARIANTS: [number, number, number][] = [
 ];
 
 type Ctx = CanvasRenderingContext2D;
+
+// Grass is the largest surface in the frame, so its cost per tile has to be
+// one blit. A tuft stamp carries everything the old 5-rect speckle loop could
+// not afford: soft mottle bands running along the local mowing direction,
+// 3-4 clumps of tapered blades leaning the same way, and a dark contact tick
+// under each clump so tufts sit ON the ground instead of floating. All
+// geometry stays inside 0.05..0.95 m — a blade crossing the stamp edge would
+// make the 1 m lattice visible as a grid, which rule 3 forbids.
+const GRASS_VARIANTS = 12;
+
+function grassStamp(v: number, axis: number, bloom: boolean, band: number): HTMLCanvasElement {
+  return stamp(`grass:${bloom ? 'bloom' : 'tuft'}:${v}:${axis}`, band, 1, (g) => {
+    const ax = axis === 0 ? 1 : 0;
+    const ay = axis === 0 ? 0 : 1;
+    // Bands sit anywhere across the stamp, not on a fixed pitch: three evenly
+    // spaced bands per tile line up tile-to-tile into a visible 0.3 m stripe
+    // rhythm across a whole field, which is the grid rule 3 forbids.
+    const bands = 2 + ((hash(v, 1, 207) * 2) | 0);
+    for (let i = 0; i < bands; i++) {
+      const len = 0.5 + hash(v * 5 + i, 1, 206) * 0.4;
+      const wid = 0.1 + hash(v * 5 + i, 2, 206) * 0.08;
+      const off = 0.05 + hash(v * 5 + i, 3, 206) * (0.9 - len);
+      const t = 0.1 + hash(v * 5 + i, 0, 206) * 0.8;
+      const a = 0.05 + hash(v * 5 + i, 4, 206) * 0.04;
+      g.fillStyle = i % 2 ? `rgba(206,216,164,${a.toFixed(3)})` : `rgba(26,34,18,${a.toFixed(3)})`;
+      g.fillRect(ax * off + ay * (t - wid / 2), ay * off + ax * (t - wid / 2), ax * len + ay * wid, ay * len + ax * wid);
+    }
+    const clumps = 3 + ((hash(v, 0, 207) * 2) | 0);
+    for (let c = 0; c < clumps; c++) {
+      const cx = 0.16 + hash(v * 7 + c, 0, 208) * 0.68;
+      const cy = 0.16 + hash(v * 7 + c, 1, 208) * 0.68;
+      g.fillStyle = 'rgba(18,22,14,0.25)';
+      g.fillRect(cx - 0.05, cy - 0.014, 0.1, 0.028);
+      const n = 4 + ((hash(v * 7 + c, 2, 208) * 3) | 0);
+      for (let i = 0; i < n; i++) {
+        const k = v * 97 + c * 11 + i;
+        const ang = (axis === 0 ? 0 : Math.PI / 2) + (hash(k, 0, 209) - 0.5) * 0.7;
+        const len = 0.1 + hash(k, 1, 209) * 0.12;
+        const sx = Math.min(0.9, Math.max(0.08, cx + (hash(k, 2, 209) - 0.5) * 0.18));
+        const sy = Math.min(0.9, Math.max(0.08, cy + (hash(k, 3, 209) - 0.5) * 0.18));
+        const tone = hash(k, 4, 209);
+        g.strokeStyle = tone > 0.66 ? shade(GRASS, 1.22) : tone > 0.33 ? shade(GRASS_DRY, 1.1) : shade(GRASS, 0.72);
+        g.lineWidth = 0.03 + hash(k, 5, 209) * 0.025;
+        g.beginPath();
+        g.moveTo(sx, sy);
+        g.lineTo(Math.min(0.95, Math.max(0.05, sx + Math.cos(ang) * len)), Math.min(0.95, Math.max(0.05, sy + Math.sin(ang) * len)));
+        g.stroke();
+      }
+    }
+    if (!bloom) return;
+    // Meadow bloom: cream / pale ochre / dusty mauve, all under the muted
+    // ceiling. Deliberately tiny and never at d<2 — a red dot at mid zoom
+    // reads as a unit marker.
+    const petals = 5 + ((hash(v, 0, 215) * 5) | 0);
+    for (let i = 0; i < petals; i++) {
+      const k = v * 13 + i;
+      const px = 0.1 + hash(k, 0, 215) * 0.8;
+      const py = 0.1 + hash(k, 1, 215) * 0.8;
+      const t = hash(k, 2, 215);
+      g.fillStyle = t > 0.6 ? 'rgba(228,224,198,0.60)' : t > 0.3 ? 'rgba(208,188,122,0.50)' : 'rgba(162,142,158,0.45)';
+      g.beginPath();
+      g.arc(px, py, 0.015 + hash(k, 3, 215) * 0.01, 0, Math.PI * 2);
+      g.fill();
+    }
+  });
+}
+
+// Verge strip for the grass side of a road edge: tufts leaning out over the
+// running surface plus a couple of bare-earth scuffs, which is what breaks the
+// razor-straight tile boundary the road used to end on. Baked per side so the
+// frame loop never rotates. `side` 0/1/2/3 = road to the N/S/W/E; (u, t) is
+// canonical — u runs along the edge, t runs from the grass side (0) to the
+// road side (0.5).
+function vergeStamp(v: number, side: number, band: number): HTMLCanvasElement {
+  const horiz = side < 2;
+  return stampRect(`grass:verge:${v}:${side}`, band, horiz ? 1 : 0.5, horiz ? 0.5 : 1, (g) => {
+    const px = (u: number, t: number) => (side === 0 ? u : side === 1 ? u : side === 2 ? 0.5 - t : t);
+    const py = (u: number, t: number) => (side === 0 ? 0.5 - t : side === 1 ? t : u);
+    for (let i = 0; i < 2; i++) {
+      const k = v * 11 + i;
+      const u = 0.15 + hash(k, 0, 218) * 0.7;
+      const t = 0.22 + hash(k, 1, 218) * 0.2;
+      const r = 0.075 + hash(k, 2, 218) * 0.075;
+      g.fillStyle = 'rgba(146,122,84,0.22)';
+      g.beginPath();
+      g.ellipse(px(u, t), py(u, t), r * (horiz ? 1.5 : 1), r * (horiz ? 1 : 1.5), 0, 0, Math.PI * 2);
+      g.fill();
+    }
+    const n = 3 + ((hash(v, 0, 219) * 3) | 0);
+    for (let i = 0; i < n; i++) {
+      const k = v * 11 + i;
+      const u = 0.1 + hash(k, 0, 219) * 0.8;
+      const t0 = 0.06 + hash(k, 1, 219) * 0.1;
+      const dl = 0.14 + hash(k, 2, 219) * 0.16;
+      const du = (hash(k, 3, 219) - 0.5) * 0.16;
+      g.strokeStyle = hash(k, 4, 219) > 0.5 ? shade(GRASS, 1.15) : shade(GRASS_DRY, 0.95);
+      g.lineWidth = 0.035 + hash(k, 5, 219) * 0.02;
+      g.beginPath();
+      g.moveTo(px(u, t0), py(u, t0));
+      g.lineTo(px(u + du, Math.min(0.48, t0 + dl)), py(u + du, Math.min(0.48, t0 + dl)));
+      g.stroke();
+    }
+  });
+}
 
 // One-sun hillshade (height phase D): lambertian shade per elev tile from the
 // shared NW sun. Direction TO the sun is the opposite of the SE shadow
@@ -329,7 +434,7 @@ function drawSubTileGround(g: Ctx, x: number, y: number, darken = 1): void {
   }
 }
 
-function drawTileBase(g: Ctx, map: GameMap, x: number, y: number, d: Detail): void {
+function drawTileBase(g: Ctx, map: GameMap, x: number, y: number, band: number, d: Detail): void {
   const t = map.terrainKeyAt(x, y);
   const v = 0.93 + coarse(x, y) * 0.1 + hash(x, y) * 0.04;
   if (t === 'grass') {
@@ -347,26 +452,31 @@ function drawTileBase(g: Ctx, map: GameMap, x: number, y: number, d: Detail): vo
       g.fillRect(sx, sy, 0.5, 0.5);
     }
     if (d >= 1) {
-      for (let i = 0; i < 5; i++) {
-        const h1 = hash(x, y, 10 + i);
-        const h2 = hash(x, y, 20 + i);
-        const sz = 0.05 + hash(x, y, 35 + i) * 0.05;
-        g.fillStyle = hash(x, y, 30 + i) > 0.7 ? shade(GRASS_DRY, 1.15) : shade(GRASS, h1 > 0.5 ? 1.18 : 0.78);
-        g.fillRect(x + h1, y + h2, sz, sz);
-      }
+      const [fdx, fdy] = vec(x + 0.5, y + 0.5, 205, 34);
+      const axis = Math.abs(fdx) > Math.abs(fdy) ? 0 : 1;
+      // offset lattice so flower patches are uncorrelated with the hue drift
+      const bloom = d >= 2 && macro(x + 411, y + 87) > 0.63;
+      g.drawImage(grassStamp((hash(x, y, 201) * GRASS_VARIANTS) | 0, axis, bloom, band), x, y, 1, 1);
     }
     // dusty verge where grass meets road: half-tile strips of jittered depth,
     // so traffic wear bleeds past the road's own shoulder without a hard line
     const roadAt = (tx: number, ty: number) => map.inBounds(tx, ty) && map.terrainKeyAt(tx, ty) === 'road';
     for (let h = 0; h < 2; h++) {
-      const d = 0.14 + hash(x * 2 + h, y, 140) * 0.24;
+      const dp = 0.14 + hash(x * 2 + h, y, 140) * 0.24;
       g.fillStyle = `rgba(168,140,92,${0.1 + hash(x * 2 + h, y, 141) * 0.1})`;
-      if (roadAt(x, y - 1)) g.fillRect(x + h * 0.5, y, 0.5, d);
-      if (roadAt(x, y + 1)) g.fillRect(x + h * 0.5, y + 1 - d, 0.5, d);
+      if (roadAt(x, y - 1)) g.fillRect(x + h * 0.5, y, 0.5, dp);
+      if (roadAt(x, y + 1)) g.fillRect(x + h * 0.5, y + 1 - dp, 0.5, dp);
       const dv = 0.14 + hash(x, y * 2 + h, 142) * 0.24;
       g.fillStyle = `rgba(168,140,92,${0.1 + hash(x, y * 2 + h, 143) * 0.1})`;
       if (roadAt(x - 1, y)) g.fillRect(x, y + h * 0.5, dv, 0.5);
       if (roadAt(x + 1, y)) g.fillRect(x + 1 - dv, y + h * 0.5, dv, 0.5);
+    }
+    if (d >= 1) {
+      const vv = (hash(x, y, 202) * 6) | 0;
+      if (roadAt(x, y - 1)) g.drawImage(vergeStamp(vv, 0, band), x, y, 1, 0.5);
+      if (roadAt(x, y + 1)) g.drawImage(vergeStamp(vv, 1, band), x, y + 0.5, 1, 0.5);
+      if (roadAt(x - 1, y)) g.drawImage(vergeStamp(vv, 2, band), x, y, 0.5, 1);
+      if (roadAt(x + 1, y)) g.drawImage(vergeStamp(vv, 3, band), x + 0.5, y, 0.5, 1);
     }
   } else if (t === 'road') {
     // a road tile that overwrote water is a bridge deck (map.bridges, set by
@@ -578,7 +688,7 @@ export class TerrainLayer {
     const tx1 = Math.min(this.map.w, x0 + CHUNK + pad);
     const ty1 = Math.min(this.map.h, y0 + CHUNK + pad);
     for (let y = ty0; y < ty1; y++) {
-      for (let x = tx0; x < tx1; x++) drawTileBase(g, this.map, x, y, d);
+      for (let x = tx0; x < tx1; x++) drawTileBase(g, this.map, x, y, band, d);
     }
     drawWaterBanks(g, this.map, tx0, ty0, tx1, ty1);
     drawDoorTrails(g, this.map, tx0, ty0, tx1, ty1);
