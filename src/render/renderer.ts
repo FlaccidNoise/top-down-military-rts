@@ -3,6 +3,7 @@ import { MELEE_STRIKE_RANGE, type MeleeEvent, type ShotEvent, type Side, type Si
 import type { Camera } from './camera';
 import { DecalLayer } from './decals';
 import { bandFor, getSprite, SPRITE_MIN_SCALE, SPRITE_SPAN, WALK_FRAMES, type Pose } from './dudes';
+import { blit } from './fx';
 import { RoofLayer } from './roofs';
 import { TerrainLayer } from './terrain';
 import { getVehicleSprite, vehicleBandFor, VEHICLE_SPAN } from './vehicles';
@@ -258,17 +259,7 @@ export class Renderer {
         const [sx, sy] = cam.worldToScreen(wx, wy, cw, ch);
         const sr = r * cam.scale;
         const cool = hash(p.x, p.y, 60 + i);
-        const grey = Math.round(150 + cool * 20);
-        const blue = grey + 10 + Math.round(cool * 6); // slight cool cast per rule 4
-        const a = envelope * (0.28 + cool * 0.08);
-        const grad = ctx.createRadialGradient(sx, sy, 0, sx, sy, sr);
-        grad.addColorStop(0, `rgba(${grey},${grey + 2},${blue},${a})`);
-        grad.addColorStop(0.6, `rgba(${grey},${grey + 2},${blue},${a * 0.6})`);
-        grad.addColorStop(1, `rgba(${grey},${grey + 2},${blue},0)`);
-        ctx.fillStyle = grad;
-        ctx.beginPath();
-        ctx.arc(sx, sy, sr, 0, Math.PI * 2);
-        ctx.fill();
+        blit(ctx, 'smoke', sx, sy, sr, envelope * (0.28 + cool * 0.08));
       }
     }
     for (const key of this.smokeMaxTtl.keys()) if (!seen.has(key)) this.smokeMaxTtl.delete(key);
@@ -887,14 +878,7 @@ export class Renderer {
       if (age < 1500) {
         const t = age / 1500;
         const dr = (1.5 + t * 3.5) * cam.scale;
-        const da = (1 - t) * 0.28;
-        const grad = ctx.createRadialGradient(x, y, 0, x, y, dr);
-        grad.addColorStop(0, `rgba(150,130,100,${da})`);
-        grad.addColorStop(1, 'rgba(150,130,100,0)');
-        ctx.fillStyle = grad;
-        ctx.beginPath();
-        ctx.arc(x, y, dr, 0, Math.PI * 2);
-        ctx.fill();
+        blit(ctx, 'dustTan', x, y, dr, (1 - t) * 0.28);
       }
 
       // rising smoke column: 3 staggered puffs climbing over ~2 s, cool grey
