@@ -1,3 +1,4 @@
+import type { WeaponKey } from '../sim/data';
 import { SUN } from './light';
 import { hash } from './noise';
 
@@ -60,6 +61,62 @@ export function hotPass(ctx: CanvasRenderingContext2D, f: () => void): void {
 export function ballistic(t: number, v: number, vz: number): [number, number] {
   return [v * t, Math.max(0, vz * t - 4.9 * t * t)];
 }
+
+// Muzzle-signature classes. Deliberately NOT WEAPONS[w].class — data.ts files
+// bazooka, panzerfaust, mortar60 and pak40_gun all under `rifle`, which would
+// give a Panzerfaust a rifle's flash. This table is about what the weapon
+// looks like when it goes off, not what the sim treats it as.
+export type FlashClass = 'rifle' | 'smg' | 'mg' | 'rocket' | 'cannon';
+
+const FLASH_CLASS: Record<WeaponKey, FlashClass> = {
+  garand: 'rifle',
+  carbine: 'rifle',
+  bar: 'rifle',
+  springfield: 'rifle',
+  kar98k: 'rifle',
+  kar98k_scoped: 'rifle',
+  thompson: 'smg',
+  mp40: 'smg',
+  m1919: 'mg',
+  mg42: 'mg',
+  bazooka: 'rocket',
+  schreck: 'rocket',
+  panzerfaust: 'rocket',
+  mortar60: 'cannon',
+  mortar81: 'cannon',
+  at57_gun: 'cannon',
+  pak40_gun: 'cannon',
+};
+
+export interface FlashSpec {
+  r: number; // flash radius, meters
+  spikes: number;
+  len: number; // spike length as a multiple of r
+  spread: number; // rad off the bearing at full deflection
+  life: number; // ms
+  tracerW: number; // px, the always-drawn faint thread
+  tracerCol: string;
+  extra?: 'double' | 'backblast' | 'wash';
+  tracerOdds: number; // fraction of rounds that carry a visible tracer
+}
+
+export const FLASH: Record<FlashClass, FlashSpec> = {
+  rifle: { r: 0.3, spikes: 2, len: 1.35, spread: 0.42, life: 50, tracerW: 1, tracerCol: '255,240,210', tracerOdds: 0.2 },
+  smg: { r: 0.22, spikes: 3, len: 1, spread: 0.8, life: 38, tracerW: 1, tracerCol: '255,236,200', tracerOdds: 0.2 },
+  mg: { r: 0.42, spikes: 3, len: 1.8, spread: 0.3, life: 70, tracerW: 2, tracerCol: '255,214,140', extra: 'double', tracerOdds: 0.34 },
+  rocket: { r: 0.7, spikes: 0, len: 0, spread: 0, life: 90, tracerW: 2, tracerCol: '255,222,170', extra: 'backblast', tracerOdds: 1 },
+  cannon: { r: 0.85, spikes: 2, len: 1.5, spread: 0.5, life: 110, tracerW: 2, tracerCol: '255,226,180', extra: 'wash', tracerOdds: 1 },
+};
+
+// Undefined weapon is a vehicle cannon / AP round (sim.ts pairs those with a
+// boom), so it inherits the cannon signature.
+export function flashClass(w: WeaponKey | undefined): FlashClass {
+  return w ? FLASH_CLASS[w] : 'cannon';
+}
+
+// Spike deflections by count — never a symmetric fan, which is what made the
+// old three-equal-spikes flash read as a UI arrowhead.
+export const SPIKE_SIDES: number[][] = [[], [0], [0.65, -1], [0, 1, -0.75]];
 
 type Ctx = CanvasRenderingContext2D;
 

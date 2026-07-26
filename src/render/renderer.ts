@@ -3,13 +3,24 @@ import { MELEE_STRIKE_RANGE, type MeleeEvent, type ShotEvent, type Side, type Si
 import type { Camera } from './camera';
 import { DecalLayer } from './decals';
 import { bandFor, getSprite, SPRITE_MIN_SCALE, SPRITE_SPAN, WALK_FRAMES, type Pose } from './dudes';
-import { ballistic, blit, fxDetail, hotPass, WIND, type FxKind } from './fx';
+import { ballistic, blit, FLASH, flashClass, fxDetail, hotPass, SPIKE_SIDES, WIND, type FlashSpec, type FxKind } from './fx';
 import { RoofLayer } from './roofs';
 import { TerrainLayer } from './terrain';
 import { getVehicleSprite, vehicleBandFor, VEHICLE_SPAN } from './vehicles';
 
 interface Tracer extends ShotEvent {
   at: number; // ms timestamp
+}
+
+interface ShotGeom {
+  x1: number;
+  y1: number;
+  ux: number;
+  uy: number;
+  mx: number;
+  my: number;
+  hx: number; // per-shot hash seed (impact coords), stable for the shot's life
+  hy: number;
 }
 
 // Render-only per-soldier state (facing, gait phase). The sim has no facing;
@@ -48,6 +59,9 @@ interface Plane {
 
 const PLANE_MS = 2600;
 const BOOM_MS = 2600; // longest sub-effect (smoke column) sets total lifetime
+const FADE_MS = 150; // faint thread lifetime
+const TRAVEL_MS = 90; // muzzle->target travel time for the bright segment (E3)
+const IMPACT_MS = 250; // impact dust lifetime, starts at TRAVEL_MS (E5)
 const CHUNKS: FxKind[] = ['chunk0', 'chunk1', 'chunk2', 'chunk3'];
 
 const TEAM = { blue: '#5b9bd5', red: '#d05c50' } as const;
@@ -680,9 +694,6 @@ export class Renderer {
   }
 
   private drawFire(ctx: CanvasRenderingContext2D, cam: Camera, now: number, cw: number, ch: number): void {
-    const FADE_MS = 150; // faint line + kill dot lifetime (unchanged from before)
-    const TRAVEL_MS = 90; // muzzle->target travel time for the bright segment (E3)
-    const IMPACT_MS = 250; // impact dust lifetime, starts at TRAVEL_MS (E5)
     const MELEE_FX_MS = 250; // strike fleck / miss swish lifetime
     const tier = fxDetail(cam.scale);
 
@@ -708,124 +719,7 @@ export class Renderer {
 
     // entries must survive past FADE_MS so the dust (which starts at TRAVEL_MS) can finish
     this.tracers = this.tracers.filter((t) => now - t.at < TRAVEL_MS + IMPACT_MS);
-    for (const t of this.tracers) {
-      const age = now - t.at;
-      const a = Math.max(0, 1 - age / FADE_MS);
-      const [x0, y0] = cam.worldToScreen(t.fx, t.fy, cw, ch);
-      const [x1, y1] = cam.worldToScreen(t.tx, t.ty, cw, ch);
-      const d = Math.hypot(x1 - x0, y1 - y0) || 1;
-      const ux = (x1 - x0) / d;
-      const uy = (y1 - y0) / d;
-      const mx = x0 + ux * cam.scale * 0.9;
-      const my = y0 + uy * cam.scale * 0.9;
-      // ShotEvent carries no weapon field (sim is read-only here), so there is
-      // no real MG-vs-rifle signal to key off — a per-shot hash stands in
-      // purely for size/brightness variety, not a weapon-class classifier.
-      const shotHash = hash(Math.round(t.tx * 100), Math.round(t.ty * 100), Math.round(t.fx * 37 + t.fy * 53));
-
-      // oriented muzzle flash for the first 60 ms: glow + 3-spike star along
-      // the shot direction (E4)
-      if (age < 60) {
-        const fa = 1 - age / 60;
-        const scale = 0.85 + shotHash * 0.3;
-        const fr = Math.max(3, cam.scale * 0.35) * scale;
-        const grad = ctx.createRadialGradient(mx, my, 0, mx, my, fr);
-        grad.addColorStop(0, `rgba(255,245,200,${fa})`);
-        grad.addColorStop(0.5, `rgba(255,190,80,${fa * 0.7})`);
-        grad.addColorStop(1, 'rgba(255,150,40,0)');
-        ctx.fillStyle = grad;
-        ctx.beginPath();
-        ctx.arc(mx, my, fr, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.strokeStyle = `rgba(255,235,190,${fa * 0.85})`;
-        ctx.lineWidth = Math.max(1, cam.scale * 0.1) * scale;
-        const spikeLen = fr * 1.6;
-        for (const spread of [0, 0.55, -0.55]) {
-          const sa = Math.atan2(uy, ux) + spread;
-          ctx.beginPath();
-          ctx.moveTo(mx, my);
-          ctx.lineTo(mx + Math.cos(sa) * spikeLen, my + Math.sin(sa) * spikeLen);
-          ctx.stroke();
-        }
-      }
-
-      // faint full-length line, fades out over FADE_MS (E3)
-      if (age < FADE_MS) {
-        ctx.strokeStyle = t.hit ? `rgba(255, 205, 90, ${0.18 * a})` : `rgba(255, 240, 210, ${0.12 * a})`;
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.moveTo(mx, my);
-        ctx.lineTo(x1, y1);
-        ctx.stroke();
-      }
-
-      // short bright segment traveling muzzle->target over TRAVEL_MS (E3)
-      if (age < TRAVEL_MS) {
-        const travelT = age / TRAVEL_MS;
-        const segStart = Math.max(0, travelT - 0.18);
-        const sx0 = mx + (x1 - mx) * segStart;
-        const sy0 = my + (y1 - my) * segStart;
-        const sx1 = mx + (x1 - mx) * travelT;
-        const sy1 = my + (y1 - my) * travelT;
-        ctx.strokeStyle = t.hit ? 'rgba(255, 205, 90, 0.95)' : 'rgba(210, 225, 235, 0.55)';
-        ctx.lineWidth = t.hit ? 1.5 : 1;
-        ctx.beginPath();
-        ctx.moveTo(sx0, sy0);
-        ctx.lineTo(sx1, sy1);
-        ctx.stroke();
-      } else {
-        // impact dust, per-tracer hash offsets, earth tone (E5)
-        const dAge = age - TRAVEL_MS;
-        if (dAge < IMPACT_MS) {
-          const dt = dAge / IMPACT_MS;
-          const da = (1 - dt) * 0.5;
-          for (let i = 0; i < 3; i++) {
-            const ang = hash(Math.round(t.tx * 100) + i, Math.round(t.ty * 100), 70) * Math.PI * 2;
-            const dist = (0.12 + dt * 0.3) * cam.scale;
-            const px = x1 + Math.cos(ang) * dist;
-            const py = y1 + Math.sin(ang) * dist;
-            const tone = hash(Math.round(t.tx * 100) + i, Math.round(t.ty * 100), 80);
-            const r = Math.round(120 + tone * 40);
-            const gc = Math.round(100 + tone * 30);
-            const bc = Math.round(75 + tone * 20);
-            ctx.fillStyle = `rgba(${r},${gc},${bc},${da})`;
-            ctx.beginPath();
-            ctx.arc(px, py, Math.max(1, cam.scale * 0.12), 0, Math.PI * 2);
-            ctx.fill();
-          }
-        }
-        // outcome-keyed impact punch (replaces the flat red kill dot). dAge is
-        // ms since the round landed — same clock the impact dust above uses.
-        if (t.hit) {
-          if (t.kill && dAge < 200) {
-            // kill confirm: hot flash + expanding bone-toned ring
-            const kt = dAge / 200;
-            const fa = 1 - kt;
-            const fr = Math.max(2, (0.3 + kt * 0.9) * cam.scale);
-            const grad = ctx.createRadialGradient(x1, y1, 0, x1, y1, fr);
-            grad.addColorStop(0, `rgba(255,240,210,${fa})`);
-            grad.addColorStop(0.5, `rgba(255,150,90,${fa * 0.55})`);
-            grad.addColorStop(1, 'rgba(200,80,50,0)');
-            ctx.fillStyle = grad;
-            ctx.beginPath();
-            ctx.arc(x1, y1, fr, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.strokeStyle = `rgba(214, 186, 150, ${fa * 0.7})`;
-            ctx.lineWidth = Math.max(1, cam.scale * 0.08);
-            ctx.beginPath();
-            ctx.arc(x1, y1, (0.4 + kt * 2.2) * cam.scale, 0, Math.PI * 2);
-            ctx.stroke();
-          } else if (!t.kill && dAge < 90) {
-            // a round finding flesh/cover: brief bright fleck, no lingering marker
-            const ft = dAge / 90;
-            ctx.fillStyle = `rgba(255,220,170,${(1 - ft) * 0.7})`;
-            ctx.beginPath();
-            ctx.arc(x1, y1, Math.max(1.2, cam.scale * 0.14), 0, Math.PI * 2);
-            ctx.fill();
-          }
-        }
-      }
-    }
+    for (const t of this.tracers) this.drawShotCool(ctx, cam, t, now, cw, ch);
 
     this.booms = this.booms.filter((b) => now - b.at < BOOM_MS);
     for (const b of this.booms) this.drawBoom(ctx, cam, b, now, cw, ch, tier);
@@ -833,8 +727,181 @@ export class Renderer {
     // One additive batch for the whole frame: the composite mode flips twice,
     // never once per particle.
     hotPass(ctx, () => {
+      for (const t of this.tracers) this.drawShotHot(ctx, cam, t, now, cw, ch, tier);
       for (const b of this.booms) this.drawBoomHot(ctx, cam, b, now, cw, ch);
     });
+  }
+
+  // Screen-space geometry shared by a shot's cool and hot passes: muzzle point
+  // (offset a barrel-length down the bearing), impact point, unit bearing.
+  private shotGeom(cam: Camera, t: Tracer, cw: number, ch: number): ShotGeom {
+    const [x0, y0] = cam.worldToScreen(t.fx, t.fy, cw, ch);
+    const [x1, y1] = cam.worldToScreen(t.tx, t.ty, cw, ch);
+    const d = Math.hypot(x1 - x0, y1 - y0) || 1;
+    const ux = (x1 - x0) / d;
+    const uy = (y1 - y0) / d;
+    return { x1, y1, ux, uy, mx: x0 + ux * cam.scale * 0.9, my: y0 + uy * cam.scale * 0.9, hx: Math.round(t.tx * 100), hy: Math.round(t.ty * 100) };
+  }
+
+  private onScreen(x: number, y: number, cw: number, ch: number, pad: number): boolean {
+    return x >= -pad && y >= -pad && x <= cw + pad && y <= ch + pad;
+  }
+
+  // Source-over half of a shot: the faint thread every round leaves, the
+  // weapon's smoke/dust signature, impact dust and the kill ring.
+  private drawShotCool(ctx: CanvasRenderingContext2D, cam: Camera, t: Tracer, now: number, cw: number, ch: number): void {
+    const g = this.shotGeom(cam, t, cw, ch);
+    const pad = 6 * cam.scale;
+    const muzzleOn = this.onScreen(g.mx, g.my, cw, ch, pad);
+    const impactOn = this.onScreen(g.x1, g.y1, cw, ch, pad);
+    if (!muzzleOn && !impactOn) return;
+    const age = now - t.at;
+    const fc = FLASH[flashClass(t.weapon)];
+
+    if (age < FADE_MS) {
+      const a = 1 - age / FADE_MS;
+      ctx.strokeStyle = `rgba(${fc.tracerCol},${(t.hit ? 0.18 : 0.12) * a})`;
+      ctx.lineWidth = fc.tracerW;
+      ctx.beginPath();
+      ctx.moveTo(g.mx, g.my);
+      ctx.lineTo(g.x1, g.y1);
+      ctx.stroke();
+    }
+
+    // Rocket back-blast: the cone of smoke out the rear tube. The most
+    // characteristic WW2 silhouette the effects layer was missing.
+    if (muzzleOn && fc.extra === 'backblast' && age < 400) {
+      const bt = age / 400;
+      const reach = 0.6 + bt * 2.4;
+      for (let i = 0; i < 6; i++) {
+        const f = (i + 0.5) / 6; // position along the cone — puffs widen with distance
+        const along = f * reach;
+        const lat = (hash(g.hx, g.hy, 30 + i) - 0.5) * 1.6 * f * reach;
+        const px = g.mx + (-g.ux * along - g.uy * lat) * cam.scale;
+        const py = g.my + (-g.uy * along + g.ux * lat) * cam.scale;
+        const r = (0.3 + f * 0.7 + bt * 0.5) * cam.scale;
+        blit(ctx, 'smoke', px, py, r, (1 - bt) * 0.42 * (1 - f * 0.35));
+        blit(ctx, 'soot', px, py, r * 0.75, (1 - bt) * 0.32 * Math.max(0, 1 - bt / 0.4));
+      }
+    }
+
+    // Gun muzzle-blast wash: the ground dust that gives away a gun position.
+    if (muzzleOn && fc.extra === 'wash' && age < 700) {
+      const wt = age / 700;
+      const ahead = Math.atan2(g.uy, g.ux);
+      for (let i = 0; i < 3; i++) {
+        const ca = ahead + (hash(g.hx, g.hy, 50 + i) - 0.5) * 0.7;
+        const dist = (1.5 + wt * 2.5 + hash(g.hx, g.hy, 60 + i) * 0.8) * cam.scale;
+        blit(ctx, 'dustTan', g.mx + Math.cos(ca) * dist, g.my + Math.sin(ca) * dist, (0.8 + wt * 1.6) * cam.scale, (1 - wt) * 0.35);
+      }
+    }
+
+    if (!impactOn || age < TRAVEL_MS) return;
+    const dAge = age - TRAVEL_MS;
+    if (dAge < IMPACT_MS) {
+      const dt = dAge / IMPACT_MS;
+      for (let i = 0; i < 3; i++) {
+        const ang = hash(g.hx + i, g.hy, 70) * Math.PI * 2;
+        const dist = (0.12 + dt * 0.3) * cam.scale;
+        blit(ctx, 'dustTan', g.x1 + Math.cos(ang) * dist, g.y1 + Math.sin(ang) * dist, Math.max(1, cam.scale * 0.16), (1 - dt) * 0.5);
+      }
+    }
+    if (t.hit && t.kill && dAge < 200) {
+      const kt = dAge / 200;
+      ctx.strokeStyle = `rgba(214, 186, 150, ${(1 - kt) * 0.7})`;
+      ctx.lineWidth = Math.max(1, cam.scale * 0.08);
+      ctx.beginPath();
+      ctx.arc(g.x1, g.y1, (0.4 + kt * 2.2) * cam.scale, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+  }
+
+  // Additive half of a shot: muzzle flash, tracer head, kill flash, ricochet.
+  private drawShotHot(ctx: CanvasRenderingContext2D, cam: Camera, t: Tracer, now: number, cw: number, ch: number, tier: 0 | 1 | 2): void {
+    const g = this.shotGeom(cam, t, cw, ch);
+    const pad = 4 * cam.scale;
+    const muzzleOn = this.onScreen(g.mx, g.my, cw, ch, pad);
+    const impactOn = this.onScreen(g.x1, g.y1, cw, ch, pad);
+    if (!muzzleOn && !impactOn) return;
+    const age = now - t.at;
+    const cls = flashClass(t.weapon);
+    const fc = FLASH[cls];
+    const ang = Math.atan2(g.uy, g.ux);
+
+    if (muzzleOn) {
+      if (age < fc.life) this.muzzleFlash(ctx, cam, g, ang, fc, 1 - age / fc.life);
+      // belt rhythm: an MG's second beat 25 ms behind the first is what makes
+      // it read as an MG rather than a fast rifle
+      if (fc.extra === 'double' && age >= 25 && age < 25 + fc.life) this.muzzleFlash(ctx, cam, g, ang, fc, (1 - (age - 25) / fc.life) * 0.4);
+    }
+
+    // 1-in-5 rounds (1-in-3 on a belt) carry a tracer; the irregular rhythm is
+    // what makes sustained fire read right. The rest leave only the thread.
+    if (age < TRAVEL_MS && hash(g.hx, g.hy, 77) < fc.tracerOdds) {
+      const travelT = age / TRAVEL_MS;
+      const segStart = Math.max(0, travelT - 0.11);
+      const px = (f: number) => g.mx + (g.x1 - g.mx) * f;
+      const py = (f: number) => g.my + (g.y1 - g.my) * f;
+      ctx.lineWidth = fc.tracerW;
+      for (let k = 0; k < 3; k++) {
+        ctx.strokeStyle = `rgba(${fc.tracerCol},${0.14 + k * 0.26})`;
+        ctx.beginPath();
+        ctx.moveTo(px(segStart + ((travelT - segStart) * k) / 3), py(segStart + ((travelT - segStart) * k) / 3));
+        ctx.lineTo(px(segStart + ((travelT - segStart) * (k + 1)) / 3), py(segStart + ((travelT - segStart) * (k + 1)) / 3));
+        ctx.stroke();
+      }
+      blit(ctx, 'spark', px(travelT), py(travelT), Math.max(1, cam.scale * 0.1), 0.95);
+    }
+
+    if (!impactOn || age < TRAVEL_MS) return;
+    const dAge = age - TRAVEL_MS;
+    if (t.hit && t.kill && dAge < 200) {
+      const kt = dAge / 200;
+      blit(ctx, 'flash', g.x1, g.y1, Math.max(2, (0.3 + kt * 0.9) * cam.scale), (1 - kt) * 0.8);
+    } else if (t.hit && dAge < 90) {
+      blit(ctx, 'spark', g.x1, g.y1, Math.max(1.2, cam.scale * 0.18), (1 - dAge / 90) * 0.7);
+    }
+
+    // Rounds finding a hard target throw sparks back toward the shooter.
+    if (tier >= 1 && t.hit && dAge < 260 && this.sim.map.terrainAt(Math.floor(t.tx), Math.floor(t.ty)).cover > 0) {
+      const secs = dAge / 1000;
+      const back = ang + Math.PI;
+      const n = 2 + Math.floor(hash(g.hx, g.hy, 88) * 3);
+      for (let i = 0; i < n; i++) {
+        const a = back + (hash(g.hx, g.hy, 90 + i) - 0.5) * 2.2;
+        const [dist, z] = ballistic(secs, 4 + hash(g.hx, g.hy, 100 + i) * 5, 2 + hash(g.hx, g.hy, 110 + i) * 3);
+        if (z <= 0) continue;
+        blit(ctx, 'spark', g.x1 + Math.cos(a) * dist * cam.scale, g.y1 + Math.sin(a) * dist * cam.scale - z * cam.scale * 0.9, Math.max(0.9, cam.scale * 0.06), 1 - dAge / 260);
+      }
+    }
+  }
+
+  // Oriented teardrop core + asymmetric spikes. The flash must be longer along
+  // the barrel than across it, and no two spikes may match — three equal
+  // spikes at symmetric angles is a UI arrowhead, not a muzzle flash.
+  private muzzleFlash(ctx: CanvasRenderingContext2D, cam: Camera, g: ShotGeom, ang: number, fc: FlashSpec, fa: number): void {
+    if (fa <= 0) return;
+    const fr = Math.max(2, fc.r * cam.scale) * (0.85 + hash(g.hx, g.hy, 3) * 0.3);
+    blit(ctx, 'flash', g.mx, g.my, fr * 2.4, fa * 0.22); // soft outer falloff
+    ctx.save();
+    ctx.translate(g.mx, g.my);
+    ctx.rotate(ang);
+    ctx.scale(1.15, 0.62);
+    blit(ctx, 'flash', 0.45 * fr, 0, fr, fa * 0.8);
+    ctx.restore();
+    // Spikes are strings of soft hot dots, not filled triangles: a hard-edged
+    // polygon at these alphas is exactly the arrowhead glyph this replaces.
+    const sides = SPIKE_SIDES[fc.spikes];
+    for (let i = 0; i < sides.length; i++) {
+      const sa = ang + fc.spread * sides[i] * (0.7 + hash(g.hx, g.hy, 20 + i) * 0.6);
+      const len = fc.len * fr * (0.55 + hash(g.hx, g.hy, 30 + i) * 0.45);
+      const cs = Math.cos(sa);
+      const sn = Math.sin(sa);
+      for (let k = 1; k <= 3; k++) {
+        const f = k / 3.4;
+        blit(ctx, 'spark', g.mx + cs * len * f, g.my + sn * len * f, Math.max(0.7, fr * (0.34 - k * 0.075)), fa * (0.55 - k * 0.12));
+      }
+    }
   }
 
   // Layered explosion. Order is the whole trick: the dark beats (compression
