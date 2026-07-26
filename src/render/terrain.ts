@@ -32,7 +32,7 @@ const BAKES_PER_FRAME = 3;
 import { hash, vec } from './noise';
 import { stamp, stampRect } from './stamps';
 import { canopySprite, drawLog } from './canopy';
-import { PatchIndex, type BuildingBox } from './patches';
+import { PatchIndex, type BuildingBox, type Patch } from './patches';
 import { buildYards, drawYardGround, drawYardStructures, type Yard } from './yards';
 
 // Bilinear value noise on an 8m lattice — smooth patches, no hard square edges.
@@ -718,6 +718,178 @@ function drawPaving(g: Ctx, map: GameMap, patches: PatchIndex, tx0: number, ty0:
   }
 }
 
+// Crop rows (G4). Everything is keyed on the PARCEL — one 4-connected field
+// region from the PatchIndex — not on an 8 m block, which is what made
+// base-farm read as graph paper: adjacent blocks of the same field disagreed
+// about which way the rows ran and reset their phase at every seam. Row phase
+// is measured from the parcel centroid, so a row is one continuous line from
+// one end of the field to the other, across every tile and chunk boundary.
+type Crop = 0 | 1 | 2; // plowed / cereal / roots
+const cropOf = (seed: number): Crop => {
+  const t = hash(seed, 0, 244);
+  return t < 0.4 ? 0 : t < 0.75 ? 1 : 2;
+};
+// Two tones per crop, drifted between by the 28 m macro field: the crop
+// decides the family, the noise keeps the parcel from reading as one flat
+// slab and keeps two neighbouring parcels of the same crop apart. Straw is
+// deliberately desaturated to ~36% — the raw wheat variant at this area was
+// the brightest, most saturated thing in the frame.
+// Roots sit on BARE EARTH with green rosettes down the rows — a green base
+// put the parcel at the same value as the surrounding grass and the whole
+// field disappeared.
+const CROP_A: [number, number, number][] = [[92, 80, 58], [134, 122, 82], [110, 98, 66]];
+const CROP_B: [number, number, number][] = [[114, 98, 66], [116, 108, 76], [92, 86, 60]];
+
+interface RowGeom {
+  crop: Crop;
+  a: number;
+  s: number;
+  c0: number;
+}
+
+function rowGeom(p: Patch, d: Detail): RowGeom {
+  const crop = cropOf(p.seed);
+  // rows within +-14 deg of an axis: a slight diagonal is what reads
+  // agricultural, but at d=0 the pitch aliases into moire so it snaps square
+  const axis = hash(p.seed, 0, 242) < 0.5 ? 0 : Math.PI / 2;
+  const a = d === 0 ? axis : axis + (hash(p.seed, 0, 241) - 0.5) * 0.5;
+  const s = (0.34 + hash(p.seed, 0, 243) * 0.36) * (d === 0 ? 3 : 1);
+  return { crop, a, s, c0: Math.sin(a) * p.cx - Math.cos(a) * p.cy };
+}
+
+type Seg = [number, number, number, number];
+
+function strokeSegs(g: Ctx, segs: Seg[], w: number, style: string, odx = 0, ody = 0): void {
+  if (segs.length === 0) return;
+  g.lineWidth = w;
+  g.strokeStyle = style;
+  g.beginPath();
+  for (const [ax, ay, bx, by] of segs) {
+    g.moveTo(ax + odx, ay + ody);
+    g.lineTo(bx + odx, by + ody);
+  }
+  g.stroke();
+}
+
+function drawCropRows(g: Ctx, map: GameMap, patches: PatchIndex, tx0: number, ty0: number, tx1: number, ty1: number, d: Detail): void {
+  const rows: Seg[][] = [[], [], []]; // per crop
+  const tram: Seg[] = [];
+  const roots: [number, number][][] = [[], []];
+  const turn: Seg[] = [];
+  const geom = new Map<number, RowGeom>();
+  const fieldAt = (tx: number, ty: number) => map.inBounds(tx, ty) && map.terrainKeyAt(tx, ty) === 'field';
+  for (let y = ty0; y < ty1; y++) {
+    for (let x = tx0; x < tx1; x++) {
+      const pid = patches.id[y * map.w + x];
+      if (pid < 0) continue;
+      const p = patches.patches[pid];
+      if (p.kind !== 'field') continue;
+      let gm = geom.get(pid);
+      if (!gm) {
+        gm = rowGeom(p, d);
+        geom.set(pid, gm);
+      }
+      // Headlands: a real field turns at its edge, so the outer 0.35 m of a
+      // border tile carries a row PARALLEL to that border over a bare turning
+      // strip, and the angled rows are clipped out of it.
+      let lx = x;
+      let ly = y;
+      let hx = x + 1;
+      let hy = y + 1;
+      const edges: [number, number][] = [[0, -1], [0, 1], [-1, 0], [1, 0]];
+      for (const [dx, dy] of edges) {
+        if (fieldAt(x + dx, y + dy)) continue;
+        if (dy < 0) {
+          ly = y + 0.35;
+          turn.push([x, y + 0.12, x + 1, y + 0.12]);
+          rows[gm.crop].push([x, y + 0.2, x + 1, y + 0.2]);
+        } else if (dy > 0) {
+          hy = y + 0.65;
+          turn.push([x, y + 0.88, x + 1, y + 0.88]);
+          rows[gm.crop].push([x, y + 0.8, x + 1, y + 0.8]);
+        } else if (dx < 0) {
+          lx = x + 0.35;
+          turn.push([x + 0.12, y, x + 0.12, y + 1]);
+          rows[gm.crop].push([x + 0.2, y, x + 0.2, y + 1]);
+        } else {
+          hx = x + 0.65;
+          turn.push([x + 0.88, y, x + 0.88, y + 1]);
+          rows[gm.crop].push([x + 0.8, y, x + 0.8, y + 1]);
+        }
+      }
+      if (hx - lx < 0.05 || hy - ly < 0.05) continue;
+      // n.p = c is the row line; clip it to the tile with a 4-plane
+      // parametric clip. No clip(), no per-tile save/restore, no overdraw.
+      const nx = Math.sin(gm.a);
+      const ny = -Math.cos(gm.a);
+      const dxr = Math.cos(gm.a);
+      const dyr = Math.sin(gm.a);
+      const c1 = nx * lx + ny * ly;
+      const c2 = nx * hx + ny * ly;
+      const c3 = nx * lx + ny * hy;
+      const c4 = nx * hx + ny * hy;
+      const kMin = Math.ceil((Math.min(c1, c2, c3, c4) - gm.c0) / gm.s);
+      const kMax = Math.floor((Math.max(c1, c2, c3, c4) - gm.c0) / gm.s);
+      for (let k = kMin; k <= kMax; k++) {
+        const c = gm.c0 + k * gm.s;
+        const ox = nx * c;
+        const oy = ny * c;
+        let t0 = -1e3;
+        let t1 = 1e3;
+        for (let ax = 0; ax < 2; ax++) {
+          const o = ax ? oy : ox;
+          const dd = ax ? dyr : dxr;
+          const lo = ax ? ly : lx;
+          const hi = ax ? hy : hx;
+          if (Math.abs(dd) < 1e-6) {
+            if (o < lo || o > hi) {
+              t0 = 1;
+              t1 = 0;
+              break;
+            }
+            continue;
+          }
+          const a0 = (lo - o) / dd;
+          const a1 = (hi - o) / dd;
+          t0 = Math.max(t0, Math.min(a0, a1));
+          t1 = Math.min(t1, Math.max(a0, a1));
+        }
+        if (t1 - t0 < 0.02) continue;
+        const seg: Seg = [ox + dxr * t0, oy + dyr * t0, ox + dxr * t1, oy + dyr * t1];
+        rows[gm.crop].push(seg);
+        if (gm.crop === 1 && d >= 1 && k % 12 === 0) tram.push(seg);
+        if (gm.crop === 2 && d >= 2) {
+          // roots: rosettes along the row. fillRect, not arc — at 3 rows a
+          // tile the arc count alone would eat the whole chunk budget.
+          for (let t = t0 + 0.1; t < t1; t += 0.42) {
+            const rx = ox + dxr * t;
+            const ry = oy + dyr * t;
+            const j = hash((rx * 7) | 0, (ry * 7) | 0, 245);
+            roots[j > 0.5 ? 0 : 1].push([rx + (j - 0.5) * 0.1, ry + (hash((ry * 7) | 0, (rx * 7) | 0, 245) - 0.5) * 0.1]);
+          }
+        }
+      }
+    }
+  }
+  strokeSegs(g, turn, 0.25, 'rgba(112,94,62,0.18)');
+  // plowed: a trough with a sunlit ridge crest offset NW — genuine
+  // corrugation under the shared sun, and the biggest payoff in the pass
+  strokeSegs(g, rows[0], 0.1, 'rgba(38,28,18,0.22)');
+  strokeSegs(g, rows[0], 0.06, 'rgba(196,176,132,0.13)', -0.045, -0.055);
+  // cereal: the drill line is the dark gap between two rows of straw, and the
+  // NW crest is the straw itself catching the sun — the light-only stroke the
+  // spec asked for vanished against a straw base
+  strokeSegs(g, rows[1], 0.09, 'rgba(66,56,34,0.16)');
+  strokeSegs(g, rows[1], 0.06, 'rgba(206,192,142,0.15)', -0.04, -0.05);
+  strokeSegs(g, tram, 0.14, 'rgba(64,52,32,0.20)');
+  strokeSegs(g, rows[2], 0.1, 'rgba(64,80,46,0.28)');
+  for (let i = 0; i < 2; i++) {
+    if (roots[i].length === 0) continue;
+    g.fillStyle = i ? 'rgba(52,68,40,0.5)' : 'rgba(74,92,52,0.55)';
+    for (const [rx, ry] of roots[i]) g.fillRect(rx - 0.06, ry - 0.05, 0.12, 0.1);
+  }
+}
+
 const DECK: [number, number, number] = [118, 96, 68]; // weathered plank
 const DECK_DARK: [number, number, number] = [94, 76, 54];
 
@@ -865,7 +1037,7 @@ function drawGrassBase(g: Ctx, x: number, y: number): void {
   }
 }
 
-function drawTileBase(g: Ctx, map: GameMap, x: number, y: number, band: number, d: Detail): void {
+function drawTileBase(g: Ctx, map: GameMap, patches: PatchIndex, x: number, y: number, band: number, d: Detail): void {
   const t = map.terrainKeyAt(x, y);
   const v = 0.93 + coarse(x, y) * 0.1 + hash(x, y) * 0.04;
   if (t === 'grass') {
@@ -961,26 +1133,14 @@ function drawTileBase(g: Ctx, map: GameMap, x: number, y: number, band: number, 
     // and the dark tone left a 1 m square halo around every hedge tile.
     drawGrassBase(g, x, y);
   } else if (t === 'field') {
-    const bx = x >> 3; // 8m parcel block — furrow geometry only, color stays smooth
-    const by = y >> 3;
-    const base = blendPalette(FIELD_VARIANTS, macro(x, y));
-    g.fillStyle = shade(base, v);
+    // The crop the parcel is under picks the palette family; macro drift still
+    // separates two neighbouring parcels of the same crop. Row geometry is a
+    // whole-parcel post-pass (drawCropRows) — per-tile furrows could never be
+    // continuous across a tile seam.
+    const p = patches.patchAt(x, y);
+    const c = p ? cropOf(p.seed) : 1;
+    g.fillStyle = shade(blendPalette([CROP_A[c], CROP_B[c]], macro(x, y)), v);
     g.fillRect(x, y, 1, 1);
-    const horizontal = hash(bx, by, 71) < 0.5;
-    // far LOD keeps the macro row structure but at <=1 row/tile — the full
-    // 0.4-0.65 m pitch aliases into moiré below 8 px/m
-    const spacing = (0.4 + hash(bx, by, 73) * 0.25) * (d === 0 ? 2.6 : 1);
-    const phase = hash(bx, by, 72) * spacing;
-    g.fillStyle = 'rgba(0,0,0,0.1)';
-    if (horizontal) {
-      for (let fy = Math.ceil((y - phase) / spacing) * spacing + phase; fy < y + 1; fy += spacing) {
-        g.fillRect(x, fy - 0.045, 1, 0.09);
-      }
-    } else {
-      for (let fx = Math.ceil((x - phase) / spacing) * spacing + phase; fx < x + 1; fx += spacing) {
-        g.fillRect(fx - 0.045, y, 0.09, 1);
-      }
-    }
     // darker boundary strip where the field meets non-field
     const fieldAt = (tx: number, ty: number) => map.inBounds(tx, ty) && map.terrainKeyAt(tx, ty) === 'field';
     g.fillStyle = 'rgba(40,32,20,0.18)';
@@ -1105,8 +1265,9 @@ export class TerrainLayer {
     const tx1 = Math.min(this.map.w, x0 + CHUNK + pad);
     const ty1 = Math.min(this.map.h, y0 + CHUNK + pad);
     for (let y = ty0; y < ty1; y++) {
-      for (let x = tx0; x < tx1; x++) drawTileBase(g, this.map, x, y, band, d);
+      for (let x = tx0; x < tx1; x++) drawTileBase(g, this.map, this.patches, x, y, band, d);
     }
+    drawCropRows(g, this.map, this.patches, tx0, ty0, tx1, ty1, d);
     drawPaving(g, this.map, this.patches, tx0, ty0, tx1, ty1, band, d);
     drawRoadWear(g, this.map, tx0, ty0, tx1, ty1, d, (x, y) => this.patches.pavedAt(x, y));
     drawWaterBanks(g, this.map, tx0, ty0, tx1, ty1);
