@@ -1,7 +1,7 @@
 import type { Building } from '../sim/mapgen';
 import { EDGE } from '../sim/map';
 import type { GameMap } from '../sim/map';
-import type { Sim } from '../sim/sim';
+import type { Sim, Soldier } from '../sim/sim';
 import type { Camera } from './camera';
 import { AO_ALPHA, SHADOW_ALPHA, SHADOW_SOFT_ALPHA, SUN, WIND, shadowOffset } from './light';
 
@@ -1161,12 +1161,14 @@ export class RoofLayer {
       // helper — the same rule upper floors already used, extended down to the
       // ground floor. The renderer still never re-derives vision, so a house
       // only opens for a soldier the player can already see.
+      //
+      // `?fow=0` is excluded for enemies on purpose: it is a debug switch, not
+      // an observation, and letting it through turns the rule into "open every
+      // occupied house", which is a different rule from the one designed here
+      // and leaves nothing to look at in the art gate (which runs fog off).
+      const seen = (s: Soldier): boolean => s.side === 'blue' || (!sim.fowDisabled && sim.soldierVisibleTo('blue', s));
       const inside = sim.soldiers.some(
-        (s) =>
-          s.alive &&
-          s.x >= b.x && s.x < b.x + b.w &&
-          s.y >= b.y && s.y < b.y + b.h &&
-          sim.soldierVisibleTo('blue', s),
+        (s) => s.alive && s.x >= b.x && s.x < b.x + b.w && s.y >= b.y && s.y < b.y + b.h && seen(s),
       );
       const target = this.zoomFaded || inside ? FADED_ALPHA : 1;
       const a = this.alphas[i];
