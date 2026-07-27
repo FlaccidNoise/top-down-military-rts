@@ -64,7 +64,7 @@ function computeVisibleEnemies(sim: Sim, side: Side): Soldier[] {
   const seen: Soldier[] = [];
   for (const e of enemies) {
     for (const f of friendlies) {
-      if (Math.hypot(f.x - e.x, f.y - e.y) <= WEAPONS[f.weapon].range && sightToSoldier(sim, f.x, f.y, e, f.level, eyeOf(f)).visible) {
+      if (Math.hypot(f.x - e.x, f.y - e.y) <= WEAPONS[f.weapon].range && sightToSoldier(sim, f.x, f.y, e, f.level, eyeOf(sim, f)).visible) {
         seen.push(e);
         break;
       }
@@ -102,7 +102,7 @@ export function dangerSamples(sim: Sim, team: Team, dest: { x: number; y: number
       const w = WEAPONS[e.weapon];
       // The mover we are scoring danger FOR is a hypothetical upright man, so
       // the target eye is EYE_STAND, not the sampled point's terrain.
-      if (Math.hypot(e.x - px, e.y - py) <= w.range && sightBetween(sim, e.x, e.y, px, py, e.level, 0, eyeOf(e), EYE_STAND).visible) {
+      if (Math.hypot(e.x - px, e.y - py) <= w.range && sightBetween(sim, e.x, e.y, px, py, e.level, 0, eyeOf(sim, e), EYE_STAND).visible) {
         point += 0.15;
         break; // one covering enemy is enough to flag the point; not per-enemy
       }

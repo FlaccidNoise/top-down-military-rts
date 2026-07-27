@@ -33,8 +33,6 @@ const DEFAULTS = new Set([
   'sim/sim.ts::los(this.map, x, y, s.x, s.y, l, s.level)',
   // A served gun sights at chest height either way.
   'sim/emplacement.ts::sightBetween(sim, e.x, e.y, x, y)',
-  // Scores a HYPOTHETICAL position; there is no soldier to take a stance from.
-  'sim/ai.ts::sightBetween(sim, p.x, p.y, post.x, post.y)',
 ]);
 
 // Blank out comments and string bodies, preserving length (so offsets and line
@@ -166,8 +164,8 @@ describe('sight funnel: every caller states its eye heights', () => {
     expect(named.length).toBeGreaterThanOrEqual(9);
     // and specifically: AT, panzerfaust, tank terror and apSolution
     const has = (needle: string) => calls.some((c) => c.text.includes(needle));
-    expect(has('s.level, 0, eyeOf(s), HULL_VEHICLE')).toBe(true); // AT + faust
-    expect(has('0, s.level, EYE_VEHICLE, eyeOf(s)')).toBe(true); // tank terror
+    expect(has('s.level, 0, eyeOf(this, s), HULL_VEHICLE')).toBe(true); // AT + faust
+    expect(has('0, s.level, EYE_VEHICLE, eyeOf(this, s)')).toBe(true); // tank terror
     expect(has('l0, 0, e0, HULL_VEHICLE')).toBe(true); // apSolution
   });
 });

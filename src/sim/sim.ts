@@ -463,17 +463,28 @@ export const HULL_VEHICLE = 2.0;
 // Stance is DERIVED, never stored: no field on Soldier, no bytes in snapshot().
 // This is the renderer's own pose predicate hoisted sim-side so the two cannot
 // drift — renderer.ts calls this function rather than re-testing `mental`.
-// V8 adds the doctrine stances (ambush && !path -> prone, defend && !path ->
-// crouch); they are balance-bearing and ship separately.
-export function stanceOf(s: Soldier): Stance {
+//
+// It takes the sim because a man's posture is mostly a matter of ORDERS, not of
+// his own state (V8): a team lying in ambush is prone, a team dug in on defend
+// is crouched, and both are the whole point of a 1 m hedge bank. Passing the
+// sim rather than defaulting an order argument is deliberate — a default would
+// let a new call site silently sight a prone ambusher at standing height, which
+// is exactly the class of miss the sight-caller gate exists to prevent.
+export function stanceOf(sim: Sim, s: Soldier): Stance {
   if (!s.alive || s.downed || s.captured) return 'prone';
   if (s.mental === 'pinned' || (s.mental === 'broken' && !s.path)) return 'prone';
-  if (s.path) return 'stand';
+  // Advancing under fire = low crawl. The renderer has drawn this since before
+  // stance existed; sighting him at 1.6 m while drawing him flat was the one
+  // WYSIWYG gap V6 left open.
+  if (s.path) return s.suppression > 0.5 ? 'prone' : 'stand';
+  const kind = sim.teams[s.teamId]?.orderState.order?.kind;
+  if (kind === 'ambush') return 'prone'; // lying up: the reverse-slope ambush
+  if (kind === 'defend') return 'crouch'; // dug in on the post
   return s.targetId >= 0 && s.suppression > 0.15 ? 'crouch' : 'stand';
 }
 
-export function eyeOf(s: Soldier): number {
-  const st = stanceOf(s);
+export function eyeOf(sim: Sim, s: Soldier): number {
+  const st = stanceOf(sim, s);
   return st === 'prone' ? EYE_PRONE : st === 'crouch' ? EYE_CROUCH : EYE_STAND;
 }
 
@@ -540,7 +551,7 @@ export function sightBetween(sim: Sim, x0: number, y0: number, x1: number, y1: n
 // stanceOf about how tall the man it is looking at is. Observers still pass
 // their own eye — a vehicle looking at a soldier is EYE_VEHICLE.
 export function sightToSoldier(sim: Sim, x0: number, y0: number, t: Soldier, l0 = 0, e0 = EYE_H): LosResult {
-  const sight = sightBetween(sim, x0, y0, t.x, t.y, l0, t.level, e0, eyeOf(t));
+  const sight = sightBetween(sim, x0, y0, t.x, t.y, l0, t.level, e0, eyeOf(sim, t));
   const order = sim.teams[t.teamId].orderState.order;
   if (
     sight.visible &&
@@ -1583,7 +1594,7 @@ export class Sim {
         if (!e.alive || e.downed || e.captured || e.side !== enemySide) continue;
         if (order.arc && !this.inArc(s.x, s.y, e.x, e.y, order.arc)) continue;
         const d = Math.hypot(e.x - s.x, e.y - s.y);
-        if (d <= thresh && sightToSoldier(this, s.x, s.y, e, s.level, eyeOf(s)).visible) {
+        if (d <= thresh && sightToSoldier(this, s.x, s.y, e, s.level, eyeOf(this, s)).visible) {
           triggered = true;
           break outer;
         }
@@ -1935,7 +1946,7 @@ export class Sim {
       for (const s of this.soldiers) {
         if (!s.alive || s.downed || s.captured || s.side === v.side || s.inVehicle >= 0) continue;
         const d = Math.hypot(s.x - v.x, s.y - v.y);
-        if (d < 30 && sightBetween(this, v.x, v.y, s.x, s.y, 0, s.level, EYE_VEHICLE, eyeOf(s)).visible) {
+        if (d < 30 && sightBetween(this, v.x, v.y, s.x, s.y, 0, s.level, EYE_VEHICLE, eyeOf(this, s)).visible) {
           s.suppression = Math.min(1, s.suppression + 0.05 * (1.3 - s.courage * 0.6));
         }
       }
@@ -2156,7 +2167,7 @@ export class Sim {
 
   // Infantry small-arms fire: consumes the shooter's mag and builds barrel heat.
   private fireSmallArms(shooter: Soldier, t: Soldier, shooterMoving: boolean, aim = 1): boolean {
-    const r = this.resolveSmallArmsShot(shooter.x, shooter.y, shooter.weapon, t, shooterMoving, aim, shooter.level, eyeOf(shooter));
+    const r = this.resolveSmallArmsShot(shooter.x, shooter.y, shooter.weapon, t, shooterMoving, aim, shooter.level, eyeOf(this, shooter));
     if (!r.fired) return false;
     shooter.magLeft--;
     const w: WeaponDef = WEAPONS[shooter.weapon];
@@ -2417,7 +2428,7 @@ export class Sim {
       for (const v of this.vehicles) {
         if (!v.alive || v.side === s.side) continue;
         const d = Math.hypot(v.x - s.x, v.y - s.y);
-        if (d <= w.range && d < bestD && sightBetween(this, s.x, s.y, v.x, v.y, s.level, 0, eyeOf(s), HULL_VEHICLE).visible) {
+        if (d <= w.range && d < bestD && sightBetween(this, s.x, s.y, v.x, v.y, s.level, 0, eyeOf(this, s), HULL_VEHICLE).visible) {
           bestD = d;
           bestV = v;
         }
@@ -2440,7 +2451,7 @@ export class Sim {
       for (const v of this.vehicles) {
         if (!v.alive || v.side === s.side) continue;
         const d = Math.hypot(v.x - s.x, v.y - s.y);
-        if (d <= faust.range && d < bestD && sightBetween(this, s.x, s.y, v.x, v.y, s.level, 0, eyeOf(s), HULL_VEHICLE).visible) {
+        if (d <= faust.range && d < bestD && sightBetween(this, s.x, s.y, v.x, v.y, s.level, 0, eyeOf(this, s), HULL_VEHICLE).visible) {
           bestD = d;
           bestV = v;
         }
@@ -2907,7 +2918,7 @@ export class Sim {
   sideSeesPoint(side: Side, x: number, y: number): boolean {
     for (const s of this.soldiers) {
       if (!s.alive || s.downed || s.captured || s.side !== side || s.inVehicle >= 0) continue;
-      if (Math.hypot(s.x - x, s.y - y) <= SPOT_RANGE && sightBetween(this, s.x, s.y, x, y, s.level, 0, eyeOf(s), EYE_H).visible) return true;
+      if (Math.hypot(s.x - x, s.y - y) <= SPOT_RANGE && sightBetween(this, s.x, s.y, x, y, s.level, 0, eyeOf(this, s), EYE_H).visible) return true;
     }
     for (const v of this.vehicles) {
       if (!v.alive || v.side !== side) continue;
@@ -2922,7 +2933,7 @@ export class Sim {
     // blind as his rifle is, and a tank sweeps from the cupola.
     const spotters: { x: number; y: number; l: number; e: number }[] = [];
     for (const s of this.soldiers) {
-      if (s.alive && !s.downed && !s.captured && s.side === side && s.inVehicle < 0) spotters.push({ x: s.x, y: s.y, l: s.level, e: eyeOf(s) });
+      if (s.alive && !s.downed && !s.captured && s.side === side && s.inVehicle < 0) spotters.push({ x: s.x, y: s.y, l: s.level, e: eyeOf(this, s) });
     }
     for (const v of this.vehicles) if (v.alive && v.side === side) spotters.push({ x: v.x, y: v.y, l: 0, e: EYE_VEHICLE });
     const spotted = this.spotted[side];
@@ -3094,7 +3105,7 @@ export class Sim {
     for (const e of this.soldiers) {
       if (!e.alive || e.downed || e.captured || e.side === s.side || e.inVehicle >= 0) continue;
       if (Math.hypot(e.x - order.x, e.y - order.y) > ASSAULT_RADIUS) continue;
-      if (sightToSoldier(this, s.x, s.y, e, s.level, eyeOf(s)).visible) out.push(e);
+      if (sightToSoldier(this, s.x, s.y, e, s.level, eyeOf(this, s)).visible) out.push(e);
     }
     return out;
   }
@@ -3161,7 +3172,7 @@ export class Sim {
       if (!e.alive || e.downed || e.captured || e.side === s.side || e.inVehicle >= 0) continue;
       const d = Math.hypot(e.x - s.x, e.y - s.y);
       if (d > GRENADE_RANGE || d >= bestD) continue;
-      if (!sightToSoldier(this, s.x, s.y, e, s.level, eyeOf(s)).visible) continue;
+      if (!sightToSoldier(this, s.x, s.y, e, s.level, eyeOf(this, s)).visible) continue;
       bestD = d;
       best = e;
     }
@@ -3360,11 +3371,11 @@ export class Sim {
   private acquire(s: Soldier): number {
     const order = this.teams[s.teamId].orderState.order;
     const arc = (order?.kind === 'defend' || order?.kind === 'ambush') ? order.arc : undefined;
-    return this.acquireSoldierTarget(s.x, s.y, s.side, WEAPONS[s.weapon].range, arc, s.level, eyeOf(s));
+    return this.acquireSoldierTarget(s.x, s.y, s.side, WEAPONS[s.weapon].range, arc, s.level, eyeOf(this, s));
   }
 
   private fire(s: Soldier, t: Soldier): void {
-    if (!sightToSoldier(this, s.x, s.y, t, s.level, eyeOf(s)).visible) {
+    if (!sightToSoldier(this, s.x, s.y, t, s.level, eyeOf(this, s)).visible) {
       s.targetId = -1;
       return;
     }

@@ -82,7 +82,7 @@ export function computeShot(sim: Sim, squadId: number, vehicleId: number, pick: 
     for (const at of shooters) {
       const w: WeaponDef = WEAPONS[at.weapon];
       if (w.pen === undefined) continue;
-      const sol = apSolution(sim, at.x, at.y, w.pen, w.accuracy * sim.aimFactor(at), w.range, pick.v, at.path !== null, `${w.name.toUpperCase()} — ${at.name}`, at.level, eyeOf(at));
+      const sol = apSolution(sim, at.x, at.y, w.pen, w.accuracy * sim.aimFactor(at), w.range, pick.v, at.path !== null, `${w.name.toUpperCase()} — ${at.name}`, at.level, eyeOf(sim, at));
       if (!best || (sol.ok && (!best.ok || sol.acc > best.acc))) best = sol;
     }
     return best;
@@ -97,7 +97,7 @@ export function computeShot(sim: Sim, squadId: number, vehicleId: number, pick: 
     let anyRange = false;
     let anyConcealed = false;
     for (const s of shooters) {
-      const p = sim.shotPreview(s.x, s.y, s.weapon, t, s.path !== null, sim.aimFactor(s), s.level, eyeOf(s));
+      const p = sim.shotPreview(s.x, s.y, s.weapon, t, s.path !== null, sim.aimFactor(s), s.level, eyeOf(sim, s));
       if (p.dist < nd) {
         nd = p.dist;
         nearest = s;
@@ -116,7 +116,7 @@ export function computeShot(sim: Sim, squadId: number, vehicleId: number, pick: 
       // The eye stays the shooter's own (eyeOf) precisely so the LEVEL is the
       // only thing that differs from the shotPreview call above; defaulting it
       // would let a prone shooter's wall-block read as "blocked by floor".
-      const floorBlocked = baseReason === 'no-los' && sightToSoldier(sim, nearest.x, nearest.y, t, t.level, eyeOf(nearest)).visible;
+      const floorBlocked = baseReason === 'no-los' && sightToSoldier(sim, nearest.x, nearest.y, t, t.level, eyeOf(sim, nearest)).visible;
       const reason = floorBlocked ? 'floor-blocked' : baseReason;
       const text = floorBlocked
         ? 'blocked by floor/ceiling'

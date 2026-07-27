@@ -1021,7 +1021,7 @@ export class Renderer {
     // sim's own stance function, not a second copy of the `mental`/suppression
     // thresholds. The non-stance poses (dead, surrendered, downed, drag, aid,
     // dragged, melee) stay ahead of it and win, as before.
-    const stance = stanceOf(s);
+    const stance = stanceOf(this.sim, s);
     let pose: Pose;
     let frame = 0;
     if (!s.alive) {
@@ -1037,17 +1037,18 @@ export class Renderer {
       // frame shows right after the phase wrap, when the MeleeEvent lands
       pose = 'melee';
       frame = s.meleePhase < 0.18 ? 2 : s.meleePhase < 0.42 ? 3 : s.meleePhase < 0.78 ? 0 : 1;
-    } else if (stance === 'prone') pose = 'prone';
-    else if (s.suppression > 0.5 && moved > 1e-4) {
+    } else if (s.suppression > 0.5 && moved > 1e-4) {
       // A pinned man provably never advances (sim gates advance() on it), so a
       // pinned-and-moving crawl would be dead code. `shaken` — suppressed past
       // 0.5 but under the pin threshold — is the state that still moves.
-      // KNOWN GAP: stanceOf calls this man 'stand' (he has a path), so LOS
-      // sights him at 1.6 m while he is drawn low-crawling. V8 owns it.
+      // Ahead of the prone branch because this IS the prone stance, animated:
+      // stanceOf returns 'prone' for a man advancing under >0.5 suppression
+      // (V8), so LOS sights him at 0.4 m exactly as he is drawn.
       pose = 'crawl';
       st.phase += moved * 0.9;
       frame = Math.floor((st.phase % 1) * CRAWL_FRAMES);
-    } else if (moved > 1e-4) {
+    } else if (stance === 'prone') pose = 'prone';
+    else if (moved > 1e-4) {
       pose = 'walk';
       st.phase += moved * 1.4;
       frame = Math.floor((st.phase % 1) * WALK_FRAMES);

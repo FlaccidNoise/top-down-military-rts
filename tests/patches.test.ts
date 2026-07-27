@@ -24,7 +24,10 @@ describe('PatchIndex', () => {
         }
       }
     }
-  });
+    // 10 x (320x240 generateMap + a full-map flood fill + 76,800 assertions):
+    // ~3.3s standalone, past the 5s default under full-suite CPU contention.
+    // Explicit budget, same as the other heavy suites in this repo.
+  }, 20_000);
 
   it('parcels are 4-connected and their bounds/centroids fit their tiles', () => {
     for (const seed of SEEDS) {
