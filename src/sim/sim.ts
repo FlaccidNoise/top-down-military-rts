@@ -22,7 +22,7 @@ import {
   type WeaponKey,
 } from './data';
 import { crewDegrade, crewHasLos, crewNear, friendlyHasLos, loadsReady, pickFirer, type Emplacement } from './emplacement';
-import { EDGE, EYE_H, FLOOR_H, GameMap, los, type LosResult } from './map';
+import { BREACH_LIP, BREACH_THRESH, BREACH_WIDE, EDGE, EYE_H, FLOOR_H, GameMap, edgeClass, los, type LosResult } from './map';
 import type { Building } from './mapgen';
 import { ambushThreshold, ASSAULT_DANGER_MULT, BALK_REASON, CHARGE_BALK_REASON, compliance, dangerScore, type OrderState, type TeamOrder } from './orders';
 import { astar } from './path';
@@ -58,8 +58,38 @@ const PATH_BUDGET_PER_TICK = 6;
 const GRENADE_RANGE = 12; // m
 const GRENADE_FUSE_TICKS = 30; // ~1 s
 const GRENADE_COOLDOWN_TICKS = 60;
-const GRENADE_BLAST = { suppRadius: 6, fragRadius: 3, frags: 2, dmg: [20, 55] as [number, number] };
+const GRENADE_BLAST = { suppRadius: 6, fragRadius: 3, frags: 2, dmg: [20, 55] as [number, number], breach: 2 };
 const GRENADE_SCATTER = 2; // m max
+
+// Destructible terrain (docs/plans/2026-07-27-destructible-terrain-design.md
+// §1.2-§1.3). Breach energy falls off linearly from the burst point over the
+// frag radius and is compared against map.ts's BREACH_THRESH — no rng, ever.
+// The shared sequential rng stream is why: one draw per candidate edge would
+// reshuffle every downstream draw in the tick and invalidate every pinned
+// determinism snapshot. Jitter, if it is ever wanted, belongs in a derived
+// sub-stream (mulberry32(base ^ imul(edgeIndex, 0x9e3779b1))), which takes
+// zero draws from this.rng.
+const BREACH_CAP = 4; // edges opened per explosion, in a fixed scan order
+// Source energy at or above which the hole is wide enough for a hull: tank HE
+// (7), a missed AT rocket (8) and a deliberate wall shot (12). A mortar,
+// a strafing run or a grenade leaves a foot-only rubble lip.
+const BREACH_WIDE_ENERGY = 7;
+// How far onto the burst's own side of an edge the occlusion guard aims. Any
+// value in (0, 0.5) picks the same tile; small keeps the ray honest.
+const BREACH_FACE_EPS = 0.01;
+
+// A wall (or gate, or window) that opened mid-battle. Insertion-ordered:
+// `pendingBreaches` is the render channel (drained every frame like booms),
+// `breachLog` is append-only and survives to the debrief for the campaign
+// scar re-stamp.
+export interface BreachEvent {
+  horiz: boolean;
+  x: number;
+  y: number;
+  cls: number; // ECLASS of what stood there before it opened
+  wide: boolean;
+  cause: 'blast' | 'crush';
+}
 
 export type Side = 'blue' | 'red';
 export type Mental = 'steady' | 'shaken' | 'pinned' | 'broken';
@@ -609,6 +639,10 @@ export class Sim {
   private strafeImpacts: { tick: number; x: number; y: number }[] = [];
   private pendingEvents: ShotEvent[] = [];
   private pendingBooms: { x: number; y: number }[] = [];
+  private pendingBreaches: BreachEvent[] = [];
+  // Append-only, never drained. The map itself is the single source of truth
+  // for where the holes are; this is the ordered record of how it got that way.
+  breachLog: BreachEvent[] = [];
   private pendingPlanes: { x0: number; y: number; x1: number }[] = [];
   private pendingUnitEvents: UnitEvent[] = [];
   private pendingMeleeEvents: MeleeEvent[] = [];
@@ -1166,7 +1200,7 @@ export class Sim {
       if (this.tick < sh.tick) return true;
           // Mortar/barrage smoke lands at ground level 0, wherever it falls.
       if (sh.smoke) this.smoke.push(smokePuff(sh.x, sh.y, this.map.elevAt(Math.floor(sh.x), Math.floor(sh.y)), 60));
-      else this.explode(sh.x, sh.y, { suppRadius: 10, fragRadius: 5, frags: 2, dmg: [25, 75] });
+      else this.explode(sh.x, sh.y, { suppRadius: 10, fragRadius: 5, frags: 2, dmg: [25, 75], breach: 5 }); // 81 mm: opens a head-high enclosure wall, never masonry
       return false;
     });
   }
@@ -1711,6 +1745,14 @@ export class Sim {
     return b;
   }
 
+  // Deliberately NOT routed through takeBooms: that path stamps a scorch decal
+  // and punches a roof hole, and a flattened garden wall is not a crater.
+  takeBreaches(): BreachEvent[] {
+    const b = this.pendingBreaches;
+    this.pendingBreaches = [];
+    return b;
+  }
+
   takePlanes(): { x0: number; y: number; x1: number }[] {
     const p = this.pendingPlanes;
     this.pendingPlanes = [];
@@ -1813,7 +1855,9 @@ export class Sim {
     }
     while (this.strafeImpacts.length > 0 && this.tick >= this.strafeImpacts[0].tick) {
       const s = this.strafeImpacts.shift()!;
-      this.explode(s.x, s.y, { suppRadius: 12, fragRadius: 5, frags: 2, dmg: [25, 70] });
+      // breach 0, and that is a decision, not an omission: a 20 mm cannon
+      // strafing run chews masonry cosmetically and opens nothing.
+      this.explode(s.x, s.y, { suppRadius: 12, fragRadius: 5, frags: 2, dmg: [25, 70], breach: 0 });
     }
   }
 
@@ -1905,11 +1949,12 @@ export class Sim {
   private explode(
     x: number,
     y: number,
-    p: { suppRadius: number; fragRadius: number; frags: number; dmg: [number, number] } = {
+    p: { suppRadius: number; fragRadius: number; frags: number; dmg: [number, number]; breach?: number } = {
       suppRadius: 15,
       fragRadius: 9,
       frags: 3,
       dmg: [25, 75],
+      breach: 4, // 60 mm mortar / unqualified blast
     },
     l = 0, // detonation level (floor); all current callers are ground-bursts
   ): void {
@@ -1942,6 +1987,77 @@ export class Sim {
         }
       }
     }
+    // Appended AFTER the soldier loop and drawing nothing from this.rng, so
+    // the frag/suppression order above is untouched (tests/blast.test.ts).
+    if (p.breach) this.breachScan(x, y, p.fragRadius, p.breach, l);
+  }
+
+  // Deterministic candidate scan (§1.2). One integer pass over the tiles the
+  // frag radius covers; at each cell the north (h) edge then the west (v)
+  // edge, row-major — a fixed order, so the 4-edge cap always takes the same
+  // four edges on a replay. The cap bounds the render invalidation set and
+  // stops one 81 mm round deleting a whole courtyard.
+  //
+  // The cheap test runs first, deliberately: the raw edge byte, then the
+  // distance, then the threshold, and only then the los() occlusion guard —
+  // a full grid traversal that must not run on a burst inside a courtyard
+  // for every wall of the house next door. Do not reorder these.
+  private breachScan(bx: number, by: number, radius: number, energy: number, l: number): void {
+    if (radius <= 0) return;
+    const map = this.map;
+    const wide = energy >= BREACH_WIDE_ENERGY;
+    const x0 = Math.floor(bx - radius);
+    const x1 = Math.floor(bx + radius) + 1;
+    const y0 = Math.floor(by - radius);
+    const y1 = Math.floor(by + radius) + 1;
+    let opened = 0;
+    for (let ty = y0; ty <= y1 && opened < BREACH_CAP; ty++) {
+      for (let tx = x0; tx <= x1 && opened < BREACH_CAP; tx++) {
+        for (let k = 0; k < 2; k++) {
+          const horiz = k === 0;
+          const e = horiz ? map.hEdge(tx, ty) : map.vEdge(tx, ty);
+          if (e === EDGE.NONE || e === EDGE.BREACH) continue;
+          // midpoint of the edge span, for the falloff
+          const mx = horiz ? tx + 0.5 : tx;
+          const my = horiz ? ty : ty + 0.5;
+          const d = Math.hypot(mx - bx, my - by);
+          if (d > radius) continue;
+          const cls = edgeClass(map, tx, ty, horiz);
+          if (energy * (1 - d / radius) < BREACH_THRESH[cls]) continue;
+          // The los() guard aims at the NEAR FACE, not at the midpoint: the
+          // midpoint lies exactly on the edge line and floors into the far
+          // tile from one side, so a ray to it crosses the very wall under
+          // test and a head-high wall could never be opened from that side.
+          // Nudging onto the burst's own side asks the question we actually
+          // mean — "does the blast reach this face" — and keeps the courtyard
+          // guard (§1.4) intact, because an intervening wall still blocks.
+          const gx = horiz ? mx : bx < tx ? tx - BREACH_FACE_EPS : tx + BREACH_FACE_EPS;
+          const gy = horiz ? (by < ty ? ty - BREACH_FACE_EPS : ty + BREACH_FACE_EPS) : my;
+          // Stance-neutral EYE_H both ends, exactly like the frag ray above: a
+          // waist-high wall does not shadow what is behind it, a head-high one
+          // does. Stated rather than defaulted (tests/sight-callers.test.ts).
+          if (!los(map, bx, by, gx, gy, l, l, EYE_H, EYE_H).visible) continue;
+          this.breachEdge(horiz, tx, ty, cls, wide, 'blast');
+          if (++opened >= BREACH_CAP) break;
+        }
+      }
+    }
+  }
+
+  // The one place an edge byte is allowed to change mid-battle. State lives on
+  // the map and nowhere else; the two event lists are derived records.
+  private breachEdge(horiz: boolean, x: number, y: number, cls: number, wide: boolean, cause: 'blast' | 'crush'): void {
+    const map = this.map;
+    if (horiz) {
+      map.setHEdge(x, y, EDGE.BREACH);
+      map.hEdgeTops[y * map.w + x] = wide ? BREACH_WIDE : BREACH_LIP;
+    } else {
+      map.setVEdge(x, y, EDGE.BREACH);
+      map.vEdgeTops[y * (map.w + 1) + x] = wide ? BREACH_WIDE : BREACH_LIP;
+    }
+    const ev: BreachEvent = { horiz, x, y, cls, wide, cause };
+    this.pendingBreaches.push(ev);
+    this.breachLog.push(ev);
   }
 
   private updateVehicle(v: Vehicle): void {
@@ -2045,7 +2161,8 @@ export class Sim {
       // guard HE fire on remaining he ammo — the M3/SdKfz (ammo.he: 0, no
       // real main gun) fall straight through to the pintle MG.
       if (v.gunCooldown <= 0 && v.ammo.he > 0 && this.turretBearingReady(v, def, t.x, t.y)) {
-        this.explode(t.x + this.rng.range(-2, 2), t.y + this.rng.range(-2, 2), { suppRadius: 10, fragRadius: 5, frags: 2, dmg: [25, 60] });
+        // Tank HE is the first thing on the field that leaves a hull-wide hole.
+        this.explode(t.x + this.rng.range(-2, 2), t.y + this.rng.range(-2, 2), { suppRadius: 10, fragRadius: 5, frags: 2, dmg: [25, 60], breach: 7 });
         this.pendingEvents.push({ fx: v.x, fy: v.y, tx: t.x, ty: t.y, hit: true, kill: false });
         v.ammo.he--;
         v.gunCooldown = def.gunCooldown * (0.85 + this.rng.next() * 0.3);
@@ -2109,7 +2226,10 @@ export class Sim {
     const hit = this.rng.next() < p.acc;
     this.pendingEvents.push({ fx, fy, tx: target.x, ty: target.y, hit, kill: false });
     if (!hit) {
-      this.explode(target.x + this.rng.range(-4, 4), target.y + this.rng.range(-4, 4), { suppRadius: 8, fragRadius: 3, frags: 1, dmg: [20, 50] });
+      // A missed AT rocket / tank round hits whatever is behind the tank, and
+      // that is usually a wall. Same warhead as a deliberate wall shot, minus
+      // the aiming, so it is nearly as good at opening one.
+      this.explode(target.x + this.rng.range(-4, 4), target.y + this.rng.range(-4, 4), { suppRadius: 8, fragRadius: 3, frags: 1, dmg: [20, 50], breach: 8 });
       return;
     }
     const effPen = pen * this.rng.range(0.75, 1.25);
