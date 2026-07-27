@@ -319,6 +319,18 @@ function doorSideOf(b: Building, map: GameMap): 'n' | 's' | 'e' | 'w' | null {
   return null;
 }
 
+// I17. The centre of the first `hearth` tile inside the footprint, in world
+// metres, or null. Scan order is fixed, so a two-hearth farmhouse takes the
+// same one on every bake and at every band; `hasFurniture` short-circuits every
+// legacy map, which has no interiors pass and therefore no hearths at all.
+function hearthOf(b: Building, map: GameMap): [number, number] | null {
+  if (!map.hasFurniture) return null;
+  for (let y = b.y; y < b.y + b.h; y++) {
+    for (let x = b.x; x < b.x + b.w; x++) if (map.terrainKeyAt(x, y) === 'hearth') return [x + 0.5, y + 0.5];
+  }
+  return null;
+}
+
 // Material from role + footprint + neighbours, never from the index: two-story
 // town houses are never thatched, and the smaller half of a close pair
 // (mapgen's farm house+barn) is usually the outbuilding, so it gets thatch or
@@ -512,15 +524,31 @@ function buildArt(b: Building, stories: number, smallOfPair: boolean, map: GameM
       ? { x: p - stackW / 2, y: cross - stackH / 2, w: stackW, h: stackH }
       : { x: cross - stackW / 2, y: p - stackH / 2, w: stackW, h: stackH };
   };
+  // I17. A stack is the top of a flue and a flue starts at a fire, so where the
+  // interiors pass gave this building a hearth the primary chimney stands over
+  // THAT tile and the ridge hash is not consulted at all. The furnishing rule
+  // puts the hearth on the longest windowless exterior-or-party wall run, which
+  // is where a Normandy stack belongs anyway — so this reproduces the gable-end
+  // and party-wall rhythm the hash was approximating, and now it is true.
+  const hearth = hearthOf(b, map);
+  const stackOver = (hx: number, hy: number): Rect => ({
+    x: Math.max(rr.x + 0.1, Math.min(rr.x + rr.w - 0.1 - stackW, hx - stackW / 2)),
+    y: Math.max(rr.y + 0.1, Math.min(rr.y + rr.h - 0.1 - stackH, hy - stackH / 2)),
+    w: stackW,
+    h: stackH,
+  });
   // A church has no hearth. A terrace stacks its flues ON the party wall, one
   // per joint, which is the rhythm that reads the range as separate dwellings
   // once the ridge below them has been made continuous.
   const chimneys: Rect[] = [];
   if (!sacred) {
-    if (terraced) chimneys.push(stackAt(party[1] ? 0.9 : 0.5));
-    else {
-      chimneys.push(stackAt(t0));
-      if (b.w * b.h >= 70) chimneys.push(stackAt(1 - t0));
+    chimneys.push(hearth ? stackOver(hearth[0], hearth[1]) : terraced ? stackAt(party[1] ? 0.9 : 0.5) : stackAt(t0));
+    // The hash stack on a big house is a SECOND flue, so it has to stand clear
+    // of the hearth one — two pots in the same square metre read as a mistake.
+    if (!terraced && b.w * b.h >= 70) {
+      const second = stackAt(1 - t0);
+      const first = chimneys[0];
+      if (Math.hypot(second.x - first.x, second.y - first.y) > 1.5) chimneys.push(second);
     }
   }
 
