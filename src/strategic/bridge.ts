@@ -85,6 +85,7 @@ function nudgePassable(map: GameMap, x: number, y: number): Vec {
 
 const DIRECT_FIRE = new Set<SquadKey>(['de_gruppe', 'de_smg42']);
 const GARRISON_RADIUS = 45; // meters from an objective a garrison post may sit
+const ATTACK_POST_MARGIN = 32; // attack posts start this far east of the west spawn (see attackObjectives)
 const FORD_SUPPRESSION = 0.45; // crossing under fire: shaken at spawn (fast-decaying)
 const FORD_STAMINA = 0.65; // an hour wading: no sprinting off the far bank
 
@@ -149,6 +150,18 @@ export function makeStrategicBattle(
   const commanderPosts: Record<number, Vec> = {};
   const bluePosts: Record<number, Vec> = {};
 
+  // Attack posts must lie beyond the attacker's own deployment strip. Bourg
+  // maps place outpost objectives as close as x=18-30 (seeds 1,2,3,7 of the
+  // balance survey) while the attacker fields at west.x+3..+7 — "nearest
+  // objective" then hands EVERY attacking squad the objective it practically
+  // spawned on, the commander takes it in the opening minutes and declares
+  // the attack complete without ever contacting the garrison (the doctrine
+  // baseline's 0%-casualty bourg cells). Legitimate first objectives start at
+  // x>=43 on every surveyed kind/seed; the 32-tile margin splits the gap.
+  // Defender garrisons still cover every objective, outposts included.
+  const beyondDeploy = plan.objectives.filter((o) => o.x >= west.x + ATTACK_POST_MARGIN);
+  const attackObjectives = beyondDeploy.length > 0 ? beyondDeploy : plan.objectives;
+
   // --- Field attacker ---
   if (attackerSide === 'blue') {
     const company = c.companies[attacker.companyIndex];
@@ -177,7 +190,7 @@ export function makeStrategicBattle(
       );
       const squad = sim.addSquadFromDef('blue', c.squads[si].def, anchor.x, anchor.y, roster);
       squad.name = c.squads[si].name;
-      const nearestObj = plan.objectives.reduce((best, o) => distSq(anchor, o) < distSq(anchor, best) ? o : best, plan.objectives[0]);
+      const nearestObj = attackObjectives.reduce((best, o) => distSq(anchor, o) < distSq(anchor, best) ? o : best, attackObjectives[0]);
       bluePosts[squad.id] = nearestObj;
       rosters.push(teamRosters.flat());
     });
@@ -205,7 +218,7 @@ export function makeStrategicBattle(
       const anchor = nudgePassable(plan.map, west.x + 7, yLo + yBandH * (i + 0.5));
       const roster = take === squadHeadcount(key) ? undefined : partialRoster(key, take);
       const squad = sim.addSquadFromDef('red', key, anchor.x, anchor.y, roster);
-      const nearestObj = plan.objectives.reduce((best, o) => distSq(anchor, o) < distSq(anchor, best) ? o : best, plan.objectives[0]);
+      const nearestObj = attackObjectives.reduce((best, o) => distSq(anchor, o) < distSq(anchor, best) ? o : best, attackObjectives[0]);
       commanderPosts[squad.id] = nearestObj;
       squad.name = `${i + 1}. ${SQUADS[key].name}`;
     });
