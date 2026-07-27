@@ -6,6 +6,7 @@ const TERRAIN_COLORS: Record<CellTerrain, string> = {
   open: '#5a6b4c',
   woods: '#384630',
   town: '#7d6f5c',
+  bourg: '#8a7458',
   river: '#46647a',
   bridge: '#8f7550',
   road: '#8c8371',
@@ -34,6 +35,7 @@ export const TERRAIN_LABELS: Record<CellTerrain, string> = {
   open: 'Open ground',
   woods: 'Woods',
   town: 'Town',
+  bourg: 'Bourg',
   river: 'River',
   bridge: 'Bridge',
   road: 'Road',
@@ -229,7 +231,8 @@ export class StrategicView {
         }
         break;
       }
-      case 'town': {
+      case 'town':
+      case 'bourg': {
         const n = 3 + Math.floor(cellHash(i, 2) * 2); // 3-4 roof specks
         ctx.fillStyle = '#a06a4a';
         const s = Math.max(1, size * 0.1);

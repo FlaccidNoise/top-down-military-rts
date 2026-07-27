@@ -34,6 +34,7 @@ export const CELL_MINUTES: Record<CellTerrain, number> = {
   bridge: 12,
   open: 15,
   town: 15,
+  bourg: 15, // a company column crosses 500 m of village at village pace, whichever generator drew it
   woods: 30,
   river: 60, // opposed assault crossing: fordable transit, never worth it while a bridge stands
 };

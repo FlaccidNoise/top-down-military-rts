@@ -454,7 +454,7 @@ export function resolveCoarse(
   // fortress (repeated full-strength assaults to crack), woods give cover,
   // and an assault across a defended river/bridge crossing is costlier.
   let terrainMult = 1.0;
-  if (defCell.terrain === 'town') terrainMult *= 7.0;
+  if (defCell.terrain === 'town' || defCell.terrain === 'bourg') terrainMult *= 7.0;
   if (defCell.terrain === 'woods') terrainMult *= 1.5;
   if (atkCell.terrain === 'river' || atkCell.terrain === 'bridge') terrainMult *= 2.0; // assault across a defended crossing
 

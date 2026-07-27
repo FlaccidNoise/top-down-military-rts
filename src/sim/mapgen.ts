@@ -9,11 +9,61 @@ import { mulberry32, type Rng } from './rng';
 // Deterministic: all randomness flows through the seeded rng; no Math.hypot
 // (not guaranteed correctly-rounded across engines).
 
+export interface Rect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+// What a structure is, for renderers and dressing passes. Absent means
+// 'house': every legacy kind emits bare footprints and must keep reading back
+// as a plain house.
+export type BuildingRole =
+  | 'house'
+  | 'townhouse'
+  | 'shop'
+  | 'farmhouse'
+  | 'barn'
+  | 'civic'
+  | 'halle'
+  | 'church'
+  | 'church_tower'
+  | 'church_apse';
+
+// A door opening on one face of a structure: the DOOR edge on `side` of tile
+// (x,y). width 2 writes two adjacent DOOR edges (cart entry, halle opening) —
+// the second runs +x for 'n'/'s' and +y for 'e'/'w'.
+export interface DoorEdge {
+  x: number;
+  y: number;
+  side: 'n' | 's' | 'e' | 'w';
+  width: 1 | 2;
+}
+
+// Every field past {x,y,w,h} is optional and additive: legacy kinds emit none
+// of them, every existing reader destructures only the primary mass, and the
+// fields sit outside the map-array fingerprint. See §3.1 of
+// docs/plans/2026-07-26-town-gen-design.md — frozen at T2.
 export interface Building {
   x: number;
   y: number;
   w: number;
   h: number;
+  role?: BuildingRole;
+  // Multi-rect mass under ONE roof plane (an L with a rear wing, a church
+  // nave+tower+apse). parts[0] MUST deep-equal {x,y,w,h} so buildingCenter
+  // (bridge.ts:63) still lands on a real floor tile. Rects abut or are
+  // disjoint — never overlapping (an overlapped rect strands the earlier
+  // structure's wall inside the later one's interior and breaks pathing).
+  parts?: Rect[];
+  // Shared buildingId key across the masses of one structure. floormenu and
+  // patches both group by buildingId, so a church whose tower carries its own
+  // id splits into three buildings in every UI that reads it.
+  groupId?: number;
+  doors?: DoorEdge[]; // absent = legacy single door mid-span on the road-facing side
+  frontage?: 'n' | 's' | 'e' | 'w'; // the street side; the roof ridge runs parallel to it
+  terraceRun?: number; // shared id across the units of one continuous frontage
 }
 
 export interface Vec {
@@ -21,18 +71,53 @@ export interface Vec {
   y: number;
 }
 
+// What each objective IS, so tooling stops index-guessing. Parallel to
+// MapPlan.objectives.
+export type ObjectiveKind = 'place' | 'woods' | 'faubourg' | 'church' | 'street';
+
 export interface MapPlan {
   map: GameMap;
   buildings: Building[];
   spawns: { west: Vec; east: Vec }; // arterial road entry points, vehicle-reachable
   objectives: Vec[]; // [0] village crossroads, [1] east woods anchor, [2] second hamlet (w >= 240 only); bridge/river maps append the bridge crossing last
+  objectiveKinds?: ObjectiveKind[]; // parallel to objectives; absent on legacy kinds
   woodsStands: Vec[]; // center of every placed woods stand (guaranteed east stand + extras)
 }
 
 // Battle-map archetype, mirroring the strategic cell terrain. 'bridge'/'river'
 // carve a N→S water band crossed by the arterial on a bridge; 'woods'/'town'
-// bias stand and building counts; 'open'/'road' are the base layout.
-export type MapKind = 'open' | 'woods' | 'town' | 'river' | 'bridge' | 'road';
+// bias stand and building counts; 'open'/'road' are the base layout. 'bourg' is
+// the organic Normandy town pipeline — a fully guarded branch that leaves every
+// other kind byte-identical, and is unreachable from the campaign until
+// CHAR_TERRAIN points at it (sector.ts:21-29, deliberately last).
+export type MapKind = 'open' | 'woods' | 'town' | 'river' | 'bridge' | 'road' | 'bourg';
+
+// ── Wall-top code table — the sim↔render interface ────────────────────────
+//
+// hEdgeTops/vEdgeTops carry the height in metres of the top of a WALL edge.
+// los() blocks only while the eye-line is BELOW that top (map.ts:210-213,
+// 219-222) and eye height is 1.6 m (EYE_H), so the code chooses what sees over
+// what. canStep blocks every WALL regardless of top, so nothing here is
+// walkable. Frozen at T2 — the renderer keys free-standing walls off it.
+//
+//   top | meaning                     | movement | standing LOS | cover
+//   ----+-----------------------------+----------+--------------+----------------
+//    0  | full-height block (legacy)  | blocked  | blocked      | none
+//    1  | low garden / front wall     | blocked  | PASSES       | none
+//    2  | stone yard / churchyard     | blocked  | blocked      | none (conceal only)
+//    3  | 1-storey building           | blocked  | blocked      | —
+//    6  | 2-storey building           | blocked  | blocked      | —
+//   12  | church tower (4 storeys)    | blocked  | blocked      | —
+//
+// Known gap: a 1 m wall grants no cover. los() sources cover from
+// TerrainDef.cover, WINDOW crossings and coverBehind only (map.ts:151,
+// 273-274); low-wall cover would need a new edgeCover array and is out of scope.
+//
+// The renderer identifies a FREE-STANDING wall as: edge === EDGE.WALL &&
+// top ∈ {1,2} && buildingId < 0 on both flanking tiles. No new map array.
+// A gate is EDGE.DOOR in such a run: canStep passes foot through DOOR and
+// blocks vehicles on anything but NONE (map.ts:123-124) — infantry-permeable,
+// vehicle-proof, zero new sim surface.
 
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 
