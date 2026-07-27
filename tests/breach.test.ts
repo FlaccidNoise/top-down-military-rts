@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { BREACH_COVER, BREACH_LIP, BREACH_WIDE, ECLASS, EDGE, FLOOR_H, GameMap, edgeClass, los } from '../src/sim/map';
+import { astar, BREACH_STEP } from '../src/sim/path';
 import { Sim, type BreachEvent } from '../src/sim/sim';
 
 // Destructible terrain (docs/plans/2026-07-27-destructible-terrain-design.md).
@@ -315,5 +316,83 @@ describe('D2 event channels', () => {
     const n = sim.breachLog.length;
     boom(sim)(10.5, 10.5, MORTAR_81);
     expect(sim.breachLog).toHaveLength(n);
+  });
+});
+
+// ── D3: crossing a rubble lip costs time ───────────────────────────────────
+
+describe('D3 A* rubble-lip cost', () => {
+  // A solid north-south wall across the whole map with ONE hole in it, so the
+  // hole is the only crossing and A* has to price it.
+  function pierced(): GameMap {
+    const m = new GameMap(24, 24);
+    for (let y = 0; y < 24; y++) {
+      m.setVEdge(10, y, EDGE.WALL);
+      m.vEdgeTops[y * (m.w + 1) + 10] = 2;
+    }
+    return m;
+  }
+
+  it('a lip is passable but priced above open ground', () => {
+    const m = pierced();
+    expect(astar(m, 8, 12, 12, 12, 'foot')).toBeNull(); // sealed
+
+    m.setVEdge(10, 12, EDGE.BREACH);
+    m.vEdgeTops[12 * (m.w + 1) + 10] = BREACH_LIP;
+    m.hasBreach = true;
+    const p = astar(m, 8, 12, 12, 12, 'foot');
+    expect(p).not.toBeNull();
+    expect(p!.some((n) => n.x === 10 && n.y === 12)).toBe(true);
+  });
+
+  it('a door two tiles away beats the hole; a hole beats a long detour', () => {
+    const near = pierced();
+    near.setVEdge(10, 12, EDGE.BREACH);
+    near.vEdgeTops[12 * (near.w + 1) + 10] = BREACH_LIP;
+    near.setVEdge(10, 14, EDGE.DOOR); // free crossing, 2 rows south
+    near.hasBreach = true;
+    expect(astar(near, 8, 12, 12, 12, 'foot')!.some((n) => n.x === 10 && n.y === 14)).toBe(true);
+
+    const far = pierced();
+    far.setVEdge(10, 12, EDGE.BREACH);
+    far.vEdgeTops[12 * (far.w + 1) + 10] = BREACH_LIP;
+    far.setVEdge(10, 22, EDGE.DOOR); // free, but ten rows away
+    far.hasBreach = true;
+    expect(astar(far, 8, 12, 12, 12, 'foot')!.some((n) => n.x === 10 && n.y === 12)).toBe(true);
+  });
+
+  it('costs nothing on an unbreached map — hasBreach gates the whole check', () => {
+    const m = new GameMap(24, 24);
+    expect(m.hasBreach).toBe(false);
+    expect(m.breachBetween(9, 12, 10, 12)).toBe(false);
+    expect(BREACH_STEP).toBeGreaterThan(0);
+  });
+});
+
+describe('D3 scramble timer', () => {
+  it('a man crossing a lip stalls, then carries on — and it is not the climb timer', () => {
+    const m = new GameMap(24, 24);
+    for (let y = 0; y < 24; y++) {
+      m.setVEdge(10, y, EDGE.WALL);
+      m.vEdgeTops[y * (m.w + 1) + 10] = 2;
+    }
+    m.setVEdge(10, 12, EDGE.BREACH);
+    m.vEdgeTops[12 * (m.w + 1) + 10] = BREACH_LIP;
+    m.hasBreach = true;
+
+    const sim = new Sim(m, 5);
+    const squad = sim.addSquad('blue', 'a', [{ name: 'A', weapon: 'garand', x: 6.5, y: 12.5 }]);
+    sim.orderTeam(squad.teamIds[0], { kind: 'fast', x: 14.5, y: 12.5 });
+    let stalledTick = -1;
+    for (let i = 0; i < 900; i++) {
+      sim.step();
+      const s = sim.soldiers[0];
+      if (s.scrambleLeft > 0 && stalledTick < 0) stalledTick = i;
+      expect(s.climbLeft).toBe(0); // horizontal scramble never touches the level machinery
+      expect(s.level).toBe(0);
+    }
+    expect(stalledTick).toBeGreaterThan(0); // he really did clamber through
+    expect(sim.soldiers[0].x).toBeGreaterThan(12); // and he got to the far side
+    expect(sim.soldiers[0].scrambleLeft).toBe(0);
   });
 });

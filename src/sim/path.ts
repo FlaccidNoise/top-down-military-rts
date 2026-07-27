@@ -1,5 +1,10 @@
 import { type GameMap } from './map';
 
+// Scrambling a rubble lip costs about as much as a flight of stairs (the
+// vertical step below charges a flat +2). Effect: A* prefers a door two tiles
+// away over a hole in the wall, and prefers the hole over a six-tile detour.
+export const BREACH_STEP = 2.5;
+
 // Scratch buffers shared across calls (sim is single-threaded, astar never
 // re-enters).
 let g = new Float64Array(0);
@@ -118,7 +123,18 @@ export function astar(
         if (!ok) continue;
         const ni = cl * layerSize + ny * w + nx;
         if (closed[ni]) continue;
-        const stepCost = (dx !== 0 && dy !== 0 ? 1.414 : 1) * map.terrainAt(nx, ny).moveCost;
+        let stepCost = (dx !== 0 && dy !== 0 ? 1.414 : 1) * map.terrainAt(nx, ny).moveCost;
+        // A diagonal is charged only when BOTH L-paths go through a lip —
+        // otherwise there is a clean way round the rubble inside the same move
+        // and A* would be paying for a scramble nobody makes.
+        if (map.hasBreach) {
+          const lip =
+            dx !== 0 && dy !== 0
+              ? (map.breachBetween(cx, cy, nx, cy) || map.breachBetween(nx, cy, nx, ny)) &&
+                (map.breachBetween(cx, cy, cx, ny) || map.breachBetween(cx, ny, nx, ny))
+              : map.breachBetween(cx, cy, nx, ny);
+          if (lip) stepCost += BREACH_STEP;
+        }
         const ng = g[cur] + stepCost;
         if (ng < g[ni]) {
           g[ni] = ng;

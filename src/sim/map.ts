@@ -59,6 +59,12 @@ export class GameMap {
   // every interiors-aware behaviour change in sim.ts is guarded on it, so an
   // unfurnished map executes zero new instructions and is provably unchanged.
   hasFurniture = false;
+  // Set by the first breach of the battle. Purely a "is there any point
+  // looking?" hint — the edge arrays remain the only source of truth for where
+  // the holes are. It exists so A* and advance() run zero extra instructions on
+  // the overwhelmingly common unbreached map (astar is ~98 % of the order-burst
+  // tick; see memory perf-order-burst-profile).
+  hasBreach = false;
   // Road tiles carved over the water band — passable road to the sim (no
   // separate terrain kind), a plank deck to the renderer. Recorded by mapgen
   // because the road overwrites the water, destroying the overlap the renderer
@@ -200,6 +206,17 @@ export class GameMap {
     }
     if (mode === 'vehicle') return false;
     return e === EDGE.DOOR; // walls and windows block movement
+  }
+
+  // Does a step between two orthogonally adjacent tiles cross a rubble lip?
+  // Gate every call on `hasBreach`: on an unbreached map the answer is always
+  // false and the lookup is pure waste.
+  breachBetween(x0: number, y0: number, x1: number, y1: number): boolean {
+    if (x1 === x0 + 1) return this.vEdge(x1, y0) === EDGE.BREACH;
+    if (x1 === x0 - 1) return this.vEdge(x0, y0) === EDGE.BREACH;
+    if (y1 === y0 + 1) return this.hEdge(x0, y1) === EDGE.BREACH;
+    if (y1 === y0 - 1) return this.hEdge(x0, y0) === EDGE.BREACH;
+    return false;
   }
 }
 

@@ -77,6 +77,9 @@ const BREACH_WIDE_ENERGY = 7;
 // How far onto the burst's own side of an edge the occlusion guard aims. Any
 // value in (0, 0.5) picks the same tile; small keeps the ray honest.
 const BREACH_FACE_EPS = 0.01;
+// Ticks a man spends getting himself over a rubble lip (0.3 s), the climbLeft
+// shape applied to a horizontal obstacle.
+const SCRAMBLE_TICKS = 18;
 
 // A wall (or gate, or window) that opened mid-battle. Insertion-ordered:
 // `pendingBreaches` is the render channel (drained every frame like booms),
@@ -194,6 +197,7 @@ export interface Soldier {
   // height: floor level and stair transition
   level: number; // floor level, 0-based. vehicles/emplacements always 0
   climbLeft: number; // ticks remaining of a stair climb; >0 = on stairs transitioning
+  scrambleLeft: number; // ticks remaining of a rubble-lip crossing; >0 = clambering through a breach
   grenadesLeft: number; // 2 for grenadiers, 0 for everyone else
   grenadeCooldownUntil: number; // tick when next grenade throw is allowed
   captured: boolean; // alive, out of the fight, untargetable (surrendered at melee contact)
@@ -725,6 +729,7 @@ export class Sim {
       meleeTempo: 0,
       level: 0,
       climbLeft: 0,
+      scrambleLeft: 0,
       grenadesLeft: m.grenades ?? 0,
       grenadeCooldownUntil: 0,
       captured: false,
@@ -2048,6 +2053,7 @@ export class Sim {
   // the map and nowhere else; the two event lists are derived records.
   private breachEdge(horiz: boolean, x: number, y: number, cls: number, wide: boolean, cause: 'blast' | 'crush'): void {
     const map = this.map;
+    map.hasBreach = true;
     if (horiz) {
       map.setHEdge(x, y, EDGE.BREACH);
       map.hEdgeTops[y * map.w + x] = wide ? BREACH_WIDE : BREACH_LIP;
@@ -2694,8 +2700,33 @@ export class Sim {
       return;
     }
 
+    // Rubble scramble: he is over the lip and on the far tile already, so this
+    // is a plain countdown with no path bookkeeping. Deliberately NOT climbLeft
+    // — that timer's completion branch writes s.level from the path waypoint,
+    // and wiring a horizontal clamber into the level machinery is a bug waiting
+    // for the first breach on an upper floor.
+    if (s.scrambleLeft > 0) {
+      s.scrambleLeft--;
+      return;
+    }
+
     const cost = this.map.terrainAt(Math.floor(s.x), Math.floor(s.y)).moveCost;
     let remaining = (speed / cost) * DT;
+    // Which tile he is leaving, tracked off the PATH rather than off s.x/s.y:
+    // waypoints are tile centres, so by the time he consumes one he has already
+    // crossed the boundary and Math.floor(s.x) reads the tile he just entered.
+    // Only the previous waypoint answers "which edge did he come through". On
+    // the first leg there is no previous waypoint (astar's origin node is
+    // sliced off at assignment); his current tile is the honest fallback and
+    // can only ever under-report, never invent a crossing.
+    const track = this.map.hasBreach;
+    let prevX = 0;
+    let prevY = 0;
+    if (track && s.path) {
+      const p = s.pathI > 0 ? s.path[s.pathI - 1] : null;
+      prevX = p ? Math.floor(p.x) : Math.floor(s.x);
+      prevY = p ? Math.floor(p.y) : Math.floor(s.y);
+    }
     while (remaining > 0 && s.path) {
       const wp = s.path[s.pathI];
       const dx = wp.x - s.x;
@@ -2720,6 +2751,21 @@ export class Sim {
           s.path = null;
           s.pathI = 0;
           s.fleeing = false;
+        }
+        // He just came through a hole in a wall: hands and knees over the
+        // rubble, then on. Charged on arrival, so the pause reads as him
+        // picking himself up on the far side.
+        if (track) {
+          const wx = Math.floor(wp.x);
+          const wy = Math.floor(wp.y);
+          const lip = this.map.breachBetween(prevX, prevY, wx, wy);
+          prevX = wx;
+          prevY = wy;
+          if (lip) {
+            s.scrambleLeft = SCRAMBLE_TICKS;
+            remaining = 0;
+            break;
+          }
         }
       } else {
         s.x += (dx / d) * remaining;
@@ -3683,6 +3729,7 @@ export class Sim {
         Math.round((s.crewSkill.gun ?? 0) * 1e6),
         s.level,
         s.climbLeft,
+        s.scrambleLeft,
       ]),
       vehicles: this.vehicles.map((v) => [
         v.id,
