@@ -6,6 +6,7 @@ import { generateMap, type Building, type Vec } from '../sim/mapgen';
 import { mulberry32, type Rng } from '../sim/rng';
 import { wireBonds } from '../sim/scenario';
 import { Sim, type BreachEvent, type MemberInit } from '../sim/sim';
+import { lightAt } from '../sim/solar';
 import { COMPANY_TOE, squadHeadcount } from '../sim/toe';
 import { cellIndex, cellXY, type SectorMap } from './sector';
 import { Front, type Chit, type Engagement } from './front';
@@ -503,6 +504,20 @@ export function applyEngagementOutcome(
   return { record, redLosses, cellTaken, breaches: sim.breachLog };
 }
 
+// Coarse night multiplier (day/night design §6): the fine resolver's night
+// rules — spot cap, cheap concealment — favour whoever is already hidden and
+// dug in, i.e. the defender, and a coarse resolver that ignored night would
+// make "let the AI fight the night ones" weakly optimal. The hook lands at
+// EXACTLY 1.0: terrainMult is a calibrated chain (tuned 2026-07 across 16
+// campaign seeds, wars 1-15 days, both outcomes) and its calibration is the
+// asset. scripts/warsweep.mjs re-measures the distribution under a candidate;
+// pick a number from that sweep, never from a guess. The setter exists for
+// that script and the tests — production never calls it.
+let coarseNightMult = 1.0;
+export function setCoarseNightMult(m: number): void {
+  coarseNightMult = m;
+}
+
 // Resolve an engagement without running a Sim — coarse Lanchester-style
 // resolution for AI-vs-AI battles.
 export function resolveCoarse(
@@ -525,6 +540,10 @@ export function resolveCoarse(
   if (defCell.terrain === 'town' || defCell.terrain === 'bourg') terrainMult *= 7.0;
   if (defCell.terrain === 'woods') terrainMult *= 1.5;
   if (atkCell.terrain === 'river' || atkCell.terrain === 'bridge') terrainMult *= 2.0; // assault across a defended crossing
+  // Below civil-dusk light (the same band the sim's night rules bite in) the
+  // defender multiplier scales by the night hook — exactly 1.0 today, so this
+  // line is bit-identical to the tuned build until warsweep.mjs picks a value.
+  if (lightAt(front.clockMin) < 0.25) terrainMult *= coarseNightMult;
 
   const score = attacker.strength / (attacker.strength + defender.strength * terrainMult);
   const clampedScore = Math.max(0.05, Math.min(0.95, score));
