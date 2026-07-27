@@ -315,7 +315,79 @@ describe('bridge', () => {
     expect(trivialMismatchWinner(wache, able)).toBe('defender');
   });
 
-  it('resolveCoarse forcedWinner skips the roll deterministically, losses within the loss-model bands', () => {
+  it('forced and unforced resolution of the same foregone conclusion leave an identical world (S6)', () => {
+    // Accepting the offered walkover must not fork the war: the forced path
+    // draws the winner roll it ignores, so every later draw — loss bands,
+    // roster picks, the NEXT battle — lands identically.
+    const world = () => {
+      const c = newCampaign(10);
+      const front = newFront(c, makeDefaultSector());
+      const able = front.chits.find((ch) => ch.side === 'blue')!;
+      const wache = front.chits.find((ch) => ch.name === 'Brückenwache Süd')!;
+      wache.strength = 20; // 6.9x — a genuine trivial mismatch
+      return { c, front, able, wache };
+    };
+    const A = world(); // player accepts the auto-resolve offer
+    const B = world(); // player fights out the same foregone conclusion
+    const e = (w: ReturnType<typeof world>) => ({ attackerId: w.able.id, defenderId: w.wache.id, cell: w.wache.cell });
+    const rA = resolveCoarse(A.c, A.front, e(A), 'attacker');
+    const rB = resolveCoarse(B.c, B.front, e(B));
+    expect(rA.attackerWon).toBe(true);
+    expect(rB.attackerWon).toBe(true); // premise: the unforced roll agrees at this seed
+    expect(A.able.strength).toBe(B.able.strength);
+    expect(A.wache.strength).toBe(B.wache.strength);
+    expect(rA.record).toEqual(rB.record);
+    // The second engagement is the point: identical worlds resolve identically.
+    const second = (w: ReturnType<typeof world>) => {
+      const red = w.front.chits.find((ch) => ch.side === 'red' && ch.strength > 0 && ch.id !== w.wache.id)!;
+      return resolveCoarse(w.c, w.front, { attackerId: w.able.id, defenderId: red.id, cell: red.cell });
+    };
+    const sA = second(A);
+    const sB = second(B);
+    expect(sA.record).toEqual(sB.record);
+    expect(sA.attackerWon).toBe(sB.attackerWon);
+  });
+
+  it('nightMult is a parameter: it bites below civil dusk and is inert at noon', () => {
+    // The mult moves the WIN THRESHOLD, so post-state only differs when the
+    // seeded roll lands between the two scores — scan seeds until one splits.
+    const world = (seed: number, clockMin: number) => {
+      const c = newCampaign(seed);
+      const front = newFront(c, makeDefaultSector());
+      front.clockMin = clockMin;
+      const able = front.chits.find((ch) => ch.side === 'blue')!;
+      const wache = front.chits.find((ch) => ch.name === 'Brückenwache Süd')!;
+      const e = { attackerId: able.id, defenderId: wache.id, cell: wache.cell };
+      return { c, front, e, able, wache };
+    };
+    const night = 2 * 60; // 02:00 — well below the lightAt 0.25 band
+    const noon = 13 * 60;
+    let split = -1;
+    for (let seed = 1; seed <= 50 && split < 0; seed++) {
+      const a = world(seed, night);
+      const b = world(seed, night);
+      const ra = resolveCoarse(a.c, a.front, a.e, undefined, 1.0);
+      const rb = resolveCoarse(b.c, b.front, b.e, undefined, 6.0);
+      if (ra.attackerWon !== rb.attackerWon) split = seed;
+      // Inert at noon for every seed scanned, split or not:
+      const d1 = world(seed, noon);
+      const d6 = world(seed, noon);
+      resolveCoarse(d1.c, d1.front, d1.e, undefined, 1.0);
+      resolveCoarse(d6.c, d6.front, d6.e, undefined, 6.0);
+      expect([d1.able.strength, d1.wache.strength]).toEqual([d6.able.strength, d6.wache.strength]);
+    }
+    expect(split, 'no seed in 1..50 split the night threshold — the parameter is dead').toBeGreaterThan(0);
+  });
+
+  it('bridge.ts holds no module-level mutable state (the nightMult global died with S6)', () => {
+    // @ts-expect-error no @types/node here; node:fs resolves under vitest
+    // eslint-disable-next-line
+    const { readFileSync } = require('node:fs');
+    const src = readFileSync(new URL('../src/strategic/bridge.ts', import.meta.url), 'utf8');
+    expect(src.match(/^let /m)).toBe(null);
+  });
+
+  it('resolveCoarse forcedWinner is deterministic, losses within the loss-model bands', () => {
     const run = () => {
       const c = newCampaign(10);
       const front = newFront(c, makeDefaultSector());

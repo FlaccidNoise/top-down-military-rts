@@ -14,7 +14,7 @@
 // strategic-command.test.ts AI-vs-AI block: both commanders, coarse
 // resolution, heal clocks and reinforcement cycles on day change.
 import { newCampaign, advanceDays, fillReplacements } from '../src/campaign/campaign';
-import { newFront, resolveCoarse, setCoarseNightMult, syncStrengths } from '../src/strategic/bridge';
+import { newFront, resolveCoarse, syncStrengths } from '../src/strategic/bridge';
 import { StrategicCommander, RED_DEFENDER, BLUE_ATTACKER } from '../src/strategic/command';
 import { operationStatus, REINFORCE_CYCLE_DAYS, REINFORCE_PER_COMPANY } from '../src/strategic/front';
 import { makeDefaultSector } from '../src/strategic/sector';
@@ -26,7 +26,6 @@ const arg = (name, dflt) => {
 };
 const SEEDS = arg('seeds', 16);
 const NIGHT = arg('night', 1.0);
-setCoarseNightMult(NIGHT);
 
 const runWar = (seed) => {
   const c = newCampaign(seed);
@@ -50,7 +49,7 @@ const runWar = (seed) => {
     if (e) {
       battles++;
       if (lightAt(front.clockMin) < 0.25) nightBattles++; // the band the hook fires in
-      resolveCoarse(c, front, e);
+      resolveCoarse(c, front, e, undefined, NIGHT);
     }
     steps++;
   }
