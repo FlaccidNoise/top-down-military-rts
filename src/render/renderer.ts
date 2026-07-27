@@ -426,7 +426,8 @@ export class Renderer {
     this.roofs.update(this.sim, cam, dt);
     this.roofs.drawShadows(ctx, cam, cw, ch);
     this.roofs.drawWalls(ctx, cam, cw, ch);
-    // stair glyphs only where the roof fade reveals the interior
+    // interior lighting and stair glyphs, only where the roof fade reveals them
+    this.terrain.drawHearthGlow(ctx, cam, cw, ch, now, (x, y) => this.roofs.interiorVisibleAt(x, y));
     this.terrain.drawStairs(ctx, cam, cw, ch, (x, y) => this.roofs.interiorVisibleAt(x, y));
     // One sun (U2): cast shadows go down after the decals they fall across and
     // before every unit, so no man's shadow lands on another man's back.

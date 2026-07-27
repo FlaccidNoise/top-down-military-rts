@@ -55,6 +55,7 @@ import { buildYards, drawYardGround, drawYardStructures, type Yard } from './yar
 import { drawProp, propExtent, propsFor, type Prop } from './props';
 import { EnclosureIndex, drawEnclosureGround, drawEnclosurePlanting, drawEnclosureWalls } from './enclos';
 import { drawShopfronts, shopfrontsFor, type Shopfront } from './shops';
+import { ROLE, buildingIndex, drawFurniture, drawHearthGlow, drawRugs, hearthTiles } from './furniture';
 
 // Bilinear value noise on an 8m lattice — smooth patches, no hard square edges.
 function coarse(x: number, y: number): number {
@@ -105,11 +106,9 @@ const HEDGE_GREEN: [number, number, number] = [72, 90, 48]; // yellower, denser 
 const FLOOR: [number, number, number] = [160, 145, 122];
 const FLOOR_DARK: [number, number, number] = [141, 120, 95];
 const WATER: [number, number, number] = [70, 90, 99]; // desaturated slate, muted-Normandy — not postcard blue
-// V3 put 'bank' and 'rail' on the map; V4 owns their real art (ballast,
-// sleepers, gradient-derived batter shading). These two are TERRAIN.bank.color
-// and TERRAIN.rail.color as triples, so the placeholder base is at least the
-// right colour — see drawTileBase.
-const BANK_EARTH: [number, number, number] = [95, 107, 70]; // #5f6b46
+// A bank is turf, so it draws the ordinary grass base and adds erosion — there
+// is no BANK_EARTH tone any more. Ballast is its own material: TERRAIN.rail's
+// colour as a triple, so the flat far-LOD fill and the drawn crest agree.
 const RAIL_BALLAST: [number, number, number] = [107, 100, 89]; // #6b6459
 const FIELD_VARIANTS: [number, number, number][] = [
   [96, 84, 58], // turned earth
@@ -241,7 +240,12 @@ function drawHillshade(g: Ctx, map: GameMap, x: number, y: number): void {
   const dzdx = Math.max(-8, Math.min(8, (map.elevAt(x + 1, y) - map.elevAt(x - 1, y)) / 2));
   const dzdy = Math.max(-8, Math.min(8, (map.elevAt(x, y + 1) - map.elevAt(x, y - 1)) / 2));
   if (dzdx === 0 && dzdy === 0) return;
-  const nl = Math.hypot(dzdx, dzdy, 1);
+  // sqrt, not hypot (verticality design §2.5): undulation gives essentially
+  // every tile a non-zero gradient, so the zero early-out above stops firing
+  // and this becomes 76,800 calls per full bake. Math.hypot is a slow,
+  // overflow-guarded library call; the magnitudes here are bounded by the
+  // clamp, so the guard buys nothing.
+  const nl = Math.sqrt(dzdx * dzdx + dzdy * dzdy + 1);
   const dot = (-dzdx * LIGHT.x + -dzdy * LIGHT.y + LIGHT.z) / nl;
   const d = (dot - FLAT_DOT) * HILLSHADE;
   if (Math.abs(d) < 0.004) return;
@@ -1064,7 +1068,396 @@ function drawGrassBase(g: Ctx, x: number, y: number): void {
   }
 }
 
-function drawTileBase(g: Ctx, map: GameMap, patches: PatchIndex, x: number, y: number, band: number, d: Detail): void {
+// ── Railway: ballast, sleepers, rails, embankment batter (V4) ──────────────
+//
+// The sim gives the renderer two keys and an elevation field, and nothing else:
+// `rail` is the ballasted crest, `bank` the batter either side, and
+// map.crossings marks the road tiles the arterial carved through the footprint
+// (verticality design §2.2 — the road wins the tile, so a crossing is ordinary
+// road to A* and to every vehicle). Run direction, which tile of a 3-wide crest
+// carries the track, and which way a batter falls are all re-derived here.
+
+const RAIL_STEEL: [number, number, number] = [74, 72, 68];
+const SLEEPER: [number, number, number] = [64, 52, 40];
+const SLEEPER_PITCH = 0.6; // m — verticality design §2.5
+const GAUGE = 0.24; // m from the track centreline to each rail
+const SLEEPER_HALF = 0.42;
+
+export interface RailIndex {
+  /** 0 = the line runs along world x, 1 = along world y */
+  axis: number;
+  /** track centreline in world metres on the ACROSS axis, per ALONG tile */
+  centre: Float32Array;
+}
+
+// One index for the whole map, built once, because the track has to be
+// CONTINUOUS. Two facts about the generated line force this:
+//
+//   1. The line MEANDERS. R-C's crest is a constant 3 tiles wide but it drifts
+//      across the map (seed 7: x=290..292 at y=56, x=294..296 at y=208), so a
+//      single centreline column is wrong everywhere except the middle.
+//   2. Its width is NOT locally trustworthy. The level crossing eats a column
+//      out of the crest (verticality §2.2 — the road wins the tile) and the end
+//      taper narrows it, so measuring "middle of the band" at a tile put the
+//      rails at x=293 north of the road and x=294 south of it, and the line
+//      visibly jogged sideways as it crossed.
+//
+// So: measure the crest per ALONG tile, keep only the readings whose width
+// matches the line's modal width, interpolate across the rest, then box-smooth.
+// The smoothing is what turns the generator's whole-tile jogs into a drift of
+// ~0.2 m per tile, which is a railway curve rather than a kink. Half-tile
+// precision throughout: an even crest has its centreline on a tile boundary,
+// and forcing it onto a tile index would push the track off its own ballast.
+// Returns null on every map with no railway, which is every legacy kind.
+function railIndex(map: GameMap): RailIndex | null {
+  // one pass over the map, because this runs in the TerrainLayer ctor on every
+  // battle boot and a 320x240 scan is 76,800 terrainKeyAt calls
+  const xs: number[] = [];
+  const ys: number[] = [];
+  let minX = 1e9;
+  let maxX = -1e9;
+  let minY = 1e9;
+  let maxY = -1e9;
+  for (let y = 0; y < map.h; y++) {
+    for (let x = 0; x < map.w; x++) {
+      if (map.terrainKeyAt(x, y) !== 'rail') continue;
+      xs.push(x);
+      ys.push(y);
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+    }
+  }
+  if (xs.length === 0) return null;
+  const axis = maxX - minX >= maxY - minY ? 0 : 1;
+  const nU = axis === 0 ? map.w : map.h;
+  const lo = new Int16Array(nU).fill(-1);
+  const hi = new Int16Array(nU).fill(-1);
+  for (let i = 0; i < xs.length; i++) {
+    const u = axis === 0 ? xs[i] : ys[i];
+    const t = axis === 0 ? ys[i] : xs[i];
+    if (lo[u] < 0 || t < lo[u]) lo[u] = t;
+    if (t > hi[u]) hi[u] = t;
+  }
+  const widths = new Map<number, number>();
+  for (let u = 0; u < nU; u++) if (lo[u] >= 0) widths.set(hi[u] - lo[u] + 1, (widths.get(hi[u] - lo[u] + 1) ?? 0) + 1);
+  let modeW = 3;
+  let modeN = -1;
+  for (const [w, c] of widths) if (c > modeN) { modeW = w; modeN = c; }
+  const centre = new Float32Array(nU);
+  const good: number[] = [];
+  for (let u = 0; u < nU; u++) {
+    if (lo[u] < 0 || hi[u] - lo[u] + 1 !== modeW) continue;
+    centre[u] = (lo[u] + hi[u] + 1) / 2;
+    good.push(u);
+  }
+  if (good.length === 0) return null;
+  for (let i = 0, u = 0; u < nU; u++) {
+    while (i + 1 < good.length && good[i + 1] < u) i++;
+    const a = good[i];
+    const b = i + 1 < good.length ? good[i + 1] : a;
+    if (u === a || u === b) continue;
+    centre[u] = u < a || b === a ? centre[a] : centre[a] + ((centre[b] - centre[a]) * (u - a)) / (b - a);
+  }
+  const smooth = new Float32Array(nU);
+  for (let u = 0; u < nU; u++) {
+    let s = 0;
+    for (let k = -2; k <= 2; k++) s += centre[Math.max(0, Math.min(nU - 1, u + k))];
+    smooth[u] = s / 5;
+  }
+  return { axis, centre: smooth };
+}
+
+// Sleepers on their world-space pitch, then the two rails over them. World
+// phase, not per-tile phase: a sleeper rhythm that restarts at every tile seam
+// is the single most obvious way to make a railway look tiled.
+function drawTrack(g: Ctx, along0: number, c: number, axis: number, d: Detail, sunk: boolean): void {
+  const [sdx, sdy] = shadowOffset(0.14);
+  if (d >= 1) {
+    for (let k = Math.ceil(along0 / SLEEPER_PITCH); k * SLEEPER_PITCH < along0 + 1; k++) {
+      const u = k * SLEEPER_PITCH;
+      g.fillStyle = shade(SLEEPER, 0.9 + hash(k, Math.round(c), 470) * 0.26);
+      if (axis === 0) g.fillRect(u - 0.11, c - SLEEPER_HALF, 0.22, SLEEPER_HALF * 2);
+      else g.fillRect(c - SLEEPER_HALF, u - 0.11, SLEEPER_HALF * 2, 0.22);
+      g.fillStyle = 'rgba(226,214,186,0.12)'; // NW lip — creosoted timber still catches the sun
+      if (axis === 0) g.fillRect(u - 0.11, c - SLEEPER_HALF, 0.05, SLEEPER_HALF * 2);
+      else g.fillRect(c - SLEEPER_HALF, u - 0.11, SLEEPER_HALF * 2, 0.05);
+    }
+  }
+  for (const s of [-1, 1]) {
+    const p = c + s * GAUGE;
+    if (!sunk) {
+      g.fillStyle = 'rgba(16,14,11,0.42)';
+      if (axis === 0) g.fillRect(along0 + sdx, p - 0.037 + sdy, 1, 0.075);
+      else g.fillRect(p - 0.037 + sdx, along0 + sdy, 0.075, 1);
+    }
+    g.fillStyle = shade(RAIL_STEEL, 1);
+    if (axis === 0) g.fillRect(along0, p - 0.037, 1, 0.075);
+    else g.fillRect(p - 0.037, along0, 0.075, 1);
+    // the frame's other specular, pointing at the same NW sun as the puddles
+    g.fillStyle = 'rgba(214,216,212,0.36)';
+    if (axis === 0) g.fillRect(along0, p - 0.037, 1, 0.026);
+    else g.fillRect(p - 0.037, along0, 0.026, 1);
+  }
+}
+
+function drawRailTile(g: Ctx, map: GameMap, x: number, y: number, band: number, d: Detail, rail: RailIndex): void {
+  g.fillStyle = shade(RAIL_BALLAST, 0.82 + coarse(x, y) * 0.24 + hash(x, y, 471) * 0.08);
+  g.fillRect(x, y, 1, 1);
+  // crushed stone, not a poured slab: the road's own gravel scatter is exactly
+  // the right grain, and it earns its place a band earlier here because
+  // unbroken ballast is the flattest surface on the map.
+  if (d >= 1) g.drawImage(gravelStamp((hash(x, y, 472) * 8) | 0, band), x, y, 1, 1);
+  // The ballast trapezoid: where the crest stops, its shoulder falls away. Only
+  // across the run — along it the ballast simply continues.
+  const isRail = (tx: number, ty: number) => map.inBounds(tx, ty) && map.terrainKeyAt(tx, ty) === 'rail';
+  const sides: [number, number, number, number, number, number][] = rail.axis === 0
+    ? [[0, -1, x, y, 1, 0.2], [0, 1, x, y + 0.8, 1, 0.2]]
+    : [[-1, 0, x, y, 0.2, 1], [1, 0, x + 0.8, y, 0.2, 1]];
+  for (const [dx, dy, rx, ry, rw, rh] of sides) {
+    if (isRail(x + dx, y + dy)) continue;
+    g.fillStyle = 'rgba(28,24,18,0.34)';
+    g.fillRect(rx, ry, rw, rh);
+    g.fillStyle = 'rgba(206,196,172,0.12)';
+    g.fillRect(rx + (dx > 0 ? rw - 0.05 : 0), ry + (dy > 0 ? rh - 0.05 : 0), dx !== 0 ? 0.05 : rw, dy !== 0 ? 0.05 : rh);
+  }
+}
+
+// Embankment batter. The grass base is the ordinary field grass — a bank is
+// turf, not a new material — and everything added on top is derived from the
+// local elev gradient so the slope reads as a slope. Deliberately NOT
+// sun-directional: drawHillshade already lays the lambertian term over this
+// tile from the shared sun, and a second directional pass here would either
+// double it or fight it. What goes down instead is contact darkening at the
+// toe, which is ambient, plus the erosion a worked earth bank actually shows.
+function drawBankTile(g: Ctx, map: GameMap, x: number, y: number, d: Detail): void {
+  drawGrassBase(g, x, y);
+  const dzdx = map.elevAt(x + 1, y) - map.elevAt(x - 1, y);
+  const dzdy = map.elevAt(x, y + 1) - map.elevAt(x, y - 1);
+  const m = Math.sqrt(dzdx * dzdx + dzdy * dzdy);
+  if (m < 0.01 || d < 1) return;
+  const ux = dzdx / m; // unit vector pointing UPHILL
+  const uy = dzdy / m;
+  // toe shading, on the downhill edge
+  g.fillStyle = `rgba(22,26,16,${(AO_ALPHA * 0.6).toFixed(3)})`;
+  if (Math.abs(ux) > Math.abs(uy)) g.fillRect(ux > 0 ? x : x + 0.74, y, 0.26, 1);
+  else g.fillRect(x, uy > 0 ? y : y + 0.74, 1, 0.26);
+  // bare earth scoured through the turf, elongated ALONG the contour
+  for (let i = 0; i < 2; i++) {
+    const k = x * 5 + i;
+    g.fillStyle = `rgba(146,124,88,${(0.1 + hash(k, y, 473) * 0.14).toFixed(3)})`;
+    g.beginPath();
+    g.ellipse(x + 0.2 + hash(k, y, 474) * 0.6, y + 0.2 + hash(k, y, 475) * 0.6, 0.26, 0.1, Math.atan2(ux, -uy), 0, Math.PI * 2);
+    g.fill();
+  }
+  if (d < 2) return;
+  // grass combed down the fall line — the tell that this is a graded batter
+  g.lineWidth = 0.035;
+  for (let i = 0; i < 4; i++) {
+    const k = x * 7 + i;
+    const px = x + 0.15 + hash(k, y, 476) * 0.7;
+    const py = y + 0.15 + hash(k, y, 477) * 0.7;
+    const l = 0.1 + hash(k, y, 478) * 0.1;
+    g.strokeStyle = hash(k, y, 479) > 0.5 ? 'rgba(150,166,110,0.30)' : 'rgba(46,54,32,0.30)';
+    g.beginPath();
+    g.moveTo(px + ux * l, py + uy * l);
+    g.lineTo(px - ux * l, py - uy * l);
+    g.stroke();
+  }
+}
+
+// Level crossing, as a post-pass over the finished road (it has to run after
+// drawRoadWear, which would otherwise lay ruts over the timbers). Only the
+// track centreline gets a deck; the rest of the carved band is ordinary road
+// with a dust of ballast tracked onto it.
+function drawCrossings(g: Ctx, map: GameMap, tx0: number, ty0: number, tx1: number, ty1: number, d: Detail, rail: RailIndex): void {
+  for (let y = ty0; y < ty1; y++) {
+    for (let x = tx0; x < tx1; x++) {
+      if (!map.isCrossing(x, y)) continue;
+      g.fillStyle = `rgba(120,112,98,${(0.07 + hash(x, y, 480) * 0.07).toFixed(3)})`;
+      g.fillRect(x, y, 1, 1);
+      const c = rail.centre[rail.axis === 0 ? x : y];
+      if (Math.floor(c) !== (rail.axis === 0 ? y : x)) continue;
+      // timber baulks laid PARALLEL to the rails, between them and outside
+      // them — what a cart actually crosses on
+      for (let p = -3; p <= 2; p++) {
+        const t0 = c + p * 0.16 + 0.01;
+        g.fillStyle = shade(DECK, 0.8 + hash(x * 7 + p, y, 481) * 0.22);
+        if (rail.axis === 0) g.fillRect(x, t0, 1, 0.14);
+        else g.fillRect(t0, y, 0.14, 1);
+        if (d < 1) continue; // a 0.03 m joint is sub-pixel below band 16
+        g.fillStyle = 'rgba(24,20,14,0.30)';
+        if (rail.axis === 0) g.fillRect(x, t0, 1, 0.03);
+        else g.fillRect(t0, y, 0.03, 1);
+      }
+    }
+  }
+}
+
+// Sleepers and rails for a whole visible stretch of line, laid AFTER every
+// per-tile base and after the crossing deck. It cannot be a drawTileBase
+// branch: the track straddles a tile boundary wherever the crest is an even
+// number of tiles wide, and whichever tile owned it would have its spill
+// painted over by the neighbour the base loop reaches next.
+function drawTrackRun(g: Ctx, map: GameMap, tx0: number, ty0: number, tx1: number, ty1: number, d: Detail, rail: RailIndex): void {
+  const a0 = rail.axis === 0 ? ty0 : tx0;
+  const a1 = rail.axis === 0 ? ty1 : tx1;
+  const laid = (u: number, c: number): number => {
+    // the line exists at this along-coordinate if either column under the
+    // sleeper is ballast or carved crossing; 1 = crossing (rails set into the
+    // road deck, so no cast shadow under the foot)
+    for (const t of [Math.floor(c - 0.3), Math.floor(c + 0.3)]) {
+      const x = rail.axis === 0 ? u : t;
+      const y = rail.axis === 0 ? t : u;
+      if (!map.inBounds(x, y)) continue;
+      if (map.isCrossing(x, y)) return 1;
+      if (map.terrainKeyAt(x, y) === 'rail') return 2;
+    }
+    return 0;
+  };
+  for (let u = rail.axis === 0 ? tx0 : ty0, uEnd = rail.axis === 0 ? tx1 : ty1; u < uEnd; u++) {
+    const c = rail.centre[u];
+    if (c + SLEEPER_HALF < a0 || c - SLEEPER_HALF > a1) continue;
+    const state = laid(u, c);
+    if (state !== 0) drawTrack(g, u, c, rail.axis, d, state === 1);
+  }
+}
+
+// ── Interior floor materials (interiors design R1) ─────────────────────────
+// The material is the BUILDING's, from Building.role, not the room's: rooms are
+// not persisted (D8) and a role plus one hearth-proximity test already
+// separates every surface the eye needs — cold flags in a church, quarry tile
+// in a shop, beaten earth in a barn, boards in a dwelling, and a flagstone
+// apron round the fire that makes the kitchen read differently from the parlor
+// off the terrain grid alone.
+const FLAG_STONE: [number, number, number] = [106, 106, 102]; // church: cool, blue-grey
+const FLAG_WARM: [number, number, number] = [132, 122, 106]; // hearth apron: warmer, so the two never read as the same floor
+const QUARRY: [number, number, number] = [134, 104, 82];
+const QUARRY_DARK: [number, number, number] = [113, 88, 72];
+const EARTH_FLOOR: [number, number, number] = [116, 100, 76];
+
+// Irregular slabs on a 2x2 sub-grid: joints land on the 0.5 m lattice (flags
+// ARE laid regularly) but every corner is jittered and every slab has its own
+// value, so a nave floor never reads as graph paper.
+function flagStamp(v: number, warm: boolean, band: number): HTMLCanvasElement {
+  const base = warm ? FLAG_WARM : FLAG_STONE;
+  return stamp(`floor:flag:${warm ? 'w' : 'c'}:${v}`, band, 1, (g) => {
+    // A heavy joint turns a nave into graph paper at every zoom: the mortar is
+    // a low-alpha wash under slabs whose value spread is narrow on purpose.
+    g.fillStyle = shade(base, 0.72);
+    g.fillRect(0, 0, 1, 1);
+    const j = (k: number, f: number) => (hash(k, f, 440) - 0.5) * 0.045;
+    for (let r = 0; r < 2; r++) {
+      for (let c = 0; c < 2; c++) {
+        const k = v * 11 + r * 2 + c;
+        const x0 = c * 0.5 + 0.022 + j(k, 0);
+        const y0 = r * 0.5 + 0.022 + j(k, 1);
+        const x1 = c * 0.5 + 0.478 + j(k, 2);
+        const y1 = r * 0.5 + 0.478 + j(k, 3);
+        g.fillStyle = shade(base, 0.94 + hash(k, 4, 440) * 0.14);
+        g.fillRect(x0, y0, x1 - x0, y1 - y0);
+        g.fillStyle = 'rgba(226,224,214,0.09)';
+        g.fillRect(x0, y0, x1 - x0, 0.03);
+        g.fillRect(x0, y0, 0.03, y1 - y0);
+      }
+    }
+  });
+}
+
+// Shop floor: small square quarry tiles on a 3x3 grid, alternating two warm
+// tones with pale lime joints. Regular on purpose — it is a laid floor, and its
+// regularity is exactly what separates a shop from a boarded parlor at a glance.
+function quarryStamp(v: number, band: number): HTMLCanvasElement {
+  return stamp(`floor:quarry:${v}`, band, 1, (g) => {
+    g.fillStyle = 'rgba(178,168,150,0.30)'; // lime grout
+    g.fillRect(0, 0, 1, 1);
+    for (let r = 0; r < 3; r++) {
+      for (let c = 0; c < 3; c++) {
+        const k = v * 17 + r * 3 + c;
+        g.fillStyle = shade((r + c) % 2 ? QUARRY_DARK : QUARRY, 0.92 + hash(k, 0, 441) * 0.18);
+        g.fillRect(c / 3 + 0.022, r / 3 + 0.022, 1 / 3 - 0.044, 1 / 3 - 0.044);
+      }
+    }
+  });
+}
+
+// Barn / farmhouse: beaten earth, scuffed, with loose straw. No boards — a
+// Normandy farm ground floor is packed dirt, and the value drop is what makes
+// the barn read as an outbuilding from across the yard.
+function earthFloorStamp(v: number, band: number, d: Detail): HTMLCanvasElement {
+  return stamp(`floor:earth:${v}:${d}`, band, 1, (g) => {
+    for (let sub = 0; sub < 4; sub++) {
+      g.fillStyle = shade(EARTH_FLOOR, 0.9 + hash(v * 5 + sub, 0, 442) * 0.2);
+      g.fillRect((sub & 1) * 0.5, (sub >> 1) * 0.5, 0.5, 0.5);
+    }
+    if (d < 1) return;
+    for (let i = 0; i < 3; i++) {
+      const k = v * 7 + i;
+      g.fillStyle = `rgba(72,60,42,${(0.1 + hash(k, 0, 443) * 0.1).toFixed(3)})`;
+      g.beginPath();
+      g.ellipse(0.15 + hash(k, 1, 443) * 0.7, 0.15 + hash(k, 2, 443) * 0.7, 0.16, 0.11, hash(k, 3, 443) * Math.PI, 0, Math.PI * 2);
+      g.fill();
+    }
+    // Loose straw, kept quiet: at 0.42 alpha the wisps read as pale scratches
+    // across the floor rather than as chaff on it.
+    g.lineWidth = 0.03;
+    for (let i = 0; i < 5; i++) {
+      const k = v * 13 + i;
+      const a = hash(k, 0, 444) * Math.PI;
+      const px = 0.1 + hash(k, 1, 444) * 0.8;
+      const py = 0.1 + hash(k, 2, 444) * 0.8;
+      const l = 0.06 + hash(k, 3, 444) * 0.12;
+      g.strokeStyle = hash(k, 4, 444) > 0.5 ? 'rgba(170,152,106,0.22)' : 'rgba(126,110,72,0.20)';
+      g.beginPath();
+      g.moveTo(px - Math.cos(a) * l, py - Math.sin(a) * l);
+      g.lineTo(px + Math.cos(a) * l, py + Math.sin(a) * l);
+      g.stroke();
+    }
+  });
+}
+
+function drawPlankFloor(g: Ctx, x: number, y: number): void {
+  // plank rows every 0.33m, two wood tones, staggered butt joints.
+  // rowIdx is world-space (y*3+r) so joints don't repeat identically tile to tile.
+  for (let r = 0; r < 3; r++) {
+    const ry = y + r / 3;
+    const rowIdx = y * 3 + r;
+    const tone = rowIdx % 2 === 0 ? FLOOR : FLOOR_DARK;
+    g.fillStyle = shade(tone, 0.92 + hash(x, rowIdx, 7) * 0.14);
+    g.fillRect(x, ry, 1, 1 / 3);
+    g.fillStyle = 'rgba(0,0,0,0.12)';
+    g.fillRect(x, ry, 1, 0.03);
+    if (hash(x, rowIdx, 8) < 0.3) g.fillRect(x + hash(x, rowIdx, 9), ry, 0.03, 1 / 3);
+  }
+}
+
+function drawFloorTile(g: Ctx, x: number, y: number, role: number, apron: number, band: number, d: Detail): void {
+  if (role === ROLE.CHURCH) g.drawImage(flagStamp((hash(x, y, 445) * 8) | 0, false, band), x, y, 1, 1);
+  else if (role === ROLE.SHOP || role === ROLE.HALLE) g.drawImage(quarryStamp((hash(x, y, 446) * 6) | 0, band), x, y, 1, 1);
+  else if (role === ROLE.BARN || role === ROLE.FARMHOUSE) g.drawImage(earthFloorStamp((hash(x, y, 447) * 8) | 0, band, d), x, y, 1, 1);
+  else drawPlankFloor(g, x, y);
+  if (apron === 0) return;
+  // hearthstone: warm flags laid round the fire, thinning at the second ring.
+  // Drawn OVER the building's own floor so the two materials meet in a ragged
+  // alpha edge rather than a ruled one.
+  g.globalAlpha = apron === 2 ? 0.80 : 0.25;
+  g.drawImage(flagStamp((hash(x, y, 448) * 8) | 0, true, band), x, y, 1, 1);
+  g.globalAlpha = 1;
+}
+
+function drawTileBase(
+  g: Ctx,
+  map: GameMap,
+  patches: PatchIndex,
+  x: number,
+  y: number,
+  band: number,
+  d: Detail,
+  roleAt: (x: number, y: number) => number,
+  apron: Uint8Array | null,
+  rail: RailIndex | null,
+): void {
   const t = map.terrainKeyAt(x, y);
   const v = 0.93 + coarse(x, y) * 0.1 + hash(x, y) * 0.04;
   if (t === 'grass') {
@@ -1186,26 +1579,15 @@ function drawTileBase(g: Ctx, map: GameMap, patches: PatchIndex, x: number, y: n
     }
     // bank treatment lives in drawWaterBanks (post-pass — the mud fringe
     // paints onto neighboring land tiles, which raster order would overpaint)
-  } else if (t === 'bank' || t === 'rail') {
-    // PLACEHOLDER, owned by V4 (ballast trapezoid, neighbour-derived sleepers,
-    // two rail lines, batter shading off the local elev gradient). It exists
-    // because the chain's final `else` is the FLOOR branch: without this, every
-    // embankment V3 just put on the map would render as building floorboards.
-    g.fillStyle = shade(t === 'rail' ? RAIL_BALLAST : BANK_EARTH, v);
-    g.fillRect(x, y, 1, 1);
+  } else if (t === 'rail' && rail) {
+    drawRailTile(g, map, x, y, band, d, rail);
+  } else if (t === 'bank') {
+    drawBankTile(g, map, x, y, d);
   } else {
-    // floor: plank rows every 0.33m, two wood tones, staggered butt joints.
-    // rowIdx is world-space (y*3+r) so joints don't repeat identically tile to tile.
-    for (let r = 0; r < 3; r++) {
-      const ry = y + r / 3;
-      const rowIdx = y * 3 + r;
-      const tone = rowIdx % 2 === 0 ? FLOOR : FLOOR_DARK;
-      g.fillStyle = shade(tone, 0.92 + hash(x, rowIdx, 7) * 0.14);
-      g.fillRect(x, ry, 1, 1 / 3);
-      g.fillStyle = 'rgba(0,0,0,0.12)';
-      g.fillRect(x, ry, 1, 0.03);
-      if (hash(x, rowIdx, 8) < 0.3) g.fillRect(x + hash(x, rowIdx, 9), ry, 0.03, 1 / 3);
-    }
+    // floor, and every furniture key — a table stands ON a floor, so the four
+    // interior keys share this branch and the piece itself goes down later, in
+    // drawFurniture's post-pass.
+    drawFloorTile(g, x, y, roleAt(x, y), apron ? apron[y * map.w + x] : 0, band, d);
   }
 }
 
@@ -1233,7 +1615,25 @@ function drawTree(g: Ctx, map: GameMap, x: number, y: number, band: number, d: D
   g.drawImage(canopySprite(fam, (hash(x, y, 46) * 12) | 0, band, d), cx - 1.5 * k, cy - 1.5 * k, 3 * k, 3 * k);
 }
 
-function drawEdge(g: Ctx, e: number, x0: number, y0: number, x1: number, y1: number): void {
+// Interior partitions are not masonry (interiors R4). An exterior wall is
+// 0.5-0.7 m of Norman rubble stone and a partition is 100 mm of lath and
+// plaster, and drawing them with the same hairline pair was the reason a
+// revealed interior read as a grid of cells rather than as rooms. Thinner,
+// lighter, warmer — and legible as "you can hear through this".
+//
+// `pier` is the arcade case: a WALL stub with EDGE.NONE on both collinear
+// sides is not a partition at all, it is one of the piers a nave arcade is
+// made of (interiors §3.6 draws arcades as pier-and-gap runs so a squad can
+// move through them). It is drawn as a blob of masonry on the edge midpoint
+// with its own cast shadow. Restricted to churches by the caller, because the
+// same geometry test also matches a barn's stall stubs and a one-tile partition
+// in a small house, and turning either of those into a free-standing column
+// would be a lie about the building.
+//
+// A church is also the one role that keeps MASONRY on its interior edges: a
+// chancel wall is 0.6 m of the same stone as the nave's outside, and drawing it
+// as a stud partition made the arch read like a bedroom door.
+function drawEdge(g: Ctx, e: number, x0: number, y0: number, x1: number, y1: number, interior = false, pier = false): void {
   if (e === EDGE.NONE) return;
   const line = (w: number, color: string, t0 = 0, t1 = 1) => {
     g.strokeStyle = color;
@@ -1243,6 +1643,30 @@ function drawEdge(g: Ctx, e: number, x0: number, y0: number, x1: number, y1: num
     g.lineTo(x0 + (x1 - x0) * t1, y0 + (y1 - y0) * t1);
     g.stroke();
   };
+  if (e === EDGE.WALL && pier) {
+    const cx = (x0 + x1) / 2;
+    const cy = (y0 + y1) / 2;
+    const [sdx, sdy] = shadowOffset(0.3);
+    const r = 0.22;
+    g.fillStyle = `rgba(14,12,9,${SHADOW_SOFT_ALPHA})`;
+    g.fillRect(cx - r + sdx * 1.7, cy - r + sdy * 1.7, r * 2, r * 2);
+    g.fillStyle = `rgba(14,12,9,${SHADOW_ALPHA})`;
+    g.fillRect(cx - r + sdx, cy - r + sdy, r * 2, r * 2);
+    g.fillStyle = '#8a8073'; // dressed ashlar, warmer and lighter than the nave flags
+    g.fillRect(cx - r, cy - r, r * 2, r * 2);
+    g.fillStyle = 'rgba(234,228,208,0.24)';
+    g.fillRect(cx - r, cy - r, r * 2, 0.06);
+    g.fillRect(cx - r, cy - r, 0.06, r * 2);
+    g.fillStyle = 'rgba(18,14,10,0.45)';
+    g.fillRect(cx - r, cy + r - 0.06, r * 2, 0.06);
+    g.fillRect(cx + r - 0.06, cy - r, 0.06, r * 2);
+    return;
+  }
+  if (e === EDGE.WALL && interior) {
+    line(0.18, 'rgba(46,38,28,0.85)');
+    line(0.085, '#8d8271'); // plaster face
+    return;
+  }
   if (e === EDGE.WALL) {
     line(0.3, '#2c241a');
     line(0.14, '#4a4034');
@@ -1274,6 +1698,19 @@ export class TerrainLayer {
   private enclos: EnclosureIndex;
   // Storefront dressing (T21) — likewise empty without building roles.
   private shops: Shopfront[];
+  // Building role per buildingId (interiors R1/R2). Legacy maps carry no roles,
+  // so every lookup returns ROLE.OTHER and every branch keyed on it takes the
+  // plank/house default the renderer already had.
+  private roles: Uint8Array;
+  private across: Uint8Array;
+  private hearths: number[];
+  // Chebyshev ring round every hearth: 2 = touching, 1 = one out, 0 = no apron.
+  // Null on any map without a hearth, which is every legacy map — the floor
+  // branch then takes exactly the pre-interiors path.
+  private apron: Uint8Array | null;
+  // Railway line axis + track centreline (V4). Null on every kind without an
+  // embankment, so the two new drawTileBase branches are unreachable there.
+  private rail: RailIndex | null;
   /** Chunks painted flat this frame because the bake budget ran out (mobile). */
   readonly pending = new Set<string>();
   private flat = new Map<string, string>();
@@ -1284,6 +1721,7 @@ export class TerrainLayer {
     this.hasElev = map.elev.some((e) => e !== 0);
     this.hasStairs = map.stairs.some((s) => s !== 0);
     this.patches = new PatchIndex(map);
+    this.rail = railIndex(map);
     const churchTiles = new Uint8Array(map.w * map.h);
     for (const b of buildings) {
       if (b.role !== 'church' && b.role !== 'church_tower' && b.role !== 'church_apse') continue;
@@ -1294,6 +1732,29 @@ export class TerrainLayer {
     }
     this.enclos = new EnclosureIndex(map, churchTiles);
     this.shops = shopfrontsFor(map, buildings);
+    const bidx = buildingIndex(map, buildings);
+    this.roles = bidx.role;
+    this.across = bidx.across;
+    this.hearths = hearthTiles(map);
+    this.apron = null;
+    if (this.hearths.length > 0) {
+      const a = new Uint8Array(map.w * map.h);
+      for (const i of this.hearths) {
+        const hx = i % map.w;
+        const hy = (i / map.w) | 0;
+        for (let dy = -2; dy <= 2; dy++) {
+          for (let dx = -2; dx <= 2; dx++) {
+            const x = hx + dx;
+            const y = hy + dy;
+            if (!map.inBounds(x, y) || map.buildingIdAt(x, y) !== map.buildingIdAt(hx, hy)) continue;
+            const ring = Math.max(Math.abs(dx), Math.abs(dy)) <= 1 ? 2 : 1;
+            const k = y * map.w + x;
+            if (a[k] < ring) a[k] = ring;
+          }
+        }
+      }
+      this.apron = a;
+    }
     this.yards = buildYards(map, this.patches, (wx, wy) => this.enclos.enclosureIdAt(Math.floor(wx), Math.floor(wy)) >= 0);
     for (const p of propsFor(map, this.patches)) {
       const [ex0, ey0, ex1, ey1] = propExtent(p);
@@ -1314,6 +1775,26 @@ export class TerrainLayer {
   get index(): PatchIndex {
     return this.patches;
   }
+
+  private roleAt = (x: number, y: number): number => {
+    const id = this.map.buildingIdAt(x, y);
+    return id < 0 ? ROLE.OTHER : (this.roles[id] ?? ROLE.OTHER);
+  };
+
+  // An edge is INTERIOR when both flanking tiles belong to the same building —
+  // the same test drawDoorTrails uses to tell an internal door from an external
+  // one, and the rule interiors D10 gives the generator for which edges the
+  // furnishing pass owns. A party wall between two terraced units has two
+  // different ids on its flanks and stays masonry, which is right: it is.
+  private sameBuilding(ax: number, ay: number, bx: number, by: number): boolean {
+    const a = this.map.buildingIdAt(ax, ay);
+    return a >= 0 && a === this.map.buildingIdAt(bx, by);
+  }
+
+  private acrossAt = (x: number, y: number): number => {
+    const id = this.map.buildingIdAt(x, y);
+    return id < 0 ? 0 : (this.across[id] ?? 0);
+  };
 
   private chunk(cx: number, cy: number, band: number): HTMLCanvasElement {
     const key = `${cx},${cy},${band}`;
@@ -1340,15 +1821,25 @@ export class TerrainLayer {
     const tx1 = Math.min(this.map.w, x0 + CHUNK + pad);
     const ty1 = Math.min(this.map.h, y0 + CHUNK + pad);
     for (let y = ty0; y < ty1; y++) {
-      for (let x = tx0; x < tx1; x++) drawTileBase(g, this.map, this.patches, x, y, band, d);
+      for (let x = tx0; x < tx1; x++) drawTileBase(g, this.map, this.patches, x, y, band, d, this.roleAt, this.apron, this.rail);
     }
     drawCropRows(g, this.map, this.patches, tx0, ty0, tx1, ty1, d);
     drawPaving(g, this.map, this.patches, tx0, ty0, tx1, ty1, band, d);
     drawRoadWear(g, this.map, tx0, ty0, tx1, ty1, d, (x, y) => this.patches.pavedAt(x, y));
+    // after the wear pass, which would otherwise lay ruts across the timbers
+    if (this.rail) {
+      drawCrossings(g, this.map, tx0, ty0, tx1, ty1, d, this.rail);
+      drawTrackRun(g, this.map, tx0, ty0, tx1, ty1, d, this.rail);
+    }
     drawWaterBanks(g, this.map, tx0, ty0, tx1, ty1);
     drawYardGround(g, this.map, this.patches, this.yards, tx0, ty0, tx1, ty1, d);
     drawEnclosureGround(g, this.map, this.enclos, tx0, ty0, tx1, ty1, d);
     drawDoorTrails(g, this.map, tx0, ty0, tx1, ty1);
+    // Interiors, under the roof: rugs lie on the floor, furniture stands on the
+    // rug, and both are post-passes because a piece's contact shadow spills
+    // into the tile SE of it — the base loop would paint the next floor over it.
+    drawRugs(g, this.map, this.roleAt, tx0, ty0, tx1, ty1, d);
+    drawFurniture(g, this.map, this.roleAt, this.acrossAt, tx0, ty0, tx1, ty1, band);
     drawYardStructures(g, this.map, this.patches, this.yards, tx0, ty0, tx1, ty1, d);
     drawHedgeRun(g, this.map, tx0, ty0, tx1, ty1, d);
     if (d >= 1) {
@@ -1376,10 +1867,22 @@ export class TerrainLayer {
     // would sit under the rubble as a dark seam and, on a gate, draw a second
     // door leaf across the plank one.
     for (let y = ty0; y <= ty1; y++) {
-      for (let x = tx0; x < tx1; x++) if (!this.enclos.ownsH(x, y)) drawEdge(g, this.map.hEdge(x, y), x, y, x + 1, y);
+      for (let x = tx0; x < tx1; x++) {
+        if (this.enclos.ownsH(x, y)) continue;
+        const church = this.roleAt(x, y) === ROLE.CHURCH;
+        const inside = this.sameBuilding(x, y - 1, x, y);
+        const pier = inside && church && this.map.hEdge(x - 1, y) === EDGE.NONE && this.map.hEdge(x + 1, y) === EDGE.NONE;
+        drawEdge(g, this.map.hEdge(x, y), x, y, x + 1, y, inside && !church, pier);
+      }
     }
     for (let y = ty0; y < ty1; y++) {
-      for (let x = tx0; x <= tx1; x++) if (!this.enclos.ownsV(x, y)) drawEdge(g, this.map.vEdge(x, y), x, y, x, y + 1);
+      for (let x = tx0; x <= tx1; x++) {
+        if (this.enclos.ownsV(x, y)) continue;
+        const church = this.roleAt(x, y) === ROLE.CHURCH;
+        const inside = this.sameBuilding(x - 1, y, x, y);
+        const pier = inside && church && this.map.vEdge(x, y - 1) === EDGE.NONE && this.map.vEdge(x, y + 1) === EDGE.NONE;
+        drawEdge(g, this.map.vEdge(x, y), x, y, x, y + 1, inside && !church, pier);
+      }
     }
     drawEnclosureWalls(g, this.enclos, tx0, ty0, tx1, ty1, d);
     if (this.hasElev) {
@@ -1465,6 +1968,21 @@ export class TerrainLayer {
         ctx.drawImage(this.chunk(cx, cy, band), band, band, CHUNK * band, CHUNK * band, sx, sy, size, size);
       }
     }
+  }
+
+  // Firelight from every revealed hearth. Same gating as drawStairs and for the
+  // same reason, plus one of its own: a flicker cannot be baked, and rebaking a
+  // chunk per frame is 2-5 ms of chunk work every frame.
+  drawHearthGlow(ctx: Ctx, cam: Camera, cw: number, ch: number, now: number, visible: (x: number, y: number) => boolean): void {
+    if (this.hearths.length === 0) return;
+    const [wx0, wy0] = cam.screenToWorld(0, 0, cw, ch);
+    const [wx1, wy1] = cam.screenToWorld(cw, ch, cw, ch);
+    ctx.save();
+    const [ox, oy] = cam.worldToScreen(0, 0, cw, ch);
+    ctx.translate(ox, oy);
+    ctx.scale(cam.scale, cam.scale);
+    drawHearthGlow(ctx, this.map, this.hearths, Math.floor(wx0) - 2, Math.floor(wy0) - 2, Math.ceil(wx1) + 2, Math.ceil(wy1) + 2, now, visible);
+    ctx.restore();
   }
 
   // Stair glyphs over the visible window only — a dynamic pass (not baked
