@@ -93,8 +93,9 @@ for (const seed of SEEDS) {
 // Two seeds x two crops per hour, appended as NEW rows so not one existing
 // baseline moves; deliberately not fanned across all ten seeds — the contact
 // sheet is already 10x11 and the marginal information is near zero (§8).
-// Known, accepted: dawn telegraph-pole shadows clip at the 1.4 m prop:post
-// stamp edge (POST_H*3 = 3 m throw > sprite) — flagged so nobody is surprised.
+// (The old known-issue here — dawn post shadows clipping at the 1.4 m
+// prop:post stamp edge — is gone: the stamp is 5.2 m with the post centred
+// and the throw clamps to light.ts SHADOW_LEN_LEGIBLE.)
 const HOURS = [
   { label: 'dawn', min: 7 * 60 },
   { label: 'night', min: 2 * 60 },

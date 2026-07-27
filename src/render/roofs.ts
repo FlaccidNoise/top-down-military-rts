@@ -2258,7 +2258,9 @@ export class RoofLayer {
     const lm = Math.min(sun().lenMul, SHADOW_LEN_LEGIBLE);
     this.withWorldTransform(ctx, cam, cw, ch, () => {
       this.buildings.forEach((b, i) => {
-        if (!this.onScreen(cam, i, cw, ch, 2 * this.stories[i] * lm)) return;
+        // spireCast rides the same offset as the storey throw (bakeShadow), so
+        // a church tower just off-screen keeps its finger from popping in.
+        if (!this.onScreen(cam, i, cw, ch, (2 * this.stories[i] + this.art[i].spireCast) * lm)) return;
         // shadow tracks the roof fade: a faded roof (zoomed-in interior reveal)
         // must not leave a full-footprint shadow rect stranded on the ground
         // with no roof above it — it reads as a dark terrain stain.
