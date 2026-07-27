@@ -136,6 +136,7 @@ const WALL_V = 0.62;
 type WallMat = 'rubble' | 'colombage' | 'brick';
 const WALL_BASES: Record<WallMat, string> = { rubble: '#8d867a', colombage: '#9a917c', brick: '#6f5041' };
 const WALL_SEAM = '#2c241a'; // terrain.ts drawEdge's outer wall tone, shared verbatim
+const BREACH_JAMB = 0.1; // metres of masonry left standing at each side of a breach
 const WALL_GLASS = '#7d8a8f'; // ...and its glass
 const WALL_LEAF = '#7d5028'; // ...and its door leaf
 const SIDE_N = 0;
@@ -284,6 +285,27 @@ interface RoofArt {
   opens: Uint8Array[]; // per-tile edge type along each footprint side, SIDE_N..SIDE_E
   chimneys: Rect[];
   smoke: boolean;
+}
+
+// The live edge byte under every tile of the footprint outline. Re-readable,
+// not read-once, because the sim breaches walls mid-battle (D2) — a wall band
+// baked against a byte that has since changed is the stale-art bug the version
+// tags below exist to catch.
+function readOpens(b: Building, map: GameMap, opens: Uint8Array[]): void {
+  for (let k = 0; k < b.w; k++) {
+    opens[SIDE_N][k] = map.hEdge(b.x + k, b.y);
+    opens[SIDE_S][k] = map.hEdge(b.x + k, b.y + b.h);
+  }
+  for (let k = 0; k < b.h; k++) {
+    opens[SIDE_W][k] = map.vEdge(b.x, b.y + k);
+    opens[SIDE_E][k] = map.vEdge(b.x + b.w, b.y + k);
+  }
+}
+
+/** True when edge (x, y) lies on this footprint's outline — a party wall is on two. */
+export function onOutline(b: Building, x: number, y: number, horiz: boolean): boolean {
+  if (horiz) return (y === b.y || y === b.y + b.h) && x >= b.x && x < b.x + b.w;
+  return (x === b.x || x === b.x + b.w) && y >= b.y && y < b.y + b.h;
 }
 
 function roofRect(b: Building, butt: Sides, oh: number): Rect {
@@ -563,14 +585,7 @@ function buildArt(b: Building, stories: number, smallOfPair: boolean, map: GameM
   // and an EDGE.NONE tile (a church arcade, an open barn front) is a real gap
   // in the ring rather than a tile to paint masonry over.
   const opens: Uint8Array[] = [new Uint8Array(b.w), new Uint8Array(b.w), new Uint8Array(b.h), new Uint8Array(b.h)];
-  for (let k = 0; k < b.w; k++) {
-    opens[SIDE_N][k] = map.hEdge(b.x + k, b.y);
-    opens[SIDE_S][k] = map.hEdge(b.x + k, b.y + b.h);
-  }
-  for (let k = 0; k < b.h; k++) {
-    opens[SIDE_W][k] = map.vEdge(b.x, b.y + k);
-    opens[SIDE_E][k] = map.vEdge(b.x + b.w, b.y + k);
-  }
+  readOpens(b, map, opens);
 
   // Belfry plus slate spire is ~12 m of stone above the eave the walls stop
   // at, so its shadow reaches far past the tower's own. That long finger
@@ -1779,6 +1794,17 @@ function wallBandInto(
     const e = open[k];
     if (e === EDGE.NONE) continue; // an arcade bay or an open barn front is a real hole in the ring
     const a = u0 + k;
+    // A breach is masonry removed and NOTHING painted back. The band goes
+    // transparent across the gap so the rubble terrain.ts laid there reads
+    // straight through the wall line — the two are the same 0.3 m of wall seen
+    // by two layers, and the band draws last. The jambs are deliberately
+    // SHORTER than drawEdge's stubs (0.1 against 0.2/0.1) so the band can only
+    // ever under-paint them: over-painting would hide the spoil.
+    if (e === EDGE.BREACH) {
+      masonry(a, BREACH_JAMB);
+      masonry(a + 1 - BREACH_JAMB, BREACH_JAMB);
+      continue;
+    }
     masonry(a, 1);
     if (e === EDGE.WALL) continue;
     // An opening is masonry REMOVED, not a rectangle painted on: the reveal goes
@@ -1914,6 +1940,7 @@ interface Baked {
   shadow: HTMLCanvasElement;
   walls: HTMLCanvasElement[]; // the plan band, one strip per side, SIDE_N..SIDE_E
   ver: number; // damage version this was baked at — stale sprites keep serving until the rebake lands
+  wallVer: number; // ...and the breach version. Two tags, because the two sprites move independently
 }
 
 export class RoofLayer {
@@ -1924,6 +1951,12 @@ export class RoofLayer {
   private zoomFaded = false;
   private damage: Damage[][] = [];
   private dmgVer: number[] = [];
+  // Parallel to dmgVer. A hit punches the ROOF; a breach opens the WALL BAND —
+  // and pump() reuses the wall strips across a damage rebake precisely because
+  // they used to be damage-independent. They are not breach-independent, so
+  // they need a tag of their own or a shelled house keeps its walls intact.
+  private wallVer: number[] = [];
+  private map: GameMap | null = null;
   private sprites = new Map<number, (Baked | null)[]>();
   private band = 0;
   private prevBand = 0;
@@ -1936,6 +1969,7 @@ export class RoofLayer {
   private still = 0;
 
   update(sim: Sim, cam: Camera, dt: number): void {
+    this.map = sim.map;
     if (this.buildings !== sim.buildings) {
       this.buildings = sim.buildings;
       this.alphas = this.buildings.map(() => 1);
@@ -1954,6 +1988,7 @@ export class RoofLayer {
       // list is a new battle, and every hole goes with it.
       this.damage = this.buildings.map(() => []);
       this.dmgVer = this.buildings.map(() => 0);
+      this.wallVer = this.buildings.map(() => 0);
       this.sprites.clear();
       this.band = 0;
       this.prevBand = 0;
@@ -2026,6 +2061,24 @@ export class RoofLayer {
     if (!this.queue.includes(hit)) this.queue.push(hit);
   }
 
+  // The sim opened a hole in a wall. Unlike noteImpact this is not a render-side
+  // record of something watched — the edge byte really changed and the band is
+  // now wrong — so the openings are RE-READ from the live map rather than
+  // remembered. A party wall is on two footprints' outlines and both rebake.
+  //
+  // Free, and the point of re-deriving rather than patching one cell: a breached
+  // WINDOW stops being drawn as a window, because there is no window there.
+  noteBreach(x: number, y: number, horiz: boolean): void {
+    if (!this.map) return;
+    for (let i = 0; i < this.buildings.length; i++) {
+      const b = this.buildings[i];
+      if (!onOutline(b, x, y, horiz)) continue;
+      readOpens(b, this.map, this.art[i].opens);
+      this.wallVer[i]++;
+      if (!this.queue.includes(i)) this.queue.push(i);
+    }
+  }
+
   // True when building i is the smaller half of a pair standing within 4 m —
   // mapgen's farm house+barn, where the small one is the outbuilding.
   private smallOfPair(i: number): boolean {
@@ -2086,7 +2139,10 @@ export class RoofLayer {
     this.queue = [];
     // a sprite baked before this building took a hit is stale, not missing —
     // it keeps drawing (no blink) but has to be redrawn at the new band too
-    for (let i = 0; i < this.buildings.length; i++) if (!cur[i] || cur[i]!.ver !== this.dmgVer[i]) this.queue.push(i);
+    for (let i = 0; i < this.buildings.length; i++) {
+      const s = cur[i];
+      if (!s || s.ver !== this.dmgVer[i] || s.wallVer !== this.wallVer[i]) this.queue.push(i);
+    }
   }
 
   // Amortized bake. The first band after a buildings change drains in one go —
@@ -2108,13 +2164,20 @@ export class RoofLayer {
       const i = nextBake(this.queue, (j) => this.onScreen(cam, j, cw, ch, 2));
       const b = this.buildings[i];
       const art = this.art[i];
+      const was = cur[i];
       cur[i] = {
         roof: bakeRoof(art, this.band, this.damage[i]),
-        // walls and shadow are damage-independent; a rebake driven by a hit
-        // reuses them rather than redrawing masonry that did not change
-        shadow: cur[i]?.shadow ?? bakeShadow(b, art, this.stories[i], sBand),
-        walls: cur[i]?.walls ?? [SIDE_N, SIDE_S, SIDE_W, SIDE_E].map((s) => bakeWallBand(b, art, this.band, s)),
+        // the shadow is damage- AND breach-independent: a hole in a wall does
+        // not shorten the throw of the roof above it
+        shadow: was?.shadow ?? bakeShadow(b, art, this.stories[i], sBand),
+        // the band is not. A rebake driven by a HIT still reuses it — that was
+        // the original point — but one driven by a BREACH must redraw it.
+        walls:
+          was && was.wallVer === this.wallVer[i]
+            ? was.walls
+            : [SIDE_N, SIDE_S, SIDE_W, SIDE_E].map((s) => bakeWallBand(b, art, this.band, s)),
         ver: this.dmgVer[i],
+        wallVer: this.wallVer[i],
       };
     }
     if (this.queue.length) return;

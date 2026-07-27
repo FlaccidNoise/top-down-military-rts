@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { generateMap, type Building } from '../src/sim/mapgen';
-import { artContexts, artKey, bakeBudgetMs, nextBake, pickMat } from '../src/render/roofs';
+import { artContexts, artKey, bakeBudgetMs, nextBake, onOutline, pickMat } from '../src/render/roofs';
 
 // Lane B, T15 / T17 / T22. Everything here is the PURE half of roofs.ts — the
 // decisions the bake reads off, with no canvas in sight. The pixels are judged
@@ -202,5 +202,34 @@ describe('bake queue (T22)', () => {
     // moving one must still fit inside a 60 Hz frame.
     expect(moving).toBeLessThan(16.7);
     expect(Math.ceil((65 * 4) / still)).toBeLessThanOrEqual(20);
+  });
+});
+
+// D11. Which footprints a breached edge belongs to. This is the whole routing
+// decision behind the wall-band rebake: miss a footprint and the band keeps
+// drawing masonry across a hole the sim will happily walk a squad through.
+describe('onOutline (D11)', () => {
+  const b: Building = { x: 10, y: 20, w: 4, h: 3 } as Building;
+
+  it('claims all four sides of its own outline', () => {
+    expect(onOutline(b, 10, 20, true)).toBe(true); // N
+    expect(onOutline(b, 13, 23, true)).toBe(true); // S, last column
+    expect(onOutline(b, 10, 22, false)).toBe(true); // W, last row
+    expect(onOutline(b, 14, 20, false)).toBe(true); // E
+  });
+
+  it('rejects the interior, the corners past the end, and the wrong axis', () => {
+    expect(onOutline(b, 11, 21, true)).toBe(false); // an interior partition
+    expect(onOutline(b, 14, 20, true)).toBe(false); // one past the N run
+    expect(onOutline(b, 9, 20, true)).toBe(false);
+    expect(onOutline(b, 10, 23, false)).toBe(false); // one past the W run
+    expect(onOutline(b, 10, 19, false)).toBe(false);
+  });
+
+  it('puts a party wall on BOTH units, so a terrace rebakes as one', () => {
+    const left: Building = { x: 10, y: 20, w: 4, h: 3 } as Building;
+    const right: Building = { x: 14, y: 20, w: 4, h: 3 } as Building;
+    expect(onOutline(left, 14, 21, false)).toBe(true); // left's E
+    expect(onOutline(right, 14, 21, false)).toBe(true); // right's W
   });
 });
