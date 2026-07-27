@@ -719,6 +719,14 @@ export interface Contact {
   tick: number;
 }
 
+// The ONE shared "can this man execute an order" predicate (movement design
+// §1.1): execution (Sim.eligible delegates here), spots.ts's resolver callers
+// and the preview overlay all filter through this same function, so the
+// preview's dot count can never drift from the mover count.
+export function eligible(s: Soldier): boolean {
+  return s.alive && !s.downed && !s.captured && s.mental !== 'broken';
+}
+
 export class Sim {
   tick = 0;
   rng: Rng;
@@ -1688,7 +1696,7 @@ export class Sim {
   }
 
   private eligible(s: Soldier): boolean {
-    return s.alive && !s.downed && !s.captured && s.mental !== 'broken';
+    return eligible(s); // the module-scope export above — one predicate, no drift
   }
 
   // The order vocabulary's entry point (spec's "interpret + refuse"): runs
