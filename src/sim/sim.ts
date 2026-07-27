@@ -2089,6 +2089,11 @@ export class Sim {
     v.burning = true;
     v.path = null;
     this.pendingBooms.push({ x: v.x, y: v.y });
+    // A brewed-up tank burns for three minutes and throws a 20 m column
+    // (PLUME[1]) that screens the street it died in and is visible from
+    // anywhere on the map. It is ordinary smoke: stepSmoke ages it, the LOS
+    // capsule blocks through it and the renderer draws it, all off one record.
+    this.smoke.push(smokePuff(v.x, v.y, this.map.elevAt(Math.floor(v.x), Math.floor(v.y)), 180, 1));
     // survivors (crew and any passengers still aboard) bail out shaken
     const aboard = [...v.crewIds];
     for (const tid of v.passengerTeamIds) {

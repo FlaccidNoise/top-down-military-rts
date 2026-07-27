@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { GameMap } from '../src/sim/map';
-import { DT, Sim, sightBetween, SMOKE_H, smokePuff, grow } from '../src/sim/sim';
+import { dangerScore } from '../src/sim/orders';
+import { DT, Sim, sightBetween, SMOKE_H, smokePuff, grow, SPOT_INTERVAL, type Vehicle } from '../src/sim/sim';
 import { LEAN_K, smokeAxisAt, WIND } from '../src/sim/wind';
 
 // V11: the smoke column ages, grows and leans on the wind. The old model was a
@@ -118,6 +119,66 @@ describe('the column as an LOS obstacle', () => {
     expect(one.visible).toBe(true);
     expect(one.conceal).toBeCloseTo(0.5, 9);
     expect(ray(simWith(smokePuff(9.5, 10.5, 0, 60, 0, 3), smokePuff(11.5, 10.5, 0, 60, 0, 3))).visible).toBe(false);
+  });
+});
+
+describe('a burning wreck is a plume (V13)', () => {
+  const kill = (sim: Sim, v: Vehicle) => (sim as unknown as { destroyVehicle: (v: Vehicle) => void }).destroyVehicle(v);
+
+  it('a brewed-up tank emits a kind-1 column at the wreck, for three minutes', () => {
+    const sim = new Sim(new GameMap(60, 20), 3);
+    const v = sim.addVehicle('red', 'panzer4', 30.5, 10.5, 0);
+    expect(sim.smoke.length).toBe(0);
+    kill(sim, v);
+    expect(sim.smoke.length).toBe(1);
+    const p = sim.smoke[0];
+    expect(p.kind).toBe(1);
+    expect(p.x).toBe(v.x);
+    expect(p.ttl).toBe(180);
+    expect(v.burning).toBe(true);
+  });
+
+  it('it screens the ground it died on immediately — no four-tick delay like a grenade', () => {
+    const sim = new Sim(new GameMap(60, 20), 3);
+    const clear = sightBetween(sim, 5.5, 10.5, 55.5, 10.5);
+    expect(clear.conceal).toBe(0);
+    kill(sim, sim.addVehicle('red', 'panzer4', 30.5, 10.5, 0));
+    expect(sightBetween(sim, 5.5, 10.5, 55.5, 10.5).conceal).toBeGreaterThan(0); // h0 = 2 m, over a standing eye at once
+  });
+
+  it('and it grows to a 15 m-plus column that an upstairs eye cannot see over', () => {
+    const sim = new Sim(new GameMap(60, 20), 3);
+    kill(sim, sim.addVehicle('red', 'panzer4', 30.5, 10.5, 0));
+    for (let i = 0; i < 30 * 60; i++) sim.step();
+    expect(sim.smoke.length).toBe(1);
+    expect(sim.smoke[0].h).toBeGreaterThan(15);
+    expect(sightBetween(sim, 5.5, 10.5, 55.5, 10.5, 2, 2).conceal).toBeGreaterThan(0);
+  });
+
+  it('the doctrine loop cannot pathologically avoid a wreck: the plume LOWERS the danger model', () => {
+    // The worry with a permanent 20 m column is that the AI treats burning
+    // ground as lethal and refuses to cross it. It cannot: danger is summed
+    // from enemies with LOS to the sampled points, and the plume removes LOS.
+    // Same scenario twice, identical rng, wreck or no wreck.
+    const build = (wreck: boolean) => {
+      const sim = new Sim(new GameMap(80, 20), 4);
+      sim.addSquad('red', 'MG', [{ name: 'G', weapon: 'mg42', x: 70.5, y: 10.5 }]);
+      const blue = sim.addSquad('blue', 'A', [{ name: 'A1', weapon: 'garand', x: 10.5, y: 10.5 }]);
+      for (let i = 0; i < SPOT_INTERVAL + 1; i++) sim.step(); // let blue actually see the MG
+      if (wreck) kill(sim, sim.addVehicle('red', 'panzer4', 40.5, 10.5, 0));
+      return dangerScore(sim, sim.teams[blue.teamIds[0]], { x: 60, y: 10.5 });
+    };
+    const open = build(false);
+    const screened = build(true);
+    expect(open).toBeGreaterThan(0); // the MG really does cover the approach
+    expect(screened).toBeLessThanOrEqual(open);
+  });
+
+  it('and it burns out on its ttl', () => {
+    const sim = new Sim(new GameMap(60, 20), 3);
+    kill(sim, sim.addVehicle('red', 'panzer4', 30.5, 10.5, 0));
+    for (let i = 0; i < 30 * 181; i++) sim.step();
+    expect(sim.smoke.length).toBe(0);
   });
 });
 
