@@ -25,8 +25,10 @@ if (process.argv.includes('--at')) {
   [x, y] = arg('at', '160,120').split(',').map(Number);
   scale = Number(arg('scale', '24'));
 } else {
-  const t = targets[arg('preset', 'village')];
-  if (!t) throw new Error(`unknown preset "${arg('preset')}" — see node scripts/shot.mjs --list`);
+  // Default to whichever settlement crop this map kind has: legacy maps name
+  // it `village`, a bourg names it `place`.
+  const t = targets[arg('preset', targets.village ? 'village' : 'place')];
+  if (!t) throw new Error(`unknown preset "${arg('preset')}" — one of: ${Object.keys(targets).join(', ')}`);
   ({ x, y } = t);
   scale = process.argv.includes('--scale') ? Number(arg('scale', '24')) : t.scale;
 }

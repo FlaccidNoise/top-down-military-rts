@@ -39,9 +39,41 @@ export async function launch({ device = 'desktop' } = {}) {
   return { browser, page };
 }
 
+// Named hours a designer inspecting shadow work actually wants, so nobody has
+// to do solar arithmetic to find the interesting minute. See src/sim/solar.ts
+// for the arc these sit on.
+export const HOUR_PRESETS = { dawn: '0700', dusk: '2030', night: '0200' };
+
+// Parse an --hour argument: a preset name, HHMM, or HH:MM. Returns minutes past
+// midnight, or null for "leave it at the canonical hour".
+export function hourMin(spec) {
+  if (spec === null || spec === undefined || spec === '') return null;
+  const s = HOUR_PRESETS[spec] ?? String(spec);
+  const m = /^(\d{1,2}):?(\d{2})$/.exec(s);
+  if (!m) throw new Error(`bad --hour "${spec}" — want HHMM, HH:MM, or one of: ${Object.keys(HOUR_PRESETS).join(', ')}`);
+  const [h, min] = [Number(m[1]), Number(m[2])];
+  if (h > 23 || min > 59) throw new Error(`bad --hour "${spec}" — ${h}:${min} is not a time of day`);
+  return h * 60 + min;
+}
+
+export const fmtHour = (min) => `${String(Math.floor(min / 60)).padStart(2, '0')}${String(min % 60).padStart(2, '0')}`;
+
 // Navigate to a pinned campaign+seed and stage the static defend scene the art
 // gate relies on. Returns the defended cell's terrain kind (after any force).
-export async function gotoStaged(page, { port, seed, camp = 42, fow = 0, haze = null, forceKind = null }) {
+//
+// THE HOUR PIN. `front.clockMin` sits at OP_START_MIN = 06:00, which the solar
+// model (src/sim/solar.ts) scores at elevation -1.9 deg: civil twilight, no
+// cast shadows, a deep-blue grade. The moment the sun model goes live every
+// baseline in this repo would silently reshoot as a dim night frame, and a
+// silently reshot art baseline is an invisible regression — nothing downstream
+// would ever flag it. So every staged scene is pinned to CANON_CLOCK_MIN
+// (14:00 DBST = solar noon), which is the fixed point where the sun model
+// reproduces the shipped art byte-for-byte. The constant is read out of
+// solar.ts in-page rather than duplicated here, so it cannot drift.
+//
+// This is why the HUD title of every art baseline reads "Day 1 1400". If it
+// ever reads 0600 again, the pin is broken.
+export async function gotoStaged(page, { port, seed, camp = 42, fow = 0, haze = null, forceKind = null, hour = null }) {
   const q = `seed=${seed}&camp=${camp}&fow=${fow}${haze === null ? '' : `&haze=${haze}`}`;
   await page.goto(`http://[::1]:${port}/?${q}`, { waitUntil: 'domcontentloaded' });
   await page
@@ -49,9 +81,12 @@ export async function gotoStaged(page, { port, seed, camp = 42, fow = 0, haze = 
     .catch(() => {
       throw new Error(`__game never appeared — is the dev server running? (npm run dev -- --port ${port} --strictPort, reachable at http://[::1]:${port}/)`);
     });
-  return page.evaluate(({ forceKind }) => {
+  return page.evaluate(async ({ forceKind, hour }) => {
     const g = window.__game;
     const front = g.front;
+    const { CANON_CLOCK_MIN } = await import('/src/sim/solar.ts');
+    // Before startEngagementBattle: the battle reads the clock on the way in.
+    front.clockMin = hour === null ? CANON_CLOCK_MIN : hour;
     const reds = front.chits
       .filter((c) => c.side === 'red' && c.strength > 0)
       .sort((a, b) => b.strength - a.strength || a.id - b.id);
@@ -66,7 +101,18 @@ export async function gotoStaged(page, { port, seed, camp = 42, fow = 0, haze = 
     if (!atk) throw new Error('no blue chit to attack (empty blue side) — pick a different seed/camp');
     g.startEngagementBattle({ attackerId: atk.id, defenderId: def.id, cell: def.cell });
     return front.sector.cells[def.cell].terrain;
-  }, { forceKind });
+  }, { forceKind, hour });
+}
+
+// What hour a staged page is actually sitting at, and what the canonical hour
+// is according to src/sim/solar.ts. The art gate asserts on this; keeping the
+// comparison against the module (not against a copy of the number) is the
+// whole point.
+export function stagedHour(page) {
+  return page.evaluate(async () => {
+    const { CANON_CLOCK_MIN } = await import('/src/sim/solar.ts');
+    return { clockMin: window.__game.front.clockMin, canon: CANON_CLOCK_MIN };
+  });
 }
 
 // Named scene targets ({x, y, scale}) derived by re-running the map plan
@@ -243,9 +289,27 @@ export function stageEmplacements(page, { x, y }) {
 // Poll a downscaled centre crop — UI chrome excluded — and stop once two
 // consecutive frames are pixel-identical. Static scenes reach that in a few
 // frames; the cap bounds a scene that never quiesces.
-export function place(page, x, y, scale) {
-  return page.evaluate(
-    async ({ x, y, scale }) => {
+//
+// Returns { frames, quiesced }, and SHOUTS when it hits the cap instead of
+// returning a half-settled world in silence.
+//
+// MEASURED, 2026-07-27, because §8 of the day/night design asks whether this
+// cap still holds: most crops settle in 2-4 frames, but some crops NEVER
+// settle, and raising the cap makes them strictly worse. Seed 10's `enemy`
+// crop (bourg interiors) was still repainting 120-200 px/frame at delta ~14
+// after 300 frames. The cause is furniture.ts drawHearthGlow — I15 firelight,
+// deliberately in the frame loop with two incommensurate sine rates off
+// wall-clock `now` so the flicker never reads as a loop. A scene with a
+// visible lit hearth cannot be pixel-stable, so `place()` cannot converge on
+// it and the baseline is not reproducible: two back-to-back captures differed
+// by 221 px at cap 120, and by 18,626 px at cap 400 — a longer settle just
+// lets the flicker phase drift further apart. Hence 120 stays. The fix is to
+// pin the flicker clock for the gate (a staging switch in the ?fow=0 / ?haze=0
+// family), NOT to settle longer.
+export const SETTLE_CAP = 120;
+export async function place(page, x, y, scale) {
+  const r = await page.evaluate(
+    async ({ x, y, scale, cap }) => {
       const g = window.__game;
       g.cam.x = x;
       g.cam.y = y;
@@ -268,7 +332,9 @@ export function place(page, x, y, scale) {
       await raf();
       await raf();
       let prev = snap();
-      for (let i = 0, stable = 0; i < 120 && stable < 2; i++) {
+      let i = 0;
+      let stable = 0;
+      for (; i < cap && stable < 2; i++) {
         await raf();
         const cur = snap();
         let same = true;
@@ -281,9 +347,15 @@ export function place(page, x, y, scale) {
         stable = same ? stable + 1 : 0;
         prev = cur;
       }
+      return { frames: i, quiesced: stable >= 2 };
     },
-    { x, y, scale }
+    { x, y, scale, cap: SETTLE_CAP }
   );
+  if (!r.quiesced)
+    console.warn(
+      `  WARNING: place(${x.toFixed(1)}, ${y.toFixed(1)} @ ${scale}) never went still in ${SETTLE_CAP} frames — this crop is NOT a reproducible baseline; it will differ between captures. Usual cause: a frame-loop animation on wall-clock \`now\` in view (furniture.ts drawHearthGlow flickers forever by design). Do not raise SETTLE_CAP — that makes the drift worse. Pin the animation clock, or move the crop off it.`
+    );
+  return r;
 }
 
 // The building footprint nearest a point, straight out of sim.buildings — the

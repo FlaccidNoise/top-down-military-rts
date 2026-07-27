@@ -11,11 +11,12 @@
 //   node scripts/shot.mjs --seed 7 --at 160,120 --scale 24   # any tile @ px/m
 //   node scripts/shot.mjs --seed 7 --map                     # whole map, far-LOD
 //   node scripts/shot.mjs --seed 7 --effect boom             # stage a VFX, best frame
+//   node scripts/shot.mjs --seed 7 --preset place --hour dawn  # the same scene at 07:00
 //   node scripts/shot.mjs --seed 7 --dump                    # JSON state → stdout
 //   node scripts/shot.mjs --list                             # presets + effects
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { arg, launch, gotoStaged, deriveTargets, deriveBuilding, wallStage, place, burst, stageEmplacements, stageVehicles } from './lib/stage.mjs';
+import { arg, launch, gotoStaged, deriveTargets, deriveBuilding, wallStage, place, burst, stageEmplacements, stageVehicles, hourMin, fmtHour, HOUR_PRESETS, stagedHour } from './lib/stage.mjs';
 
 const has = (name) => process.argv.includes(`--${name}`);
 const PORT = Number(arg('port', '5198'));
@@ -23,6 +24,10 @@ const SEED = Number(arg('seed', '7'));
 const CAMP = Number(arg('camp', '42'));
 const FOW = Number(arg('fow', '0'));
 const FORCE = arg('force', null); // bridge|river|... to force the defended cell's terrain
+// --hour dawn|dusk|night|HHMM moves the sun (src/sim/solar.ts). Omitted, every
+// scene stages at the canonical hour, which is what the art gate shoots — so a
+// shot taken without --hour is directly comparable to a sweep baseline.
+const HOUR = hourMin(arg('hour', null));
 const OUT = arg('out', '.screenshots/shot.png');
 const MAP_W = 320;
 const MAP_H = 240;
@@ -48,11 +53,14 @@ const EFFECTS = {
 if (has('list')) {
   console.log(`presets: ${PRESETS.join(', ')}`);
   console.log(`effects: ${Object.keys(EFFECTS).join(', ')}`);
+  console.log(`hours:   ${Object.entries(HOUR_PRESETS).map(([k, v]) => `${k} (${v})`).join(', ')}, or any HHMM — default is the canonical hour the art gate shoots`);
   process.exit(0);
 }
 
 const { browser, page } = await launch();
-const kind = await gotoStaged(page, { port: PORT, seed: SEED, camp: CAMP, fow: FOW, forceKind: FORCE });
+const kind = await gotoStaged(page, { port: PORT, seed: SEED, camp: CAMP, fow: FOW, forceKind: FORCE, hour: HOUR });
+const staged = await stagedHour(page);
+const at = `${fmtHour(staged.clockMin)}${staged.clockMin === staged.canon ? ' canonical' : ''}`;
 
 if (has('dump')) {
   const state = await page.evaluate(() => {
@@ -112,14 +120,14 @@ if (has('effect')) {
     );
     await page.waitForTimeout(e.hold); // let the blast transient expire; what is left is the fire
     await page.screenshot({ path: OUT });
-    console.log(`${OUT}  (effect ${name}, ${e.hold}ms after the blast)`);
+    console.log(`${OUT}  (effect ${name}, ${e.hold}ms after the blast, ${at})`);
     await browser.close();
     process.exit(0);
   }
   const frames = await burst(page, { x: anchor.x, y: anchor.y, scale, trigger, dur: e.dur, buckets: e.buckets, roiFrac: e.roiFrac });
   const best = frames.reduce((a, f) => (f.score > a.score ? f : a), { score: -1 });
   writeFileSync(OUT, Buffer.from(best.dataUrl.split(',')[1], 'base64'));
-  console.log(`${OUT}  (effect ${name}, best frame ${best.ageMs}ms, ${best.score} changed-px)`);
+  console.log(`${OUT}  (effect ${name}, best frame ${best.ageMs}ms, ${best.score} changed-px, ${at})`);
   await browser.close();
   process.exit(0);
 }
@@ -143,5 +151,5 @@ if (has('map')) {
 }
 await place(page, x, y, scale);
 await page.screenshot({ path: OUT });
-console.log(`${OUT}  (seed ${SEED}, x=${x.toFixed(1)} y=${y.toFixed(1)} @ ${scale.toFixed(2)}px/m, terrain=${kind})`);
+console.log(`${OUT}  (seed ${SEED}, x=${x.toFixed(1)} y=${y.toFixed(1)} @ ${scale.toFixed(2)}px/m, terrain=${kind}, ${at})`);
 await browser.close();

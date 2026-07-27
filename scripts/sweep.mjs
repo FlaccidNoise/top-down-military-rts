@@ -15,7 +15,7 @@
 //   Output: .screenshots/sweep/s<seed>-<crop>.png + index.html contact sheet
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { arg, launch, gotoStaged, deriveTargets, place, stageEmplacements, stageVehicles } from './lib/stage.mjs';
+import { arg, launch, gotoStaged, deriveTargets, place, stageEmplacements, stageVehicles, stagedHour, fmtHour } from './lib/stage.mjs';
 
 const PORT = Number(arg('port', '5198'));
 const SEEDS = arg('seeds', '1,2,3,4,5,6,7,8,9,10').split(',').map(Number);
@@ -45,12 +45,24 @@ const { browser, page } = await launch();
 // shot on has not moved. An accidental DPR bump or a MOBILE flip reshoots
 // every crop at once, and a reshot baseline is an invisible regression —
 // nothing downstream would ever flag it. Cheap assert, catastrophic miss.
+//
+// The hour is the third member of that family and the newest: under the solar
+// model (src/sim/solar.ts) the campaign's own OP_START_MIN of 06:00 is civil
+// twilight, so an unpinned sweep reshoots every crop as a dim blue night frame.
+// gotoStaged pins it; this asserts the pin actually took.
 {
   await page.goto(`http://[::1]:${PORT}/?camp=${CAMP}&seed=${SEEDS[0]}`, { waitUntil: 'domcontentloaded' });
   await page.waitForFunction(() => '__game' in window, null, { timeout: 5000 });
   const p = await page.evaluate(() => ({ dpr: window.__game.view.dpr, mobile: document.documentElement.classList.contains('mobile') }));
   if (p.dpr !== 1) throw new Error(`sweep preflight: view.dpr is ${p.dpr}, expected 1 — the baselines are 1280x800 @ dpr 1`);
   if (p.mobile) throw new Error('sweep preflight: html.mobile is set — the phone layout would reshoot every art baseline');
+  await gotoStaged(page, { port: PORT, seed: SEEDS[0], camp: CAMP });
+  const h = await stagedHour(page);
+  if (h.clockMin !== h.canon)
+    throw new Error(
+      `sweep preflight: staged clock is ${fmtHour(h.clockMin)}, expected the canonical ${fmtHour(h.canon)} — every baseline would reshoot under a different sun. Check the hour pin in scripts/lib/stage.mjs gotoStaged.`
+    );
+  console.log(`preflight ok — 1280x800 @ dpr 1, staged at ${fmtHour(h.canon)} (solar noon)`);
 }
 
 const shots = []; // {seed, crop, file}

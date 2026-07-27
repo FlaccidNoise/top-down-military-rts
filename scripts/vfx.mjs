@@ -49,7 +49,10 @@ const kind = await gotoStaged(page, { port: PORT, seed: SEED, camp: CAMP });
 const targets = await deriveTargets(page, { seed: SEED, kind });
 const anchor = targets.units; // stage over the US squad cluster (real units in frame)
 
-const house = await deriveBuilding(page, targets.village);
+// `village` only exists in the legacy target set; a bourg map calls the same
+// crop `place`. Since bourg went live in the campaign the default seed carves
+// a bourg, so hard-coding `village` crashed the whole gate on boot.
+const house = await deriveBuilding(page, targets.village ?? targets.place);
 
 const rows = [];
 let warnings = 0;
@@ -210,7 +213,7 @@ await browser.close();
         g.cam.scale = 12;
         for (let i = 0; i < 20; i++) await new Promise((r) => requestAnimationFrame(r));
       },
-      t2.village
+      t2.village ?? t2.place
     );
     await p2.screenshot({ path: join(OUT, file) });
     rows.push({ name, cells: [{ file, bucket: 0, age: 0, score: 0 }] });
