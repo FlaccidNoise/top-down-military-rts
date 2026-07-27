@@ -7,7 +7,8 @@ import { planBourg, stampBourg } from '../src/sim/bourg/plan';
 import { furnishInteriors } from '../src/sim/interiors/furnish';
 import { mulberry32 } from '../src/sim/rng';
 import { PatchIndex } from '../src/render/patches';
-import { Sim, sightBetween, smokePuff, type Squad } from '../src/sim/sim';
+import { eligible, fanOffsets, Sim, sightBetween, smokePuff, TEAM_FAN, type Squad } from '../src/sim/sim';
+import { resolveMoveSpots } from '../src/sim/spots';
 import { COMPANY_TOE, companyHeadcount } from '../src/sim/toe';
 
 // Task 14 perf: headless tick-time benchmark at design scale (a full US
@@ -592,5 +593,73 @@ describe('perf: design-scale tick time', () => {
     logPerf('night-settle', d, sim.soldiers.length);
     expect(sim.light).toBe(0); // guard: this really is the dark case
     expect(p95(d.all)).toBeLessThan(SANITY_P95_MS);
+  }, 120_000);
+});
+
+describe('perf: move-spot resolver (movement design §3.3)', () => {
+  // The preview recomputes every selected team's spots on any cursor/selection
+  // change (overlays.ts previewMoveSpots, memoized per tick), so a select-all
+  // drag pays this on the mousemove path. §3.3 budgets one full company
+  // recompute at "well under 0.5 ms"; M4 measured 0.83 ms in-browser for 18
+  // squads / 138 men / 27 teams.
+  //
+  // Budgeted absolute rather than as a ratio: unlike los-micro there is no
+  // second implementation to divide by, and min-of-reps (the furnish-cost
+  // idiom) already strips the contention spikes that make small absolute
+  // numbers flap. Measured standalone on this box, seed 7, 27 teams / 137
+  // movers: mean 1.20 ms, max 1.28 ms. The 5x ceiling matches what
+  // GEN_SANITY_MS allows itself, and only fires on a real algorithmic
+  // regression — an unbounded ring, a per-tile allocation — not a loaded box.
+  const RESOLVER_COMPANY_MS = 6;
+
+  // One select-all preview: every team of every blue squad, each with its own
+  // `used` set, anchored exactly as orderSquad's legacy y-axis fan places them
+  // (sim.ts orderSquad). Same call pattern the overlay runs, resolver only —
+  // no dangerScore raycasts, no canvas.
+  function recompute(sim: Sim, squads: Squad[], x: number, y: number): number {
+    let spots = 0;
+    for (const squad of squads) {
+      const offs = fanOffsets(squad.teamIds.length, TEAM_FAN);
+      squad.teamIds.forEach((teamId, ti) => {
+        const ids = sim.teams[teamId].soldierIds.filter((id) => eligible(sim.soldiers[id]));
+        if (ids.length === 0) return;
+        spots += resolveMoveSpots(sim, { soldierIds: ids, x, y: y + offs[ti], kind: 'move' }, new Set<number>()).length;
+      });
+    }
+    return spots;
+  }
+
+  it('resolver-company: one select-all recompute for a full rifle company', () => {
+    const { sim, commander, spawns, objectives, blueSquads } = buildScenario(SEED);
+    warmup(sim, commander, 300);
+    const far = objectives.reduce((a, o) =>
+      Math.hypot(o.x - spawns.west.x, o.y - spawns.west.y) > Math.hypot(a.x - spawns.west.x, a.y - spawns.west.y) ? o : a,
+    );
+
+    // Scenario validity: this has to be the design-scale select-all the budget
+    // is about, not a handful of survivors.
+    const teams = blueSquads.reduce((a, s) => a + s.teamIds.length, 0);
+    const movers = blueSquads.reduce((a, s) => a + s.soldierIds.filter((id) => eligible(sim.soldiers[id])).length, 0);
+    expect(teams).toBeGreaterThanOrEqual(20);
+    expect(movers).toBeGreaterThanOrEqual(120);
+
+    for (let r = 0; r < 8; r++) recompute(sim, blueSquads, far.x, far.y); // JIT warmup, untimed
+
+    // The cursor moves a tile each sample: a still cursor is the memoized case
+    // the overlay never recomputes, so measuring it would flatter the budget.
+    const ts: number[] = [];
+    let placed = 0;
+    for (let sample = 0; sample < 12; sample++) {
+      let best = Infinity;
+      for (let rep = 0; rep < 5; rep++) {
+        const t0 = performance.now();
+        placed = recompute(sim, blueSquads, far.x + sample, far.y);
+        best = Math.min(best, performance.now() - t0);
+      }
+      ts.push(best);
+    }
+    console.log(`[perf] resolver-company ${JSON.stringify({ mean: round(mean(ts)), max: round(max(ts)), teams, movers, placed })}`);
+    expect(mean(ts)).toBeLessThan(RESOLVER_COMPANY_MS);
+    expect(max(ts)).toBeLessThan(RESOLVER_COMPANY_MS * 2);
   }, 120_000);
 });

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { EDGE, GameMap } from '../src/sim/map';
-import { Sim, TEAM_FAN } from '../src/sim/sim';
+import { fanOffsets, Sim, TEAM_FAN } from '../src/sim/sim';
+import { resolveMoveSpots, threatBearing } from '../src/sim/spots';
 import { formatContextChip, previewMoveSpots, type MovePreview, type OverlayState } from '../src/ui/overlays';
 
 // M4 (movement design §3): the order preview resolves through the same
@@ -54,11 +55,18 @@ function expectParity(sim: Sim, pv: MovePreview): void {
   expect(checked).toBeGreaterThan(0);
 }
 
+// A 2x2 grass islet in open water: four tiles, and nothing else passable
+// within the resolver's r <= FALLBACK_R reach of them.
+function isletSim(): Sim {
+  const sim = new Sim(new GameMap(24, 24, 'water'), 3);
+  for (let y = 11; y <= 12; y++) for (let x = 11; x <= 12; x++) sim.map.setTerrain(x, y, 'grass');
+  return sim;
+}
+
 describe('refusal surfaces at preview time (design §3.4)', () => {
   it('men with no footing in reach are listed, not silently dropped', () => {
-    // A 2x2 grass islet in open water: four tiles for eight men.
-    const sim = new Sim(new GameMap(24, 24, 'water'), 3);
-    for (let y = 11; y <= 12; y++) for (let x = 11; x <= 12; x++) sim.map.setTerrain(x, y, 'grass');
+    // Four tiles for eight men.
+    const sim = isletSim();
     sim.addSquad('blue', 'A', men(8, 11.5, 11.5));
     const pv = previewMoveSpots(sim, state({ selectedSquads: [0], cursor: { x: 12, y: 12 } }))!;
 
@@ -74,6 +82,36 @@ describe('refusal surfaces at preview time (design §3.4)', () => {
     for (const r of pv.teams[0].refused) expect(Number.isFinite(r.slotX) && Number.isFinite(r.slotY)).toBe(true);
   });
 
+  // The refusal half of parity: it is not enough that the preview refuses SOME
+  // men, it must refuse exactly the men the sim declines to move. A preview
+  // that refused a different four would be as much a lie as a misplaced dot.
+  it('the men the preview refuses are exactly the men execution never dispatches', () => {
+    const sim = isletSim();
+    // A far corner pad, outside the islet's reach, whose squad burns the whole
+    // A* budget first. Without it the four placed men are pathed directly, and
+    // any of them already standing on his own resolved tile gets no path at
+    // all (astar returns length 1) — indistinguishable from a refusal. Over
+    // budget every placement is recorded in pendingPaths instead, so the
+    // placed/refused split is readable no matter where the men started.
+    for (let y = 19; y <= 22; y++) for (let x = 1; x <= 4; x++) sim.map.setTerrain(x, y, 'grass');
+    const decoy = sim.addSquad('blue', 'D', men(6, 2.5, 20.5));
+    const islet = sim.addSquad('blue', 'A', men(8, 11.5, 11.5));
+
+    const pv = previewMoveSpots(sim, state({ selectedSquads: [islet.id], selectedSquad: islet.id, cursor: { x: 12, y: 12 } }))!;
+    sim.orderSquad(decoy.id, { kind: 'move', x: 3.5, y: 21.5 });
+    sim.orderSquad(islet.id, { kind: 'move', x: 12, y: 12 });
+
+    const asc = (a: number, b: number) => a - b;
+    const previewed = pv.teams[0].spots.map((s) => s.sid).sort(asc);
+    const dispatched = islet.soldierIds.filter((id) => destOf(sim, id) !== null).sort(asc);
+    expect(dispatched).toEqual(previewed);
+    expect(pv.teams[0].refused.map((r) => r.sid).sort(asc)).toEqual(
+      islet.soldierIds.filter((id) => destOf(sim, id) === null).sort(asc),
+    );
+    expect(pv.refused).toBe(4);
+    expectParity(sim, pv);
+  });
+
   it('no preview at all when nothing is selected or a target mode owns the cursor', () => {
     const sim = new Sim(new GameMap(24, 24), 3);
     sim.addSquad('blue', 'A', men(4, 5.5, 5.5));
@@ -83,17 +121,17 @@ describe('refusal surfaces at preview time (design §3.4)', () => {
   });
 });
 
-describe('cover truth and snap tails', () => {
-  // A N-S hedge column at x = 30, enemy known to the east: the resolver puts
-  // men on the WEST flank (design §4.3a), which is what the dots must show.
-  function hedgeSim(): Sim {
-    const sim = new Sim(new GameMap(48, 24), 11);
-    for (let y = 0; y < 24; y++) sim.map.setTerrain(30, y, 'hedge');
-    sim.addSquad('blue', 'A', men(6, 10.5, 12));
-    sim.spotted.blue.set(999, { x: 40.5, y: 12.5 });
-    return sim;
-  }
+// A N-S hedge column at x = 30, enemy known to the east: the resolver puts
+// men on the WEST flank (design §4.3a), which is what the dots must show.
+function hedgeSim(): Sim {
+  const sim = new Sim(new GameMap(48, 24), 11);
+  for (let y = 0; y < 24; y++) sim.map.setTerrain(30, y, 'hedge');
+  sim.addSquad('blue', 'A', men(6, 10.5, 12));
+  sim.spotted.blue.set(999, { x: 40.5, y: 12.5 });
+  return sim;
+}
 
+describe('cover truth and snap tails', () => {
   it('dots report directional cover and carry the tail back to their slot', () => {
     const sim = hedgeSim();
     const pv = previewMoveSpots(sim, state({ selectedSquads: [0], cursor: { x: 28.4, y: 12.3 } }))!;
@@ -129,6 +167,60 @@ describe('cover truth and snap tails', () => {
     const sim = hedgeSim();
     const pv = previewMoveSpots(sim, state({ selectedSquads: [0], cursor: { x: 28.4, y: 12.3 }, armedOrder: 'smoke' }))!;
     expect(pv.kind).toBe('move');
+  });
+});
+
+// The execution-side half of the parity contract. TeamOrder.arc has exactly
+// one producer — the red commander's defend posts (src/sim/ai.ts) — and no
+// player input creates one, so OverlayState carries no arc and the preview
+// never sees this path. That makes the arc the one resolver input the preview
+// cannot check for us: what has to hold is that the arc the ORDER carried
+// reaches the resolver through orderTeam -> moveSoldiersTo unaltered.
+describe('defend with an arc: the order input the preview cannot express', () => {
+  const EAST: [number, number] = [-0.5, 0.5];
+  const WEST: [number, number] = [Math.PI - 0.5, Math.PI + 0.5];
+  const anchor = { x: 28.4, y: 12.3 };
+
+  // The arc is rung 1 of the bearing ladder and intel is rung 2 (spots.ts
+  // threatBearing), so pointing the arc AWAY from the known enemy is what
+  // proves the arc is actually being read: east and west put the men on
+  // opposite flanks of the same hedge.
+  it('the arc outranks the known contact and picks the flank', () => {
+    const sim = hedgeSim();
+    const ids = sim.squads[0].soldierIds;
+    const east = resolveMoveSpots(sim, { soldierIds: ids, x: anchor.x, y: anchor.y, kind: 'defend', arc: EAST }, new Set());
+    expect(threatBearing(sim, { soldierIds: ids, x: anchor.x, y: anchor.y, kind: 'defend', arc: WEST })).toBeCloseTo(Math.PI, 5);
+    const west = resolveMoveSpots(sim, { soldierIds: ids, x: anchor.x, y: anchor.y, kind: 'defend', arc: WEST }, new Set());
+    // enemy is east: an east arc holds the near (west) flank, x = 29
+    for (const s of east) expect(s.x).toBe(29);
+    // the west arc crosses the hedge to the far flank, x = 31
+    expect(west.filter((s) => s.x === 31).length).toBe(5);
+  });
+
+  // Both arcs go through orderTeam, and the WEST one is the load-bearing half:
+  // it disagrees with the intel bearing, so an orderTeam that dropped
+  // TeamOrder.arc on the way to moveSoldiersTo would silently fall back to
+  // rung 2 and put the men on the other flank. Asserting only the EAST arc
+  // cannot see that — east and intel resolve to the same tiles.
+  it('a hedge-adjacent defend line resolves tile-identically through orderTeam', () => {
+    for (const arc of [EAST, WEST]) {
+      const ref = hedgeSim();
+      const spots = resolveMoveSpots(
+        ref,
+        { soldierIds: ref.squads[0].soldierIds, x: anchor.x, y: anchor.y, kind: 'defend', arc, l: 0 },
+        new Set(),
+      );
+      const sim = hedgeSim();
+      sim.orderTeam(sim.squads[0].teamIds[0], { kind: 'defend', x: anchor.x, y: anchor.y, arc });
+      for (const sp of spots) expect(destOf(sim, sp.sid), `soldier ${sp.sid}`).toEqual([sp.x, sp.y, sp.l]);
+
+      // the M2 probe's quality numbers on the near flank, made permanent
+      if (arc === EAST) {
+        expect(spots.length).toBe(6);
+        expect(spots.filter((s) => s.snapped).length).toBe(5);
+        expect(spots.filter((s) => s.covered).length).toBe(6);
+      }
+    }
   });
 });
 
@@ -187,6 +279,24 @@ describe('floors: the preview resolves on the storey the order lands on (M4b)', 
     expect(pv.teams[0].level).toBe(0);
     expect(pv.level).toBe(0); // an explicit pick is reported even on the ground
     sim.orderSquad(0, { kind: 'defend', x: cursor.x, y: cursor.y, l: 0 });
+    expectParity(sim, pv);
+  });
+
+  // The floor menu's own reason to exist: a plain MOVE defaults to the ground
+  // (orderLevel), so upstairs is only reachable by an explicit {l}. Preview and
+  // order must climb together — this is the case where the auto-garrison
+  // default cannot mask a level-blind preview.
+  it('an explicit upstairs pick moves a plain move order off the ground, on both sides', () => {
+    const sim = houseSim();
+    const cursor = { x: 13.5, y: 13.5 };
+    const pv = previewMoveSpots(sim, state({ selectedSquads: [0], cursor, orderFloor: 1 }))!;
+    expect(pv.kind).toBe('move');
+    expect(pv.teams[0].level).toBe(1);
+    expect(pv.level).toBe(1);
+    expect(pv.placed).toBe(6);
+    for (const sp of pv.teams[0].spots) expect(sp.l).toBe(1);
+    // issueShortClick's floor-menu branch: the same order, carrying l
+    sim.orderSquad(0, { kind: 'move', x: cursor.x, y: cursor.y, l: 1 });
     expectParity(sim, pv);
   });
 
@@ -253,6 +363,31 @@ describe('the fan chain matches commitOrder → orderSquad → orderTeam', () =>
     // drag, exactly as commitOrder does, and must ignore it
     const pv = previewMoveSpots(sim, state({ selectedSquads: [0], cursor: { x: 5, y: 5 }, formationDrag: drag }))!;
     sim.orderSquad(0, { kind: 'move', x: drag.ax, y: drag.ay, facing: drag.facing, width: drag.width });
+    expectParity(sim, pv);
+  });
+
+  // Two nested fans at once — squads along the drag axis by cos/sin, then each
+  // squad's teams inside its own width/K share. One squad cannot catch a
+  // mis-shared width, because at K = 1 the squad offset is 0 and the share is
+  // the whole width; only K > 1 separates the two divisions.
+  it('preview === execution through a MULTI-squad drag, every team of both squads', () => {
+    const sim = new Sim(new GameMap(80, 60), 5);
+    sim.addSquadFromDef('blue', 'us_rifle', 12, 20);
+    sim.addSquadFromDef('blue', 'us_rifle', 12, 34);
+    const drag = { ax: 40, ay: 24, facing: 0.7, width: 24 };
+    const pv = previewMoveSpots(sim, state({ selectedSquads: [0, 1], cursor: { x: 5, y: 5 }, formationDrag: drag }))!;
+    expect(pv.teams.length).toBe(4);
+    expect(pv.placed).toBe(24);
+
+    // commitOrder's right-drag branch verbatim, K = 2
+    const K = 2;
+    const seg = drag.width / K;
+    const offs = fanOffsets(K, seg);
+    const cos = Math.cos(drag.facing);
+    const sin = Math.sin(drag.facing);
+    for (let i = 0; i < K; i++) {
+      sim.orderSquad(i, { kind: 'move', x: drag.ax + cos * offs[i], y: drag.ay + sin * offs[i], facing: drag.facing, width: seg });
+    }
     expectParity(sim, pv);
   });
 });
