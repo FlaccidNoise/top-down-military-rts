@@ -1,3 +1,4 @@
+import { ambientAt, elevationAt } from '../sim/solar';
 import { chitEtaMinutes, formatClock, minutesToReinforcement, type Chit, type Front } from '../strategic/front';
 import { cellIndex, cellXY, type CellTerrain, type SectorMap } from '../strategic/sector';
 import { MOBILE } from './view';
@@ -199,6 +200,18 @@ export class StrategicView {
         ctx.lineWidth = 2;
         ctx.strokeRect(cx + 1, cy + 1, size - 3, size - 3);
       }
+    }
+
+    // Day/night wash (design §6): one source-over fillRect over the sector-map
+    // band only — header, hint bar, legend and panels stay full daylight. Not
+    // realism at 500 m/cell: the point is the player reads "this engagement
+    // lands at 02:00" in the same colour language the battlefield grades with,
+    // BEFORE committing. a === 0 through the core of the day, so daytime pays
+    // nothing and every existing frame is untouched.
+    const amb = ambientAt(elevationAt(front.clockMin));
+    if (amb[3] > 0) {
+      ctx.fillStyle = `rgba(${amb[0]}, ${amb[1]}, ${amb[2]}, ${amb[3]})`;
+      ctx.fillRect(0, HEADER_H, canvasW, canvasH - HEADER_H - FOOTER_H);
     }
 
     // Narrow viewport: the legend is a 216x101 box and HINT_TEXT is a pure
@@ -462,7 +475,11 @@ export class StrategicView {
     const a = timeOfDayAngle(tod);
     const mx = cx + (r - 3.5) * Math.sin(a);
     const my = cy - (r - 3.5) * Math.cos(a);
-    if (tod >= 6 * 60 && tod < 18 * 60) {
+    // Solar, not a hard-coded 06:00-18:00: under the real arc sunset is 21:45,
+    // and the old literal drew a hollow "night" marker in broad daylight from
+    // 18:00 — visibly contradicting the graded battlefield the moment the sun
+    // model went live.
+    if (elevationAt(front.clockMin) > 0) {
       ctx.fillStyle = AMBER;
       ctx.beginPath();
       ctx.arc(mx, my, 2.2, 0, Math.PI * 2);
