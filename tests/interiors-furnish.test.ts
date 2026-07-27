@@ -191,9 +191,23 @@ describe('interiors furnish — determinism and order invariance (§6.4, D9)', (
     expect(shuffled.vEdges).toEqual(straight.vEdges);
   });
 
-  test('the pass is idempotent — furnishing a furnished map reproduces it exactly', () => {
+  test('re-running over a furnished map is safe, and settles to a fixed point', () => {
+    // Run 1 adds D11's rear doors, which are envelope edges the pass does NOT
+    // own and cannot take back — so run 2 sees a two-door mass, picks a
+    // different primary door, and may plan a different frontage. That is the
+    // one thing a re-run legitimately changes. What must hold at every step is
+    // that the map stays valid, and from run 2 on the pass is a fixed point.
     const plan = generateMap(2, 320, 240, 'bourg');
+    const check = (): void => {
+      for (const struct of structuresOf(plan.map, plan.buildings)) {
+        const it = interiorOf(plan.map, struct);
+        if (it !== null) expect(sealedTiles(plan.map, it)).toEqual([]);
+      }
+    };
     furnishInteriors(plan.map, plan.buildings, 61);
+    check();
+    furnishInteriors(plan.map, plan.buildings, 61);
+    check();
     const tiles = Uint8Array.from(plan.map.tiles);
     const hEdges = Uint8Array.from(plan.map.hEdges);
     const vEdges = Uint8Array.from(plan.map.vEdges);

@@ -1,5 +1,5 @@
 import { EDGE, type GameMap } from '../map';
-import type { Building, BuildingRole } from '../mapgen';
+import type { Building, BuildingRole, Vec } from '../mapgen';
 import type { Rng } from '../rng';
 import { churchAcross, churchDeep, churchFrame, churchTile } from './church';
 import {
@@ -13,6 +13,7 @@ import {
   structuresOf,
   type Interior,
 } from './kernel';
+import { addRearDoor, inferRoles } from './roles';
 import { aOf, dOf, frameOf, planRooms, tileX, tileY, type Frame } from './rooms';
 import {
   FURN_TAG,
@@ -59,12 +60,20 @@ import {
  * `generateMap`; every per-structure stream is derived from it and the
  * structure's GEOMETRY (D9), never its array index — so the bourg can reorder
  * its emissions without every interior in the game changing.
+ *
+ * `objective` is `MapPlan.objectives[0]`, used by §3.7's shop rule and nothing
+ * else. Optional — the doc's §6.1 signature has three parameters — and a map
+ * called without it simply grows no shops. It is additive rather than required
+ * because a legacy building's role is otherwise inferable from geometry alone.
  */
-export function furnishInteriors(map: GameMap, buildings: readonly Building[], base: number): void {
+export function furnishInteriors(map: GameMap, buildings: readonly Building[], base: number, objective?: Vec): void {
+  // §3.7, first: the role picks the plan AND the furniture table, so it has to
+  // exist before anything is partitioned. A no-op on the bourg, where every
+  // building already carries the role its generator gave it.
+  inferRoles(buildings, objective);
   for (const struct of structuresOf(map, buildings)) {
     const lead = struct.buildings[0];
     const role = lead.role ?? 'house';
-    if (PLAN_BY_ROLE[role] === 'none') continue;
     const it = interiorOf(map, struct);
     if (it === null) continue;
     // D9, keyed one notch harder than the doc writes it: the MASS bbox, not
@@ -74,11 +83,23 @@ export function furnishInteriors(map: GameMap, buildings: readonly Building[], b
     // index-sensitivity D9 exists to kill. The mass bbox is read off the map
     // and cannot depend on emission order at all.
     const key = structKey({ x: it.x0, y: it.y0, w: it.w, h: it.h });
+    // 'none' (halle, halt) is not partitioned and not furnished — but D11 says
+    // EVERY mass of interior area >= 20 gets a second way in, and a station
+    // shed with one door is exactly the building that most wants one. A halle
+    // has no envelope at all and falls out of addRearDoor on its own.
+    if (PLAN_BY_ROLE[role] === 'none') {
+      addRearDoor(map, it, furnStream(base, key, FURN_TAG.doors));
+      continue;
+    }
 
     stripFurniture(map, it);
     resetInterior(map, it);
     const plan = planRooms(map, it, lead.role, furnStream(base, key, FURN_TAG.partition));
     if (plan === null) continue;
+    // D11, AFTER the partitioner (roles.ts explains why) and BEFORE keepClear,
+    // which scans the map for DOOR edges and so gives the new door its 2-tile
+    // apron for free.
+    addRearDoor(map, it, furnStream(base, key, FURN_TAG.doors));
     const keep = keepClear(map, it, plan.spine);
     const c = new Ctx(map, it, plan, new Furnisher(map, it, keep), furnStream(base, key, FURN_TAG.furniture), base, key);
 
@@ -96,9 +117,14 @@ export function furnishInteriors(map: GameMap, buildings: readonly Building[], b
 // `resetInterior` owns the EDGES; without this a second run over the same map
 // re-partitions around the FIRST run's furniture, and a wall that moved can
 // then seal a tile the old furniture is standing on. Production calls the pass
-// once, so this is not a bug being papered over — it is what makes the pass
-// idempotent, which is the property that lets the dev assertion below be
-// trusted and lets a tool re-furnish a map to compare two bases.
+// once, so this is not a bug being papered over — it is what lets a tool
+// re-furnish a map to compare two bases without the dev assertion below firing
+// on the previous run's leftovers.
+//
+// Full byte-idempotency it does NOT buy, and cannot: D11's rear door is an
+// ENVELOPE edge, which this pass does not own and therefore never takes back,
+// so a second run sees a two-door mass, may pick the other door as primary and
+// may plan the other frontage. From run 2 on the pass is a fixed point.
 function stripFurniture(map: GameMap, it: Interior): void {
   for (const t of it.tiles) {
     const x = t % map.w;
