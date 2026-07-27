@@ -1,11 +1,11 @@
 import { applyBattleResults, fitRoster, squadMembers, type BattleRecord, type Campaign, type RosterEntry } from '../campaign/campaign';
 import { RedCommander } from '../sim/ai';
 import { SQUADS, TEAMS, type SquadKey } from '../sim/data';
-import type { GameMap } from '../sim/map';
+import { BREACH_LIP, BREACH_WIDE, EDGE, type GameMap } from '../sim/map';
 import { generateMap, type Building, type Vec } from '../sim/mapgen';
 import { mulberry32, type Rng } from '../sim/rng';
 import { wireBonds } from '../sim/scenario';
-import { Sim, type MemberInit } from '../sim/sim';
+import { Sim, type BreachEvent, type MemberInit } from '../sim/sim';
 import { COMPANY_TOE, squadHeadcount } from '../sim/toe';
 import { cellIndex, cellXY, type SectorMap } from './sector';
 import { Front, type Chit, type Engagement } from './front';
@@ -408,12 +408,74 @@ export function retreat(front: Front, chit: Chit): void {
   chit.strength = 0; // nowhere to go: overrun
 }
 
+// ── Battle scars (design section 4.3) ─────────────────────────────────────
+// Campaign doctrine already commits to persistent battle damage: decision
+// 2026-07-22 "deterministic battlefield carve WITH scars", and the strategic
+// spec defines `scars: Scar[]` on the cell as "wrecks, craters, ruined
+// buildings — appended after battles", applied at carve step 5, with the
+// stated payoff "with scars, the Panzer killed in June is still rusting there
+// in July". Scars are a T2 item and nothing wires them yet. Tactical breaching
+// is the PRODUCER that system was specified to consume, so this design's job is
+// to emit and to fix the re-stamp shape, and to stop there.
+//
+// T2 adds 'wreck' and 'crater' arms to the union; applyScars switches on kind.
+export interface BreachScar {
+  kind: 'breach';
+  horiz: boolean;
+  x: number;
+  y: number;
+  wide: boolean;
+}
+export type Scar = BreachScar;
+
+// A finished battle's breach log as re-stampable scars. Tile-indexed, and exact
+// on a future generation of the same seed BECAUSE the map is regenerated rather
+// than persisted (makeStrategicBattle calls generateMap fresh for every
+// engagement, and the bourg decision rejected a map version flag for exactly
+// this reason): a breach recorded at (h, 114, 87) on seed S refers to the same
+// wall on every future generation of seed S.
+export function breachScars(breaches: readonly BreachEvent[]): Scar[] {
+  return breaches.map((b) => ({ kind: 'breach', horiz: b.horiz, x: b.x, y: b.y, wide: b.wide }));
+}
+
+// Carve step 5, for the one scar kind that exists. Writes the edge byte and the
+// width code straight onto a freshly generated map — the same two writes
+// Sim.breachEdge makes, which is why a re-stamped map is indistinguishable from
+// the one the battle left behind.
+//
+// DELIBERATELY UNREFERENCED in production until T2 wires the scar list onto
+// Cell. Written now so the shape is fixed and the breach log is not silently
+// thrown away for a milestone; NOT called from makeStrategicBattle, because
+// doing so would need a `scars` field the strategic save does not carry, and
+// half-persisted damage that vanishes on reload is worse than none.
+export function applyScars(map: GameMap, scars: readonly Scar[]): void {
+  for (const s of scars) {
+    switch (s.kind) {
+      case 'breach': {
+        const top = s.wide ? BREACH_WIDE : BREACH_LIP;
+        if (s.horiz) {
+          map.setHEdge(s.x, s.y, EDGE.BREACH);
+          map.hEdgeTops[s.y * map.w + s.x] = top;
+        } else {
+          map.setVEdge(s.x, s.y, EDGE.BREACH);
+          map.vEdgeTops[s.y * (map.w + 1) + s.x] = top;
+        }
+        map.hasBreach = true;
+        break;
+      }
+    }
+  }
+}
+
 export function applyEngagementOutcome(
   c: Campaign,
   front: Front,
   e: Engagement,
   sim: Sim,
-): { record: BattleRecord; redLosses: number; cellTaken: boolean } {
+  // `breaches` rides the RETURNED result, not BattleRecord: BattleRecord lives
+  // in Campaign.log, which save.ts serializes, and the design forbids a save
+  // schema bump for a list nothing reads until T2.
+): { record: BattleRecord; redLosses: number; cellTaken: boolean; breaches: BreachEvent[] } {
   const attacker = front.chits.find((ch) => ch.id === e.attackerId)!;
   const defender = front.chits.find((ch) => ch.id === e.defenderId)!;
   // record.won is BLUE-perspective (the debrief is the player's after-action
@@ -435,7 +497,7 @@ export function applyEngagementOutcome(
     retreat(front, attacker);
   }
   syncStrengths(c, front);
-  return { record, redLosses, cellTaken };
+  return { record, redLosses, cellTaken, breaches: sim.breachLog };
 }
 
 // Resolve an engagement without running a Sim — coarse Lanchester-style

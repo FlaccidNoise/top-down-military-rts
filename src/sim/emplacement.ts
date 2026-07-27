@@ -1,4 +1,5 @@
 import { EMPLACEMENTS, type EmplacementKey, type LoadKey } from './data';
+import type { EdgeRef } from './map';
 import { EYE_STAND, eyeOf, sightBetween, type Side, type Sim, type Soldier } from './sim';
 
 // Crewed-weapon entity (spec §4): reuses the vehicle-crew pattern — an
@@ -29,6 +30,7 @@ export interface Emplacement {
   hasTarget: boolean; // arc weapons (mortars): HE point set via Sim.orderFire
   smokeRoundsLeft: number; // arc weapons: rounds left in an active smoke mission
   moveTarget: { x: number; y: number } | null; // wheeled AT guns: Sim.orderWheel destination
+  wallTarget: EdgeRef | null; // AT guns: player-assigned wall to open (D5), null = none
 }
 
 // How close a crew soldier must be to the gun to count as "serving" it —

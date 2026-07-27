@@ -1,9 +1,17 @@
 import { describe, expect, it } from 'vitest';
-import { GameMap } from '../src/sim/map';
+import { EDGE, GameMap } from '../src/sim/map';
 import { Sim } from '../src/sim/sim';
 
 // Open ground; soldiers get zeroed ammo unless a test needs live rounds.
 const flat = () => new GameMap(30, 20);
+
+// Open ground fenced across the objective with free-standing timber gates —
+// the one thing a grenade's 2 energy will open (GATE, threshold 1.5).
+const gated = () => {
+  const m = flat();
+  for (let y = 8; y <= 13; y++) for (const x of [12, 13, 14]) m.setVEdge(x, y, EDGE.DOOR);
+  return m;
+};
 
 function pair(opts: { dist?: number; map?: GameMap; seed?: number; grenades?: number } = {}) {
   const sim = new Sim(opts.map ?? flat(), opts.seed ?? 42);
@@ -96,7 +104,12 @@ describe('grenades', () => {
 
   it('determinism: two same-seed runs produce identical snapshots with a grenade thrown', () => {
     const run = () => {
-      const m = flat();
+      // A grenade is the cheapest breacher there is, which makes this the most
+      // valuable existing fixture for the destructible-terrain snapshot field
+      // (design section 4.2). Its 2 energy opens exactly one class — a gate,
+      // and only within 0.75 m — so the objective is fenced with them and the
+      // run below asserts the hole actually appeared.
+      const m = gated();
       const sim = new Sim(m, 42);
       const aId = sim.addSquad('blue', 'A', [{ name: 'A', weapon: 'garand', x: 5.5, y: 10.5 }]).soldierIds[0];
       const b1Id = sim.addSquad('red', 'B1', [{ name: 'B1', weapon: 'kar98k', x: 12.5, y: 10.5 }]).soldierIds[0];
@@ -106,8 +119,11 @@ describe('grenades', () => {
       a.grenadesLeft = 2;
       forceAssault(sim, a.teamId, 12.5, 10.5);
       for (let i = 0; i < 200; i++) sim.step();
-      return sim.snapshot();
+      return sim;
     };
-    expect(run()).toBe(run());
+    const a = run();
+    expect(a.snapshot()).toBe(run().snapshot());
+    expect(a.breachLog.length).toBeGreaterThan(0); // the gates really went in
+    expect(JSON.parse(a.snapshot()).breaches).toHaveLength(a.breachLog.length);
   });
 });

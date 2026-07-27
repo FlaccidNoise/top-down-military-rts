@@ -221,15 +221,34 @@ describe('pathfinding', () => {
 });
 
 describe('simulation', () => {
+  // The map stopped being immutable the day breaching landed, and snapshot()
+  // captured no map state at all because it had never had to (destructible
+  // terrain design, section 4.2). The primary determinism gate therefore has
+  // to contain something breachable, or the new `breaches` field is pinned by
+  // nothing. A waist-high garden wall (WALL_LOW, threshold 3) across the
+  // ordered axis is inside a barrage round's 4 energy out to 2.25 m, so the
+  // run really does open — asserted below rather than assumed.
+  const gardenWall = (sim: Sim, x: number, y0: number, y1: number) => {
+    for (let y = y0; y <= y1; y++) {
+      sim.map.setVEdge(x, y, EDGE.WALL);
+      sim.map.vEdgeTops[y * (sim.map.w + 1) + x] = 1;
+    }
+  };
+
   it('is deterministic: same seed and orders produce identical state', () => {
     const run = () => {
       const sim = makeScenario(42);
+      gardenWall(sim, 80, 50, 60);
+      sim.callBarrage('blue', 80, 55);
       sim.orderSquad(0, { kind: 'move', x: 80, y: 55 });
       sim.orderSquad(1, { kind: 'move', x: 80, y: 70 });
       for (let i = 0; i < 3000; i++) sim.step();
-      return sim.snapshot();
+      return sim;
     };
-    expect(run()).toBe(run());
+    const a = run();
+    expect(a.snapshot()).toBe(run().snapshot());
+    expect(a.breachLog.length).toBeGreaterThan(0); // the fixture really breaches
+    expect(JSON.parse(a.snapshot()).breaches).toHaveLength(a.breachLog.length);
   });
 
   it('different seeds diverge', () => {

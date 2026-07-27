@@ -1,4 +1,13 @@
-import { type GameMap } from './map';
+import { type GameMap, type StepMode } from './map';
+
+// Scrambling a rubble lip costs about as much as a flight of stairs (the
+// vertical step below charges a flat +2). Effect: A* prefers a door two tiles
+// away over a hole in the wall, and prefers the hole over a six-tile detour.
+export const BREACH_STEP = 2.5;
+
+// Flattening something costs more than scrambling it: a hull only drives
+// through a wall when going round genuinely costs more than six tiles.
+export const CRUSH_STEP = 6;
 
 // Scratch buffers shared across calls (sim is single-threaded, astar never
 // re-enters).
@@ -17,13 +26,14 @@ export function astar(
   sy: number,
   gx: number,
   gy: number,
-  mode: 'foot' | 'vehicle' = 'foot',
+  mode: StepMode = 'foot',
   sl = 0,
   gl = 0,
 ): { x: number; y: number; l: number }[] | null {
   const { w, h } = map;
   if (!map.inBounds(gx, gy) || !map.terrainAt(gx, gy).passable) return null;
-  if (mode === 'vehicle' && (sl > 0 || gl > 0)) return null;
+  const crush = mode === 'crush_light' || mode === 'crush_heavy';
+  if (mode !== 'foot' && (sl > 0 || gl > 0)) return null;
 
   const needLevels = Math.max(sl, gl) + 1;
   const layerSize = w * h;
@@ -118,7 +128,28 @@ export function astar(
         if (!ok) continue;
         const ni = cl * layerSize + ny * w + nx;
         if (closed[ni]) continue;
-        const stepCost = (dx !== 0 && dy !== 0 ? 1.414 : 1) * map.terrainAt(nx, ny).moveCost;
+        let stepCost = (dx !== 0 && dy !== 0 ? 1.414 : 1) * map.terrainAt(nx, ny).moveCost;
+        // A diagonal is charged only when BOTH L-paths go through a lip —
+        // otherwise there is a clean way round the rubble inside the same move
+        // and A* would be paying for a scramble nobody makes.
+        if (map.hasBreach) {
+          const lip =
+            dx !== 0 && dy !== 0
+              ? (map.breachBetween(cx, cy, nx, cy) || map.breachBetween(nx, cy, nx, ny)) &&
+                (map.breachBetween(cx, cy, cx, ny) || map.breachBetween(cx, ny, nx, ny))
+              : map.breachBetween(cx, cy, nx, ny);
+          if (lip) stepCost += BREACH_STEP;
+        }
+        // Same both-L-paths rule as the lip above: a diagonal that has a clean
+        // way round the wall inside the move is not a crush.
+        if (crush) {
+          const flatten =
+            dx !== 0 && dy !== 0
+              ? (map.crushesBetween(cx, cy, nx, cy) || map.crushesBetween(nx, cy, nx, ny)) &&
+                (map.crushesBetween(cx, cy, cx, ny) || map.crushesBetween(cx, ny, nx, ny))
+              : map.crushesBetween(cx, cy, nx, ny);
+          if (flatten) stepCost += CRUSH_STEP;
+        }
         const ng = g[cur] + stepCost;
         if (ng < g[ni]) {
           g[ni] = ng;
