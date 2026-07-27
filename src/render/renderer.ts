@@ -541,10 +541,51 @@ export class Renderer {
     this.drawFires(ctx, cam, now, cw, ch); // over the roof it is consuming, under the smoke screens
     this.drawBirds(ctx, cam, now, cw, ch);
     this.drawSmoke(ctx, cam, cw, ch);
-    this.drawContacts(ctx, cam, cw, ch);
     this.drawPlanes(ctx, cam, now, cw, ch);
+    // Ambient grade (N7): one source-over lerp toward the hour's tint, the
+    // last world-space draw — everything the sun lights sits under it. Sized
+    // past the viewport so the shake translate never exposes an ungraded edge.
+    this.gradeWorld(ctx, cw, ch);
+    // The frame's ONE additive batch, hoisted ABOVE the grade: 'lighter' adds
+    // a fixed increment, so the same flash over a graded-dark floor gains
+    // contrast for free — night punch nobody has to tune (§3.3). The cost,
+    // paid knowingly and covered by a reviewed vfx.mjs reshoot: hot FX now
+    // also draw over roof edges and smoke columns in daylight.
+    this.drawHot(ctx, cam, now, cw, ch);
+    // Intel markers, not world objects: contact ghosts and call-in marks sit
+    // above the grade so the picture the player acts on stays legible at 02:00.
+    this.drawContacts(ctx, cam, cw, ch);
     this.drawBarrageMarks(ctx, cam, now, cw, ch);
     ctx.restore();
+  }
+
+  // Ambient world grade (design §3.1/§3.2): source-over, never multiply — a
+  // lerp toward the tint lifts blacks instead of crushing them, so the night
+  // floor reads dark blue and low-contrast, never black. ambient.a === 0 above
+  // +25 deg elevation: the nine-hour core of the day skips the draw entirely
+  // and the canonical hour renders untouched by construction. Drawn INSIDE the
+  // worldShake envelope (world layers only); the DOM HUD and everything
+  // main.ts draws after renderer.draw() returns stay full-brightness.
+  private gradeWorld(ctx: CanvasRenderingContext2D, cw: number, ch: number): void {
+    const [r, g, b, a] = sun().ambient;
+    if (a <= 0) return;
+    ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${a})`;
+    ctx.fillRect(-24, -24, cw + 48, ch + 48);
+  }
+
+  // The frame's single additive batch (§3.3), AFTER the grade: shot flashes
+  // and tracers, boom fireballs, and the burning-building hot cores, pools and
+  // embers. The composite mode still flips twice per frame, never once per
+  // particle — the batches that used to live inside drawFire and drawFires
+  // merged into one when they hoisted above the grade.
+  private drawHot(ctx: CanvasRenderingContext2D, cam: Camera, now: number, cw: number, ch: number): void {
+    if (this.tracers.length === 0 && this.booms.length === 0 && this.lit.length === 0) return;
+    const tier = fxDetail(cam.scale);
+    hotPass(ctx, () => {
+      for (const t of this.tracers) this.drawShotHot(ctx, cam, t, now, cw, ch, tier);
+      for (const b of this.booms) this.drawBoomHot(ctx, cam, b, now, cw, ch);
+      this.drawFiresHot(ctx, cam, now, cw, ch, tier);
+    });
   }
 
   // Cast-shadow pass (U2). Every shadow in the world is thrown by the one sun
@@ -850,13 +891,16 @@ export class Renderer {
         f.y = v.y;
       } else this.stoke(key, v.x, v.y, v.id);
     }
+    // Cleared before the early-outs, not after: drawHot() reads lit/licks
+    // once this pass has returned, and a stale lick from the frame its fire
+    // burned out would otherwise glow over nothing.
+    this.lit.length = 0;
+    this.licks.length = 0;
     if (this.fires.size === 0) return;
 
     const S = cam.scale;
     const tier = fxDetail(S);
     const pad = 9 * S;
-    this.lit.length = 0;
-    this.licks.length = 0;
     for (const [key, f] of this.fires) {
       if (f.vid < 0 && (this.sim.tick - f.tick) / 30 >= FIRE_LIFE_S) {
         this.fires.delete(key);
@@ -910,33 +954,36 @@ export class Renderer {
         blit(ctx, 'fire', sx, sy, r * 2.2, 0.2); // warm halo — merges neighbouring licks into one body of flame
         blit(ctx, 'fire', sx, sy, r, 0.9);
         blit(ctx, 'soot', sx, sy - r * 1.2, r * 1.7, 0.34);
-        this.licks.push(sx, sy, r * 0.45, 0.5 + 0.3 * flick); // hot cores, drawn in the frame's fire hot pass
+        this.licks.push(sx, sy, r * 0.45, 0.5 + 0.3 * flick); // hot cores, drawn in the frame's hot batch (drawHot)
       }
     }
-    if (this.lit.length === 0) return;
+  }
 
-    hotPass(ctx, () => {
-      for (let i = 0; i < this.licks.length; i += 4) blit(ctx, 'flash', this.licks[i], this.licks[i + 1], this.licks[i + 2], this.licks[i + 3]);
-      for (const f of this.lit) {
-        const it = this.intensity(f);
-        const [x, y] = cam.worldToScreen(f.x, f.y, cw, ch);
-        // Warm ground pool: a light POOL, not a light DIRECTION — no cast
-        // shadow anywhere changes, so the one-sun rule still holds.
-        blit(ctx, 'fire', x, y, 3.2 * it * S, FIRE_POOL_ALPHA);
-        if (tier < 1) continue;
-        // Embers: a fixed pool per fire on staggered wrapping phases, riding
-        // the one wind up and downwind. They die — nothing here accumulates.
-        const ne = Math.max(2, Math.round(8 * it));
-        for (let i = 0; i < ne; i++) {
-          const hs = hash(f.key + 2000, i, 220);
-          const life = 1.6 + hs * 1.2;
-          const t = ((now * 0.001 + i * 0.37) % life) / life;
-          const ex = x + (WIND.dx * WIND.speed * 1.9 * t + (hash(f.key + 2000, i, 221) - 0.5) * 1.6) * S;
-          const ey = y + (WIND.dy * WIND.speed * 1.9 * t + (hash(f.key + 2000, i, 222) - 0.5) * 1.2) * S - t * 2.6 * S;
-          blit(ctx, 'spark', ex, ey, Math.max(0.6, (0.05 - 0.03 * t) * S), Math.pow(1 - t, 1.6) * 0.8 * it);
-        }
+  // The fires' share of the frame hot batch. Runs inside drawHot's hotPass —
+  // never call it with a source-over ctx.
+  private drawFiresHot(ctx: CanvasRenderingContext2D, cam: Camera, now: number, cw: number, ch: number, tier: 0 | 1 | 2): void {
+    if (this.lit.length === 0) return;
+    const S = cam.scale;
+    for (let i = 0; i < this.licks.length; i += 4) blit(ctx, 'flash', this.licks[i], this.licks[i + 1], this.licks[i + 2], this.licks[i + 3]);
+    for (const f of this.lit) {
+      const it = this.intensity(f);
+      const [x, y] = cam.worldToScreen(f.x, f.y, cw, ch);
+      // Warm ground pool: a light POOL, not a light DIRECTION — no cast
+      // shadow anywhere changes, so the one-sun rule still holds.
+      blit(ctx, 'fire', x, y, 3.2 * it * S, FIRE_POOL_ALPHA);
+      if (tier < 1) continue;
+      // Embers: a fixed pool per fire on staggered wrapping phases, riding
+      // the one wind up and downwind. They die — nothing here accumulates.
+      const ne = Math.max(2, Math.round(8 * it));
+      for (let i = 0; i < ne; i++) {
+        const hs = hash(f.key + 2000, i, 220);
+        const life = 1.6 + hs * 1.2;
+        const t = ((now * 0.001 + i * 0.37) % life) / life;
+        const ex = x + (WIND.dx * WIND.speed * 1.9 * t + (hash(f.key + 2000, i, 221) - 0.5) * 1.6) * S;
+        const ey = y + (WIND.dy * WIND.speed * 1.9 * t + (hash(f.key + 2000, i, 222) - 0.5) * 1.2) * S - t * 2.6 * S;
+        blit(ctx, 'spark', ex, ey, Math.max(0.6, (0.05 - 0.03 * t) * S), Math.pow(1 - t, 1.6) * 0.8 * it);
       }
-    });
+    }
   }
 
   // Last-known ghosts: intel markers, not world objects — drawn above roofs,
@@ -1454,13 +1501,9 @@ export class Renderer {
 
     this.breaches = this.breaches.filter((b) => now - b.at < BREACH_MS);
     for (const b of this.breaches) this.drawBreach(ctx, cam, b, now, cw, ch, tier);
-
-    // One additive batch for the whole frame: the composite mode flips twice,
-    // never once per particle.
-    hotPass(ctx, () => {
-      for (const t of this.tracers) this.drawShotHot(ctx, cam, t, now, cw, ch, tier);
-      for (const b of this.booms) this.drawBoomHot(ctx, cam, b, now, cw, ch);
-    });
+    // The additive halves (drawShotHot/drawBoomHot) moved to drawHot(), which
+    // runs after the ambient grade — the filters above are what keep the
+    // arrays it iterates current.
   }
 
   // Screen-space geometry shared by a shot's cool and hot passes: muzzle point
