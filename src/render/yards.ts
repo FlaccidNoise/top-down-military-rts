@@ -1,5 +1,5 @@
 import { EDGE, type GameMap } from '../sim/map';
-import { AO_ALPHA, SHADOW_ALPHA, SHADOW_SOFT_ALPHA, WIND, shadowOffset } from './light';
+import { AO_ALPHA, WIND, shadowAlpha, shadowOffset, shadowSoftAlpha } from './light';
 import { hash } from './noise';
 import type { BuildingBox, PatchIndex } from './patches';
 import type { Detail } from './terrain';
@@ -237,8 +237,8 @@ const WALL_TONES = ['rgb(128,122,110)', 'rgb(112,108,98)', 'rgb(140,132,118)', '
 function drawWallRun(g: Ctx, y: Yard, d: Detail): void {
   const [sdx, sdy] = shadowOffset(0.55);
   strokeSegs(g, y.runs, WALL_W * 1.5, `rgba(8,10,7,${(AO_ALPHA * 0.6).toFixed(3)})`);
-  strokeSegs(g, y.runs, WALL_W * 1.25, `rgba(10,14,8,${SHADOW_SOFT_ALPHA})`, sdx * 1.6, sdy * 1.6);
-  strokeSegs(g, y.runs, WALL_W * 1.15, `rgba(10,14,8,${SHADOW_ALPHA})`, sdx, sdy);
+  strokeSegs(g, y.runs, WALL_W * 1.25, `rgba(10,14,8,${shadowSoftAlpha()})`, sdx * 1.6, sdy * 1.6);
+  strokeSegs(g, y.runs, WALL_W * 1.15, `rgba(10,14,8,${shadowAlpha()})`, sdx, sdy);
   // Mass in 0.45 m blocks with value jitter, bucketed into four tones so the
   // whole wall is four strokes rather than one per block.
   const buckets: Seg[][] = [[], [], [], []];
@@ -316,8 +316,8 @@ function drawFenceRun(g: Ctx, y: Yard, d: Detail): void {
   // so what it throws is a broken grey band, not a second wall. The BAND is
   // the read and the posts only thicken it — fat per-post fingers over a faint
   // rail line turned the boundary into a comb.
-  strokeSegs(g, y.runs, 0.16, `rgba(10,12,8,${SHADOW_SOFT_ALPHA})`, sdx, sdy);
-  strokeSegs(g, y.runs, 0.1, `rgba(10,12,8,${(SHADOW_ALPHA * 0.68).toFixed(3)})`, sdx, sdy);
+  strokeSegs(g, y.runs, 0.16, `rgba(10,12,8,${shadowSoftAlpha()})`, sdx, sdy);
+  strokeSegs(g, y.runs, 0.1, `rgba(10,12,8,${(shadowAlpha() * 0.68).toFixed(3)})`, sdx, sdy);
   strokeSegs(g, y.runs, 0.13, `rgba(10,12,8,${(AO_ALPHA * 0.4).toFixed(3)})`);
   strokeSegs(g, y.runs, 0.075, 'rgb(96,80,56)');
   strokeSegs(g, y.runs, 0.025, 'rgba(186,172,140,0.30)', -sdx * 0.05, -sdy * 0.05);

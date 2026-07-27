@@ -1,5 +1,5 @@
 import { EDGE, type GameMap } from '../sim/map';
-import { AO_ALPHA, SUN, shadowOffset } from './light';
+import { AO_ALPHA, shadowOffset, sunStepFor } from './light';
 import { hash } from './noise';
 import type { PatchIndex } from './patches';
 import { stamp } from './stamps';
@@ -44,13 +44,19 @@ const POST_H = 1;
 
 // How far a prop's ink reaches from its anchor — the chunk bucketing uses it,
 // so a telegraph wire or a pole's shadow is never clipped off at a seam.
+// Bucketing happens ONCE at boot but the sun moves all day, so the cast term
+// pads every side by the worst case (any azimuth, the 3x dawn/dusk length
+// clamp) instead of reading the boot-time SUN. A chunk that gains the prop
+// but receives none of its ink at the current hour is a few wasted path ops
+// per bake, never a pixel.
+const CAST_PAD = 3; // solar LEN_MAX
 export function propExtent(p: Prop): [number, number, number, number] {
   const ax = p.axis === 0 ? 1 : 0;
   const ay = p.axis === 0 ? 0 : 1;
   const fwd = p.link ? (p.kind === 'telegraph' ? POLE_SPACING : POST_SPACING) : 0;
   const r = p.kind === 'haystack' ? 2.4 : p.kind === 'telegraph' ? 3 : p.kind === 'cart' || p.kind === 'well' || p.kind === 'gate' ? 2 : 1.4;
-  const cast = p.kind === 'telegraph' ? POLE_H : p.kind === 'well' ? WELL_FRAME_H : 0;
-  return [p.x - r, p.y - r, p.x + r + ax * fwd + SUN.dx * cast, p.y + r + ay * fwd + SUN.dy * cast];
+  const cast = (p.kind === 'telegraph' ? POLE_H : p.kind === 'well' ? WELL_FRAME_H : 0) * CAST_PAD;
+  return [p.x - r - cast, p.y - r - cast, p.x + r + ax * fwd + cast, p.y + r + ay * fwd + cast];
 }
 
 function doorNear(map: GameMap, x: number, y: number): boolean {
@@ -351,7 +357,8 @@ function finger(g: Ctx, x: number, y: number, dx: number, dy: number, w: number,
 const POST_SPRITE = 1.4;
 
 function postStamp(v: number, band: number): HTMLCanvasElement {
-  return stamp(`prop:post:${v}`, band, POST_SPRITE, (g) => {
+  // shadowOffset below makes the stamp sun-dependent — the key carries the step
+  return stamp(`prop:post:${v}:${sunStepFor(band)}`, band, POST_SPRITE, (g) => {
     const [sx, sy] = shadowOffset(POST_H);
     finger(g, 0.4, 0.4, sx, sy, 0.13, 0.18);
     g.fillStyle = hash(v, 0, 274) > 0.5 ? 'rgb(72,60,42)' : 'rgb(60,50,36)';

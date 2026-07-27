@@ -9,7 +9,7 @@ import {
   sunAt,
   sunStepAt,
 } from '../src/sim/solar';
-import { SHADOW_ALPHA, SHADOW_SOFT_ALPHA, SUN, setSun, shadowAlpha, shadowOffset, shadowSoftAlpha } from '../src/render/light';
+import { SHADOW_ALPHA, SHADOW_SOFT_ALPHA, SUN, SUN_PIN_BAND, setSun, shadowAlpha, shadowOffset, shadowSoftAlpha, sunStepFor } from '../src/render/light';
 
 // This suite is the guard on the whole day/night design. Map-north is DEFINED
 // as the direction today's shadows fall, which makes solar noon the fixed point
@@ -219,5 +219,19 @@ describe('render/light.ts adapter', () => {
     expect(SUN.dy).toBe(0.55 / Math.hypot(0.45, 0.55));
     expect(shadowOffset(0.71)).toEqual([SUN.dx * 0.71, SUN.dy * 0.71]);
     expect(shadowAlpha()).toBe(SHADOW_ALPHA);
+  });
+
+  it('pins bands at or under SUN_PIN_BAND to step 0 — far LOD never rebakes for the sun', () => {
+    expect(setSun(CANON_CLOCK_MIN)).toBe(false); // make the order-independence explicit
+    const canonStep = sunStepAt(CANON_CLOCK_MIN);
+    expect(SUN_PIN_BAND).toBe(8);
+    for (const b of [4, 8]) expect(sunStepFor(b)).toBe(0);
+    for (const b of [16, 32, 48]) expect(sunStepFor(b)).toBe(canonStep);
+    setSun(7 * 60);
+    const dawnStep = sunStepAt(7 * 60);
+    expect(dawnStep).not.toBe(canonStep);
+    for (const b of [4, 8]) expect(sunStepFor(b)).toBe(0); // pinned through the step
+    for (const b of [16, 32, 48]) expect(sunStepFor(b)).toBe(dawnStep);
+    setSun(CANON_CLOCK_MIN); // leave the module where every other suite expects it
   });
 });

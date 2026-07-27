@@ -22,7 +22,7 @@
 
 import { EDGE, type GameMap } from '../sim/map';
 import type { Building, BuildingRole } from '../sim/mapgen';
-import { SHADOW_ALPHA, SHADOW_SOFT_ALPHA, shadowOffset } from './light';
+import { MAP_N, SHADOW_ALPHA, SHADOW_SOFT_ALPHA } from './light';
 import { hash } from './noise';
 import { stamp } from './stamps';
 
@@ -111,7 +111,13 @@ const STRAW_C: RGB = [156, 138, 92];
 
 const PAD = 0.25; // collar around the 1 m tile inside the bake box
 const BOX = 1 + PAD * 2;
-const [SDX, SDY] = shadowOffset(0.18); // contact shadow, not a full-height cast
+// Contact shade, not a full-height cast — and deliberately NOT the moving sun:
+// furniture stands under a roof, so its 0.18 m drop is ambient-interior
+// styling fixed at the house direction, the same rule as AO_ALPHA. That is
+// what keeps the furn:* stamps sun-independent (no step in their key) and an
+// interior identical at noon and at midnight until the grade dims it.
+const SDX = MAP_N.dx * 0.18;
+const SDY = MAP_N.dy * 0.18;
 
 // neighbour / wall bitmask
 const N = 1;

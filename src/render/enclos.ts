@@ -1,5 +1,5 @@
 import { EDGE, type GameMap } from '../sim/map';
-import { AO_ALPHA, SHADOW_ALPHA, SHADOW_SOFT_ALPHA, shadowOffset } from './light';
+import { AO_ALPHA, shadowAlpha, shadowOffset, shadowSoftAlpha, sun, sunStepFor } from './light';
 import { hash } from './noise';
 import { stamp } from './stamps';
 import type { Detail } from './terrain';
@@ -390,13 +390,13 @@ export function drawEnclosureWalls(g: Ctx, idx: EnclosureIndex, tx0: number, ty0
     const wd = WIDTH[top];
     const [sdx, sdy] = shadowOffset(RISE[top]);
     strokeSegs(g, segs, wd * 1.55, `rgba(8,10,7,${(AO_ALPHA * 0.6).toFixed(3)})`);
-    strokeSegs(g, segs, wd * 1.3, `rgba(10,14,8,${SHADOW_SOFT_ALPHA})`, sdx * 1.5, sdy * 1.5);
-    strokeSegs(g, segs, wd * 1.15, `rgba(10,14,8,${SHADOW_ALPHA})`, sdx, sdy);
+    strokeSegs(g, segs, wd * 1.3, `rgba(10,14,8,${shadowSoftAlpha()})`, sdx * 1.5, sdy * 1.5);
+    strokeSegs(g, segs, wd * 1.15, `rgba(10,14,8,${shadowAlpha()})`, sdx, sdy);
     // A head-high wall is told from a waist-high one by its WIDTH (0.46 vs
     // 0.28 m of coping) and by how far its shadow reaches (RISE 1.25 vs 0.6) —
     // the two things a strict plan projection has. This used to paint the SE
     // flank as "a visible face", which is a side view of a wall.
-    if (top === 2) strokeSegs(g, segs, wd * 1.15, `rgba(10,14,8,${(SHADOW_ALPHA * 0.55).toFixed(3)})`, sdx * 0.55, sdy * 0.55);
+    if (top === 2) strokeSegs(g, segs, wd * 1.15, `rgba(10,14,8,${(shadowAlpha() * 0.55).toFixed(3)})`, sdx * 0.55, sdy * 0.55);
     // Mass in rubble courses, value-jittered and bucketed into four tones so
     // the whole enclosure is four strokes rather than one per block.
     const buckets: Seg[][] = [[], [], [], []];
@@ -613,7 +613,8 @@ export function drawEnclosureGround(g: Ctx, map: GameMap, idx: EnclosureIndex, t
 // A churchyard yew: darker, denser and rounder than anything in the hedgerow
 // families, because it is the one tree that is always planted, never grown.
 function yewSprite(variant: number, band: number): HTMLCanvasElement {
-  return stamp(`enclos:yew:${variant}`, band, 3, (g) => {
+  // shadowOffset below makes the stamp sun-dependent — the key carries the step
+  return stamp(`enclos:yew:${variant}:${sunStepFor(band)}`, band, 3, (g) => {
     const C = 1.5;
     const R = 0.82;
     const [sx, sy] = shadowOffset(0.85);
@@ -629,7 +630,7 @@ function yewSprite(variant: number, band: number): HTMLCanvasElement {
       g.arc(x, y, r, 0, TAU);
       g.fill();
     };
-    g.fillStyle = 'rgba(8,14,8,0.34)';
+    g.fillStyle = `rgba(8,14,8,${0.34 * sun().alphaMul})`;
     for (const [x, y, r] of lobes) blob(x + sx, y + sy, r);
     g.fillStyle = 'rgba(0,0,0,0.30)';
     for (const [x, y, r] of lobes) blob(C + (x - C) * 1.05, C + (y - C) * 1.05, r * 1.05);

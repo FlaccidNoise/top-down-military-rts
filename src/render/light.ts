@@ -53,6 +53,24 @@ export const SUN = {
 
 export { CANON_CLOCK_MIN } from '../sim/solar';
 
+// Map-north — bit-for-bit the canonical shadow direction (see solar.ts §1).
+// Exported for the few draws that are deliberately SUN-INDEPENDENT: interior
+// furniture sits under a roof, so its contact shade keeps the house direction
+// whatever the sky is doing outside.
+export { MAP_N } from '../sim/solar';
+
+// Far-LOD pin: at <= 8 px/m a hedge's 0.4 m cast is three pixels and its
+// direction is not readable, so bands this coarse always bake under step 0 and
+// NEVER rebake for the sun — rebaking 300 whole-map chunks to rotate a 3 px
+// smudge is the one place the moving sun could genuinely hurt (design §2.3,
+// §9.1). Day/night at far LOD is carried by the ambient grade alone.
+export const SUN_PIN_BAND = 8;
+
+/** The sun-step component of a bake key at `band` — pinned to 0 at far LOD. */
+export function sunStepFor(band: number): number {
+  return band <= SUN_PIN_BAND ? 0 : cur.step;
+}
+
 // The wind now lives sim-side (src/sim/wind.ts) because the smoke-column LOS
 // test leans by it, and src/sim/* may not import src/render/*. Re-exported here
 // so every render consumer keeps importing it from the light model.

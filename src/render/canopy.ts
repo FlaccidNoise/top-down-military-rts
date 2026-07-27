@@ -1,5 +1,5 @@
 import { hash } from './noise';
-import { shadowOffset } from './light';
+import { shadowOffset, sun, sunStepFor } from './light';
 import { stamp } from './stamps';
 import type { Detail } from './terrain';
 
@@ -28,12 +28,18 @@ function shade(base: [number, number, number], f: number): string {
 
 export function canopySprite(family: 0 | 1 | 2, variant: number, band: number, d: Detail): HTMLCanvasElement {
   const fine = d >= 2;
-  return stamp(`canopy:${family}:${variant}:${fine ? 2 : 1}`, band, SPRITE, (g) => {
+  // The sprite reads the sun (cast direction, lit/shaded lobes), so its cache
+  // key carries the step — pinned to 0 at far LOD bands with the terrain
+  // chunks that blit it, which keeps the far-LOD sprite set from churning.
+  return stamp(`canopy:${family}:${variant}:${fine ? 2 : 1}:${sunStepFor(band)}`, band, SPRITE, (g) => {
     const f = FAMILY[family];
     const R = 0.75 * f.scale;
     const C = SPRITE / 2;
     const [sx, sy] = shadowOffset(0.45);
-    const sun = Math.atan2(sy, sx); // SE, the direction shade falls
+    // Down-sun, the direction shade falls. At night the cast offset collapses
+    // to zero length; the lobe shading then keys off the direction vector so
+    // the canopy keeps a coherent (if moot, under the grade) light side.
+    const sunA = sx === 0 && sy === 0 ? Math.atan2(sun().dir[1], sun().dir[0]) : Math.atan2(sy, sx);
     if (f.orchard) {
       // planted tree standing in worked earth, not lawn
       g.fillStyle = 'rgba(120,102,70,0.20)';
@@ -54,7 +60,7 @@ export function canopySprite(family: 0 | 1 | 2, variant: number, band: number, d
       g.arc(lx, ly, lr, 0, TAU);
       g.fill();
     };
-    g.fillStyle = 'rgba(10,16,8,0.28)';
+    g.fillStyle = `rgba(10,16,8,${0.28 * sun().alphaMul})`;
     for (const [lx, ly, lr] of lobes) blob(lx + sx, ly + sy, lr);
     // one silhouette pass at 1.06x gives the whole cluster a clean dark rim
     // for the price of a single extra fill — cheaper and far less busy than
@@ -68,11 +74,11 @@ export function canopySprite(family: 0 | 1 | 2, variant: number, band: number, d
     }
     const facing = (a: number, target: number) => Math.cos(a - target) > 0.2;
     g.fillStyle = 'rgba(14,22,12,0.22)';
-    for (const [lx, ly, lr, a] of lobes) if (facing(a, sun)) blob(lx + lr * 0.16, ly + lr * 0.2, lr * 0.82);
+    for (const [lx, ly, lr, a] of lobes) if (facing(a, sunA)) blob(lx + lr * 0.16, ly + lr * 0.2, lr * 0.82);
     g.fillStyle = 'rgba(190,214,148,0.16)';
-    for (const [lx, ly, lr, a] of lobes) if (facing(a, sun + Math.PI)) blob(lx - lr * 0.14, ly - lr * 0.18, lr * 0.7);
+    for (const [lx, ly, lr, a] of lobes) if (facing(a, sunA + Math.PI)) blob(lx - lr * 0.14, ly - lr * 0.18, lr * 0.7);
     g.fillStyle = 'rgba(206,224,158,0.22)';
-    for (const [lx, ly, lr, a] of lobes) if (facing(a, sun + Math.PI)) blob(lx - lr * 0.3, ly - lr * 0.34, lr * 0.3);
+    for (const [lx, ly, lr, a] of lobes) if (facing(a, sunA + Math.PI)) blob(lx - lr * 0.3, ly - lr * 0.34, lr * 0.3);
     g.fillStyle = 'rgba(12,20,10,0.30)';
     for (let i = 0; i < 8; i++) {
       const a = hash(variant, i, 255) * TAU;
@@ -88,14 +94,14 @@ export function canopySprite(family: 0 | 1 | 2, variant: number, band: number, d
       }
     }
     if (!fine) return;
-    const tx = C + Math.cos(sun) * R * 0.72;
-    const ty = C + Math.sin(sun) * R * 0.72;
+    const tx = C + Math.cos(sunA) * R * 0.72;
+    const ty = C + Math.sin(sunA) * R * 0.72;
     g.fillStyle = 'rgba(30,24,16,0.55)';
     blob(tx, ty, 0.045);
     g.strokeStyle = 'rgba(30,24,16,0.4)';
     g.lineWidth = 0.035;
     for (let i = 0; i < 2; i++) {
-      const a = sun + Math.PI + (hash(variant, i, 260) - 0.5) * 1.6;
+      const a = sunA + Math.PI + (hash(variant, i, 260) - 0.5) * 1.6;
       g.beginPath();
       g.moveTo(tx, ty);
       g.lineTo(tx + Math.cos(a) * R * 0.4, ty + Math.sin(a) * R * 0.4);

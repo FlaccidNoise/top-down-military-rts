@@ -2,7 +2,7 @@ import { TERRAIN, type TerrainKey } from '../sim/data';
 import { BREACH_WIDE, EDGE, type GameMap } from '../sim/map';
 import type { Building } from '../sim/mapgen';
 import type { Camera } from './camera';
-import { AO_ALPHA, SHADOW_ALPHA, SHADOW_SOFT_ALPHA, SUN, shadowOffset } from './light';
+import { AO_ALPHA, SUN, SUN_PIN_BAND, shadowAlpha, shadowOffset, shadowSoftAlpha, sun, sunStepFor } from './light';
 import { MOBILE } from './view';
 
 // Terrain is rendered lazily into 16x16-tile chunk canvases at the nearest
@@ -244,20 +244,42 @@ function vergeStamp(v: number, side: number, band: number): HTMLCanvasElement {
 }
 
 // One-sun hillshade (height phase D): lambertian shade per elev tile from the
-// shared NW sun. Direction TO the sun is the opposite of the SE shadow
-// direction in light.ts; sun elevation ~40° (tan ≈ 0.84). Shade is expressed
-// as a delta from the flat-surface lambert term so perfectly flat ground is
+// shared sun. Direction TO the sun is the opposite of the shadow direction in
+// light.ts; the art convention's sun height stays fixed (tan ≈ 0.84) — only
+// the horizontal component rotates with the day. Shade is expressed as a
+// delta from the flat-surface lambert term so perfectly flat ground is
 // untouched even before the hasElev early-out.
+//
+// N4: the light vector is memoized PER SUN STEP, never a module constant — a
+// module constant is exactly the "reader that caches across frames without
+// the step in its key" that light.ts's header forbids. Callers sit inside
+// chunk bakes whose key records the step, so a per-step memo is sound.
 const SUN_Z = 0.84;
-const LIGHT_LEN = Math.hypot(SUN.dx, SUN.dy, SUN_Z);
-const LIGHT = { x: -SUN.dx / LIGHT_LEN, y: -SUN.dy / LIGHT_LEN, z: SUN_Z / LIGHT_LEN };
-const FLAT_DOT = LIGHT.z; // n·L for n = (0,0,1)
 const HILLSHADE = 0.45; // subtle multiply/overlay strength
+interface HillLight {
+  x: number;
+  y: number;
+  z: number;
+  flat: number; // n·L for n = (0,0,1)
+}
+let hillStep = -1;
+let hillLight: HillLight = { x: 0, y: 0, z: 0, flat: 0 };
+function hillLightNow(): HillLight {
+  const s = sun();
+  if (s.step !== hillStep) {
+    hillStep = s.step;
+    // Same ops, same order as the shipped module constants — at the canonical
+    // step this must land on bit-identical doubles or every baseline moves.
+    const len = Math.hypot(s.dir[0], s.dir[1], SUN_Z);
+    hillLight = { x: -s.dir[0] / len, y: -s.dir[1] / len, z: SUN_Z / len, flat: SUN_Z / len };
+  }
+  return hillLight;
+}
 
 // Lambertian shade overlay for one tile: central differences on elev
-// (clamped) give the normal; the dot delta from FLAT_DOT lights NW-facing
-// slopes and darkens SE-facing ones.
-function drawHillshade(g: Ctx, map: GameMap, x: number, y: number): void {
+// (clamped) give the normal; the dot delta from FLAT_DOT lights sun-facing
+// slopes and darkens the ones facing away.
+function drawHillshade(g: Ctx, map: GameMap, x: number, y: number, LIGHT: HillLight): void {
   const dzdx = Math.max(-8, Math.min(8, (map.elevAt(x + 1, y) - map.elevAt(x - 1, y)) / 2));
   const dzdy = Math.max(-8, Math.min(8, (map.elevAt(x, y + 1) - map.elevAt(x, y - 1)) / 2));
   if (dzdx === 0 && dzdy === 0) return;
@@ -268,7 +290,7 @@ function drawHillshade(g: Ctx, map: GameMap, x: number, y: number): void {
   // clamp, so the guard buys nothing.
   const nl = Math.sqrt(dzdx * dzdx + dzdy * dzdy + 1);
   const dot = (-dzdx * LIGHT.x + -dzdy * LIGHT.y + LIGHT.z) / nl;
-  const d = (dot - FLAT_DOT) * HILLSHADE;
+  const d = (dot - LIGHT.flat) * HILLSHADE;
   if (Math.abs(d) < 0.004) return;
   g.fillStyle = d > 0 ? `rgba(255,250,235,${Math.min(0.5, d)})` : `rgba(8,10,14,${Math.min(0.5, -d)})`;
   g.fillRect(x, y, 1, 1);
@@ -331,9 +353,9 @@ function drawHedgeRun(g: Ctx, map: GameMap, tx0: number, ty0: number, tx1: numbe
   };
   // base AO: subtle all-around ground darkening at the hedge's foot
   pass((t) => t.width * 1.3, () => `rgba(8,10,7,${AO_ALPHA * 0.6})`, 0, 0);
-  // soft two-layer SE cast shadow
-  pass((t) => t.width * 1.15, () => `rgba(10,14,8,${SHADOW_SOFT_ALPHA})`, sdx * 1.6, sdy * 1.6);
-  pass((t) => t.width * 1.1, () => `rgba(10,14,8,${SHADOW_ALPHA})`, sdx, sdy);
+  // soft two-layer cast shadow (down-sun; alpha rides the sun's own ramp)
+  pass((t) => t.width * 1.15, () => `rgba(10,14,8,${shadowSoftAlpha()})`, sdx * 1.6, sdy * 1.6);
+  pass((t) => t.width * 1.1, () => `rgba(10,14,8,${shadowAlpha()})`, sdx, sdy);
   // earth bank under the foliage: a bocage hedge grows out of a raised bank,
   // and without it the run reads as a green sausage lying on the lawn
   pass((t) => t.width * 1.25, () => 'rgba(72,58,38,0.35)', 0.06, 0.08);
@@ -1711,8 +1733,8 @@ function drawEdge(g: Ctx, e: number, x0: number, y0: number, x1: number, y1: num
     }
     if (!wide) {
       // the lip: spoil heaped across the opening, lower and wider than the wall
-      bar(0.34, `rgba(12,14,9,${SHADOW_SOFT_ALPHA})`, 0.24, 0.76, rdx * 1.3, rdy * 1.3);
-      bar(0.3, `rgba(12,14,9,${SHADOW_ALPHA})`, 0.26, 0.74, rdx * 0.7, rdy * 0.7);
+      bar(0.34, `rgba(12,14,9,${shadowSoftAlpha()})`, 0.24, 0.76, rdx * 1.3, rdy * 1.3);
+      bar(0.3, `rgba(12,14,9,${shadowAlpha()})`, 0.26, 0.74, rdx * 0.7, rdy * 0.7);
       bar(0.26, RUBBLE[1], 0.26, 0.74);
       bar(0.1, 'rgba(224,216,194,0.24)', 0.3, 0.7, -rdx * 0.5, -rdy * 0.5);
     }
@@ -1731,7 +1753,7 @@ function drawEdge(g: Ctx, e: number, x0: number, y0: number, x1: number, y1: num
         (hash(k, y0, 386 + i) - 0.5) * Math.PI,
       ]);
     }
-    g.fillStyle = `rgba(12,14,9,${SHADOW_ALPHA})`;
+    g.fillStyle = `rgba(12,14,9,${shadowAlpha()})`;
     for (const [sx, sy, r] of st) {
       g.beginPath();
       g.ellipse(sx + rdx, sy + rdy, r * 1.2, r * 0.86, 0, 0, Math.PI * 2);
@@ -1761,9 +1783,9 @@ function drawEdge(g: Ctx, e: number, x0: number, y0: number, x1: number, y1: num
     const cy = (y0 + y1) / 2;
     const [sdx, sdy] = shadowOffset(0.3);
     const r = 0.22;
-    g.fillStyle = `rgba(14,12,9,${SHADOW_SOFT_ALPHA})`;
+    g.fillStyle = `rgba(14,12,9,${shadowSoftAlpha()})`;
     g.fillRect(cx - r + sdx * 1.7, cy - r + sdy * 1.7, r * 2, r * 2);
-    g.fillStyle = `rgba(14,12,9,${SHADOW_ALPHA})`;
+    g.fillStyle = `rgba(14,12,9,${shadowAlpha()})`;
     g.fillRect(cx - r + sdx, cy - r + sdy, r * 2, r * 2);
     g.fillStyle = '#8a8073'; // dressed ashlar, warmer and lighter than the nave flags
     g.fillRect(cx - r, cy - r, r * 2, r * 2);
@@ -1836,6 +1858,14 @@ export class TerrainLayer {
   /** Chunks painted flat this frame because the bake budget ran out (mobile). */
   readonly pending = new Set<string>();
   private flat = new Map<string, string>();
+  // The sun step the current frame keys on, and the one before it. A sun step
+  // is invalidation BY KEY — the old step's chunks stay in the cache, serve
+  // through fallback() tier 2 while the new step bakes under the frame budget,
+  // and age out of the LRU untouched. Versions stays breach-only: bumping it
+  // for the sun would also dirty the pinned far-LOD bands, which must never
+  // rebake for the sun (light.ts SUN_PIN_BAND).
+  private curStep = sun().step;
+  private prevStep = sun().step;
 
   constructor(private map: GameMap, buildings: readonly Building[] = []) {
     // Flat maps (all elev 0, no stairs) early-out everywhere below, so their
@@ -1919,8 +1949,8 @@ export class TerrainLayer {
     return id < 0 ? 0 : (this.across[id] ?? 0);
   };
 
-  private chunk(cx: number, cy: number, band: number): HTMLCanvasElement {
-    const key = `${cx},${cy},${band}`;
+  private chunk(cx: number, cy: number, band: number, step: number): HTMLCanvasElement {
+    const key = `${cx},${cy},${band},${step}`;
     const ver = this.vers.at(cy * this.chunksW + cx);
     const hit = this.cache.get(key);
     // A stale chunk is not a missing one: it holds the right ground with the
@@ -2018,8 +2048,9 @@ export class TerrainLayer {
     }
     drawEnclosureWalls(g, this.enclos, tx0, ty0, tx1, ty1, d);
     if (this.hasElev) {
+      const light = hillLightNow();
       for (let y = ty0; y < ty1; y++) {
-        for (let x = tx0; x < tx1; x++) drawHillshade(g, this.map, x, y);
+        for (let x = tx0; x < tx1; x++) drawHillshade(g, this.map, x, y, light);
       }
     }
     this.cache.set(key, { c, ver });
@@ -2066,14 +2097,46 @@ export class TerrainLayer {
     if (box) this.invalidateTiles(box[0], box[1], box[2], box[3]);
   }
 
-  // Same chunk baked at some other band — same content, wrong sharpness. Walk
-  // from the crispest down; source rect origin is always that band's own
-  // 1-tile gutter, which is what keeps the blit aligned.
+  // Per-band sun-step key components. Bands at or under the pin always key on
+  // step 0 (light.ts SUN_PIN_BAND), so for them "previous" IS "current".
+  private stepFor(band: number): number {
+    return band <= SUN_PIN_BAND ? 0 : this.curStep;
+  }
+  private prevStepFor(band: number): number {
+    return band <= SUN_PIN_BAND ? 0 : this.prevStep;
+  }
+
+  // Same chunk baked under some other key — three tiers, in the order the
+  // design argues (§5.1):
+  //   1. current sun step, another band — right shadows, wrong sharpness
+  //   2. previous sun step, same band  — right sharpness, shadows one 18°
+  //      bucket stale (far less visible than a resolution drop: the shadow is
+  //      a fraction of the frame's ink, the resolution is all of it)
+  //   3. previous sun step, another band
+  // Only the previous step is searched, not every step that ever existed: sun
+  // steps are monotone through a battle and a typical engagement crosses at
+  // most one boundary, so cur+prev covers the cache's real population.
+  // Source rect origin is always that band's own 1-tile gutter, which is what
+  // keeps the blit aligned.
   private fallback(cx: number, cy: number, band: number): [HTMLCanvasElement, number] | null {
     for (let i = BANDS.length - 1; i >= 0; i--) {
       const b = BANDS[i];
       if (b === band) continue;
-      const c = this.cache.get(`${cx},${cy},${b}`);
+      const c = this.cache.get(`${cx},${cy},${b},${this.stepFor(b)}`);
+      if (c) return [c.c, b];
+    }
+    if (this.prevStep === this.curStep) return null;
+    const pb = this.prevStepFor(band);
+    if (pb !== this.stepFor(band)) {
+      const c = this.cache.get(`${cx},${cy},${band},${pb}`);
+      if (c) return [c.c, band];
+    }
+    for (let i = BANDS.length - 1; i >= 0; i--) {
+      const b = BANDS[i];
+      if (b === band) continue;
+      const p = this.prevStepFor(b);
+      if (p === this.stepFor(b)) continue; // pinned band: already tried in tier 1
+      const c = this.cache.get(`${cx},${cy},${b},${p}`);
       if (c) return [c.c, b];
     }
     return null;
@@ -2106,6 +2169,12 @@ export class TerrainLayer {
   draw(ctx: Ctx, cam: Camera, cw: number, ch: number): void {
     this.bakeBudget = MOBILE ? MOBILE_BAKES_PER_FRAME : BAKES_PER_FRAME;
     const band = BANDS.find((b) => b >= cam.scale) ?? BANDS[BANDS.length - 1];
+    const live = sun().step;
+    if (live !== this.curStep) {
+      this.prevStep = this.curStep;
+      this.curStep = live;
+    }
+    const step = this.stepFor(band);
     const [wx0, wy0] = cam.screenToWorld(0, 0, cw, ch);
     const [wx1, wy1] = cam.screenToWorld(cw, ch, cw, ch);
     const cx0 = Math.max(0, Math.floor(wx0 / CHUNK));
@@ -2115,7 +2184,7 @@ export class TerrainLayer {
     const size = CHUNK * cam.scale;
     for (let cy = cy0; cy <= cy1; cy++) {
       for (let cx = cx0; cx <= cx1; cx++) {
-        const key = `${cx},${cy},${band}`;
+        const key = `${cx},${cy},${band},${step}`;
         const [sx, sy] = cam.worldToScreen(cx * CHUNK, cy * CHUNK, cw, ch);
         if (this.bakeBudget <= 0 && !this.cache.has(key)) {
           const fb = this.fallback(cx, cy, band);
@@ -2131,7 +2200,7 @@ export class TerrainLayer {
           }
         }
         this.pending.delete(key);
-        ctx.drawImage(this.chunk(cx, cy, band), band, band, CHUNK * band, CHUNK * band, sx, sy, size, size);
+        ctx.drawImage(this.chunk(cx, cy, band, step), band, band, CHUNK * band, CHUNK * band, sx, sy, size, size);
       }
     }
   }
