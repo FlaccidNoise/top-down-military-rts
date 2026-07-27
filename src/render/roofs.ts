@@ -505,10 +505,12 @@ function buildArt(b: Building, stories: number, smallOfPair: boolean, map: GameM
   const openE = new Uint8Array(b.h);
   for (let k = 0; k < b.h; k++) openE[k] = map.vEdge(b.x + b.w, b.y + k);
 
-  // A spire stands ~6 m above the belfry floor, so its shadow reaches far
-  // past the tower's own. That long finger across the churchyard is the whole
-  // church read at the far-LOD camera, where the roof itself is 15 px wide.
-  const spireCast = plan === 'spire' ? 6 : 0;
+  // Belfry plus slate spire is ~12 m of stone above the eave the walls stop
+  // at, so its shadow reaches far past the tower's own. That long finger
+  // across the churchyard is the ONLY thing carrying the tower's height now
+  // that the apex is drawn centred in plan — and at the far-LOD camera, where
+  // the roof itself is 15 px wide, it is the whole church read.
+  const spireCast = plan === 'spire' ? 12 : 0;
   const spireCross = role === 'church' ? Math.min(1.5, spanLen * 0.2) : 0;
   const [csdx, csdy] = shadowOffset(1.1 * stories + spireCast);
   const blurPad = 0.6;
@@ -523,11 +525,6 @@ function buildArt(b: Building, stories: number, smallOfPair: boolean, map: GameM
     ny = Math.min(ny, lean.y);
     mx = Math.max(mx, lean.x + lean.w);
     my = Math.max(my, lean.y + lean.h);
-  }
-  if (plan === 'spire') {
-    // the apex and its finial lean up-sun out of the footprint (see spireInto)
-    nx -= 0.6;
-    ny -= 0.6;
   }
 
   return {
@@ -956,10 +953,13 @@ function chimneyInto(g: CanvasRenderingContext2D, st: Rect, i: number, k: number
 // The single highest-value crop in the town, so the tower is drawn as a TOWER
 // rather than as a roof over a small square building: a stone belfry stage
 // with louvred openings on all four faces, corner pinnacles, and a slate spire
-// whose apex leans up-sun by the same convention the wall-face parallax uses,
-// so the mass reads as tall from straight above. Nothing here is rolled — the
-// geometry is a function of the footprint alone, so the church is the same
-// church on every seed and at every zoom band.
+// drawn in STRICT plan: the apex sits on the centre of the belfry square, so
+// the pyramid is the X of four hip arrises you actually see from overhead. The
+// height is sold entirely by the cast shadow — bakeShadow throws a long
+// tapering finger with the finial cross at its tip — never by leaning the
+// apex out of the footprint. Nothing here is rolled: the geometry is a
+// function of the footprint alone, so the church is the same church on every
+// seed and at every zoom band.
 // Limestone, sitting a shade under the rubble wall base so the tower belongs
 // to the same village. Brighter than this and the belfry reads as concrete.
 const STONE_FACE = '#8f8879';
@@ -990,37 +990,41 @@ function louvreInto(g: CanvasRenderingContext2D, r: Rect, alongU: boolean, band:
   }
 }
 
-// A cross, outlined light and filled dark so it survives landing on a black
-// belfry opening at 24 px/m and on pale limestone at 8. `dx, dy` is the up-sun
-// lean every tall thing in this renderer takes; the ARM stays on a world axis,
-// because a crossbar is horizontal in the world and drawing it perpendicular
-// to the leaning staff turns a cross into an X.
-function crossInto(g: CanvasRenderingContext2D, x: number, y: number, dx: number, dy: number, barAlongX: boolean, band: number): void {
-  const half = Math.hypot(dx, dy) * 0.42;
-  const bx = barAlongX ? half : 0;
-  const by = barAlongX ? 0 : half;
-  const mx = x + dx * 0.66;
-  const my = y + dy * 0.66;
+// A cross seen from directly overhead. The staff is vertical in the world, so
+// it projects to a POINT and the only limb with real length is the crossbar;
+// the glyph is therefore a small world-axis `+` — a long stick leaning up-sun
+// out of the roof, which is what this used to draw, is an elevation view.
+// Everything that says "tall" is in the cast shadow, and that shadow is itself
+// cross-shaped: the staff swept SE by shadowOffset(h), with the bar laid
+// across it at the height the bar actually hangs. Outlined light and filled
+// dark so it survives landing on a black belfry opening at 24 px/m and on pale
+// limestone at 8.
+function crossInto(g: CanvasRenderingContext2D, x: number, y: number, h: number, arm: number, barAlongX: boolean, band: number): void {
+  const bx = barAlongX ? arm : 0;
+  const by = barAlongX ? 0 : arm;
+  const sx = barAlongX ? 0 : arm * 0.55; // the staff's token limb: no real plan length
+  const sy = barAlongX ? arm * 0.55 : 0;
+  const [fdx, fdy] = shadowOffset(h);
+  const [bdx, bdy] = shadowOffset(h * 0.68);
   const line = (x0: number, y0: number, x1: number, y1: number): void => {
     g.beginPath();
     g.moveTo(x0, y0);
     g.lineTo(x1, y1);
     g.stroke();
   };
-  const [sdx, sdy] = shadowOffset(1.2);
   g.lineCap = 'round';
   g.lineWidth = Math.max(0.09, 2.4 / band);
   g.strokeStyle = 'rgba(14,12,9,0.45)';
-  line(x + sdx, y + sdy, x + dx + sdx, y + dy + sdy);
-  line(mx - bx + sdx, my - by + sdy, mx + bx + sdx, my + by + sdy);
+  line(x, y, x + fdx, y + fdy);
+  line(x + bdx - bx, y + bdy - by, x + bdx + bx, y + bdy + by);
   g.lineWidth = Math.max(0.16, 4.2 / band); // the halo, so the dark core reads on anything
   g.strokeStyle = 'rgba(236,230,214,0.55)';
-  line(x, y, x + dx, y + dy);
-  line(mx - bx, my - by, mx + bx, my + by);
+  line(x - bx, y - by, x + bx, y + by);
+  line(x - sx, y - sy, x + sx, y + sy);
   g.lineWidth = Math.max(0.075, 2 / band);
   g.strokeStyle = '#241f1a';
-  line(x, y, x + dx, y + dy);
-  line(mx - bx, my - by, mx + bx, my + by);
+  line(x - bx, y - by, x + bx, y + by);
+  line(x - sx, y - sy, x + sx, y + sy);
   g.lineCap = 'butt';
 }
 
@@ -1064,16 +1068,15 @@ function spireInto(g: CanvasRenderingContext2D, art: RoofArt, key: number, band:
   louvreInto(g, { x: r.x + inset, y: cy - lw / 2, w: ld, h: lw }, false, band);
   louvreInto(g, { x: r.x + r.w - inset - ld, y: cy - lw / 2, w: ld, h: lw }, false, band);
 
-  // 3 — the spire. Four slated triangles from the base square to an apex that
-  // leans up-sun; the SE pair therefore reads big and dark and the NW pair as
-  // two bright slivers, which is exactly a slate pyramid under a NW sun.
+  // 3 — the spire. Four slated triangles meeting at an apex CENTRED on the
+  // belfry square: from directly overhead a pyramid is an X of hip arrises and
+  // nothing else. What separates the two sun-facing planes from the two shaded
+  // ones is value, not a lean — the lean was an oblique projection, and the
+  // height it was faking now lives in bakeShadow's spire finger.
   const ss = side * 0.7;
   const sp: Rect = { x: cx - ss / 2, y: cy - ss / 2, w: ss, h: ss };
-  // Enough lean to sell the height, not so much that the two up-sun faces
-  // shrink to slivers and the pyramid reads as one dark quad with a crease.
-  const lean = side * 0.14;
-  const ax = cx - SUN.dx * lean;
-  const ay = cy - SUN.dy * lean;
+  const ax = cx;
+  const ay = cy;
   // The scrim is what separates the two lit faces from each other and the two
   // shaded ones from each other: four planes at two values reads as two.
   const faces: {
@@ -1150,14 +1153,15 @@ function spireInto(g: CanvasRenderingContext2D, art: RoofArt, key: number, band:
     g.fillRect(c[0] + pin * 0.72, c[1], pin * 0.28, pin);
   }
 
-  // 5 — the cross finial. A few pixels at the far-LOD camera, and still the
-  // thing that says "church" there.
-  const fl = side * 0.34;
+  // 5 — the cross finial, in plan. Its real shadow is 20 m of churchyard and
+  // belongs to the ground pass (bakeShadow), so the one drawn here is only the
+  // short throw across the SE slope right beside it — anything longer walks
+  // off the sprite.
   g.fillStyle = STONE_LIT;
   g.beginPath();
   g.arc(ax, ay, Math.max(0.08, side * 0.03), 0, TAU);
   g.fill();
-  crossInto(g, ax, ay, -SUN.dx * fl, -SUN.dy * fl, art.ridgeAlongX, band);
+  crossInto(g, ax, ay, side * 0.2, side * 0.13, art.ridgeAlongX, band);
 }
 
 // A party wall carried up through the roof. Drawn only at a unit's LO joint so
@@ -1454,12 +1458,16 @@ function drawRoof(g: CanvasRenderingContext2D, art: RoofArt, band: number, damag
   if (art.wing && art.spireCross > 0) {
     const wg = art.wing;
     const fl = art.spireCross;
+    // A gable cross stands a metre or so proud of the apex it sits on, so its
+    // shadow is a short cross laid on the slope beside it — long enough to
+    // read at 24 px/m, short enough to stay inside the eave and PAD_SE.
+    const arm = fl * 0.42;
     if (along) {
-      crossInto(g, wg.x + wg.w / 2, wg.y + 0.2, -SUN.dx * fl, -SUN.dy * fl, true, band);
-      crossInto(g, wg.x + wg.w / 2, wg.y + wg.h - 0.2, -SUN.dx * fl, -SUN.dy * fl, true, band);
+      crossInto(g, wg.x + wg.w / 2, wg.y + 0.2, fl * 0.5, arm, true, band);
+      crossInto(g, wg.x + wg.w / 2, wg.y + wg.h - 0.2, fl * 0.5, arm, true, band);
     } else {
-      crossInto(g, wg.x + 0.2, wg.y + wg.h / 2, -SUN.dx * fl, -SUN.dy * fl, false, band);
-      crossInto(g, wg.x + wg.w - 0.2, wg.y + wg.h / 2, -SUN.dx * fl, -SUN.dy * fl, false, band);
+      crossInto(g, wg.x + 0.2, wg.y + wg.h / 2, fl * 0.5, arm, false, band);
+      crossInto(g, wg.x + wg.w - 0.2, wg.y + wg.h / 2, fl * 0.5, arm, false, band);
     }
   }
 
@@ -1594,13 +1602,45 @@ function bakeShadow(b: Building, art: RoofArt, stories: number, band: number): H
     const [tdx, tdy] = shadowOffset(1.1 * stories + art.spireCast);
     const cx = r.x + r.w / 2;
     const cy = r.y + r.h / 2;
-    const half = Math.min(r.w, r.h) * 0.24;
+    const side = Math.min(r.w, r.h);
+    // ACROSS the sun, not along it: the base of the finger is the spire's own
+    // width seen square to the light.
+    const px = -SUN.dy;
+    const py = SUN.dx;
+    // The tip keeps a little width instead of vanishing to a point — the top
+    // courses and the finial are what the eye actually finds out here, and the
+    // last third of a true cone taper is sub-metre and reads as nothing.
+    const finger = (base: number, tip: number): void => {
+      g.beginPath();
+      g.moveTo(cx + sdx + px * base, cy + sdy + py * base);
+      g.lineTo(cx + sdx - px * base, cy + sdy - py * base);
+      g.lineTo(cx + tdx - px * tip, cy + tdy - py * tip);
+      g.lineTo(cx + tdx + px * tip, cy + tdy + py * tip);
+      g.closePath();
+      g.fill();
+    };
+    g.filter = `blur(${(0.4 * band).toFixed(2)}px)`;
+    g.fillStyle = `rgba(12,15,10,${SHADOW_SOFT_ALPHA})`;
+    finger(side * 0.3, side * 0.14);
+    g.filter = `blur(${(0.12 * band).toFixed(2)}px)`;
+    g.fillStyle = `rgba(12,15,10,${SHADOW_ALPHA})`;
+    finger(side * 0.24, side * 0.09);
+    // The finial at the tip. A vertical cross throws a cross-shaped shadow,
+    // and this one lands on open churchyard — which is what tells the player
+    // the finger is a SPIRE and not a chimney or a wall.
+    const arm = side * 0.18;
+    const bx = art.ridgeAlongX ? arm : 0;
+    const by = art.ridgeAlongX ? 0 : arm;
+    const mx = cx + tdx - SUN.dx * arm * 0.7;
+    const my = cy + tdy - SUN.dy * arm * 0.7;
+    g.lineCap = 'round';
+    g.lineWidth = Math.max(0.14, arm * 0.36);
+    g.strokeStyle = `rgba(12,15,10,${SHADOW_ALPHA})`;
     g.beginPath();
-    g.moveTo(cx + sdx - half, cy + sdy - half);
-    g.lineTo(cx + sdx + half, cy + sdy + half);
-    g.lineTo(cx + tdx, cy + tdy);
-    g.closePath();
-    g.fill();
+    g.moveTo(mx - bx, my - by);
+    g.lineTo(mx + bx, my + by);
+    g.stroke();
+    g.lineCap = 'butt';
   }
   g.filter = 'none';
   // contact occlusion sits on the true footprint and stays crisp
