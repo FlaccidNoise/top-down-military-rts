@@ -41,7 +41,7 @@ export const TERRAIN_LABELS: Record<CellTerrain, string> = {
   bridge: 'Bridge',
   road: 'Road',
 };
-const TERRAIN_ORDER: CellTerrain[] = ['open', 'woods', 'town', 'river', 'bridge', 'road'];
+const TERRAIN_ORDER: CellTerrain[] = ['open', 'woods', 'bourg', 'river', 'bridge', 'road'];
 
 const PANEL_BG = 'rgba(18, 22, 15, 0.88)';
 const PANEL_BORDER = '#4a5240';
