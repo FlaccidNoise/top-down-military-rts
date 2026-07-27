@@ -1,5 +1,5 @@
 import { EDGE, type GameMap } from '../sim/map';
-import { AO_ALPHA, shadowAlpha, shadowOffset, shadowSoftAlpha, sun, sunStepFor } from './light';
+import { AO_ALPHA, capsulePath, shadowAlpha, shadowOffset, shadowOffsetLegible, shadowSoftAlpha, sun, sunStepFor, sweptStrokePath } from './light';
 import { hash } from './noise';
 import { stamp } from './stamps';
 import type { Detail } from './terrain';
@@ -359,6 +359,24 @@ function strokeSegs(g: Ctx, segs: Seg[], width: number, style: string, odx = 0, 
   g.stroke();
 }
 
+// A cast-shadow layer as the SWEEP of the wall's thickness along the sun —
+// one connected slab leaving the masonry, never a translated stroke floating
+// parallel to it (which is what the runs threw at dawn). One fill for all
+// segs: unions under nonzero winding, and the square-cap extension lets two
+// runs meeting at a corner join without a notch.
+function fillSweptSegs(g: Ctx, segs: Seg[], width: number, style: string, odx: number, ody: number): void {
+  if (segs.length === 0) return;
+  g.fillStyle = style;
+  g.beginPath();
+  for (const [ax, ay, bx, by] of segs) {
+    const len = Math.hypot(bx - ax, by - ay) || 1;
+    const ux = ((bx - ax) / len) * (width / 2);
+    const uy = ((by - ay) / len) * (width / 2);
+    sweptStrokePath(g, ax - ux, ay - uy, bx + ux, by + uy, width, odx, ody);
+  }
+  g.fill();
+}
+
 // Two builds of the same limestone. The waist-high plot wall keeps the warm
 // tones the legacy yard walls already use (yards.ts WALL_TONES), so a bourg
 // garden boundary and a 'town' farm boundary read as the same material on a
@@ -388,15 +406,18 @@ export function drawEnclosureWalls(g: Ctx, idx: EnclosureIndex, tx0: number, ty0
     for (const r of idx.runs) if (r.top === top && hits(r, tx0, ty0, tx1, ty1)) segs.push([r.ax, r.ay, r.bx, r.by]);
     if (segs.length === 0) continue;
     const wd = WIDTH[top];
-    const [sdx, sdy] = shadowOffset(RISE[top]);
+    // Legible clamp: at the 3x dawn rake a 1.25 RISE threw the stroke 3.75 m
+    // clear of its own wall — three floating parallel lines across the yard.
+    const [sdx, sdy] = shadowOffsetLegible(RISE[top]);
     strokeSegs(g, segs, wd * 1.55, `rgba(8,10,7,${(AO_ALPHA * 0.6).toFixed(3)})`);
-    strokeSegs(g, segs, wd * 1.3, `rgba(10,14,8,${shadowSoftAlpha()})`, sdx * 1.5, sdy * 1.5);
-    strokeSegs(g, segs, wd * 1.15, `rgba(10,14,8,${shadowAlpha()})`, sdx, sdy);
+    fillSweptSegs(g, segs, wd * 1.3, `rgba(10,14,8,${shadowSoftAlpha()})`, sdx * 1.5, sdy * 1.5);
+    fillSweptSegs(g, segs, wd * 1.15, `rgba(10,14,8,${shadowAlpha()})`, sdx, sdy);
     // A head-high wall is told from a waist-high one by its WIDTH (0.46 vs
     // 0.28 m of coping) and by how far its shadow reaches (RISE 1.25 vs 0.6) —
     // the two things a strict plan projection has. This used to paint the SE
-    // flank as "a visible face", which is a side view of a wall.
-    if (top === 2) strokeSegs(g, segs, wd * 1.15, `rgba(10,14,8,${(shadowAlpha() * 0.55).toFixed(3)})`, sdx * 0.55, sdy * 0.55);
+    // flank as "a visible face", which is a side view of a wall. The swept
+    // core+soft already stack a darker band at the wall base, so the extra
+    // 0.55x layer the head-high wall used to add would only triple it.
     // Mass in rubble courses, value-jittered and bucketed into four tones so
     // the whole enclosure is four strokes rather than one per block.
     const buckets: Seg[][] = [[], [], [], []];
@@ -453,7 +474,8 @@ function drawGate(g: Ctx, gt: GateRun, d: Detail): void {
   const ny = ux;
   // The SAME throw as the run this gate is punched into — a gate that shades
   // 10% further than the wall on either side of it breaks the joint.
-  const [sdx, sdy] = shadowOffset(RISE[gt.top]);
+  const [sdx, sdy] = shadowOffsetLegible(RISE[gt.top]);
+  const am = sun().alphaMul;
   const pr = WIDTH[gt.top] * 0.62; // pier half-size
   // leaf first, so the piers cap its ends
   const t0 = pr * 1.3;
@@ -464,7 +486,10 @@ function drawGate(g: Ctx, gt: GateRun, d: Detail): void {
     const lx1 = gt.ax + ux * t1;
     const ly1 = gt.ay + uy * t1;
     g.lineCap = 'butt';
-    strokeSegs(g, [[lx0, ly0, lx1, ly1]], 0.2, 'rgba(12,14,9,0.28)', sdx, sdy);
+    g.beginPath();
+    sweptStrokePath(g, lx0, ly0, lx1, ly1, 0.2, sdx, sdy);
+    g.fillStyle = `rgba(12,14,9,${(0.28 * am).toFixed(3)})`;
+    g.fill();
     strokeSegs(g, [[lx0, ly0, lx1, ly1]], 0.15, '#6b4c2a');
     strokeSegs(g, [[lx0, ly0, lx1, ly1]], 0.05, 'rgba(196,170,124,0.30)', -0.03, -0.04);
     if (d >= 1) {
@@ -488,7 +513,7 @@ function drawGate(g: Ctx, gt: GateRun, d: Detail): void {
     const cx = gt.ax + ux * t;
     const cy = gt.ay + uy * t;
     g.lineCap = 'round'; // one connected finger, not a detached copy of the pier
-    g.strokeStyle = 'rgba(12,14,9,0.30)';
+    g.strokeStyle = `rgba(12,14,9,${(0.3 * am).toFixed(3)})`;
     g.lineWidth = pr * 2;
     g.beginPath();
     g.moveTo(cx, cy);
@@ -612,12 +637,17 @@ export function drawEnclosureGround(g: Ctx, map: GameMap, idx: EnclosureIndex, t
 
 // A churchyard yew: darker, denser and rounder than anything in the hedgerow
 // families, because it is the one tree that is always planted, never grown.
+// Stamp span in meters. 6, not the tree's own ~3: the down-sun half holds the
+// cast shadow, which at the clamped dawn rake sweeps ~2 m past the lobes —
+// the 3 m stamp clipped it mid-air.
+const YEW_SPRITE = 6;
+
 function yewSprite(variant: number, band: number): HTMLCanvasElement {
   // shadowOffset below makes the stamp sun-dependent — the key carries the step
-  return stamp(`enclos:yew:${variant}:${sunStepFor(band)}`, band, 3, (g) => {
-    const C = 1.5;
+  return stamp(`enclos:yew:${variant}:${sunStepFor(band)}`, band, YEW_SPRITE, (g) => {
+    const C = YEW_SPRITE / 2;
     const R = 0.82;
-    const [sx, sy] = shadowOffset(0.85);
+    const [sx, sy] = shadowOffsetLegible(0.85);
     const lobes: [number, number, number][] = [];
     const n = 7;
     for (let i = 0; i < n; i++) {
@@ -630,8 +660,13 @@ function yewSprite(variant: number, band: number): HTMLCanvasElement {
       g.arc(x, y, r, 0, TAU);
       g.fill();
     };
+    // The sweep of each lobe from the trunk along the sun — one union fill,
+    // connected to the tree at any hour (a translated copy of the lobes read
+    // as a second yew lying on the grass at dawn).
     g.fillStyle = `rgba(8,14,8,${0.34 * sun().alphaMul})`;
-    for (const [x, y, r] of lobes) blob(x + sx, y + sy, r);
+    g.beginPath();
+    for (const [x, y, r] of lobes) capsulePath(g, x, y, x + sx, y + sy, r);
+    g.fill();
     g.fillStyle = 'rgba(0,0,0,0.30)';
     for (const [x, y, r] of lobes) blob(C + (x - C) * 1.05, C + (y - C) * 1.05, r * 1.05);
     for (let i = 0; i < lobes.length; i++) {
@@ -722,9 +757,12 @@ function churchyardInto(
   // here, not a card with its inscription facing the camera. All the height is
   // in the cast shadow, which uses the same SUN every other shadow in the
   // scene does — the graves used to throw theirs off a hand-rolled offset and
-  // read as a field of detached grey flakes.
-  const [hdx, hdy] = shadowOffset(HEADSTONE_H);
-  const [tdx, tdy] = shadowOffset(TOMB_H);
+  // read as a field of detached grey flakes. Legible clamp on the length and
+  // the sun's own alpha ramp on the fill: sixty full-dark 2.4 m rakes turned
+  // the dawn churchyard into a barcode.
+  const [hdx, hdy] = shadowOffsetLegible(HEADSTONE_H);
+  const [tdx, tdy] = shadowOffsetLegible(TOMB_H);
+  const slabAlpha = (0.34 * sun().alphaMul).toFixed(3);
   // Rows run across the churchyard's short axis and every stone faces the same
   // way, because a graveyard is the one place in the town that is laid out.
   const rows = Math.floor((wide ? e.maxY - e.minY : e.maxX - e.minX) / GRAVE_ROW);
@@ -764,7 +802,7 @@ function churchyardInto(
         g.lineWidth = 0.035;
         g.stroke();
       }
-      g.fillStyle = 'rgba(10,14,8,0.34)';
+      g.fillStyle = `rgba(10,14,8,${slabAlpha})`;
       castSlab(g, hw, hh, lx, ly);
       g.fillStyle = tomb ? 'rgb(142,138,124)' : hash(k, 5, 332) > 0.6 ? 'rgb(150,146,132)' : 'rgb(132,128,116)';
       g.fillRect(-hw, -hh, hw * 2, hh * 2);
@@ -790,8 +828,12 @@ function churchyardInto(
       const yy = (e.minY + e.maxY) / 2 + Math.sin(a) * (e.maxY - e.minY) * rad;
       if (!clearAt(map, idx, id, yx, yy, 1.5)) continue;
       if (yx >= tx0 - 3 && yx <= tx1 + 3 && yy >= ty0 - 3 && yy <= ty1 + 3) {
+        // s is the TREE's drawn span; the stamp is YEW_SPRITE wide around the
+        // same centre (shadow margin), so it draws at s * (YEW_SPRITE / 3) to
+        // keep the tree itself the size it always was.
         const s = 2.3 + hash(k, 1, 335) * 0.8;
-        g.drawImage(yewSprite((hash(k, 2, 335) * 6) | 0, band), yx - s / 2, yy - s / 2, s, s);
+        const span = (s * YEW_SPRITE) / 3;
+        g.drawImage(yewSprite((hash(k, 2, 335) * 6) | 0, band), yx - span / 2, yy - span / 2, span, span);
       }
       break;
     }
@@ -871,12 +913,12 @@ function gardenInto(
     // Bean canes: a 1.8 m stick is a dot from up here and a long thin line of
     // shade on the ground. It used to lean north out of the last row, which is
     // a side view of the cane.
-    const [pdx, pdy] = shadowOffset(1.8);
+    const [pdx, pdy] = shadowOffsetLegible(1.8);
     for (let p = 0; p < 2; p++) {
       const px = wide ? cx - bw / 2 + (0.3 + p * 0.4) * bw : cx + bw / 2 - 0.15;
       const py = wide ? cy + bh / 2 - 0.15 : cy - bh / 2 + (0.3 + p * 0.4) * bh;
       g.lineCap = 'round';
-      g.strokeStyle = 'rgba(14,16,10,0.22)';
+      g.strokeStyle = `rgba(14,16,10,${(0.22 * sun().alphaMul).toFixed(3)})`;
       g.lineWidth = 0.05;
       g.beginPath();
       g.moveTo(px, py);

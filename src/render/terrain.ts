@@ -69,7 +69,7 @@ export function chunkSpan(t0: number, t1: number, n: number): [number, number] {
 
 import { hash, vec } from './noise';
 import { stamp, stampRect } from './stamps';
-import { canopySprite, drawLog } from './canopy';
+import { SPRITE as CANOPY_SPRITE, canopySprite, drawLog } from './canopy';
 import { PatchIndex, type BuildingBox, type Patch } from './patches';
 import { buildYards, drawYardGround, drawYardStructures, type Yard } from './yards';
 import { drawProp, propExtent, propsFor, type Prop } from './props';
@@ -1655,7 +1655,8 @@ function drawTree(g: Ctx, map: GameMap, x: number, y: number, band: number, d: D
   // quantized so repeated trees reuse the same destination scale and the
   // browser's resample of the sprite stays predictable
   const k = Math.round((r / 0.75) * 8) / 8;
-  g.drawImage(canopySprite(fam, (hash(x, y, 46) * 12) | 0, band, d), cx - 1.5 * k, cy - 1.5 * k, 3 * k, 3 * k);
+  const half = (CANOPY_SPRITE / 2) * k;
+  g.drawImage(canopySprite(fam, (hash(x, y, 46) * 12) | 0, band, d), cx - half, cy - half, CANOPY_SPRITE * k, CANOPY_SPRITE * k);
 }
 
 // Interior partitions are not masonry (interiors R4). An exterior wall is

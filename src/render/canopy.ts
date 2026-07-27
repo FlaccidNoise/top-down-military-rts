@@ -1,5 +1,5 @@
 import { hash } from './noise';
-import { shadowOffset, sun, sunStepFor } from './light';
+import { capsulePath, shadowOffsetLegible, sun, sunStepFor, sweptStrokePath } from './light';
 import { stamp } from './stamps';
 import type { Detail } from './terrain';
 
@@ -11,7 +11,11 @@ import type { Detail } from './terrain';
 // is only affordable baked — and baked it is ~1.3 µs a tree, so a dense woods
 // chunk gets FASTER than the six-op version it replaces.
 
-const SPRITE = 3; // meters; fits the lobes plus the SE cast shadow at k=1
+// Meters; fits the lobes plus the cast shadow at k=1 — at the clamped dawn
+// rake the sweep runs ~1.1 m past the lobes, which the old 3 m span clipped.
+// Exported for terrain's draw site, which must scale the destination rect by
+// the same span or every tree changes size.
+export const SPRITE = 4;
 const TAU = Math.PI * 2;
 
 // Kept local rather than imported from terrain.ts: terrain imports this
@@ -35,7 +39,7 @@ export function canopySprite(family: 0 | 1 | 2, variant: number, band: number, d
     const f = FAMILY[family];
     const R = 0.75 * f.scale;
     const C = SPRITE / 2;
-    const [sx, sy] = shadowOffset(0.45);
+    const [sx, sy] = shadowOffsetLegible(0.45);
     // Down-sun, the direction shade falls. At night the cast offset collapses
     // to zero length; the lobe shading then keys off the direction vector so
     // the canopy keeps a coherent (if moot, under the grade) light side.
@@ -60,8 +64,13 @@ export function canopySprite(family: 0 | 1 | 2, variant: number, band: number, d
       g.arc(lx, ly, lr, 0, TAU);
       g.fill();
     };
+    // Each lobe SWEPT from its stand along the sun (one union fill, no
+    // double-darkened overlaps) — a translated copy of the cluster passes at
+    // noon under the canopy and floats free of the tree at dawn.
     g.fillStyle = `rgba(10,16,8,${0.28 * sun().alphaMul})`;
-    for (const [lx, ly, lr] of lobes) blob(lx + sx, ly + sy, lr);
+    g.beginPath();
+    for (const [lx, ly, lr] of lobes) capsulePath(g, lx, ly, lx + sx, ly + sy, lr);
+    g.fill();
     // one silhouette pass at 1.06x gives the whole cluster a clean dark rim
     // for the price of a single extra fill — cheaper and far less busy than
     // stroking every lobe
@@ -117,14 +126,13 @@ export function drawLog(g: CanvasRenderingContext2D, x: number, y: number, seed:
   const a = hash(seed, 1, 261) * Math.PI;
   const dx = Math.cos(a) * len * 0.5;
   const dy = Math.sin(a) * len * 0.5;
-  const [ox, oy] = shadowOffset(0.3);
+  const [ox, oy] = shadowOffsetLegible(0.3);
   g.lineCap = 'round';
-  g.strokeStyle = 'rgba(10,14,8,0.30)';
-  g.lineWidth = 0.34;
+  // swept from under the trunk, not a parallel copy floating beside it
+  g.fillStyle = `rgba(10,14,8,${(0.3 * sun().alphaMul).toFixed(3)})`;
   g.beginPath();
-  g.moveTo(x - dx + ox, y - dy + oy);
-  g.lineTo(x + dx + ox, y + dy + oy);
-  g.stroke();
+  sweptStrokePath(g, x - dx, y - dy, x + dx, y + dy, 0.34, ox, oy);
+  g.fill();
   g.strokeStyle = '#3a2f22';
   g.lineWidth = 0.28;
   g.beginPath();
