@@ -5,6 +5,12 @@ import { EYE_STAND, eyeOf, sightBetween, sightToSoldier, type Side, type Sim, ty
 // order per team; the executor in sim.ts decomposes it into per-soldier tasks.
 export type OrderKind = 'move' | 'fast' | 'sneak' | 'fire' | 'smoke' | 'defend' | 'ambush' | 'assault';
 
+// The kinds a right-click/right-drag can carry into a formation order. An
+// armed kind outside this list falls back to a plain move (main.ts
+// commitOrder), so the preview must read the SAME list to show the kind the
+// order will actually be issued with (movement design §3.2).
+export const MOVE_FAMILY: OrderKind[] = ['move', 'fast', 'sneak', 'assault', 'defend', 'ambush'];
+
 export interface TeamOrder {
   kind: OrderKind;
   x: number;

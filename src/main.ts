@@ -9,7 +9,7 @@ import { bootCamera as bootCameraFor, capInset, FRAME_M_DESKTOP, FRAME_M_MOBILE,
 import { MOBILE, view, viewSize } from './render/view';
 import type { RedCommander } from './sim/ai';
 import { WEAPONS } from './sim/data';
-import type { OrderKind, TeamOrder } from './sim/orders';
+import { MOVE_FAMILY, type OrderKind, type TeamOrder } from './sim/orders';
 import { DT, fanOffsets, SQUAD_FAN, type Side, type Sim, type Soldier } from './sim/sim';
 import { applyEngagementOutcome, makeStrategicBattle, newFront, resolveCoarse, syncStrengths, trivialMismatchWinner } from './strategic/bridge';
 import { StrategicCommander, RED_DEFENDER, BLUE_ATTACKER } from './strategic/command';
@@ -767,9 +767,8 @@ function commitOrder(sx: number, sy: number, opts: { squadForce: boolean; floors
 
   if (K === 0) { rmbAnchor = null; return; }
 
-  // Move-family kinds that support formation orders
-  const MOVE_FAMILY: OrderKind[] = ['move', 'fast', 'sneak', 'assault', 'defend', 'ambush'];
-  const useArmed = armedOrder && MOVE_FAMILY.includes(armedOrder);
+  // Move-family kinds that support formation orders (shared with the preview)
+  const useArmed = armedOrder !== null && MOVE_FAMILY.includes(armedOrder);
   const kind: OrderKind = useArmed ? armedOrder! : 'move';
 
   if (len < 2) {
@@ -1240,8 +1239,6 @@ function frame(now: number): void {
     const shot = computeShot(sim, getPrimary(), selectedVehicle, pick);
     const cursor = mouse.onCanvas ? cam.screenToWorld(mouse.x, mouse.y, view.w, view.h) : null;
     const primary = getPrimary();
-    const primarySquad = sim.squads[primary];
-    const focusTeams = primary < 0 ? [] : selectedTeam >= 0 ? [selectedTeam] : primarySquad?.teamIds ?? [];
 
     // Formation drag state for overlays
     let formationDrag: { ax: number; ay: number; facing: number; width: number } | null = null;
@@ -1257,14 +1254,15 @@ function frame(now: number): void {
 
     renderer.draw(ctx, cam, selectedSquads, now, floorFocus);
     drawOverlays(ctx, cam, sim, {
-      pick, shot,
+      shot,
       selectedSquad: primary,
+      selectedTeam,
       selectedSquads,
       selectRect: boxRect,
       formationDrag,
       targetMode,
-      focusTeams,
       armedOrder,
+      squadForce: addMode,
       cursor: cursor && { x: cursor[0], y: cursor[1] }
     }, pings);
     if (touchHold) drawHoldRing(ctx, touchHold, now);

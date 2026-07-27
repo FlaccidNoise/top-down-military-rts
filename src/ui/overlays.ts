@@ -1,18 +1,19 @@
 import type { Camera } from '../render/camera';
 import { view } from '../render/view';
-import { compliance, dangerSamples, dangerScore, type OrderKind } from '../sim/orders';
-import { fanOffsets, formationSlots, OFFSETS, TEAM_FAN, SQUAD_FAN, type Side, type Sim, type UnitEvent } from '../sim/sim';
+import { ASSAULT_DANGER_MULT, compliance, dangerSamples, dangerScore, MOVE_FAMILY, type OrderKind } from '../sim/orders';
+import { eligible, fanOffsets, formationSlots, TEAM_FAN, SQUAD_FAN, type Side, type Sim, type UnitEvent } from '../sim/sim';
+import { resolveMoveSpots, type ResolvedSpot } from '../sim/spots';
 import { TEAM } from './hud';
-import type { Pick, ShotSolution } from './tooltip';
+import type { ShotSolution } from './tooltip';
 
 export interface OverlayState {
-  pick: Pick;
   shot: ShotSolution | null;
-  selectedSquad: number;
+  selectedSquad: number; // the primary squad — commitOrder's team-narrowing target
+  selectedTeam: number; // -1, or the one team a narrowed order will go to
   targetMode: '' | 'barrage' | 'air' | 'wheel' | 'empfire' | 'empsmoke' | 'breach';
-  focusTeams: number[]; // the selected squad's teams, or one narrowed team
   armedOrder: OrderKind | null;
-  cursor: { x: number; y: number } | null; // world position, for the danger preview
+  squadForce: boolean; // shift/add-mode: forces the whole squad even when a team is narrowed
+  cursor: { x: number; y: number } | null; // world position — commitOrder's own order anchor
   selectedSquads: number[]
   selectRect: { x: number; y: number; w: number; h: number } | null
   formationDrag: { ax: number; ay: number; facing: number; width: number } | null
@@ -22,6 +23,162 @@ function teamCentroid(sim: Sim, soldierIds: number[]): { x: number; y: number } 
   const alive = soldierIds.map((id) => sim.soldiers[id]).filter((s) => s.alive && !s.downed);
   if (alive.length === 0) return null;
   return { x: alive.reduce((a, s) => a + s.x, 0) / alive.length, y: alive.reduce((a, s) => a + s.y, 0) / alive.length };
+}
+
+// The teams whose OrderState chips are drawn: the narrowed team, else every
+// team of the primary squad (main.ts's old focusTeams field, derived here so
+// the overlay owns one definition of "focus").
+function focusTeams(sim: Sim, st: OverlayState): number[] {
+  if (st.selectedSquad < 0) return [];
+  if (st.selectedTeam >= 0) return [st.selectedTeam];
+  return sim.squads[st.selectedSquad]?.teamIds ?? [];
+}
+
+export interface PreviewSpot extends ResolvedSpot {
+  slotX: number; // the naive formation slot, world coords — the snap tail's tail
+  slotY: number;
+}
+
+export interface PreviewTeam {
+  teamId: number;
+  x: number; // post-fan team anchor: the exact order.x/y orderTeam will receive
+  y: number;
+  spots: PreviewSpot[];
+  refused: { sid: number; slotX: number; slotY: number }[]; // no footing in reach — the sim drops these men silently
+  danger: number | null; // focus teams under an armed order only (8 raycast samples/team)
+  verdict: ChipVerdict | null;
+}
+
+export interface MovePreview {
+  kind: OrderKind;
+  teams: PreviewTeam[];
+  placed: number;
+  covered: number;
+  refused: number;
+}
+
+// The order preview, resolved through the SAME function execution runs
+// (movement design §3.1). The fan chain below mirrors commitOrder →
+// orderSquad → orderTeam → moveSoldiersTo call for call, so preview ===
+// execution is structural: one resolver, one eligible() filter, one fresh
+// `used` set per team in squad.teamIds order.
+//
+// Pure and rng-free (resolveMoveSpots' contract), so it is safe to call from
+// the draw path and safe for the parity test to call directly.
+export function previewMoveSpots(sim: Sim, st: OverlayState): MovePreview | null {
+  if (st.targetMode || !st.cursor || st.selectedSquads.length === 0) return null;
+  const useArmed = st.armedOrder !== null && MOVE_FAMILY.includes(st.armedOrder);
+  const kind: OrderKind = useArmed ? st.armedOrder! : 'move';
+  const drag = st.formationDrag;
+  const K = st.selectedSquads.length;
+  const squadOffs = fanOffsets(K, drag ? drag.width / K : SQUAD_FAN);
+  const cos = drag ? Math.cos(drag.facing) : 0;
+  const sin = drag ? Math.sin(drag.facing) : 0;
+  const teams: PreviewTeam[] = [];
+  st.selectedSquads.forEach((squadId, si) => {
+    const squad = sim.squads[squadId];
+    if (!squad) return;
+    const ax = drag ? drag.ax + cos * squadOffs[si] : st.cursor!.x;
+    const ay = drag ? drag.ay + sin * squadOffs[si] : st.cursor!.y + squadOffs[si];
+    // commitOrder narrows to the selected team only on a SHORT right-click of
+    // the primary squad with no armed kind and no additive modifier; every
+    // right-drag goes to orderSquad. Without this branch the preview shows
+    // dots for teams that are not going to move.
+    if (!drag && !useArmed && !st.squadForce && st.selectedTeam >= 0 && squadId === st.selectedSquad) {
+      pushPreviewTeam(sim, st, teams, st.selectedTeam, ax, ay, kind);
+      return;
+    }
+    const n = squad.teamIds.length;
+    if (!drag) {
+      const offs = fanOffsets(n, TEAM_FAN); // orderSquad's legacy y-axis fan
+      squad.teamIds.forEach((tid, ti) => pushPreviewTeam(sim, st, teams, tid, ax, ay + offs[ti], kind));
+    } else {
+      const share = drag.width / K / n; // orderSquad's (order.width ?? n * TEAM_FAN) / n
+      const offs = fanOffsets(n, share);
+      squad.teamIds.forEach((tid, ti) =>
+        pushPreviewTeam(sim, st, teams, tid, ax + cos * offs[ti], ay + sin * offs[ti], kind, drag.facing, share),
+      );
+    }
+  });
+  if (teams.length === 0) return null;
+  let placed = 0;
+  let covered = 0;
+  let refused = 0;
+  for (const t of teams) {
+    placed += t.spots.length;
+    refused += t.refused.length;
+    for (const sp of t.spots) if (sp.covered) covered++;
+  }
+  return { kind, teams, placed, covered, refused };
+}
+
+function pushPreviewTeam(
+  sim: Sim,
+  st: OverlayState,
+  out: PreviewTeam[],
+  teamId: number,
+  x: number,
+  y: number,
+  kind: OrderKind,
+  facing?: number,
+  width?: number,
+): void {
+  const team = sim.teams[teamId];
+  if (!team) return;
+  const ids = team.soldierIds.filter((id) => eligible(sim.soldiers[id]));
+  if (ids.length === 0) return; // orderTeam's own early return
+  const spots = resolveMoveSpots(sim, { soldierIds: ids, x, y, facing, width, kind }, new Set<number>());
+  const slots = formationSlots(ids.length, facing, width);
+  const placed = new Map(spots.map((sp) => [sp.sid, sp]));
+  const mine: PreviewSpot[] = [];
+  const refused: PreviewTeam['refused'] = [];
+  ids.forEach((sid, i) => {
+    const slotX = x + slots[i][0];
+    const slotY = y + slots[i][1];
+    const sp = placed.get(sid);
+    if (sp) mine.push({ ...sp, slotX, slotY });
+    else refused.push({ sid, slotX, slotY });
+  });
+  // The refusal model only matters where it is drawn: the armed-order chip
+  // covers the focus teams, and dangerScore is 8 LOS raycasts per visible
+  // enemy per team — too costly to run for every team of a select-all.
+  const focus = st.selectedTeam >= 0 ? teamId === st.selectedTeam : team.squadId === st.selectedSquad;
+  let danger: number | null = null;
+  let verdict: ChipVerdict | null = null;
+  if (st.armedOrder && focus) {
+    // orderTeam weights the charge up BEFORE the ladder runs; the old chip
+    // omitted the multiplier and under-reported assault refusal.
+    danger = dangerScore(sim, team, { x, y }) * (kind === 'assault' ? ASSAULT_DANGER_MULT : 1);
+    verdict = compliance(sim, team, danger);
+  }
+  out.push({ teamId, x, y, spots: mine, refused, danger, verdict });
+}
+
+// Same-tick memo (design §3.3). The resolver is ~50k array reads for a
+// select-all company, which is fine once per changed input but not on every
+// frame of a still cursor. Keyed per sim so two sims in one process cannot
+// share an entry. The cursor is keyed EXACTLY, not floored to the tile the
+// design suggested: the slot floor inside the resolver is sub-tile sensitive
+// (anchor 12.9 + slot 0.5 lands in tile 13, anchor 12.1 + 0.5 in tile 12), so
+// a tile-quantized key would serve dots from a different sub-tile position
+// than the order will use — the exact class of lie this milestone removes.
+const previewMemo = new WeakMap<Sim, { key: string; val: MovePreview | null }>();
+
+function movePreview(sim: Sim, st: OverlayState): MovePreview | null {
+  if (st.targetMode || !st.cursor || st.selectedSquads.length === 0) return null;
+  const d = st.formationDrag;
+  const key = `${sim.tick}|${st.selectedSquads.join(',')}|${st.selectedSquad}|${st.selectedTeam}|${st.squadForce}|${st.armedOrder}|${st.cursor.x},${st.cursor.y}|${d ? `${d.ax},${d.ay},${d.facing},${d.width}` : ''}`;
+  const hit = previewMemo.get(sim);
+  if (hit && hit.key === key) return hit.val;
+  const val = previewMoveSpots(sim, st);
+  previewMemo.set(sim, { key, val });
+  return val;
+}
+
+function worseVerdict(a: ChipVerdict, b: ChipVerdict): ChipVerdict {
+  if (a === 'balk' || b === 'balk') return 'balk';
+  if (a === 'cautious' || b === 'cautious') return 'cautious';
+  return 'comply';
 }
 
 // World-anchored order feedback, drawn on the canvas after the scene.
@@ -96,117 +253,99 @@ export function drawOverlays(ctx: CanvasRenderingContext2D, cam: Camera, sim: Si
     }
   }
 
-  // Move-order preview: formation spots computed exactly as orderSquad does.
-  if (!st.targetMode && st.selectedSquads.length > 0 && st.pick?.kind === 'terrain') {
-    const pick = st.pick
-    const nSquads = st.selectedSquads.length;
-    const seg = st.formationDrag ? st.formationDrag.width / nSquads : SQUAD_FAN;
-    const squadOffs = fanOffsets(nSquads, seg);
-    st.selectedSquads.forEach((squadId, si) => {
-      const squad = sim.squads[squadId];
-      if (!squad) return;
-      let ax = pick.x;
-      let ay = pick.y;
-      if (st.formationDrag) {
-        ax = st.formationDrag.ax + Math.cos(st.formationDrag.facing) * squadOffs[si];
-        ay = st.formationDrag.ay + Math.sin(st.formationDrag.facing) * squadOffs[si];
-      } else {
-        ay += squadOffs[si];
-      }
-      const nTeams = squad.teamIds.length;
-      const teamSpacing = st.formationDrag ? (st.formationDrag.width / nSquads) / nTeams : TEAM_FAN;
-      const teamOffs = fanOffsets(nTeams, teamSpacing);
-      squad.teamIds.forEach((tid, ti) => {
-        const team = sim.teams[tid];
-        if (!team) return;
-        const eligible = team.soldierIds.filter((id) => {
-          const s = sim.soldiers[id];
-          return s && s.alive && !s.downed && s.mental !== 'broken';
-        });
-        if (eligible.length === 0) return;
-        let tx = ax;
-        let ty = ay;
-        if (st.formationDrag) {
-          tx += Math.cos(st.formationDrag.facing) * teamOffs[ti];
-          ty += Math.sin(st.formationDrag.facing) * teamOffs[ti];
-        } else {
-          ty += teamOffs[ti];
-        }
-        const slots = formationSlots(eligible.length, st.formationDrag?.facing, st.formationDrag ? teamSpacing : undefined);
-        for (const [ox, oy] of slots) {
-          const px = tx + ox;
-          const py = ty + oy;
-          if (!sim.map.inBounds(Math.floor(px), Math.floor(py))) continue;
-          const covered = sim.inCover(px, py);
-          const [sx, sy] = cam.worldToScreen(px, py, cw, ch);
-          const r = Math.max(2.5, cam.scale * 0.18);
+  // Move-order preview: ghost dots on the tiles resolveMoveSpots hands the
+  // sim, not on naive formation slots. A dot that moved off its slot draws a
+  // tail back to it so the snap is visible, and a man the resolver could not
+  // place at all gets a refusal cross ON his slot — the silent drop
+  // (moveSoldiersTo skips him) is now a preview-time failure state.
+  const preview = movePreview(sim, st);
+  if (preview) {
+    const r = Math.max(2.5, cam.scale * 0.18);
+    for (const t of preview.teams) {
+      const balked = t.verdict === 'balk'; // this team is not going anywhere; do not paint it green
+      for (const sp of t.spots) {
+        // Tile centre, which is exactly the waypoint pathTo builds (x + 0.5).
+        const [sx, sy] = cam.worldToScreen(sp.x + 0.5, sp.y + 0.5, cw, ch);
+        if (sp.snapped) {
+          const [lx, ly] = cam.worldToScreen(sp.slotX, sp.slotY, cw, ch);
           ctx.beginPath();
-          ctx.arc(sx, sy, r, 0, Math.PI * 2);
-          ctx.fillStyle = covered ? 'rgba(127,191,106,0.9)' : 'rgba(232,228,216,0.55)';
-          ctx.fill();
-          if (r > 3) {
-            ctx.strokeStyle = 'rgba(18,22,15,0.6)';
-            ctx.lineWidth = 1;
-            ctx.stroke();
-          }
+          ctx.moveTo(lx, ly);
+          ctx.lineTo(sx, sy);
+          ctx.lineWidth = 1;
+          ctx.strokeStyle = 'rgba(232,228,216,0.35)';
+          ctx.stroke();
         }
-      });
-    });
+        ctx.beginPath();
+        ctx.arc(sx, sy, r, 0, Math.PI * 2);
+        ctx.fillStyle = balked ? 'rgba(208,92,80,0.35)' : sp.covered ? 'rgba(127,191,106,0.9)' : 'rgba(232,228,216,0.55)';
+        ctx.fill();
+        if (r > 3) {
+          ctx.strokeStyle = balked ? 'rgba(208,92,80,0.9)' : 'rgba(18,22,15,0.6)';
+          ctx.lineWidth = 1;
+          ctx.stroke();
+        }
+      }
+      for (const rf of t.refused) {
+        const [sx, sy] = cam.worldToScreen(rf.slotX, rf.slotY, cw, ch);
+        const k = Math.max(3, r);
+        ctx.strokeStyle = 'rgba(208,92,80,0.95)';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(sx - k, sy - k);
+        ctx.lineTo(sx + k, sy + k);
+        ctx.moveTo(sx + k, sy - k);
+        ctx.lineTo(sx - k, sy + k);
+        ctx.stroke();
+      }
+    }
   }
 
   // Order-kind danger preview: while an order is armed, the same 8 points
   // dangerScore will sum over, colored green (safe) to red (0.2/point cap) —
   // the legibility contract: see the risk before you commit to the order.
-  // Offsets match orderSquad's own team-fanout formula exactly (Sim.orderSquad,
-  // sim.ts) so the preview lines up with where the order will actually land.
-  if (st.armedOrder && st.cursor && !st.targetMode) {
-    const n = st.focusTeams.length;
-    st.focusTeams.forEach((tid, ti) => {
-      const team = sim.teams[tid];
-      if (!team) return;
-      const oy = fanOffsets(n, TEAM_FAN)[ti];
-      const dest = { x: st.cursor!.x, y: st.cursor!.y + oy };
-      for (const p of dangerSamples(sim, team, dest)) {
+  // Anchored on the preview's own post-fan team destinations, so the samples
+  // track a formation drag instead of the legacy y-axis fan.
+  if (preview && st.armedOrder) {
+    for (const t of preview.teams) {
+      if (t.danger === null) continue; // non-focus team: never scored, nothing to draw
+      const team = sim.teams[t.teamId];
+      for (const p of dangerSamples(sim, team, { x: t.x, y: t.y })) {
         const [sx, sy] = cam.worldToScreen(p.x, p.y, cw, ch);
-        const t = Math.min(1, p.score / 0.2);
-        const r = Math.round(127 + 128 * t);
-        const g = Math.round(191 - 131 * t);
-        ctx.fillStyle = `rgb(${r},${g},60)`;
+        const tt = Math.min(1, p.score / 0.2);
+        const cr = Math.round(127 + 128 * tt);
+        const cg = Math.round(191 - 131 * tt);
+        ctx.fillStyle = `rgb(${cr},${cg},60)`;
         ctx.beginPath();
         ctx.arc(sx, sy, Math.max(2, cam.scale * 0.12), 0, Math.PI * 2);
         ctx.fill();
       }
-    });
+    }
   }
 
-  // Armed-order context chip: the per-point dots' one-glance summary —
-  // worst-case danger across focus teams, cover at the cursor, ETA from the
-  // slowest eligible soldier's own moveSpeed, and the compliance verdict the
-  // team will actually run. Static (no tick-driven animation): pause- and
-  // reduced-motion-safe by construction. Only while an order is armed.
-  if (st.armedOrder && st.cursor && !st.targetMode && st.focusTeams.length > 0) {
-    const n = st.focusTeams.length;
-    let danger = 0;
-    let verdict: ChipVerdict = 'comply';
+  // Order context chip: the preview's one-glance summary — how many of the men
+  // actually land in cover, how many have no footing at all, ETA from the
+  // slowest eligible soldier's own moveSpeed, and (armed only, where the
+  // raycast cost is paid) worst-case danger with the compliance verdict the
+  // team will run. Static (no tick-driven animation): pause- and
+  // reduced-motion-safe by construction.
+  if (preview && st.cursor) {
+    let danger: number | null = null;
+    let verdict: ChipVerdict | null = null;
     let eta: number | null = null;
-    st.focusTeams.forEach((tid, ti) => {
-      const team = sim.teams[tid];
-      if (!team) return;
-      const dest = { x: st.cursor!.x, y: st.cursor!.y + fanOffsets(n, TEAM_FAN)[ti] };
-      const d = dangerScore(sim, team, dest);
-      danger = Math.max(danger, d);
-      const v = compliance(sim, team, d);
-      if (v === 'balk' || (v === 'cautious' && verdict !== 'balk')) verdict = v;
+    for (const t of preview.teams) {
+      if (t.danger !== null) danger = Math.max(danger ?? 0, t.danger);
+      if (t.verdict !== null) verdict = verdict === null ? t.verdict : worseVerdict(verdict, t.verdict);
+      const team = sim.teams[t.teamId];
       const centroid = teamCentroid(sim, team.soldierIds);
-      if (!centroid) return;
-      const eligible = team.soldierIds.map((id) => sim.soldiers[id]).filter((s) => s.alive && !s.downed && s.mental !== 'broken');
-      const speed = eligible.length > 0 ? Math.min(...eligible.map((s) => sim.moveSpeed(s))) : 0;
+      if (!centroid) continue;
+      const members = team.soldierIds.map((id) => sim.soldiers[id]).filter((s) => eligible(s));
+      const speed = members.length > 0 ? Math.min(...members.map((s) => sim.moveSpeed(s))) : 0;
       if (speed > 0.01) {
-        const t = Math.hypot(st.cursor!.x - centroid.x, st.cursor!.y - centroid.y) / speed;
-        eta = eta === null ? t : Math.max(eta, t);
+        const secs = Math.hypot(t.x - centroid.x, t.y - centroid.y) / speed;
+        eta = eta === null ? secs : Math.max(eta, secs);
       }
-    });
-    const fmt = formatContextChip(danger, sim.inCover(st.cursor.x, st.cursor.y), eta, verdict);
+    }
+    const fmt = formatContextChip({ danger, covered: preview.covered, placed: preview.placed, refused: preview.refused, eta, verdict });
     const [sx, sy] = cam.worldToScreen(st.cursor.x, st.cursor.y, cw, ch);
     contextChip(ctx, sx, sy, cw, ch, fmt.lines, fmt.color);
   }
@@ -242,7 +381,7 @@ export function drawOverlays(ctx: CanvasRenderingContext2D, cam: Camera, sim: Si
 
   // Selected team(s) show their OrderState above their soldiers: kind +
   // refusal reason. A balked team's chip pulses so a refusal is never missed.
-  for (const tid of st.focusTeams) {
+  for (const tid of focusTeams(sim, st)) {
     const team = sim.teams[tid];
     if (!team) continue;
     const os = team.orderState;
@@ -286,19 +425,36 @@ export type ChipVerdict = 'comply' | 'cautious' | 'balk';
 
 const VERDICT_LABEL: Record<ChipVerdict, string> = { comply: 'COMPLY', cautious: 'CAUTIOUS', balk: 'BALK' };
 const VERDICT_COLOR: Record<ChipVerdict, string> = { comply: '#7fbf6a', cautious: '#e0c060', balk: '#d05c50' };
+const CHIP_MUTED = '#b8b4a4';
 
-// Pure formatting for the armed-order context chip, exported for tests —
-// canvas drawing (contextChip) consumes this and stays untested.
-export function formatContextChip(
-  danger: number,
-  cover: boolean,
-  eta: number | null,
-  verdict: ChipVerdict,
-): { lines: string[]; color: string } {
-  const risk = danger < 0.2 ? 'LOW' : danger < 0.5 ? 'MED' : 'HIGH';
-  let env = cover ? 'COVER' : 'OPEN';
-  if (eta !== null) env += ` · ~${Math.max(1, Math.round(eta))}s`;
-  return { lines: [`RISK ${risk} ${danger.toFixed(2)}`, env, VERDICT_LABEL[verdict]], color: VERDICT_COLOR[verdict] };
+export interface ChipInput {
+  danger: number | null; // null = unarmed hover: no raycasts were spent, so no RISK line
+  covered: number; // men the resolver put in directional cover
+  placed: number; // men it found a tile for
+  refused: number; // men it could not place at all
+  eta: number | null;
+  verdict: ChipVerdict | null;
+}
+
+// Pure formatting for the order context chip, exported for tests — canvas
+// drawing (contextChip) consumes this and stays untested. The cover line
+// counts resolved spots instead of sampling inCover at the cursor: the cursor
+// is one point the men never stand on, and the count is the number the player
+// is actually buying (design §3.4).
+export function formatContextChip(o: ChipInput): { lines: string[]; color: string } {
+  const lines: string[] = [];
+  if (o.danger !== null) lines.push(`RISK ${o.danger < 0.2 ? 'LOW' : o.danger < 0.5 ? 'MED' : 'HIGH'} ${o.danger.toFixed(2)}`);
+  if (o.placed > 0) {
+    let env = `${o.covered}/${o.placed} COVERED`;
+    if (o.eta !== null) env += ` · ~${Math.max(1, Math.round(o.eta))}s`;
+    lines.push(env);
+  }
+  if (o.verdict) lines.push(VERDICT_LABEL[o.verdict]);
+  // Last line carries the chip color, and a refusal outranks the verdict: men
+  // with nowhere to stand never step off whatever the compliance ladder says.
+  if (o.refused > 0) lines.push(o.placed === 0 ? 'NO FOOTING' : `${o.refused} NO FOOTING`);
+  const color = o.refused > 0 ? VERDICT_COLOR.balk : o.verdict ? VERDICT_COLOR[o.verdict] : o.covered === o.placed ? VERDICT_COLOR.comply : CHIP_MUTED;
+  return { lines, color };
 }
 
 function contextChip(
@@ -334,7 +490,7 @@ function contextChip(
   ctx.textAlign = 'left';
   ctx.textBaseline = 'middle';
   lines.forEach((line, i) => {
-    ctx.fillStyle = i === lines.length - 1 ? color : '#b8b4a4'; // verdict line carries the state color, the rest stay muted
+    ctx.fillStyle = i === lines.length - 1 ? color : CHIP_MUTED; // last line carries the state color, the rest stay muted
     ctx.fillText(line, x + 6, y + 4 + lh * i + lh / 2);
   });
   ctx.textBaseline = 'alphabetic';

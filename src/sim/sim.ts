@@ -503,8 +503,9 @@ function crewClassOf(w: WeaponDef): CrewClass | null {
   return null;
 }
 
-// Formation offsets around a squad destination, meters. Exported for the
-// move-order cover preview, which must show the real spots men will take.
+// Formation offsets around a squad destination, meters. formationSlots below
+// is the only production reader — the order preview goes through
+// resolveMoveSpots, which asks formationSlots for the slots execution uses.
 export const OFFSETS: [number, number][] = [
   [0, 0], [1.5, 0], [-1.5, 0], [0, 1.5], [0, -1.5],
   [2.2, 1.5], [-2.2, 1.5], [2.2, -1.5], [-2.2, -1.5], [0, 3],
