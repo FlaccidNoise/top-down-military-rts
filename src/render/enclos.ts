@@ -334,9 +334,11 @@ export function drawEnclosureWalls(g: Ctx, idx: EnclosureIndex, tx0: number, ty0
     strokeSegs(g, segs, wd * 1.55, `rgba(8,10,7,${(AO_ALPHA * 0.6).toFixed(3)})`);
     strokeSegs(g, segs, wd * 1.3, `rgba(10,14,8,${SHADOW_SOFT_ALPHA})`, sdx * 1.5, sdy * 1.5);
     strokeSegs(g, segs, wd * 1.15, `rgba(10,14,8,${SHADOW_ALPHA})`, sdx, sdy);
-    // The SE flank of a head-high wall is a visible face in this projection,
-    // not just a shadow — without it a 2 m wall reads as a wide 1 m one.
-    if (top === 2) strokeSegs(g, segs, wd * 1.0, 'rgba(52,51,46,0.62)', sdx * 0.4, sdy * 0.4);
+    // A head-high wall is told from a waist-high one by its WIDTH (0.46 vs
+    // 0.28 m of coping) and by how far its shadow reaches (RISE 1.25 vs 0.6) —
+    // the two things a strict plan projection has. This used to paint the SE
+    // flank as "a visible face", which is a side view of a wall.
+    if (top === 2) strokeSegs(g, segs, wd * 1.15, `rgba(10,14,8,${(SHADOW_ALPHA * 0.55).toFixed(3)})`, sdx * 0.55, sdy * 0.55);
     // Mass in rubble courses, value-jittered and bucketed into four tones so
     // the whole enclosure is four strokes rather than one per block.
     const buckets: Seg[][] = [[], [], [], []];
@@ -391,7 +393,9 @@ function drawGate(g: Ctx, gt: GateRun, d: Detail): void {
   const uy = (gt.by - gt.ay) / len;
   const nx = -uy;
   const ny = ux;
-  const [sdx, sdy] = shadowOffset(RISE[gt.top] * 1.1);
+  // The SAME throw as the run this gate is punched into — a gate that shades
+  // 10% further than the wall on either side of it breaks the joint.
+  const [sdx, sdy] = shadowOffset(RISE[gt.top]);
   const pr = WIDTH[gt.top] * 0.62; // pier half-size
   // leaf first, so the piers cap its ends
   const t0 = pr * 1.3;
@@ -402,7 +406,7 @@ function drawGate(g: Ctx, gt: GateRun, d: Detail): void {
     const lx1 = gt.ax + ux * t1;
     const ly1 = gt.ay + uy * t1;
     g.lineCap = 'butt';
-    strokeSegs(g, [[lx0, ly0, lx1, ly1]], 0.2, 'rgba(12,14,9,0.28)', sdx * 0.55, sdy * 0.55);
+    strokeSegs(g, [[lx0, ly0, lx1, ly1]], 0.2, 'rgba(12,14,9,0.28)', sdx, sdy);
     strokeSegs(g, [[lx0, ly0, lx1, ly1]], 0.15, '#6b4c2a');
     strokeSegs(g, [[lx0, ly0, lx1, ly1]], 0.05, 'rgba(196,170,124,0.30)', -0.03, -0.04);
     if (d >= 1) {
@@ -425,8 +429,13 @@ function drawGate(g: Ctx, gt: GateRun, d: Detail): void {
   for (const t of [0, len]) {
     const cx = gt.ax + ux * t;
     const cy = gt.ay + uy * t;
-    g.fillStyle = 'rgba(12,14,9,0.30)';
-    g.fillRect(cx + sdx * 0.7 - pr, cy + sdy * 0.7 - pr, pr * 2, pr * 2);
+    g.lineCap = 'round'; // one connected finger, not a detached copy of the pier
+    g.strokeStyle = 'rgba(12,14,9,0.30)';
+    g.lineWidth = pr * 2;
+    g.beginPath();
+    g.moveTo(cx, cy);
+    g.lineTo(cx + sdx, cy + sdy);
+    g.stroke();
     g.fillStyle = TONES[gt.top][2];
     g.fillRect(cx - pr, cy - pr, pr * 2, pr * 2);
     g.fillStyle = 'rgba(216,208,188,0.26)';
@@ -800,16 +809,25 @@ function gardenInto(
       g.fill();
     }
     if (d < 2) continue;
-    // bean poles: fake height, so they lean north out of the last row
-    g.strokeStyle = 'rgba(126,108,74,0.55)';
-    g.lineWidth = 0.04;
-    g.beginPath();
+    // Bean canes: a 1.8 m stick is a dot from up here and a long thin line of
+    // shade on the ground. It used to lean north out of the last row, which is
+    // a side view of the cane.
+    const [pdx, pdy] = shadowOffset(1.8);
     for (let p = 0; p < 2; p++) {
       const px = wide ? cx - bw / 2 + (0.3 + p * 0.4) * bw : cx + bw / 2 - 0.15;
       const py = wide ? cy + bh / 2 - 0.15 : cy - bh / 2 + (0.3 + p * 0.4) * bh;
+      g.lineCap = 'round';
+      g.strokeStyle = 'rgba(14,16,10,0.22)';
+      g.lineWidth = 0.05;
+      g.beginPath();
       g.moveTo(px, py);
-      g.lineTo(px + 0.08, py - 0.55);
+      g.lineTo(px + pdx, py + pdy);
+      g.stroke();
+      g.lineCap = 'butt';
+      g.fillStyle = 'rgba(126,108,74,0.7)';
+      g.beginPath();
+      g.arc(px, py, 0.05, 0, TAU);
+      g.fill();
     }
-    g.stroke();
   }
 }
