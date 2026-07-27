@@ -320,10 +320,16 @@ export function stampEnclosures(map: GameMap, sk: Skeleton, land: Landmarks, fp:
     const touches: boolean[] = [];
     const spanLo: number[] = [];
     const spanHi: number[] = [];
+    // Passability and the four edge lookups are inlined rather than routed
+    // through map.canStep: this flood runs up to three times over 76,800 tiles
+    // and the method call plus the TERRAIN object lookup is 5 ms of the 7 it
+    // used to cost. Same rule — WALL and WINDOW block, NONE and DOOR pass.
+    const pass = new Uint8Array(w * h);
+    for (let i = 0; i < pass.length; i++) pass[i] = map.terrainAt(i % w, (i / w) | 0).passable ? 1 : 0;
+    const open = (e: number): boolean => e === EDGE.NONE || e === EDGE.DOOR;
     let next = 0;
     for (let start = 0; start < comp.length; start++) {
-      if (comp[start] >= 0 || sk.road[start]) continue;
-      if (!map.terrainAt(start % w, (start / w) | 0).passable) continue;
+      if (comp[start] >= 0 || sk.road[start] || !pass[start]) continue;
       const id = next++;
       touches.push(false);
       spanLo.push(w);
@@ -340,20 +346,20 @@ export function stampEnclosures(map: GameMap, sk: Skeleton, land: Landmarks, fp:
           if (cx < spanLo[id]) spanLo[id] = cx;
           if (cx > spanHi[id]) spanHi[id] = cx;
         }
-        for (const [dx, dy] of STEPS) {
-          const nx = cx + dx;
-          const ny = cy + dy;
-          if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
-          if (!map.canStep(cx, cy, nx, ny, 'foot')) continue;
-          const ni = ny * w + nx;
+        const visit = (ni: number, passable: boolean): void => {
+          if (!passable || !pass[ni]) return;
           if (sk.road[ni]) {
             touches[id] = true;
-            continue;
+            return;
           }
-          if (comp[ni] >= 0) continue;
+          if (comp[ni] >= 0) return;
           comp[ni] = id;
           queue[toe++] = ni;
-        }
+        };
+        if (cx + 1 < w) visit(cur + 1, open(map.vEdges[cy * (w + 1) + cx + 1]));
+        if (cx > 0) visit(cur - 1, open(map.vEdges[cy * (w + 1) + cx]));
+        if (cy + 1 < h) visit(cur + w, open(map.hEdges[(cy + 1) * w + cx]));
+        if (cy > 0) visit(cur - w, open(map.hEdges[cy * w + cx]));
       }
     }
 
@@ -421,11 +427,4 @@ export function stampEnclosures(map: GameMap, sk: Skeleton, land: Landmarks, fp:
     return any;
   }
 }
-
-const STEPS: [number, number][] = [
-  [1, 0],
-  [-1, 0],
-  [0, 1],
-  [0, -1],
-];
 

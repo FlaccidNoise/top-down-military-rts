@@ -1,4 +1,4 @@
-import type { Building, DoorEdge, Rect, Vec } from '../mapgen';
+import type { Building, BuildingRole, DoorEdge, Rect, Vec } from '../mapgen';
 import type { Rng } from '../rng';
 import { RESV, type Landmarks } from './landmarks';
 import type { Interior, Parcels, Plot } from './parcels';
@@ -64,6 +64,12 @@ export interface Footprints {
 const MIN_AVAIL = 4;
 const MIN_BODY = 3;
 const MIN_WIDTH = 4;
+// §5.2's "<= 90 buildings — the bound catches a runaway parcelizer", enforced
+// where it belongs rather than asserted after the fact. Measured yield over
+// seeds 1-20 at 320x240 is 40-83 before T9's outlying farms add up to six more,
+// so the cap binds on the densest seeds only, and it sheds block-interior sheds
+// before it sheds frontage.
+const MAX_BUILDINGS = 80;
 // A rank-0 frontage stays terraced well past the 0.35 density line: the Grande
 // Rue IS the village in a 'bourgRue', and a high street that dissolves into
 // detached cottages 39 tiles from the church is not one. 64 in Q8 is ~62 tiles
@@ -161,9 +167,25 @@ function doorList(
   const d = faceDoor(parts, face, prefer, blocked, width);
   if (d) return [d];
   if (width === 2) return doorList(parts, face, prefer, blocked, 1);
-  // no clear face at all: let stampStructure's own mid-span fallback try, and
-  // if that fails too it throws with the structure named, which is the correct
-  // outcome — a building with no way in is a bug, not a variation
+  return undefined;
+}
+
+// The preferred face first, then the rest. A caller that gets `undefined` back
+// MUST NOT emit the structure: stampStructure's own fallback scan does not know
+// about `occ`, so it will happily site a door on a span that abuts the
+// neighbour and then throw at stamp time, which is a dead map rather than a
+// missing shed.
+function anyDoor(
+  parts: Rect[],
+  first: Face,
+  prefer: number,
+  blocked: (x: number, y: number) => boolean,
+  width: 1 | 2 = 1,
+): DoorEdge[] | undefined {
+  for (const f of [first, 's', 'n', 'e', 'w'] as Face[]) {
+    const d = doorList(parts, f, prefer, blocked, width);
+    if (d) return d;
+  }
   return undefined;
 }
 
@@ -212,6 +234,7 @@ export function buildFootprints(sk: Skeleton, land: Landmarks, pc: Parcels): Foo
   let chainIdx = -2;
 
   pc.plots.forEach((p, plotIndex) => {
+    if (buildings.length >= MAX_BUILDINGS) return;
     const avail = p.d - p.setback;
     if (avail < MIN_AVAIL || p.w < MIN_WIDTH) return;
     const core = p.densQ8 > DENS_CORE;
@@ -288,6 +311,7 @@ export function buildFootprints(sk: Skeleton, land: Landmarks, pc: Parcels): Foo
     }
 
     let consumed = 0;
+    let deepest = p.setback + bd;
     for (let u = 0; u < units; u++) {
       const uw = u === units - 1 ? aw - consumed : (aw / units) | 0;
       const ua0 = a0 + consumed;
@@ -295,8 +319,10 @@ export function buildFootprints(sk: Skeleton, land: Landmarks, pc: Parcels): Foo
       if (uw < MIN_WIDTH) continue;
       const body = localRect(p, ua0, p.setback, uw, bd);
       const parts: Rect[] = [body];
-      if (wantWing && wingW >= 3 && wingD >= 3 && u === (wingHigh ? units - 1 : 0) && uw >= wingW + 2)
+      if (wantWing && wingW >= 3 && wingD >= 3 && u === (wingHigh ? units - 1 : 0) && uw >= wingW + 2) {
         parts.push(localRect(p, wingHigh ? ua0 + uw - wingW : ua0, p.setback + bd, wingW, wingD));
+        deepest = Math.max(deepest, p.setback + bd + wingD);
+      }
 
       const prefer = alongAxis ? body.x + (body.w >> 1) : body.y + (body.h >> 1);
       const fd = faceDoor(parts, front, prefer, blocked);
@@ -320,21 +346,17 @@ export function buildFootprints(sk: Skeleton, land: Landmarks, pc: Parcels): Foo
       });
     }
 
-    // fringe étable across the yard, at the rear of the plot
+    // Fringe étable across the yard, at the rear of the plot. `deepest` is the
+    // real back of the house INCLUDING its L wing — measuring the gap from the
+    // body alone puts the étable's front wall against the wing, and its door
+    // then opens onto the same structure it is three tiles behind.
     if (!core && !mid && tail >= 8 && aw >= 5) {
       const eh = 3 + r9.int(2);
       const ew = Math.min(aw, 4 + r9.int(3));
-      if (tail - eh >= 3) {
+      if (avail - eh - deepest >= 3) {
         const et = localRect(p, a0, p.setback + avail - eh, ew, eh);
-        emit({
-          x: et.x,
-          y: et.y,
-          w: et.w,
-          h: et.h,
-          role: 'barn',
-          doors: doorList([et], front, alongAxis ? et.x + (et.w >> 1) : et.y + (et.h >> 1), blocked),
-          frontage: front,
-        });
+        const ed = anyDoor([et], front, alongAxis ? et.x + (et.w >> 1) : et.y + (et.h >> 1), blocked);
+        if (ed) emit({ x: et.x, y: et.y, w: et.w, h: et.h, role: 'barn', doors: ed, frontage: front });
       }
     }
 
@@ -355,6 +377,7 @@ export function buildFootprints(sk: Skeleton, land: Landmarks, pc: Parcels): Foo
   // built on the outermost ring — setHEdge/setVEdge do no bounds test
   // (map.ts:77-83) and a wall one tile off the grid lands on the far side of it.
   for (const it of pc.interiors) {
+    if (buildings.length >= MAX_BUILDINGS) break;
     const x0 = Math.max(1, it.rect.x);
     const y0 = Math.max(1, it.rect.y);
     const x1 = Math.min(w - 1, it.rect.x + it.rect.w);
@@ -417,12 +440,12 @@ function placeChurch(
   // wall down the middle of a church is not a church
   const gid = nextIndex();
   const naveFace: Face = cy.y + cy.h / 2 > sk.place.y ? 'n' : 's';
-  const naveDoor = faceDoor([nave], naveFace, nave.x + (nave.w >> 1), blocked);
+  const naveDoor = anyDoor([nave], naveFace, nave.x + (nave.w >> 1), blocked);
   emit({
     ...nave,
     role: 'church',
     groupId: gid,
-    doors: naveDoor ? [naveDoor] : undefined,
+    doors: naveDoor,
     frontage: naveFace,
   });
   emit({ x: x0, y: y0 + ((naveW - towerW) >> 1), w: towerW, h: towerW, role: 'church_tower', groupId: gid });
@@ -462,7 +485,7 @@ function placeMarket(land: Landmarks, r: Rng, emit: (b: Building) => number, blo
     emit({
       ...rect,
       role: 'shop',
-      doors: doorList([rect], face, horizontal ? rect.x + (rect.w >> 1) : rect.y + (rect.h >> 1), blocked),
+      doors: anyDoor([rect], face, horizontal ? rect.x + (rect.w >> 1) : rect.y + (rect.h >> 1), blocked),
       frontage: face,
       terraceRun: run,
     });
@@ -493,7 +516,7 @@ function placeCivic(
   emit({
     ...rect,
     role: 'civic',
-    doors: doorList([rect], face, rect.x + (rect.w >> 1), blocked, 2),
+    doors: anyDoor([rect], face, rect.x + (rect.w >> 1), blocked, 2),
     frontage: face,
   });
   compounds.push({
@@ -547,9 +570,9 @@ function fillInterior(
     const logis = put(1, 0, Math.min(L - 2, 7 + r.int(3)), logisH);
     const grange = put(1, C - grangeH, Math.min(L - 2, 9 + r.int(4)), grangeH);
     const etable = put(0, logisH, etW, C - logisH - grangeH);
-    emit({ ...logis, role: 'farmhouse', doors: doorList([logis], face('+v'), centre(logis, long), blocked), frontage: face('+v') });
-    emit({ ...grange, role: 'barn', doors: doorList([grange], face('-v'), centre(grange, long), blocked, 2), frontage: face('-v') });
-    emit({ ...etable, role: 'barn', doors: doorList([etable], face('+u'), across(etable, long), blocked), frontage: face('+u') });
+    putMass(emit, logis, 'farmhouse', face('+v'), centre(logis, long), blocked, 1);
+    putMass(emit, grange, 'barn', face('-v'), centre(grange, long), blocked, 2);
+    putMass(emit, etable, 'barn', face('+u'), across(etable, long), blocked, 1);
     compounds.push({ rect: put(etW, logisH, L - etW, C - logisH - grangeH), open: face('+u'), gateWidth: 2 });
     return;
   }
@@ -559,8 +582,8 @@ function fillInterior(
     const a = put(0, 0, Math.min(L, 6 + r.int(3)), aH);
     const bw = Math.min(L, 5 + r.int(3));
     const b = put(L - bw, C - bH, bw, bH);
-    emit({ ...a, role: 'barn', doors: doorList([a], face('+v'), centre(a, long), blocked), frontage: face('+v') });
-    emit({ ...b, role: 'barn', doors: doorList([b], face('-v'), centre(b, long), blocked), frontage: face('-v') });
+    putMass(emit, a, 'barn', face('+v'), centre(a, long), blocked, 1);
+    putMass(emit, b, 'barn', face('-v'), centre(b, long), blocked, 1);
     compounds.push({ rect: put(0, aH, L, C - aH - bH), open: face('+u'), gateWidth: 2 });
     return;
   }
@@ -568,9 +591,23 @@ function fillInterior(
     // one tile of yard on the door side: a shed filling its parcel edge to edge
     // has its door against whatever abuts the parcel
     const s = put(0, 0, Math.min(L, 5 + r.int(4)), Math.min(C - 1, 4 + r.int(2)));
-    emit({ ...s, role: 'barn', doors: doorList([s], face('+v'), centre(s, long), blocked), frontage: face('+v') });
+    putMass(emit, s, 'barn', face('+v'), centre(s, long), blocked, 1);
   }
 }
 
 const centre = (r: Rect, long: boolean): number => (long ? r.x + (r.w >> 1) : r.y + (r.h >> 1));
 const across = (r: Rect, long: boolean): number => (long ? r.y + (r.h >> 1) : r.x + (r.w >> 1));
+
+// Emit a single-rect mass, or nothing at all if no face can carry a door.
+function putMass(
+  emit: (b: Building) => number,
+  rect: Rect,
+  role: BuildingRole,
+  frontage: Face,
+  prefer: number,
+  blocked: (x: number, y: number) => boolean,
+  width: 1 | 2,
+): void {
+  const doors = anyDoor([rect], frontage, prefer, blocked, width);
+  if (doors) emit({ ...rect, role, doors, frontage });
+}
