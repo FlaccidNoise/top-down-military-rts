@@ -398,8 +398,64 @@ button.hbtn.active { background: var(--chip-active-bg); border-color: var(--ambe
 #debrief button.primary { background: var(--chip-bg); color: var(--amber-bright); border-color: var(--amber); font-weight: var(--fw-label); }
 #debrief button.primary:hover { background: var(--chip-active-bg); }
 
+/* ---- main menu ---- */
+#mainmenu {
+  position: fixed;
+  inset: 0;
+  display: none;
+  flex-direction: column;
+  z-index: 10;
+  background: #0d0f0b;
+  font-size: var(--fs-lg);
+  line-height: 1.5;
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  color: var(--paper);
+}
+#mainmenu .db-scroll { overflow-y: auto; min-height: 0; touch-action: pan-y; }
+#mainmenu .db { max-width: 640px; margin: 48px auto 0; padding: 0 var(--sp-5); }
+#mainmenu h1 { letter-spacing: 6px; font-size: 26px; margin: 0 0 var(--sp-1); }
+#mainmenu .mm-panel { margin: var(--sp-5) 0; }
+#mainmenu .mm-continue { margin-top: var(--sp-4); }
+#mainmenu .mm-continue-actions { display: flex; gap: 10px; margin-top: var(--sp-2); }
+#mainmenu .mm-msg, #mainmenu .mm-reason, #mainmenu .mm-status { color: var(--muted); margin: 6px 0 0; }
+#mainmenu .mm-status { color: var(--paper); }
+#mainmenu #mm-storage-banner {
+  flex-shrink: 0;
+  text-align: center;
+  padding: var(--sp-2) var(--sp-4);
+  background: rgba(var(--red-rgb), 0.12);
+  color: var(--red);
+  font-size: var(--fs-md);
+  letter-spacing: 1px;
+}
+#mainmenu #mm-storage-banner small { display: block; color: var(--muted); letter-spacing: 0; margin-top: 2px; }
+#mainmenu .db-actions {
+  flex-shrink: 0;
+  width: 100%;
+  max-width: 688px;
+  box-sizing: border-box;
+  margin: 0 auto;
+  padding: 20px var(--sp-5) var(--sp-5);
+  display: flex;
+  gap: 10px;
+}
+#mainmenu button {
+  font: inherit;
+  padding: var(--sp-2) 22px;
+  cursor: pointer;
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  letter-spacing: 1px;
+}
+#mainmenu button:hover:not(:disabled) { background: rgba(255, 255, 255, 0.04); color: var(--paper); border-color: var(--muted); }
+#mainmenu button:disabled { opacity: 0.4; cursor: default; }
+#mainmenu button.primary { background: var(--chip-bg); color: var(--amber-bright); border-color: var(--amber); font-weight: var(--fw-label); }
+#mainmenu button.primary:hover:not(:disabled) { background: var(--chip-active-bg); }
+
 /* ---- interaction baseline: standard easing, keyboard focus, reduced motion ---- */
-button.hbtn, .card, .srow, #debrief button {
+button.hbtn, .card, .srow, #debrief button, #mainmenu button {
   transition:
     border-color 0.15s cubic-bezier(0.4, 0, 0.2, 1),
     background-color 0.15s cubic-bezier(0.4, 0, 0.2, 1),
@@ -409,6 +465,7 @@ button.hbtn, .card, .srow, #debrief button {
 button.hbtn:focus-visible,
 #debrief button:focus-visible,
 #pausemenu button:focus-visible,
+#mainmenu button:focus-visible,
 .card:focus-visible,
 .srow:focus-visible,
 .ord:focus-visible,
