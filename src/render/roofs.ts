@@ -3,7 +3,7 @@ import { EDGE } from '../sim/map';
 import type { GameMap } from '../sim/map';
 import type { Sim, Soldier } from '../sim/sim';
 import type { Camera } from './camera';
-import { AO_ALPHA, SUN, WIND, shadowAlpha, shadowOffset, shadowSoft, shadowSoftAlpha, sun } from './light';
+import { AO_ALPHA, SHADOW_LEN_LEGIBLE, SUN, WIND, shadowAlpha, shadowOffset, shadowOffsetLegible, shadowSoft, shadowSoftAlpha, sun, sweptRectPath } from './light';
 
 // Gable roofs drawn over building footprints (sim.buildings, from the map
 // plan). A roof fades out when the camera is zoomed in close or a soldier the
@@ -1676,7 +1676,9 @@ function bakeShadow(b: Building, art: RoofArt, stories: number, band: number): S
   // both scale by softMul (1 at the canonical hour, up to 3).
   const soft = shadowSoft();
   const blurPad = 0.6 * soft;
-  const [csdx, csdy] = shadowOffset(CAST_SOFT * stories + art.spireCast);
+  // The legible clamp bounds every offset drawn below, so the sprite rect
+  // computed from this longest throw contains the sweep at any hour.
+  const [csdx, csdy] = shadowOffsetLegible(CAST_SOFT * stories + art.spireCast);
   const sx = nx + Math.min(0, csdx) - blurPad;
   const sy = ny + Math.min(0, csdy) - blurPad;
   const sw = mx - nx + Math.abs(csdx) + blurPad * 2;
@@ -1687,49 +1689,49 @@ function bakeShadow(b: Building, art: RoofArt, stories: number, band: number): S
   const g = c.getContext('2d')!;
   g.scale(band, band);
   g.translate(-sx, -sy);
-  const [sdx, sdy] = shadowOffset(CAST_CORE * stories);
-  const [fdx, fdy] = shadowOffset(CAST_SOFT * stories);
-  // the silhouette is whatever the roof actually is, lean-to included
-  const cast = (ox: number, oy: number): void => {
-    g.fillRect(r.x + ox, r.y + oy, r.w, r.h);
-    if (l) g.fillRect(l.x + ox, l.y + oy, l.w, l.h);
+  const [sdx, sdy] = shadowOffsetLegible(CAST_CORE * stories);
+  const [fdx, fdy] = shadowOffsetLegible(CAST_SOFT * stories);
+  const cx = r.x + r.w / 2;
+  const cy = r.y + r.h / 2;
+  const side = Math.min(r.w, r.h);
+  // ACROSS the sun, not along it: the base of the spire finger is the spire's
+  // own width seen square to the light.
+  const px = -SUN.dy;
+  const py = SUN.dx;
+  // A spire throws a tapering finger far past the tower's own shadow. At the
+  // far-LOD camera the tower is fifteen pixels of dark slate and this is what
+  // tells the player which fifteen pixels they are. Anchored at the TOWER
+  // BASE like everything else; the tip keeps a little width instead of
+  // vanishing to a point — the top courses and the finial are what the eye
+  // actually finds out here.
+  const [tdx, tdy] = shadowOffsetLegible(CAST_SOFT * stories + art.spireCast);
+  const finger = (base: number, tip: number): void => {
+    g.moveTo(cx + px * base, cy + py * base);
+    g.lineTo(cx - px * base, cy - py * base);
+    g.lineTo(cx + tdx - px * tip, cy + tdy - py * tip);
+    g.lineTo(cx + tdx + px * tip, cy + tdy + py * tip);
+    g.closePath();
+  };
+  // The silhouette (roof rect, lean-to, spire finger) is SWEPT from the wall
+  // base along the sun, not translated to the offset: the hull of footprint
+  // and down-sun copy stays connected to the building at every hour — a
+  // translated copy passes at noon and floats free at dawn (light.ts
+  // sweptRectPath). One fill per layer: the subpaths union under nonzero
+  // winding, so overlapping masses never double-darken.
+  const cast = (ox: number, oy: number, fingerBase: number, fingerTip: number): void => {
+    g.beginPath();
+    sweptRectPath(g, r.x, r.y, r.w, r.h, ox, oy);
+    if (l) sweptRectPath(g, l.x, l.y, l.w, l.h, ox, oy);
+    if (art.spireCast > 0) finger(fingerBase, fingerTip);
+    g.fill();
   };
   g.filter = `blur(${(0.28 * band * soft).toFixed(2)}px)`;
   g.fillStyle = `rgba(12,15,10,${shadowSoftAlpha()})`;
-  cast(fdx, fdy);
+  cast(fdx, fdy, side * 0.3, side * 0.14);
   g.filter = `blur(${(0.12 * band * soft).toFixed(2)}px)`;
   g.fillStyle = `rgba(12,15,10,${shadowAlpha()})`;
-  cast(sdx, sdy);
+  cast(sdx, sdy, side * 0.24, side * 0.09);
   if (art.spireCast > 0) {
-    // A spire throws a tapering finger far past the tower's own shadow. At the
-    // far-LOD camera the tower is fifteen pixels of dark slate and this is what
-    // tells the player which fifteen pixels they are.
-    const [tdx, tdy] = shadowOffset(CAST_SOFT * stories + art.spireCast);
-    const cx = r.x + r.w / 2;
-    const cy = r.y + r.h / 2;
-    const side = Math.min(r.w, r.h);
-    // ACROSS the sun, not along it: the base of the finger is the spire's own
-    // width seen square to the light.
-    const px = -SUN.dy;
-    const py = SUN.dx;
-    // The tip keeps a little width instead of vanishing to a point — the top
-    // courses and the finial are what the eye actually finds out here, and the
-    // last third of a true cone taper is sub-metre and reads as nothing.
-    const finger = (base: number, tip: number): void => {
-      g.beginPath();
-      g.moveTo(cx + sdx + px * base, cy + sdy + py * base);
-      g.lineTo(cx + sdx - px * base, cy + sdy - py * base);
-      g.lineTo(cx + tdx - px * tip, cy + tdy - py * tip);
-      g.lineTo(cx + tdx + px * tip, cy + tdy + py * tip);
-      g.closePath();
-      g.fill();
-    };
-    g.filter = `blur(${(0.4 * band * soft).toFixed(2)}px)`;
-    g.fillStyle = `rgba(12,15,10,${shadowSoftAlpha()})`;
-    finger(side * 0.3, side * 0.14);
-    g.filter = `blur(${(0.12 * band * soft).toFixed(2)}px)`;
-    g.fillStyle = `rgba(12,15,10,${shadowAlpha()})`;
-    finger(side * 0.24, side * 0.09);
     // The finial at the tip. A vertical cross throws a cross-shaped shadow,
     // and this one lands on open churchyard — which is what tells the player
     // the finger is a SPIRE and not a chimney or a wall.
@@ -2251,8 +2253,9 @@ export class RoofLayer {
     // The off-screen reject must cover the throw, and the throw stretches
     // with the sun — without the lenMul a low-sun shadow pops in at the
     // screen edge. (At night lenMul is 0 and the sprite is the AO ring alone,
-    // which the footprint pad already covers.)
-    const lm = sun().lenMul;
+    // which the footprint pad already covers.) Clamped exactly like the bake:
+    // the throw never exceeds the legible cap.
+    const lm = Math.min(sun().lenMul, SHADOW_LEN_LEGIBLE);
     this.withWorldTransform(ctx, cam, cw, ch, () => {
       this.buildings.forEach((b, i) => {
         if (!this.onScreen(cam, i, cw, ch, 2 * this.stories[i] * lm)) return;

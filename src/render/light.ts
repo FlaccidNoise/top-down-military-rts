@@ -101,3 +101,44 @@ export function shadowOffset(len: number): [number, number] {
   const l = len * cur.lenMul;
   return [cur.dir[0] * l, cur.dir[1] * l];
 }
+
+// Legibility clamp for the big baked casters (buildings, enclosure masonry,
+// graves, canopies) at a low sun. solar.ts already clamps lenMul at 3 for
+// everything; these casters clamp tighter because a game map is not a
+// photograph — at 3x a two-storey house drags a smear across half a street
+// and the alpha ramp carries the "low sun" story anyway. Per-caster on
+// purpose: unit/vehicle/pole shadows keep the full rake deliberately.
+export const SHADOW_LEN_LEGIBLE = 2.4;
+
+/** shadowOffset with lenMul clamped to SHADOW_LEN_LEGIBLE — for the big baked casters. */
+export function shadowOffsetLegible(len: number): [number, number] {
+  const l = len * Math.min(cur.lenMul, SHADOW_LEN_LEGIBLE);
+  return [cur.dir[0] * l, cur.dir[1] * l];
+}
+
+// The plan-projection rule for cast shadows: a shadow STARTS at the caster's
+// base and travels the sun direction in ONE CONNECTED piece — the hull of the
+// footprint and its down-sun copy, the way the pole shadows sweep. A
+// silhouette merely TRANSLATED by shadowOffset overlaps its caster at noon
+// and passes, then detaches into a floating gray copy at dawn/dusk when
+// lenMul stretches the offset past the footprint.
+//
+// Appends (no beginPath/fill) the swept hull of an axis-aligned rect along
+// (dx, dy): a 6-point polygon under a diagonal offset. Callers batch several
+// casters into one path and fill once — under nonzero winding the union fills
+// uniformly, so overlapping masses never double-darken.
+export function sweptRectPath(g: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, dx: number, dy: number): void {
+  const sx = dx >= 0 ? 1 : -1;
+  const sy = dy >= 0 ? 1 : -1;
+  const cx = x + w / 2;
+  const cy = y + h / 2;
+  const hw = w / 2;
+  const hh = h / 2;
+  g.moveTo(cx - hw * sx, cy - hh * sy);
+  g.lineTo(cx + hw * sx, cy - hh * sy);
+  g.lineTo(cx + hw * sx + dx, cy - hh * sy + dy);
+  g.lineTo(cx + hw * sx + dx, cy + hh * sy + dy);
+  g.lineTo(cx - hw * sx + dx, cy + hh * sy + dy);
+  g.lineTo(cx - hw * sx, cy + hh * sy);
+  g.closePath();
+}
