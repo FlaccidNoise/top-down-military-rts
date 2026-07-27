@@ -396,10 +396,14 @@ export function paintRural(
         if (d2 < rr * rr && !inZone(x, y) && plantable(x, y)) map.setTerrain(x, y, 'woods');
       }
   };
-  const east = {
+  // objectives[1] and a red squad's spawn ride on this anchor (scenario.ts:48,
+  // 52), so it is nudged off anything a squad cannot stand on before the stand
+  // is painted around it — a road tile is standable but gets no trees, and a
+  // footprint tile becomes 'floor' the moment the buildings are stamped.
+  const east = nudgeClear(sk, fp, {
     x: clamp(sk.place.x + 38 + r13.int(20), 20, w - 14),
     y: clamp(sk.place.y - 18 + r13.int(37), 12, h - 12),
-  };
+  });
   stand(east.x, east.y, 9 + r13.int(4));
   woodsStands.push(east);
   for (let i = 0, n = 2 + r13.int(3) + Math.max(0, Math.round((w * h) / 19200) - 1); i < n; i++) {
@@ -432,4 +436,22 @@ export function paintRural(
   }
 
   return woodsStands;
+}
+
+// Walk Chebyshev rings out to 8 for a tile clear of every footprint and every
+// road, in a fixed scan order. Returns the original point when nothing near it
+// qualifies — the caller's own passability check is the backstop.
+function nudgeClear(sk: Skeleton, fp: Footprints, v: Vec): Vec {
+  const { w, h } = sk;
+  for (let r = 0; r <= 8; r++)
+    for (let dy = -r; dy <= r; dy++)
+      for (let dx = -r; dx <= r; dx++) {
+        if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+        const x = v.x + dx;
+        const y = v.y + dy;
+        if (x < 2 || y < 2 || x >= w - 2 || y >= h - 2) continue;
+        const i = y * w + x;
+        if (!fp.occ[i] && !sk.road[i]) return { x, y };
+      }
+  return v;
 }

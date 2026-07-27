@@ -378,6 +378,13 @@ export function buildFootprints(sk: Skeleton, land: Landmarks, pc: Parcels): Foo
   // (map.ts:77-83) and a wall one tile off the grid lands on the far side of it.
   for (const it of pc.interiors) {
     if (buildings.length >= MAX_BUILDINGS) break;
+    // Interiors get the same continuity roll as frontage. Without it the
+    // recursive AABB split of a big block hands back a dozen 9x9 parcels and
+    // each one grows a two-mass yard: a grid of identical sheds, which is
+    // §1.2's "reads as generated" failure in its purest form. Gated on dens,
+    // the back-land near the place stays worked and the edge of town keeps its
+    // orchards and paddocks.
+    if (r9.int(256) >= buildChanceQ8(it.densQ8)) continue;
     const x0 = Math.max(1, it.rect.x);
     const y0 = Math.max(1, it.rect.y);
     const x1 = Math.min(w - 1, it.rect.x + it.rect.w);
