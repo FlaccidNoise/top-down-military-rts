@@ -1285,11 +1285,16 @@ html.mobile #tip {
 #rotate button:focus-visible { outline: 2px solid var(--amber); outline-offset: 1px; }
 
 /* ---- floor menu ---- */
+/* The menu hangs off <body>, not #hud, so the panel background rule up there
+   never reached it and the rows floated as bare text over the map. */
 #floormenu {
   position: absolute;
   z-index: 7;
   padding: 3px 0;
   min-width: 100px;
+  background: var(--ink);
+  border: 1px solid var(--border);
+  border-radius: 3px;
 }
 #floormenu .fm-row {
   padding: 4px 12px;

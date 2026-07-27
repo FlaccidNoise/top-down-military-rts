@@ -163,6 +163,10 @@ let lastTeamId = -1; // most recently selected team, survives a later vehicle se
 let armedOrder: OrderKind | null = null; // order kind armed via ⇧1-7 / order bar, issued by right-click
 let targetMode: '' | 'barrage' | 'air' | 'wheel' | 'empfire' | 'empsmoke' | 'breach' = '';
 let floorFocus = -1; // -1 = all floors; 0..maxStories-1 = only that floor, others dimmed (F key)
+// The open floor menu: its world target pins the order preview (the pointer is
+// off the canvas, on the menu), and `level` is the row under the pointer — so
+// hovering "Floor 2" moves the ghost dots upstairs before anything is issued.
+let floorMenu: { wx: number; wy: number; level: number | null } | null = null;
 let winnerAt = -1; // ms timestamp when winner appeared
 let debriefShown = false;
 let needsBootFrame = false; // re-run bootCamera once the battle HUD is laid out
@@ -307,6 +311,7 @@ const hud = new Hud({
     armedOrder = null;
   },
   cancel: () => { escapeLadder(); },
+  cycleFloor: () => { cycleFloorFocus(); },
   openMenu: () => {
     if (menu.isOpen) { menu.close(); return; }
     pauseBeforeMenu = mode === 'strategic' ? stratPaused : paused;
@@ -735,6 +740,29 @@ function beginOrderAnchor(sx: number, sy: number): void {
   rmbAnchor = { sx, sy, wx, wy };
 }
 
+// The plain right-click: every selected squad, fanned on the y axis, narrowed
+// to one team only where commitOrder's rule says so. The floor menu issues
+// through here too (with `l` set), so "which units move" is one rule shared by
+// both paths — and the same one previewMoveSpots mirrors.
+function issueShortClick(wx: number, wy: number, squadForce: boolean, l?: number): void {
+  const K = selectedSquads.length;
+  const useArmed = armedOrder !== null && MOVE_FAMILY.includes(armedOrder);
+  const kind: OrderKind = useArmed ? armedOrder! : 'move';
+  const offs = fanOffsets(K, SQUAD_FAN);
+  const primary = getPrimary();
+  for (let i = 0; i < K; i++) {
+    const id = selectedSquads[i];
+    const order: TeamOrder = { kind, x: wx, y: wy + offs[i], l };
+    if (useArmed || squadForce) {
+      sim.orderSquad(id, order);
+    } else if (selectedTeam >= 0 && id === primary) {
+      sim.orderTeam(selectedTeam, order);
+    } else {
+      sim.orderSquad(id, order);
+    }
+  }
+}
+
 function commitOrder(sx: number, sy: number, opts: { squadForce: boolean; floors: boolean }): void {
   if (!rmbAnchor) return;
   if (mode === 'strategic') {
@@ -745,11 +773,14 @@ function commitOrder(sx: number, sy: number, opts: { squadForce: boolean; floors
   if (aiControl) { rmbAnchor = null; return; }
   const [wx, wy] = cam.screenToWorld(sx, sy, view.w, view.h);
   if (opts.floors && selectedSquads.length > 0 && sim.map.storiesAt(Math.floor(wx), Math.floor(wy)) >= 2) {
-    showFloorMenu(document.body, sim, wx, wy, sx, sy, (level) => {
-      const order: TeamOrder = { kind: armedOrder ?? 'move', x: wx, y: wy, l: level };
-      if (selectedTeam >= 0) sim.orderTeam(selectedTeam, order);
-      else sim.orderSquad(getPrimary(), order);
-      armedOrder = null;
+    floorMenu = { wx, wy, level: null };
+    showFloorMenu(document.body, sim, wx, wy, sx, sy, {
+      pick: (level) => {
+        issueShortClick(wx, wy, opts.squadForce, level);
+        armedOrder = null;
+      },
+      hover: (level) => { if (floorMenu) floorMenu.level = level; },
+      close: () => { floorMenu = null; },
     });
     rmbAnchor = null;
     return;
@@ -772,20 +803,7 @@ function commitOrder(sx: number, sy: number, opts: { squadForce: boolean; floors
   const kind: OrderKind = useArmed ? armedOrder! : 'move';
 
   if (len < 2) {
-    // Plain right-click (short drag): legacy behavior with squad fan
-    const offs = fanOffsets(K, SQUAD_FAN);
-    const primary = getPrimary();
-    for (let i = 0; i < K; i++) {
-      const id = selectedSquads[i];
-      const order: TeamOrder = { kind, x: wx, y: wy + offs[i] };
-      if (useArmed || opts.squadForce) {
-        sim.orderSquad(id, order);
-      } else if (selectedTeam >= 0 && id === primary) {
-        sim.orderTeam(selectedTeam, order);
-      } else {
-        sim.orderSquad(id, order);
-      }
-    }
+    issueShortClick(wx, wy, opts.squadForce);
     if (useArmed) armedOrder = null;
   } else {
     // Right-drag: formation order
@@ -1072,16 +1090,22 @@ window.addEventListener('keydown', (e) => {
   }
 });
 
-// Floor-focus filter (Height E2): F cycles All → Ground → Floor 2 → … → All.
+// Floor-focus filter (Height E2): All → Ground → Floor 2 → … → All. The F key
+// drives it on desktop and the touch bar's ⬒ chip on a phone — one function, so
+// the two surfaces cannot drift.
+function cycleFloorFocus(): void {
+  const maxStories = sim.map.maxStories;
+  if (maxStories <= 0) return;
+  floorFocus = floorFocus >= maxStories - 1 ? -1 : floorFocus + 1;
+}
+
 // Plain keydown listener — migrates into keymap.ts when the controls pass lands.
 window.addEventListener('keydown', (e) => {
   if (e.key !== 'f' && e.key !== 'F') return;
   if (mode !== 'battle' || menu.isOpen) return;
   const t = e.target;
   if (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement || (t instanceof HTMLElement && t.isContentEditable)) return;
-  const maxStories = sim.map.maxStories;
-  if (maxStories <= 0) return;
-  floorFocus = floorFocus >= maxStories - 1 ? -1 : floorFocus + 1;
+  cycleFloorFocus();
 });
 
 // debug/automation handle
@@ -1237,7 +1261,10 @@ function frame(now: number): void {
 
     const pick = mouse.onCanvas && !targetMode ? pickAt(sim, cam, mouse.x, mouse.y, view.w, view.h) : null;
     const shot = computeShot(sim, getPrimary(), selectedVehicle, pick);
-    const cursor = mouse.onCanvas ? cam.screenToWorld(mouse.x, mouse.y, view.w, view.h) : null;
+    const hover = mouse.onCanvas ? cam.screenToWorld(mouse.x, mouse.y, view.w, view.h) : null;
+    // With the floor menu open the pointer is on the menu, not the map, so the
+    // preview holds the target the menu was opened on.
+    const cursor = floorMenu ? { x: floorMenu.wx, y: floorMenu.wy } : hover && { x: hover[0], y: hover[1] };
     const primary = getPrimary();
 
     // Formation drag state for overlays
@@ -1263,7 +1290,9 @@ function frame(now: number): void {
       targetMode,
       armedOrder,
       squadForce: addMode,
-      cursor: cursor && { x: cursor[0], y: cursor[1] }
+      cursor,
+      orderFloor: floorMenu ? floorMenu.level : null,
+      floorFocus,
     }, pings);
     if (touchHold) drawHoldRing(ctx, touchHold, now);
     tooltip.update(sim, pick, shot, mouse.x, mouse.y, pick?.kind === 'terrain' && (primary >= 0 || selectedVehicle >= 0));

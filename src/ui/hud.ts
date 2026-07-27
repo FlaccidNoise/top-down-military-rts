@@ -8,6 +8,11 @@ import { formatBinding, loadKeymap, type Keymap } from './keymap';
 import { MOBILE } from '../render/view';
 
 export const STATE_COLOR = { steady: '#7fbf6a', shaken: '#e0c060', pinned: '#e08a3c', broken: '#d05c50' } as const;
+
+/** What a floor is called anywhere the player reads one. Ground is not "Floor 1". */
+export function floorName(level: number): string {
+  return level === 0 ? 'Ground' : `Floor ${level + 1}`;
+}
 export const TEAM = { blue: '#5b9bd5', red: '#d05c50' } as const;
 const ORDER_KINDS: OrderKind[] = ['move', 'fast', 'sneak', 'fire', 'smoke', 'defend', 'ambush', 'assault'];
 
@@ -36,6 +41,8 @@ export interface HudCallbacks {
   toggleAddMode(): void;
   selectAll(): void;
   cancel(): void;
+  /** F's floor-focus cycle, which a phone has no key for. */
+  cycleFloor(): void;
   openMenu(): void;
 }
 
@@ -124,7 +131,7 @@ export class Hud {
       <div id="squads"></div>
       <div id="banner"></div>
       <div id="hint">
-        <span class="hg">scroll zoom · WASD pan · drag box-select · ⇧click add · right-click move · right-drag formation</span>
+        <span class="hg">scroll zoom · WASD pan · drag box-select · ⇧click add · right-click move · right-drag formation · F floor view · ⎇right-click floors</span>
         <span class="hg">${fb(b.squad1)}-${fb(b.squad9)} squad · ${fb(b.order1)}-${fb(b.order8)} order kind, right-click issues · ${fb(b.barrage)} barrage · ${fb(b.airstrike)} airstrike · ${fb(b.pause)} pause · ${fb(b.cancel)} widen/cancel · ${fb(b.menu)} menu</span>
       </div>`;
     document.body.appendChild(this.root);
@@ -192,6 +199,7 @@ export class Hud {
       '<button class="hbtn" data-tb="select">▭ Select</button>' +
       '<button class="hbtn" data-tb="add">＋ Add</button>' +
       '<button class="hbtn" data-tb="all">All</button>' +
+      '<button class="hbtn" data-tb="floor">⬒ Floors</button>' +
       '<button class="hbtn" data-tb="cancel">✕ Cancel</button>' +
       '<button class="hbtn" data-tb="barrage"></button>' +
       '<button class="hbtn" data-tb="air"></button>' +
@@ -213,6 +221,7 @@ export class Hud {
         case 'select': cb.toggleBoxMode(); break;
         case 'add': cb.toggleAddMode(); break;
         case 'all': cb.selectAll(); break;
+        case 'floor': cb.cycleFloor(); break;
         case 'cancel': cb.cancel(); break;
         case 'barrage': cb.callBarrage(); break;
         case 'air': cb.callAirstrike(); break;
@@ -374,7 +383,7 @@ export class Hud {
     const fb = formatBinding;
     const b = this.km.bindings;
     this.q('#hint').innerHTML =
-      `<span class="hg">scroll zoom · ${fb(b.panUp)}${fb(b.panLeft)}${fb(b.panDown)}${fb(b.panRight)} pan · drag box-select · ⇧click add · right-click move · right-drag formation</span>` +
+      `<span class="hg">scroll zoom · ${fb(b.panUp)}${fb(b.panLeft)}${fb(b.panDown)}${fb(b.panRight)} pan · drag box-select · ⇧click add · right-click move · right-drag formation · F floor view · ⎇right-click floors</span>` +
       `<span class="hg">${fb(b.squad1)}-${fb(b.squad9)} squad · ${fb(b.order1)}-${fb(b.order8)} order kind, right-click issues · ${fb(b.barrage)} barrage · ${fb(b.airstrike)} airstrike · ${fb(b.pause)} pause · ${fb(b.cancel)} widen/cancel · ${fb(b.menu)} menu</span>`;
   }
 
@@ -400,6 +409,13 @@ export class Hud {
     tb('select').classList.toggle('active', !!st.boxMode);
     tb('add').classList.toggle('active', !!st.addMode);
     tb('roster').classList.toggle('active', this.rosterOpen);
+    // The floor chip is F's only home on a phone. A map with nothing taller
+    // than a shed has no floors to cycle, so it does not appear at all.
+    const floor = tb('floor');
+    const focus = st.floorFocus ?? -1;
+    floor.style.display = sim.map.maxStories >= 2 ? '' : 'none';
+    floor.textContent = focus < 0 ? '⬒ Floors' : `⬒ ${floorName(focus)}`;
+    floor.classList.toggle('active', focus >= 0);
   }
 
   private renderObjectiveStrip(sim: Sim, st: HudState): void {
@@ -444,7 +460,7 @@ export class Hud {
       if (s.side === 'blue') us++;
       else if (sim.soldierVisibleTo('blue', s)) ge++;
     }
-    this.q('#tb-title').innerHTML = `<b>${st.title}</b> · ${clock}${st.paused ? ' <span class="paused">⏸ PAUSED</span>' : ''}${st.aiControl ? ' <span class="paused">AI CONTROL</span>' : ''}${st.floorFocus !== undefined && st.floorFocus >= 0 ? ` <span class="paused">⬒ ${st.floorFocus === 0 ? 'Ground' : `Floor ${st.floorFocus + 1}`} only</span>` : ''}`;
+    this.q('#tb-title').innerHTML = `<b>${st.title}</b> · ${clock}${st.paused ? ' <span class="paused">⏸ PAUSED</span>' : ''}${st.aiControl ? ' <span class="paused">AI CONTROL</span>' : ''}${st.floorFocus !== undefined && st.floorFocus >= 0 ? ` <span class="paused">⬒ ${floorName(st.floorFocus)} only</span>` : ''}`;
     this.q('#tb-strength').innerHTML =
       `<span class="us">US ${us}</span><div class="ratio"><i style="flex:${us};background:#5b9bd5"></i><i style="flex:${ge};background:#d05c50"></i></div><span class="ge">GE ${sim.fowDisabled ? '' : '~'}${ge}</span>`;
 

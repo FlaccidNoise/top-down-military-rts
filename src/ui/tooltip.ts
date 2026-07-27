@@ -2,7 +2,7 @@ import type { Camera } from '../render/camera';
 import { woundLabel } from '../sim/body';
 import { TERRAIN, VEHICLES, WEAPONS, type TerrainDef, type TerrainKey, type WeaponDef } from '../sim/data';
 import { EYE_VEHICLE, HULL_VEHICLE, eyeOf, sightBetween, sightToSoldier, type Sim, type Soldier, type Vehicle } from '../sim/sim';
-import { STATE_COLOR } from './hud';
+import { floorName, STATE_COLOR } from './hud';
 import { formatCoverBreakdown, formatCoverBreakdownForFloor } from './tooltip-format';
 import { MOBILE } from '../render/view';
 
@@ -254,9 +254,8 @@ function soldierCard(sim: Sim, s: Soldier, shot: ShotSolution | null): string {
   const reserve = Object.values(s.ammo).reduce((a, n) => a + (n ?? 0), 0);
   const ammoChip = squadAmmoChip(sim, s);
   let html = `<div class="tt-head ${s.side}"><b>${s.name}</b><span>${WEAPONS[s.weapon].name} ${s.magLeft}+${reserve}${stars}${ammoChip ? ' ' + ammoChip : ''}</span></div>`;
-  if (sim.map.storiesAt(Math.floor(s.x), Math.floor(s.y)) >= 2) {
-    html += `<div class="tt-note">${s.level === 0 ? 'Ground' : `Floor ${s.level + 1}`}</div>`;
-  }
+  const stories = sim.map.storiesAt(Math.floor(s.x), Math.floor(s.y));
+  if (stories >= 2) html += `<div class="tt-note">${floorName(s.level)} of ${stories}</div>`;
   if (!s.alive) return html + `<div class="tt-kia">KIA</div>` + (s.wounds.length ? woundList(s) : '');
   if (s.downed) {
     const cond = s.stabilized ? 'stabilized' : s.bleedRate > 0.0005 ? 'bleeding out' : 'incapacitated';
@@ -318,15 +317,21 @@ function vehicleCard(sim: Sim, v: Vehicle, shot: ShotSolution | null): string {
 const TERRAIN_NAME: Record<TerrainKey, string> = { grass: 'Open ground', road: 'Road', woods: 'Woods', floor: 'Building interior', hedge: 'Hedgerow', field: 'Plowed field', water: 'River', bank: 'Embankment', rail: 'Railway', furn_heavy: 'Heavy furniture', furn_light: 'Clutter', hearth: 'Hearth', altar: 'Altar' };
 
 function terrainCard(sim: Sim, wx: number, wy: number, moveHint: boolean): string {
+  const stories = sim.map.storiesAt(Math.floor(wx), Math.floor(wy));
   const k = sim.map.terrainKeyAt(Math.floor(wx), Math.floor(wy));
   const t: TerrainDef = TERRAIN[k];
   const lines = k === 'floor' ? formatCoverBreakdownForFloor() : formatCoverBreakdown(t);
   // An impassable tile has a moveCost, but quoting it reads as an invitation to
   // walk onto a river or a pew block.
   const speed = t.passable ? `move speed ×${(1 / t.moveCost).toFixed(2)}` : 'impassable';
-  let html = `<div class="tt-head"><b>${TERRAIN_NAME[k]}</b></div><div class="tt-rows">`;
+  const head = stories >= 2 ? `${TERRAIN_NAME[k]} · ${stories} floors` : TERRAIN_NAME[k];
+  let html = `<div class="tt-head"><b>${head}</b></div><div class="tt-rows">`;
   for (const l of lines) html += `<div><span>${l}</span></div>`;
   html += `<div><span>${speed}</span></div></div>`;
   if (moveHint) html += `<div class="tt-sec">${MOBILE ? 'RELEASE TO MOVE · DRAG TO SET A FRONT' : 'RIGHT-CLICK MOVE · RIGHT-DRAG FORMATION'}</div>`;
+  // The floor controls exist and nothing names them. Say so exactly where the
+  // player is looking at a building tall enough for them to matter — on a
+  // phone the release itself opens the menu, so there is no modifier to name.
+  if (stories >= 2) html += `<div class="tt-sec">${MOBILE ? 'RELEASE FOR THE FLOOR MENU · ⬒ FLOORS FILTERS THE VIEW' : 'ALT+RIGHT-CLICK FOR THE FLOOR MENU · F FILTERS THE VIEW'}</div>`;
   return html;
 }

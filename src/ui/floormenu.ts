@@ -3,11 +3,19 @@ import type { Sim } from '../sim/sim';
 let activeMenu: HTMLDivElement | null = null;
 let activeMouseListener: ((e: MouseEvent) => void) | null = null;
 let activeKeyListener: ((e: KeyboardEvent) => void) | null = null;
+let activeClose: (() => void) | null = null;
 
 function closeMenu(): void {
   if (activeMenu) {
     activeMenu.remove();
     activeMenu = null;
+  }
+  // Fires exactly once per opened menu, whichever way it goes away — the order
+  // preview is pinned to the menu's target while it is up and has to be let go.
+  if (activeClose) {
+    const done = activeClose;
+    activeClose = null;
+    done();
   }
   if (activeMouseListener) {
     window.removeEventListener('mousedown', activeMouseListener, true);
@@ -19,6 +27,14 @@ function closeMenu(): void {
   }
 }
 
+export interface FloorMenuHandlers {
+  pick(level: number): void;
+  /** Row under the pointer, or null on leave — drives the order preview's target floor. */
+  hover?(level: number | null): void;
+  /** Dismissed without a pick (click-away, Escape) — and after a pick. */
+  close?(): void;
+}
+
 export function showFloorMenu(
   parent: HTMLElement,
   sim: Sim,
@@ -26,7 +42,7 @@ export function showFloorMenu(
   wy: number,
   clientX: number,
   clientY: number,
-  onPick: (level: number) => void,
+  handlers: FloorMenuHandlers,
 ): void {
   const tx = Math.floor(wx);
   const ty = Math.floor(wy);
@@ -51,8 +67,6 @@ export function showFloorMenu(
   el.id = 'floormenu';
   el.className = 'panel';
   el.style.position = 'absolute';
-  el.style.left = `${clientX}px`;
-  el.style.top = `${clientY}px`;
 
   // Rows bottom-to-top: Ground at bottom, Floor N at top
   for (let i = stories - 1; i >= 0; i--) {
@@ -65,15 +79,29 @@ export function showFloorMenu(
     } else {
       row.addEventListener('click', (e) => {
         e.stopPropagation();
-        onPick(i);
+        handlers.pick(i);
         closeMenu();
       });
+      // Hovering a row previews THAT floor: the dots move upstairs before the
+      // order is committed, which is the only moment the player can still
+      // change their mind.
+      row.addEventListener('pointerenter', () => handlers.hover?.(i));
+      row.addEventListener('pointerleave', () => handlers.hover?.(null));
     }
     el.appendChild(row);
   }
 
   parent.appendChild(el);
+  // Clamp into the viewport once it has a measured size. A four-storey menu is
+  // ~190 px of 44 px touch rows, and the press that opens it on a phone is
+  // usually low on the screen — unclamped, Ground ends up under the touch bar
+  // with no way to reach it.
+  const bar = document.getElementById('touchbar');
+  const bottom = innerHeight - (bar?.getBoundingClientRect().height ?? 0) - 6;
+  el.style.left = `${Math.max(6, Math.min(clientX, innerWidth - el.offsetWidth - 6))}px`;
+  el.style.top = `${Math.max(6, Math.min(clientY, bottom - el.offsetHeight))}px`;
   activeMenu = el;
+  activeClose = () => handlers.close?.();
 
   activeMouseListener = (e: MouseEvent) => {
     if (!el.contains(e.target as Node)) {

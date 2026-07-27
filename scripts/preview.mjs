@@ -12,6 +12,8 @@
 //   node scripts/preview.mjs --scene interior --order move
 //   node scripts/preview.mjs --scene pond            # the refusal state
 //   node scripts/preview.mjs --scene hedge --device phone-landscape --touch
+//   node scripts/preview.mjs --scene floors --force bourg --idle    # storey glyphs
+//   node scripts/preview.mjs --scene floors --force bourg --menu    # the floor menu
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { arg, launch, gotoStaged, place } from './lib/stage.mjs';
@@ -23,18 +25,22 @@ const PORT = Number(arg('port', '5199'));
 const SEED = Number(arg('seed', '7'));
 const CAMP = Number(arg('camp', '42'));
 const SCENE = arg('scene', 'hedge');
-const ORDER = arg('order', SCENE === 'hedge' ? 'defend' : ''); // '' = plain move, no armed kind
+const ORDER = arg('order', SCENE === 'hedge' || SCENE === 'floors' ? 'defend' : ''); // '' = plain move, no armed kind
 const DEVICE = arg('device', 'desktop');
 const SCALE = Number(arg('scale', '26'));
 const DRAG = Number(arg('drag', SCENE === 'hedge' ? '14' : '0')); // metres of right-drag; 0 = plain hover
 const OUT = arg('out', `.screenshots/m4-${SCENE}.png`);
 const POND_R = Number(arg('pond', '11')); // pond scene: water radius, must beat the resolver's r<=5 fallback
 const TOUCH = has('touch'); // drive the phone gesture path instead of the mouse
-const SCENES = ['hedge', 'interior', 'pond'];
+const FORCE = arg('force', null); // force the defended cell's terrain (bourg = a town with tall buildings)
+const MENU = has('menu'); // open the floor menu instead of hovering the ground
+const IDLE = has('idle'); // no pointer at all: the map's own overlays, nothing ordered
+const FLOOR = arg('floor', null); // floor-menu row to hover, by label ("Floor 2")
+const SCENES = ['hedge', 'interior', 'pond', 'floors'];
 if (!SCENES.includes(SCENE)) throw new Error(`unknown scene "${SCENE}" — one of: ${SCENES.join(', ')}`);
 
 const { browser, page } = await launch({ device: DEVICE });
-await gotoStaged(page, { port: PORT, seed: SEED, camp: CAMP, fow: 0 });
+await gotoStaged(page, { port: PORT, seed: SEED, camp: CAMP, fow: 0, forceKind: FORCE });
 await page.evaluate(() => window.__game.setPaused(true));
 
 // Where to aim. Each scene derives its anchor from the live map, never from a
@@ -51,6 +57,29 @@ const anchor = await page.evaluate(({ scene, pondR }) => {
 
   if (scene === 'interior') {
     const b = sim.buildings.reduce((best, b) => (near(b.x + b.w / 2, b.y + b.h / 2) < near(best.x + best.w / 2, best.y + best.h / 2) ? b : best));
+    return { x: b.x + b.w / 2, y: b.y + b.h / 2 };
+  }
+
+  if (scene === 'floors') {
+    // The tallest building the squad could plausibly be sent into: storeys
+    // first (the whole point), nearness second. Read off the map's own storey
+    // counts, the same array the badge and the resolver read.
+    const storeys = (b) => {
+      let n = 0;
+      for (let y = b.y; y < b.y + b.h; y++) for (let x = b.x; x < b.x + b.w; x++) n = Math.max(n, m.storiesAt(x, y));
+      return n;
+    };
+    const tall = sim.buildings.filter((b) => storeys(b) >= 2);
+    if (tall.length === 0) throw new Error('no multi-storey building on this map — try --force bourg');
+    // A squad's teams fan +-TEAM_FAN/2 metres off the click, and each team
+    // derives its own floor from its OWN anchor — so a footprint narrower than
+    // the fan puts half the order on the grass, which is honest but is not the
+    // upstairs picture this scene is for. Prefer one that can hold the fan.
+    const roomy = tall.filter((b) => Math.min(b.w, b.h) >= 9);
+    // Storeys first, nearness only as a tie-break — hence sqrt: squared
+    // distance runs to five figures and buries the storey term entirely.
+    const score = (x) => storeys(x) * 40 - Math.sqrt(near(x.x + x.w / 2, x.y + x.h / 2));
+    const b = (roomy.length ? roomy : tall).reduce((best, b) => (score(b) > score(best) ? b : best));
     return { x: b.x + b.w / 2, y: b.y + b.h / 2 };
   }
 
@@ -117,6 +146,12 @@ await page.evaluate(({ x, y }) => {
 const stripCoach = async () => { if (!has('coach')) await page.evaluate(() => document.querySelectorAll('.coach').forEach((e) => e.remove())); };
 await stripCoach();
 
+// Floor-focus cycles All → Ground → Floor 2 → …, so N presses of F land on
+// floor N-1. The touch bar's ⬒ chip drives the same function; pressing the key
+// is just the way a script can reach it.
+const FOCUS = Number(arg('focus', '0'));
+for (let i = 0; i < FOCUS; i++) await page.keyboard.press('f');
+
 if (ORDER) {
   // Desktop roster and phone touch bar both publish [data-order]; only one of
   // them is ever visible, so let the selector pick the live control surface.
@@ -143,21 +178,43 @@ const screen = await page.evaluate(({ a, d }) => {
   return { ax, ay, dx, dy };
 }, { a: anchor, d: drop });
 
-if (TOUCH) {
+if (IDLE) {
+  // Nothing hovered, nothing ordered: what the map alone tells the player.
+} else if (TOUCH) {
   // The phone's order gesture: press, wait past HOLD_MS so touch.ts fires
   // holdStart (which is beginOrderAnchor plus the mouse.x/y hover aliases the
-  // preview reads), then drag. No touchEnd — that would commit the order.
+  // preview reads), then drag. No touchEnd — that would commit the order…
   const cdp = await page.context().newCDPSession(page);
   const send = (type, x, y) => cdp.send('Input.dispatchTouchEvent', { type, touchPoints: [{ x, y }] });
   await send('touchStart', screen.ax, screen.ay);
   await page.waitForTimeout(HOLD_MS + 180);
   if (DRAG > 0) await send('touchMove', screen.dx, screen.dy);
+  // …unless we are after the floor menu, which is what a release over a
+  // multi-storey footprint OPENS on a phone (there is no Alt key to hold).
+  if (MENU) await send('touchEnd', screen.ax, screen.ay);
+} else if (MENU) {
+  // Desktop floor menu: Alt+right-click. Playwright carries the held modifier
+  // into the mouse events, which is exactly what commitOrder reads (e.altKey).
+  await page.mouse.move(screen.ax, screen.ay);
+  await page.keyboard.down('Alt');
+  await page.mouse.down({ button: 'right' });
+  await page.mouse.up({ button: 'right' });
+  await page.keyboard.up('Alt');
+  await page.locator('#floormenu').waitFor({ state: 'visible', timeout: 5000 });
 } else {
   await page.mouse.move(screen.ax, screen.ay);
   if (DRAG > 0) {
     await page.mouse.down({ button: 'right' });
     await page.mouse.move(screen.dx, screen.dy, { steps: 6 });
   }
+}
+
+// Hovering a row is what moves the ghost dots to THAT floor, so the shot has
+// to be taken with the pointer parked on it.
+if (MENU && FLOOR && !TOUCH) {
+  const row = page.locator('#floormenu .fm-row', { hasText: FLOOR }).first();
+  await row.waitFor({ state: 'visible', timeout: 5000 });
+  await row.hover();
 }
 // One-time coachmarks are tutorial furniture, not the surface under test, and
 // they land on top of it — including on the order chip. --coach keeps them.
