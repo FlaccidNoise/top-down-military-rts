@@ -373,6 +373,10 @@ export class Renderer {
   // of the sim, and freezing one mid-air under pause would look broken.
   private drawBirds(ctx: CanvasRenderingContext2D, cam: Camera, now: number, cw: number, ch: number): void {
     this.birds = this.birds.filter((b) => now - b.at < BIRD_MS);
+    // Below civil twilight there are no birds to flush (N14, design §11) —
+    // a startled flock over a 02:00 battlefield reads as a bug, not ambience.
+    // The filter above still drains the array, so dusk strands no stale flock.
+    if (sun().el < -6) return;
     if (this.birds.length === 0 || fxDetail(cam.scale) < 1) return;
     const S = cam.scale;
     const wing = Math.max(4, S * 0.45);

@@ -574,4 +574,23 @@ describe('perf: design-scale tick time', () => {
     logPerf('ambush-settle', d, sim.soldiers.length);
     expect(p95(d.all)).toBeLessThan(SANITY_P95_MS);
   }, 120_000);
+
+  it('night-settle: the 02:00 set piece stays inside the same tick budget', () => {
+    // Sim half of the N14 night-cost claim: the night rules are threshold
+    // compares plus a per-tick light memo, and the spotting sweep
+    // short-circuits on a 25 m cap instead of 200 m — night ticks must fit
+    // the same budget as set-piece-247, with zero night-specific machinery.
+    // (The RENDER half — night frames not slower than day, sun-step drain —
+    // is asserted browser-side in scripts/bake.mjs, where frames exist.
+    // A cross-scenario day-vs-night tick-time compare is deliberately not
+    // asserted here: the two runs diverge behaviourally, so it would pin
+    // scheduler noise, not the mechanism.)
+    const { sim, commander } = buildScenario(SEED);
+    sim.startMin = 2 * 60;
+    warmup(sim, commander, 300);
+    const d = measureTicks(sim, commander, 600);
+    logPerf('night-settle', d, sim.soldiers.length);
+    expect(sim.light).toBe(0); // guard: this really is the dark case
+    expect(p95(d.all)).toBeLessThan(SANITY_P95_MS);
+  }, 120_000);
 });
