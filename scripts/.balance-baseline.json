@@ -1,0 +1,1143 @@
+{
+ "date": "2026-07-27",
+ "seeds": 6,
+ "cap": 54000,
+ "cells": [
+  {
+   "profile": "blob",
+   "kind": "open",
+   "blueWins": 1,
+   "redWins": 0,
+   "holds": 5,
+   "n": 6,
+   "blueKiaPct": 23.3,
+   "blueWiaPct": 0.7,
+   "redKiaPct": 60,
+   "meanTicks": 45843
+  },
+  {
+   "profile": "blob",
+   "kind": "woods",
+   "blueWins": 1,
+   "redWins": 0,
+   "holds": 5,
+   "n": 6,
+   "blueKiaPct": 24.8,
+   "blueWiaPct": 0.7,
+   "redKiaPct": 58.1,
+   "meanTicks": 50336
+  },
+  {
+   "profile": "blob",
+   "kind": "bourg",
+   "blueWins": 2,
+   "redWins": 0,
+   "holds": 4,
+   "n": 6,
+   "blueKiaPct": 33,
+   "blueWiaPct": 0.5,
+   "redKiaPct": 57.2,
+   "meanTicks": 37392
+  },
+  {
+   "profile": "blob-fast",
+   "kind": "open",
+   "blueWins": 1,
+   "redWins": 0,
+   "holds": 5,
+   "n": 6,
+   "blueKiaPct": 24,
+   "blueWiaPct": 0.9,
+   "redKiaPct": 61.2,
+   "meanTicks": 46654
+  },
+  {
+   "profile": "blob-fast",
+   "kind": "woods",
+   "blueWins": 0,
+   "redWins": 0,
+   "holds": 6,
+   "n": 6,
+   "blueKiaPct": 23.7,
+   "blueWiaPct": 0.5,
+   "redKiaPct": 56.9,
+   "meanTicks": 54000
+  },
+  {
+   "profile": "blob-fast",
+   "kind": "bourg",
+   "blueWins": 3,
+   "redWins": 0,
+   "holds": 3,
+   "n": 6,
+   "blueKiaPct": 32.5,
+   "blueWiaPct": 2.9,
+   "redKiaPct": 57.8,
+   "meanTicks": 31161
+  },
+  {
+   "profile": "doctrine",
+   "kind": "open",
+   "blueWins": 0,
+   "redWins": 0,
+   "holds": 6,
+   "n": 6,
+   "blueKiaPct": 15.7,
+   "blueWiaPct": 0.2,
+   "redKiaPct": 35.6,
+   "meanTicks": 54000
+  },
+  {
+   "profile": "doctrine",
+   "kind": "woods",
+   "blueWins": 0,
+   "redWins": 0,
+   "holds": 6,
+   "n": 6,
+   "blueKiaPct": 17.4,
+   "blueWiaPct": 0.3,
+   "redKiaPct": 37.9,
+   "meanTicks": 54000
+  },
+  {
+   "profile": "doctrine",
+   "kind": "bourg",
+   "blueWins": 0,
+   "redWins": 0,
+   "holds": 6,
+   "n": 6,
+   "blueKiaPct": 25.2,
+   "blueWiaPct": 0.9,
+   "redKiaPct": 30.3,
+   "meanTicks": 54000
+  }
+ ],
+ "runs": [
+  {
+   "profile": "blob",
+   "kind": "open",
+   "seed": 1,
+   "winner": "hold",
+   "ticks": 54000,
+   "gameMin": 30,
+   "start": {
+    "blue": 138,
+    "red": 109
+   },
+   "blueKiaPct": 34.1,
+   "blueWiaPct": 0,
+   "blueCapPct": 0,
+   "redKiaPct": 52.3,
+   "redWiaPct": 1.8,
+   "redCapPct": 0,
+   "wallS": 313.4
+  },
+  {
+   "profile": "blob",
+   "kind": "open",
+   "seed": 2,
+   "winner": "hold",
+   "ticks": 54000,
+   "gameMin": 30,
+   "start": {
+    "blue": 138,
+    "red": 109
+   },
+   "blueKiaPct": 21.7,
+   "blueWiaPct": 1.4,
+   "blueCapPct": 0,
+   "redKiaPct": 70.6,
+   "redWiaPct": 0.9,
+   "redCapPct": 0,
+   "wallS": 243.7
+  },
+  {
+   "profile": "blob",
+   "kind": "open",
+   "seed": 3,
+   "winner": "hold",
+   "ticks": 54000,
+   "gameMin": 30,
+   "start": {
+    "blue": 138,
+    "red": 109
+   },
+   "blueKiaPct": 21.7,
+   "blueWiaPct": 0,
+   "blueCapPct": 0,
+   "redKiaPct": 56,
+   "redWiaPct": 0,
+   "redCapPct": 0,
+   "wallS": 346
+  },
+  {
+   "profile": "blob",
+   "kind": "open",
+   "seed": 4,
+   "winner": "blue",
+   "ticks": 5055,
+   "gameMin": 2.8,
+   "start": {
+    "blue": 138,
+    "red": 109
+   },
+   "blueKiaPct": 10.9,
+   "blueWiaPct": 2.2,
+   "blueCapPct": 0,
+   "redKiaPct": 56,
+   "redWiaPct": 18.3,
+   "redCapPct": 0.9,
+   "wallS": 34.7
+  },
+  {
+   "profile": "blob",
+   "kind": "open",
+   "seed": 5,
+   "winner": "hold",
+   "ticks": 54000,
+   "gameMin": 30,
+   "start": {
+    "blue": 138,
+    "red": 109
+   },
+   "blueKiaPct": 23.2,
+   "blueWiaPct": 0.7,
+   "blueCapPct": 0,
+   "redKiaPct": 61.5,
+   "redWiaPct": 0,
+   "redCapPct": 0,
+   "wallS": 283.6
+  },
+  {
+   "profile": "blob",
+   "kind": "open",
+   "seed": 6,
+   "winner": "hold",
+   "ticks": 54000,
+   "gameMin": 30,
+   "start": {
+    "blue": 138,
+    "red": 109
+   },
+   "blueKiaPct": 28.3,
+   "blueWiaPct": 0,
+   "blueCapPct": 0,
+   "redKiaPct": 63.3,
+   "redWiaPct": 1.8,
+   "redCapPct": 0,
+   "wallS": 267.1
+  },
+  {
+   "profile": "blob",
+   "kind": "woods",
+   "seed": 1,
+   "winner": "hold",
+   "ticks": 54000,
+   "gameMin": 30,
+   "start": {
+    "blue": 138,
+    "red": 109
+   },
+   "blueKiaPct": 34.8,
+   "blueWiaPct": 0,
+   "blueCapPct": 0,
+   "redKiaPct": 44,
+   "redWiaPct": 2.8,
+   "redCapPct": 0,
+   "wallS": 297.3
+  },
+  {
+   "profile": "blob",
+   "kind": "woods",
+   "seed": 2,
+   "winner": "hold",
+   "ticks": 54000,
+   "gameMin": 30,
+   "start": {
+    "blue": 138,
+    "red": 109
+   },
+   "blueKiaPct": 16.7,
+   "blueWiaPct": 0,
+   "blueCapPct": 0,
+   "redKiaPct": 64.2,
+   "redWiaPct": 0,
+   "redCapPct": 0,
+   "wallS": 330.3
+  },
+  {
+   "profile": "blob",
+   "kind": "woods",
+   "seed": 3,
+   "winner": "hold",
+   "ticks": 54000,
+   "gameMin": 30,
+   "start": {
+    "blue": 138,
+    "red": 109
+   },
+   "blueKiaPct": 14.5,
+   "blueWiaPct": 0.7,
+   "blueCapPct": 0,
+   "redKiaPct": 56.9,
+   "redWiaPct": 0.9,
+   "redCapPct": 0,
+   "wallS": 422.2
+  },
+  {
+   "profile": "blob",
+   "kind": "woods",
+   "seed": 4,
+   "winner": "blue",
+   "ticks": 32014,
+   "gameMin": 17.8,
+   "start": {
+    "blue": 138,
+    "red": 109
+   },
+   "blueKiaPct": 23.2,
+   "blueWiaPct": 2.2,
+   "blueCapPct": 0,
+   "redKiaPct": 72.5,
+   "redWiaPct": 2.8,
+   "redCapPct": 0,
+   "wallS": 119.6
+  },
+  {
+   "profile": "blob",
+   "kind": "woods",
+   "seed": 5,
+   "winner": "hold",
+   "ticks": 54000,
+   "gameMin": 30,
+   "start": {
+    "blue": 138,
+    "red": 109
+   },
+   "blueKiaPct": 26.1,
+   "blueWiaPct": 1.4,
+   "blueCapPct": 0,
+   "redKiaPct": 56.9,
+   "redWiaPct": 1.8,
+   "redCapPct": 0,
+   "wallS": 314.5
+  },
+  {
+   "profile": "blob",
+   "kind": "woods",
+   "seed": 6,
+   "winner": "hold",
+   "ticks": 54000,
+   "gameMin": 30,
+   "start": {
+    "blue": 138,
+    "red": 109
+   },
+   "blueKiaPct": 33.3,
+   "blueWiaPct": 0,
+   "blueCapPct": 0,
+   "redKiaPct": 54.1,
+   "redWiaPct": 1.8,
+   "redCapPct": 0,
+   "wallS": 266
+  },
+  {
+   "profile": "blob",
+   "kind": "bourg",
+   "seed": 1,
+   "winner": "hold",
+   "ticks": 54000,
+   "gameMin": 30,
+   "start": {
+    "blue": 138,
+    "red": 109
+   },
+   "blueKiaPct": 39.9,
+   "blueWiaPct": 0,
+   "blueCapPct": 0,
+   "redKiaPct": 71.6,
+   "redWiaPct": 0,
+   "redCapPct": 0,
+   "wallS": 82.2
+  },
+  {
+   "profile": "blob",
+   "kind": "bourg",
+   "seed": 2,
+   "winner": "hold",
+   "ticks": 54000,
+   "gameMin": 30,
+   "start": {
+    "blue": 138,
+    "red": 109
+   },
+   "blueKiaPct": 42,
+   "blueWiaPct": 0,
+   "blueCapPct": 0,
+   "redKiaPct": 66.1,
+   "redWiaPct": 0,
+   "redCapPct": 0,
+   "wallS": 132.1
+  },
+  {
+   "profile": "blob",
+   "kind": "bourg",
+   "seed": 3,
+   "winner": "hold",
+   "ticks": 54000,
+   "gameMin": 30,
+   "start": {
+    "blue": 138,
+    "red": 109
+   },
+   "blueKiaPct": 42.8,
+   "blueWiaPct": 0,
+   "blueCapPct": 0,
+   "redKiaPct": 66.1,
+   "redWiaPct": 0,
+   "redCapPct": 0,
+   "wallS": 592.9
+  },
+  {
+   "profile": "blob",
+   "kind": "bourg",
+   "seed": 4,
+   "winner": "blue",
+   "ticks": 4868,
+   "gameMin": 2.7,
+   "start": {
+    "blue": 138,
+    "red": 109
+   },
+   "blueKiaPct": 22.5,
+   "blueWiaPct": 1.4,
+   "blueCapPct": 0,
+   "redKiaPct": 57.8,
+   "redWiaPct": 16.5,
+   "redCapPct": 0.9,
+   "wallS": 29.6
+  },
+  {
+   "profile": "blob",
+   "kind": "bourg",
+   "seed": 5,
+   "winner": "blue",
+   "ticks": 3482,
+   "gameMin": 1.9,
+   "start": {
+    "blue": 138,
+    "red": 109
+   },
+   "blueKiaPct": 15.2,
+   "blueWiaPct": 1.4,
+   "blueCapPct": 0,
+   "redKiaPct": 58.7,
+   "redWiaPct": 15.6,
+   "redCapPct": 0.9,
+   "wallS": 23.6
+  },
+  {
+   "profile": "blob",
+   "kind": "bourg",
+   "seed": 6,
+   "winner": "hold",
+   "ticks": 54000,
+   "gameMin": 30,
+   "start": {
+    "blue": 138,
+    "red": 109
+   },
+   "blueKiaPct": 35.5,
+   "blueWiaPct": 0,
+   "blueCapPct": 0,
+   "redKiaPct": 22.9,
+   "redWiaPct": 0,
+   "redCapPct": 0,
+   "wallS": 148.8
+  },
+  {
+   "profile": "blob-fast",
+   "kind": "open",
+   "seed": 1,
+   "winner": "hold",
+   "ticks": 54000,
+   "gameMin": 30,
+   "start": {
+    "blue": 138,
+    "red": 109
+   },
+   "blueKiaPct": 29.7,
+   "blueWiaPct": 0,
+   "blueCapPct": 0,
+   "redKiaPct": 54.1,
+   "redWiaPct": 3.7,
+   "redCapPct": 0,
+   "wallS": 329.8
+  },
+  {
+   "profile": "blob-fast",
+   "kind": "open",
+   "seed": 2,
+   "winner": "hold",
+   "ticks": 54000,
+   "gameMin": 30,
+   "start": {
+    "blue": 138,
+    "red": 109
+   },
+   "blueKiaPct": 26.8,
+   "blueWiaPct": 1.4,
+   "blueCapPct": 0,
+   "redKiaPct": 67.9,
+   "redWiaPct": 0,
+   "redCapPct": 0,
+   "wallS": 256.5
+  },
+  {
+   "profile": "blob-fast",
+   "kind": "open",
+   "seed": 3,
+   "winner": "hold",
+   "ticks": 54000,
+   "gameMin": 30,
+   "start": {
+    "blue": 138,
+    "red": 109
+   },
+   "blueKiaPct": 17.4,
+   "blueWiaPct": 1.4,
+   "blueCapPct": 0,
+   "redKiaPct": 56,
+   "redWiaPct": 0,
+   "redCapPct": 0,
+   "wallS": 368.7
+  },
+  {
+   "profile": "blob-fast",
+   "kind": "open",
+   "seed": 4,
+   "winner": "blue",
+   "ticks": 9924,
+   "gameMin": 5.5,
+   "start": {
+    "blue": 138,
+    "red": 109
+   },
+   "blueKiaPct": 15.2,
+   "blueWiaPct": 2.9,
+   "blueCapPct": 0,
+   "redKiaPct": 68.8,
+   "redWiaPct": 6.4,
+   "redCapPct": 0,
+   "wallS": 53.1
+  },
+  {
+   "profile": "blob-fast",
+   "kind": "open",
+   "seed": 5,
+   "winner": "hold",
+   "ticks": 54000,
+   "gameMin": 30,
+   "start": {
+    "blue": 138,
+    "red": 109
+   },
+   "blueKiaPct": 23.9,
+   "blueWiaPct": 0,
+   "blueCapPct": 0,
+   "redKiaPct": 60.6,
+   "redWiaPct": 0,
+   "redCapPct": 0,
+   "wallS": 312.4
+  },
+  {
+   "profile": "blob-fast",
+   "kind": "open",
+   "seed": 6,
+   "winner": "hold",
+   "ticks": 54000,
+   "gameMin": 30,
+   "start": {
+    "blue": 138,
+    "red": 109
+   },
+   "blueKiaPct": 31.2,
+   "blueWiaPct": 0,
+   "blueCapPct": 0,
+   "redKiaPct": 59.6,
+   "redWiaPct": 0,
+   "redCapPct": 0,
+   "wallS": 263.8
+  },
+  {
+   "profile": "blob-fast",
+   "kind": "woods",
+   "seed": 1,
+   "winner": "hold",
+   "ticks": 54000,
+   "gameMin": 30,
+   "start": {
+    "blue": 138,
+    "red": 109
+   },
+   "blueKiaPct": 34.8,
+   "blueWiaPct": 0,
+   "blueCapPct": 0,
+   "redKiaPct": 44,
+   "redWiaPct": 2.8,
+   "redCapPct": 0,
+   "wallS": 303.3
+  },
+  {
+   "profile": "blob-fast",
+   "kind": "woods",
+   "seed": 2,
+   "winner": "hold",
+   "ticks": 54000,
+   "gameMin": 30,
+   "start": {
+    "blue": 138,
+    "red": 109
+   },
+   "blueKiaPct": 13.8,
+   "blueWiaPct": 0,
+   "blueCapPct": 0,
+   "redKiaPct": 63.3,
+   "redWiaPct": 0,
+   "redCapPct": 0,
+   "wallS": 348.8
+  },
+  {
+   "profile": "blob-fast",
+   "kind": "woods",
+   "seed": 3,
+   "winner": "hold",
+   "ticks": 54000,
+   "gameMin": 30,
+   "start": {
+    "blue": 138,
+    "red": 109
+   },
+   "blueKiaPct": 13,
+   "blueWiaPct": 0.7,
+   "blueCapPct": 0,
+   "redKiaPct": 56.9,
+   "redWiaPct": 2.8,
+   "redCapPct": 0,
+   "wallS": 429.7
+  },
+  {
+   "profile": "blob-fast",
+   "kind": "woods",
+   "seed": 4,
+   "winner": "hold",
+   "ticks": 54000,
+   "gameMin": 30,
+   "start": {
+    "blue": 138,
+    "red": 109
+   },
+   "blueKiaPct": 18.1,
+   "blueWiaPct": 0.7,
+   "blueCapPct": 0,
+   "redKiaPct": 64.2,
+   "redWiaPct": 0,
+   "redCapPct": 0,
+   "wallS": 233.9
+  },
+  {
+   "profile": "blob-fast",
+   "kind": "woods",
+   "seed": 5,
+   "winner": "hold",
+   "ticks": 54000,
+   "gameMin": 30,
+   "start": {
+    "blue": 138,
+    "red": 109
+   },
+   "blueKiaPct": 26.1,
+   "blueWiaPct": 1.4,
+   "blueCapPct": 0,
+   "redKiaPct": 56.9,
+   "redWiaPct": 1.8,
+   "redCapPct": 0,
+   "wallS": 332.6
+  },
+  {
+   "profile": "blob-fast",
+   "kind": "woods",
+   "seed": 6,
+   "winner": "hold",
+   "ticks": 54000,
+   "gameMin": 30,
+   "start": {
+    "blue": 138,
+    "red": 109
+   },
+   "blueKiaPct": 36.2,
+   "blueWiaPct": 0,
+   "blueCapPct": 0,
+   "redKiaPct": 56,
+   "redWiaPct": 1.8,
+   "redCapPct": 0,
+   "wallS": 217.2
+  },
+  {
+   "profile": "blob-fast",
+   "kind": "bourg",
+   "seed": 1,
+   "winner": "hold",
+   "ticks": 54000,
+   "gameMin": 30,
+   "start": {
+    "blue": 138,
+    "red": 109
+   },
+   "blueKiaPct": 41.3,
+   "blueWiaPct": 0,
+   "blueCapPct": 0,
+   "redKiaPct": 73.4,
+   "redWiaPct": 0,
+   "redCapPct": 0,
+   "wallS": 78.5
+  },
+  {
+   "profile": "blob-fast",
+   "kind": "bourg",
+   "seed": 2,
+   "winner": "hold",
+   "ticks": 54000,
+   "gameMin": 30,
+   "start": {
+    "blue": 138,
+    "red": 109
+   },
+   "blueKiaPct": 31.9,
+   "blueWiaPct": 0,
+   "blueCapPct": 0,
+   "redKiaPct": 66.1,
+   "redWiaPct": 0,
+   "redCapPct": 0,
+   "wallS": 235.8
+  },
+  {
+   "profile": "blob-fast",
+   "kind": "bourg",
+   "seed": 3,
+   "winner": "blue",
+   "ticks": 16121,
+   "gameMin": 9,
+   "start": {
+    "blue": 138,
+    "red": 109
+   },
+   "blueKiaPct": 37.7,
+   "blueWiaPct": 5.8,
+   "blueCapPct": 0,
+   "redKiaPct": 70.6,
+   "redWiaPct": 4.6,
+   "redCapPct": 0,
+   "wallS": 185.5
+  },
+  {
+   "profile": "blob-fast",
+   "kind": "bourg",
+   "seed": 4,
+   "winner": "blue",
+   "ticks": 5078,
+   "gameMin": 2.8,
+   "start": {
+    "blue": 138,
+    "red": 109
+   },
+   "blueKiaPct": 29.7,
+   "blueWiaPct": 9.4,
+   "blueCapPct": 0.7,
+   "redKiaPct": 57.8,
+   "redWiaPct": 16.5,
+   "redCapPct": 0.9,
+   "wallS": 29.7
+  },
+  {
+   "profile": "blob-fast",
+   "kind": "bourg",
+   "seed": 5,
+   "winner": "blue",
+   "ticks": 3764,
+   "gameMin": 2.1,
+   "start": {
+    "blue": 138,
+    "red": 109
+   },
+   "blueKiaPct": 18.8,
+   "blueWiaPct": 2.2,
+   "blueCapPct": 0,
+   "redKiaPct": 56,
+   "redWiaPct": 19.3,
+   "redCapPct": 0,
+   "wallS": 24.2
+  },
+  {
+   "profile": "blob-fast",
+   "kind": "bourg",
+   "seed": 6,
+   "winner": "hold",
+   "ticks": 54000,
+   "gameMin": 30,
+   "start": {
+    "blue": 138,
+    "red": 109
+   },
+   "blueKiaPct": 35.5,
+   "blueWiaPct": 0,
+   "blueCapPct": 0,
+   "redKiaPct": 22.9,
+   "redWiaPct": 0,
+   "redCapPct": 0,
+   "wallS": 165.1
+  },
+  {
+   "profile": "doctrine",
+   "kind": "open",
+   "seed": 1,
+   "winner": "hold",
+   "ticks": 54000,
+   "gameMin": 30,
+   "start": {
+    "blue": 138,
+    "red": 109
+   },
+   "blueKiaPct": 13,
+   "blueWiaPct": 0,
+   "blueCapPct": 0,
+   "redKiaPct": 38.5,
+   "redWiaPct": 0,
+   "redCapPct": 0,
+   "wallS": 45.3
+  },
+  {
+   "profile": "doctrine",
+   "kind": "open",
+   "seed": 2,
+   "winner": "hold",
+   "ticks": 54000,
+   "gameMin": 30,
+   "start": {
+    "blue": 138,
+    "red": 109
+   },
+   "blueKiaPct": 17.4,
+   "blueWiaPct": 0,
+   "blueCapPct": 0,
+   "redKiaPct": 28.4,
+   "redWiaPct": 0,
+   "redCapPct": 0,
+   "wallS": 43.9
+  },
+  {
+   "profile": "doctrine",
+   "kind": "open",
+   "seed": 3,
+   "winner": "hold",
+   "ticks": 54000,
+   "gameMin": 30,
+   "start": {
+    "blue": 138,
+    "red": 109
+   },
+   "blueKiaPct": 14.5,
+   "blueWiaPct": 0.7,
+   "blueCapPct": 0,
+   "redKiaPct": 34.9,
+   "redWiaPct": 0,
+   "redCapPct": 0,
+   "wallS": 90.9
+  },
+  {
+   "profile": "doctrine",
+   "kind": "open",
+   "seed": 4,
+   "winner": "hold",
+   "ticks": 54000,
+   "gameMin": 30,
+   "start": {
+    "blue": 138,
+    "red": 109
+   },
+   "blueKiaPct": 14.5,
+   "blueWiaPct": 0.7,
+   "blueCapPct": 0,
+   "redKiaPct": 44,
+   "redWiaPct": 0,
+   "redCapPct": 0,
+   "wallS": 129.3
+  },
+  {
+   "profile": "doctrine",
+   "kind": "open",
+   "seed": 5,
+   "winner": "hold",
+   "ticks": 54000,
+   "gameMin": 30,
+   "start": {
+    "blue": 138,
+    "red": 109
+   },
+   "blueKiaPct": 10.1,
+   "blueWiaPct": 0,
+   "blueCapPct": 0,
+   "redKiaPct": 28.4,
+   "redWiaPct": 0,
+   "redCapPct": 0,
+   "wallS": 143.1
+  },
+  {
+   "profile": "doctrine",
+   "kind": "open",
+   "seed": 6,
+   "winner": "hold",
+   "ticks": 54000,
+   "gameMin": 30,
+   "start": {
+    "blue": 138,
+    "red": 109
+   },
+   "blueKiaPct": 24.6,
+   "blueWiaPct": 0,
+   "blueCapPct": 0,
+   "redKiaPct": 39.4,
+   "redWiaPct": 0,
+   "redCapPct": 0.9,
+   "wallS": 141.9
+  },
+  {
+   "profile": "doctrine",
+   "kind": "woods",
+   "seed": 1,
+   "winner": "hold",
+   "ticks": 54000,
+   "gameMin": 30,
+   "start": {
+    "blue": 138,
+    "red": 109
+   },
+   "blueKiaPct": 19.6,
+   "blueWiaPct": 0,
+   "blueCapPct": 0,
+   "redKiaPct": 39.4,
+   "redWiaPct": 0,
+   "redCapPct": 0.9,
+   "wallS": 78.2
+  },
+  {
+   "profile": "doctrine",
+   "kind": "woods",
+   "seed": 2,
+   "winner": "hold",
+   "ticks": 54000,
+   "gameMin": 30,
+   "start": {
+    "blue": 138,
+    "red": 109
+   },
+   "blueKiaPct": 21.7,
+   "blueWiaPct": 0,
+   "blueCapPct": 0,
+   "redKiaPct": 27.5,
+   "redWiaPct": 0,
+   "redCapPct": 0.9,
+   "wallS": 48.8
+  },
+  {
+   "profile": "doctrine",
+   "kind": "woods",
+   "seed": 3,
+   "winner": "hold",
+   "ticks": 54000,
+   "gameMin": 30,
+   "start": {
+    "blue": 138,
+    "red": 109
+   },
+   "blueKiaPct": 22.5,
+   "blueWiaPct": 0.7,
+   "blueCapPct": 0,
+   "redKiaPct": 40.4,
+   "redWiaPct": 0,
+   "redCapPct": 0,
+   "wallS": 268.6
+  },
+  {
+   "profile": "doctrine",
+   "kind": "woods",
+   "seed": 4,
+   "winner": "hold",
+   "ticks": 54000,
+   "gameMin": 30,
+   "start": {
+    "blue": 138,
+    "red": 109
+   },
+   "blueKiaPct": 15.2,
+   "blueWiaPct": 0.7,
+   "blueCapPct": 0,
+   "redKiaPct": 48.6,
+   "redWiaPct": 0,
+   "redCapPct": 0,
+   "wallS": 113.1
+  },
+  {
+   "profile": "doctrine",
+   "kind": "woods",
+   "seed": 5,
+   "winner": "hold",
+   "ticks": 54000,
+   "gameMin": 30,
+   "start": {
+    "blue": 138,
+    "red": 109
+   },
+   "blueKiaPct": 14.5,
+   "blueWiaPct": 0.7,
+   "blueCapPct": 0,
+   "redKiaPct": 34.9,
+   "redWiaPct": 0,
+   "redCapPct": 0,
+   "wallS": 73.5
+  },
+  {
+   "profile": "doctrine",
+   "kind": "woods",
+   "seed": 6,
+   "winner": "hold",
+   "ticks": 54000,
+   "gameMin": 30,
+   "start": {
+    "blue": 138,
+    "red": 109
+   },
+   "blueKiaPct": 10.9,
+   "blueWiaPct": 0,
+   "blueCapPct": 0,
+   "redKiaPct": 36.7,
+   "redWiaPct": 0,
+   "redCapPct": 0,
+   "wallS": 78.6
+  },
+  {
+   "profile": "doctrine",
+   "kind": "bourg",
+   "seed": 1,
+   "winner": "hold",
+   "ticks": 54000,
+   "gameMin": 30,
+   "start": {
+    "blue": 138,
+    "red": 109
+   },
+   "blueKiaPct": 35.5,
+   "blueWiaPct": 1.4,
+   "blueCapPct": 0,
+   "redKiaPct": 45,
+   "redWiaPct": 0,
+   "redCapPct": 0,
+   "wallS": 245.2
+  },
+  {
+   "profile": "doctrine",
+   "kind": "bourg",
+   "seed": 2,
+   "winner": "hold",
+   "ticks": 54000,
+   "gameMin": 30,
+   "start": {
+    "blue": 138,
+    "red": 109
+   },
+   "blueKiaPct": 26.8,
+   "blueWiaPct": 0,
+   "blueCapPct": 0,
+   "redKiaPct": 26.6,
+   "redWiaPct": 0,
+   "redCapPct": 0,
+   "wallS": 188.6
+  },
+  {
+   "profile": "doctrine",
+   "kind": "bourg",
+   "seed": 3,
+   "winner": "hold",
+   "ticks": 54000,
+   "gameMin": 30,
+   "start": {
+    "blue": 138,
+    "red": 109
+   },
+   "blueKiaPct": 29,
+   "blueWiaPct": 0.7,
+   "blueCapPct": 0,
+   "redKiaPct": 43.1,
+   "redWiaPct": 0,
+   "redCapPct": 0,
+   "wallS": 126.7
+  },
+  {
+   "profile": "doctrine",
+   "kind": "bourg",
+   "seed": 4,
+   "winner": "hold",
+   "ticks": 54000,
+   "gameMin": 30,
+   "start": {
+    "blue": 138,
+    "red": 109
+   },
+   "blueKiaPct": 9.4,
+   "blueWiaPct": 0.7,
+   "blueCapPct": 0,
+   "redKiaPct": 8.3,
+   "redWiaPct": 0,
+   "redCapPct": 0,
+   "wallS": 100.5
+  },
+  {
+   "profile": "doctrine",
+   "kind": "bourg",
+   "seed": 5,
+   "winner": "hold",
+   "ticks": 54000,
+   "gameMin": 30,
+   "start": {
+    "blue": 138,
+    "red": 109
+   },
+   "blueKiaPct": 20.3,
+   "blueWiaPct": 1.4,
+   "blueCapPct": 0,
+   "redKiaPct": 25.7,
+   "redWiaPct": 0.9,
+   "redCapPct": 0,
+   "wallS": 189.3
+  },
+  {
+   "profile": "doctrine",
+   "kind": "bourg",
+   "seed": 6,
+   "winner": "hold",
+   "ticks": 54000,
+   "gameMin": 30,
+   "start": {
+    "blue": 138,
+    "red": 109
+   },
+   "blueKiaPct": 30.4,
+   "blueWiaPct": 1.4,
+   "blueCapPct": 0,
+   "redKiaPct": 33,
+   "redWiaPct": 2.8,
+   "redCapPct": 0,
+   "wallS": 57
+  }
+ ]
+}

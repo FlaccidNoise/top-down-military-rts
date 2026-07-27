@@ -32,7 +32,7 @@
 //
 // Writes scripts/.balance-baseline.json and prints a compact table.
 // @ts-nocheck
-import { writeFileSync } from 'node:fs';
+import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { newCampaign } from '../src/campaign/campaign';
 import { generateMap } from '../src/sim/mapgen';
 import { fanOffsets, SQUAD_FAN } from '../src/sim/sim';
@@ -126,21 +126,38 @@ function runCell(profile, kind, seed) {
   };
 }
 
+// --merge: skip simulation, concatenate previously written shard files
+// (scripts/.bal-*.json, produced by parallel invocations with --out) into the
+// canonical baseline. Runs are re-sorted so shard order can't matter.
+const MERGE = process.argv.includes('--merge');
 const runs = [];
-const totalCells = PROFILES.length * KINDS.length * SEEDS;
-let done = 0;
-for (const profile of PROFILES) {
-  for (const kind of KINDS) {
-    for (let seed = 1; seed <= SEEDS; seed++) {
-      const r = runCell(profile, kind, seed);
-      runs.push(r);
-      done++;
-      console.log(
-        `[${String(done).padStart(2)}/${totalCells}] ${profile.padEnd(9)} ${kind.padEnd(5)} seed=${seed}  ` +
-          `winner=${r.winner.padEnd(4)} ticks=${String(r.ticks).padStart(5)} (${r.gameMin}min)  ` +
-          `blue KIA ${r.blueKiaPct}% WIA ${r.blueWiaPct}%  red KIA ${r.redKiaPct}% WIA ${r.redWiaPct}% cap ${r.redCapPct}%  ` +
-          `[${r.wallS}s]`,
-      );
+if (MERGE) {
+  const dir = new URL('.', import.meta.url).pathname;
+  const shards = readdirSync(dir).filter((f) => f.startsWith('.bal-') && f.endsWith('.json')).sort();
+  for (const f of shards) {
+    const shard = JSON.parse(readFileSync(`${dir}/${f}`, 'utf8'));
+    runs.push(...shard.runs);
+  }
+  const pi = (p) => ['blob', 'blob-fast', 'doctrine'].indexOf(p);
+  const ki = (k) => ['open', 'woods', 'bourg'].indexOf(k);
+  runs.sort((a, b) => pi(a.profile) - pi(b.profile) || ki(a.kind) - ki(b.kind) || a.seed - b.seed);
+  console.log(`merged ${shards.length} shards, ${runs.length} runs`);
+} else {
+  const totalCells = PROFILES.length * KINDS.length * SEEDS;
+  let done = 0;
+  for (const profile of PROFILES) {
+    for (const kind of KINDS) {
+      for (let seed = 1; seed <= SEEDS; seed++) {
+        const r = runCell(profile, kind, seed);
+        runs.push(r);
+        done++;
+        console.log(
+          `[${String(done).padStart(2)}/${totalCells}] ${profile.padEnd(9)} ${kind.padEnd(5)} seed=${seed}  ` +
+            `winner=${r.winner.padEnd(4)} ticks=${String(r.ticks).padStart(5)} (${r.gameMin}min)  ` +
+            `blue KIA ${r.blueKiaPct}% WIA ${r.blueWiaPct}%  red KIA ${r.redKiaPct}% WIA ${r.redWiaPct}% cap ${r.redCapPct}%  ` +
+            `[${r.wallS}s]`,
+        );
+      }
     }
   }
 }
@@ -151,6 +168,7 @@ const cells = [];
 for (const profile of PROFILES) {
   for (const kind of KINDS) {
     const rs = runs.filter((r) => r.profile === profile && r.kind === kind);
+    if (rs.length === 0) continue;
     cells.push({
       profile,
       kind,
