@@ -144,7 +144,10 @@ export function planRegions(
   const cls: (Region['terrainClass'] | null)[] = sites.map(() => null);
 
   // Settlement: the site under each town.
-  const siteAt = (p: Vec): number => label[Math.min(H - 1, Math.floor(p.y / LAT_M)) * W + Math.min(W - 1, Math.floor(p.x / LAT_M))];
+  // Clamp BOTH ends: a negative coordinate would index off the raster and
+  // return undefined silently (found live at seed 81 before the node clamp).
+  const siteAt = (p: Vec): number =>
+    label[Math.max(0, Math.min(H - 1, Math.floor(p.y / LAT_M))) * W + Math.max(0, Math.min(W - 1, Math.floor(p.x / LAT_M)))];
   for (const n of nodes) if (n.kind === 'town') cls[siteAt(n.pos)] = 'settlement';
 
   // Marsh: river-near sites until the 3-8% band (terrainMix 'marshland' aims

@@ -94,12 +94,21 @@ interface Builder {
   nodes: TheaterNode[];
   edges: TheaterEdge[];
   nextEdgeId: number;
+  boundsM: { w: number; h: number };
 }
 
+const NODE_MARGIN_M = 400; // no node on the exact frame
+
 function mintNode(b: Builder, pos: Vec, kind: TheaterNode['kind']): TheaterNode {
+  // Universal clamp: an off-map node (a rail halt offset past the frame,
+  // seed 81) breaks region assignment downstream. In-bounds geometry is
+  // untouched, so existing pins hold.
   const n: TheaterNode = {
     id: b.nodes.length,
-    pos: { x: Math.round(pos.x), y: Math.round(pos.y) },
+    pos: {
+      x: Math.max(NODE_MARGIN_M, Math.min(b.boundsM.w - NODE_MARGIN_M, Math.round(pos.x))),
+      y: Math.max(NODE_MARGIN_M, Math.min(b.boundsM.h - NODE_MARGIN_M, Math.round(pos.y))),
+    },
     kind,
     name: '',
     regionId: -1,
@@ -146,7 +155,7 @@ export function planNetwork(
   settlements: SettlementPlan,
 ): NetworkPlan {
   const roadRng = stageStream(base, T_TAG.ROADS);
-  const b: Builder = { nodes: [], edges: [], nextEdgeId: 0 };
+  const b: Builder = { nodes: [], edges: [], nextEdgeId: 0, boundsM };
 
   const townNodes = settlements.towns.map((p) => mintNode(b, p, 'town'));
   const villageNodes = settlements.villages.map((p) => mintNode(b, p, 'village'));
