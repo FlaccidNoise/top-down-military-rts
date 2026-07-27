@@ -15,6 +15,9 @@ import { AO_ALPHA, SHADOW_ALPHA, SHADOW_SOFT_ALPHA, SUN, WIND, shadowOffset } fr
 // plus one drawImage and one silhouette stroke per visible building.
 
 const OVERHANG = 0.35; // meters past the walls
+// A church is masonry to the eaves: a domestic 0.35 m timber overhang on a
+// nave reads as a barn, and on a tower it buries the parapet the spire sits in.
+const CHURCH_OVERHANG = 0.16;
 const PAD_NW = 0.35; // sprite margin past the overhang (dormer / lean-to spill)
 const PAD_SE = 0.35;
 // Zoom-alone reveal is the CLOSE-INSPECTION band, not the tactical one: 24-32
@@ -157,7 +160,7 @@ function ramp(rgb: [number, number, number], value: number, warmth: number, amp:
   return out;
 }
 
-type RoofPlan = 'gable' | 'hip' | 'cross' | 'catslide';
+type RoofPlan = 'gable' | 'hip' | 'cross' | 'catslide' | 'spire';
 interface Rect {
   x: number;
   y: number;
@@ -165,10 +168,39 @@ interface Rect {
   h: number;
 }
 
+// Which sides of a footprint are butted against another mass of the SAME
+// structure — a party wall in a terrace, or the nave a tower stands against.
+// Those sides grow no overhang: two 0.35 m eaves meeting in the middle of a
+// party wall is the double eave-line that makes a range read as five houses
+// that happen to be touching.
+interface Sides {
+  n: boolean;
+  s: boolean;
+  e: boolean;
+  w: boolean;
+}
+type Side = keyof Sides;
+
+// Everything buildArt needs that is not the building itself. `alongX` is how
+// a church's nave and apse end up under one continuous ridge instead of two
+// competing ones.
+export interface ArtCtx {
+  butt: Sides;
+  alongX: boolean | null; // forced ridge axis (church group)
+}
+
+const NO_BUTT: Sides = { n: false, s: false, e: false, w: false };
+const SOLO: ArtCtx = { butt: NO_BUTT, alongX: null };
+
 interface RoofArt {
+  key: number; // stable art-hash key (N8) — the footprint, never the array index
   mat: RoofMat;
   ridgeAlongX: boolean;
   plan: RoofPlan;
+  hipEnds: [boolean, boolean]; // which ridge ends are hipped — a half-hip is [false, true]
+  verge: [boolean, boolean]; // barge board at the lo / hi ridge end
+  spireCast: number; // extra shadow length above the walls — a spire throws a long one
+  spireCross: number; // gable-cross arm length, 0 on everything that is not a nave
   rr: Rect; // roof rect, after any catslide eave extension
   fracNW: number; // ridge position across the span, from the NW eave
   hipInset: number; // metres the ridge is pulled back from each end; 0 unless hipped
@@ -209,8 +241,25 @@ interface RoofArt {
   smoke: boolean;
 }
 
-function roofRect(b: Building): Rect {
-  return { x: b.x - OVERHANG, y: b.y - OVERHANG, w: b.w + OVERHANG * 2, h: b.h + OVERHANG * 2 };
+function roofRect(b: Building, butt: Sides, oh: number): Rect {
+  const n = butt.n ? 0 : oh;
+  const s = butt.s ? 0 : oh;
+  const e = butt.e ? 0 : oh;
+  const w = butt.w ? 0 : oh;
+  return { x: b.x - w, y: b.y - n, w: b.w + w + e, h: b.h + n + s };
+}
+
+// N8. Roof art is keyed on the FOOTPRINT, not on the array index: the bourg
+// emits buildings in geometric order, and inserting one at the front of that
+// list used to re-roll the material of every house in the town. (x, y) is
+// unique within a map — two structures cannot share an origin tile — and
+// groupId keeps a church's masses from colliding with anything else.
+export function artKey(b: Building): number {
+  return (b.groupId ?? 0) * 131 + b.x * 1021 + b.y * 7;
+}
+
+function sacredRole(role: string): boolean {
+  return role === 'church' || role === 'church_tower' || role === 'church_apse';
 }
 
 function doorSideOf(b: Building, map: GameMap): 'n' | 's' | 'e' | 'w' | null {
@@ -225,11 +274,19 @@ function doorSideOf(b: Building, map: GameMap): 'n' | 's' | 'e' | 'w' | null {
   return null;
 }
 
-// Material from footprint + neighbours, not from the index: two-story town
-// houses are never thatched, and the smaller half of a close pair (mapgen's
-// farm house+barn) is usually the outbuilding, so it gets thatch or iron.
-function pickMat(i: number, stories: number, smallOfPair: boolean): RoofMat {
-  const r = hash(i, 201);
+// Material from role + footprint + neighbours, never from the index: two-story
+// town houses are never thatched, and the smaller half of a close pair
+// (mapgen's farm house+barn) is usually the outbuilding, so it gets thatch or
+// iron. Role wins outright where it has to — a church whose roof changes
+// denomination with the seed is not a landmark, it is a large house.
+export function pickMat(key: number, stories: number, smallOfPair: boolean, role: string): RoofMat {
+  if (sacredRole(role)) return 'slate';
+  const r = hash(key, 201);
+  // Civic stone and a market hall are built by the commune, not by a tenant:
+  // both are mineral. A barn is the other way round and leans agricultural.
+  if (role === 'civic' || role === 'halle') return r < 0.55 ? 'slate' : 'tile';
+  if (role === 'barn') return r < 0.4 ? 'iron' : r < 0.74 ? 'thatch' : 'tile';
+  if (role === 'townhouse' || role === 'shop') return r < 0.52 ? 'tile' : 'slate';
   if (stories >= 2) return r < 0.62 ? 'tile' : 'slate';
   if (smallOfPair) {
     if (r < 0.42) return 'thatch';
@@ -245,11 +302,16 @@ function pickMat(i: number, stories: number, smallOfPair: boolean): RoofMat {
 // Per-building roof look, computed once when the buildings list changes (not
 // per frame): material, weathering jitter, lit/shade slope tints and ramps,
 // and the hash-placed chimney, so identical materials don't look cloned.
-function buildArt(b: Building, i: number, stories: number, smallOfPair: boolean, map: GameMap): RoofArt {
-  const ridgeAlongX = b.w >= b.h;
-  const { x, y, w, h } = roofRect(b);
+function buildArt(b: Building, stories: number, smallOfPair: boolean, map: GameMap, ctx: ArtCtx): RoofArt {
+  const i = artKey(b);
+  const role = b.role ?? 'house';
+  const sacred = sacredRole(role);
+  const ridgeAlongX = ctx.alongX ?? b.w >= b.h;
+  const loSide: Side = ridgeAlongX ? 'w' : 'n';
+  const hiSide: Side = ridgeAlongX ? 'e' : 's';
+  const { x, y, w, h } = roofRect(b, ctx.butt, sacred ? CHURCH_OVERHANG : OVERHANG);
 
-  const mat = pickMat(i, stories, smallOfPair);
+  const mat = pickMat(i, stories, smallOfPair, role);
   const bases = MAT_BASES[mat];
   const valueJitter = 1 + (hash(i, 60) - 0.5) * 0.18; // ±9%
   const hue = MAT_HUE[mat];
@@ -268,7 +330,12 @@ function buildArt(b: Building, i: number, stories: number, smallOfPair: boolean,
   const short = Math.min(b.w, b.h);
   const pr = hash(i, 240);
   let plan: RoofPlan;
-  if (mat === 'iron') plan = pr < 0.72 ? 'gable' : 'catslide'; // a hipped tin barn is not a thing
+  // Role first, and unconditionally: the church is the one silhouette in the
+  // town that has to be the same silhouette on every seed.
+  if (role === 'church_tower') plan = 'spire';
+  else if (role === 'church') plan = 'cross'; // nave + one crossing gable for the transept
+  else if (role === 'church_apse') plan = 'hip'; // half-hipped, see hipEnds
+  else if (mat === 'iron') plan = pr < 0.72 ? 'gable' : 'catslide'; // a hipped tin barn is not a thing
   else if (pr < 0.35) plan = 'gable';
   else if (pr < 0.6) plan = 'hip';
   else if (pr < 0.8 && short >= 6) plan = 'cross';
@@ -298,9 +365,25 @@ function buildArt(b: Building, i: number, stories: number, smallOfPair: boolean,
   const fracNW = (ridgeCross - (ridgeAlongX ? rr.y : rr.x)) / spanLen;
   const ridgeLen = ridgeAlongX ? rr.w : rr.h;
   const hipInset = plan === 'hip' ? Math.min(spanLen / 2, 1.8, ridgeLen * 0.35) : 0;
-
+  // A hip is dropped wherever the ridge end butts another mass of the same
+  // structure — which is what turns the apse's full hip into the half-hip it
+  // wants: hipped on the free end, running straight into the nave on the other.
+  const hipEnds: [boolean, boolean] = plan === 'hip' ? [!ctx.butt[loSide], !ctx.butt[hiSide]] : [false, false];
+  // Barge board wherever there is neither a hip nor a party wall to hide it.
+  const verge: [boolean, boolean] = [
+    plan !== 'hip' && plan !== 'spire' && !ctx.butt[loSide],
+    plan !== 'hip' && plan !== 'spire' && !ctx.butt[hiSide],
+  ];
   let wing: Rect | null = null;
-  if (plan === 'cross') {
+  if (role === 'church') {
+    // The transept: one crossing gable across the full nave depth, set toward
+    // the chancel end. Forced, not rolled — the cross plan IS the church read
+    // from the tactical camera, where the spire is only a few pixels wide.
+    const wl = Math.max(2.4, Math.min(ridgeLen * 0.3, spanLen * 0.7));
+    const start = ridgeAlongX ? rr.x : rr.y;
+    const w0 = start + (ridgeLen - wl) * 0.58;
+    wing = ridgeAlongX ? { x: w0, y: rr.y, w: wl, h: rr.h } : { x: rr.x, y: w0, w: rr.w, h: wl };
+  } else if (plan === 'cross') {
     const wl = ridgeLen * (0.3 + hash(i, 242) * 0.15);
     const start = ridgeAlongX ? rr.x : rr.y;
     const c = start + ridgeLen * (0.28 + hash(i, 243) * 0.44);
@@ -308,9 +391,10 @@ function buildArt(b: Building, i: number, stories: number, smallOfPair: boolean,
     wing = ridgeAlongX ? { x: w0, y: rr.y, w: wl, h: rr.h } : { x: rr.x, y: w0, w: rr.w, h: wl };
   }
 
-  // lean-to annex against a wall that is not the door wall
+  // lean-to annex against a wall that is not the door wall. Never on a church
+  // and never inside a range: both are the shed that breaks the silhouette.
   let lean: (Rect & { side: 'n' | 's' | 'e' | 'w' }) | null = null;
-  if (hash(i, 244) < 0.3) {
+  if (!sacred && hash(i, 244) < 0.3) {
     const doorSide = doorSideOf(b, map);
     const sides: ('n' | 's' | 'e' | 'w')[] = (['n', 's', 'e', 'w'] as const).filter((sd) => sd !== doorSide);
     const side = sides[(hash(i, 246) * sides.length) | 0];
@@ -327,7 +411,7 @@ function buildArt(b: Building, i: number, stories: number, smallOfPair: boolean,
   // dormers on the sun slope, where a real one would be
   const dormers: Rect[] = [];
   const nwDepth = spanLen * fracNW;
-  if (plan !== 'cross' && mat !== 'iron' && nwDepth >= 2.2 && b.w * b.h >= 45) {
+  if (!sacred && plan !== 'cross' && mat !== 'iron' && nwDepth >= 2.2 && b.w * b.h >= 45) {
     const usable = ridgeLen - 2.4 - hipInset * 2;
     const n = Math.min(3, 1 + ((hash(i, 250) * 3) | 0));
     if (usable > 1.6) {
@@ -364,11 +448,15 @@ function buildArt(b: Building, i: number, stories: number, smallOfPair: boolean,
       ? { x: p - stackW / 2, y: cross - stackH / 2, w: stackW, h: stackH }
       : { x: cross - stackW / 2, y: p - stackH / 2, w: stackW, h: stackH };
   };
-  const chimneys = [stackAt(t0)];
-  if (b.w * b.h >= 70) chimneys.push(stackAt(1 - t0));
+  // A church has no hearth.
+  const chimneys: Rect[] = [];
+  if (!sacred) {
+    chimneys.push(stackAt(t0));
+    if (b.w * b.h >= 70) chimneys.push(stackAt(1 - t0));
+  }
 
   const wr = hash(i, 260);
-  const wall: WallMat = wr < 0.15 ? 'brick' : wr < 0.5 ? 'colombage' : 'rubble';
+  const wall: WallMat = sacred ? 'rubble' : wr < 0.15 ? 'brick' : wr < 0.5 ? 'colombage' : 'rubble';
   const wbase = hexToRgb(WALL_BASES[wall]);
   // Openings come from the map, not from decoration: mapgen puts a window at
   // every third edge tile and the door mid-span, which is what terrain.ts
@@ -378,7 +466,12 @@ function buildArt(b: Building, i: number, stories: number, smallOfPair: boolean,
   const openE = new Uint8Array(b.h);
   for (let k = 0; k < b.h; k++) openE[k] = map.vEdge(b.x + b.w, b.y + k);
 
-  const [csdx, csdy] = shadowOffset(1.1 * stories);
+  // A spire stands ~6 m above the belfry floor, so its shadow reaches far
+  // past the tower's own. That long finger across the churchyard is the whole
+  // church read at the far-LOD camera, where the roof itself is 15 px wide.
+  const spireCast = plan === 'spire' ? 6 : 0;
+  const spireCross = role === 'church' ? Math.min(1.5, spanLen * 0.2) : 0;
+  const [csdx, csdy] = shadowOffset(1.1 * stories + spireCast);
   const blurPad = 0.6;
 
   // The sprite must contain every plan feature or wings and lean-tos clip.
@@ -392,11 +485,21 @@ function buildArt(b: Building, i: number, stories: number, smallOfPair: boolean,
     mx = Math.max(mx, lean.x + lean.w);
     my = Math.max(my, lean.y + lean.h);
   }
+  if (plan === 'spire') {
+    // the apex and its finial lean up-sun out of the footprint (see spireInto)
+    nx -= 0.6;
+    ny -= 0.6;
+  }
 
   return {
+    key: i,
     mat,
     ridgeAlongX,
     plan,
+    hipEnds,
+    verge,
+    spireCast,
+    spireCross,
     rr,
     fracNW,
     hipInset,
@@ -438,7 +541,7 @@ function buildArt(b: Building, i: number, stories: number, smallOfPair: boolean,
     openE,
     chimneys,
     // hash-driven ambience only — never garrison state, which would leak intel
-    smoke: mat !== 'iron' && hash(i, 272) < 0.45,
+    smoke: !sacred && mat !== 'iron' && hash(i, 272) < 0.45,
   };
 }
 
@@ -681,7 +784,16 @@ function slopeInto(g: CanvasRenderingContext2D, art: RoofArt, i: number, band: n
 // A ridged pair of slopes over `r`. `along` picks the ridge axis, `frac` where
 // the ridge sits across the span — 0.5 is a plain gable, anything else the
 // catslide's long-and-short pair.
-function gablePair(g: CanvasRenderingContext2D, art: RoofArt, i: number, band: number, r: Rect, along: boolean, frac: number, verge: boolean): void {
+function gablePair(
+  g: CanvasRenderingContext2D,
+  art: RoofArt,
+  i: number,
+  band: number,
+  r: Rect,
+  along: boolean,
+  frac: number,
+  verge: [boolean, boolean],
+): void {
   const uLen = along ? r.w : r.h;
   const span = along ? r.h : r.w;
   const vNW = span * frac;
@@ -698,16 +810,16 @@ function gablePair(g: CanvasRenderingContext2D, art: RoofArt, i: number, band: n
     slopeInto(g, art, i + (along ? 0 : 7), band, uLen, lit ? vNW : vSE, lit);
     g.restore();
   }
-  if (verge) {
+  if (verge[0] || verge[1]) {
     // the barge board along each ridge end, not a dark triangle notch
     g.fillStyle = art.gable;
     const vg = 0.16;
     if (along) {
-      g.fillRect(r.x, r.y, vg, r.h);
-      g.fillRect(r.x + r.w - vg, r.y, vg, r.h);
+      if (verge[0]) g.fillRect(r.x, r.y, vg, r.h);
+      if (verge[1]) g.fillRect(r.x + r.w - vg, r.y, vg, r.h);
     } else {
-      g.fillRect(r.x, r.y, r.w, vg);
-      g.fillRect(r.x, r.y + r.h - vg, r.w, vg);
+      if (verge[0]) g.fillRect(r.x, r.y, r.w, vg);
+      if (verge[1]) g.fillRect(r.x, r.y + r.h - vg, r.w, vg);
     }
   }
   g.save();
@@ -797,6 +909,215 @@ function chimneyInto(g: CanvasRenderingContext2D, st: Rect, i: number, k: number
     g.arc(px, py, 0.07, 0, TAU);
     g.fill();
   }
+}
+
+// --- church tower (T15) ------------------------------------------------------
+//
+// The single highest-value crop in the town, so the tower is drawn as a TOWER
+// rather than as a roof over a small square building: a stone belfry stage
+// with louvred openings on all four faces, corner pinnacles, and a slate spire
+// whose apex leans up-sun by the same convention the wall-face parallax uses,
+// so the mass reads as tall from straight above. Nothing here is rolled — the
+// geometry is a function of the footprint alone, so the church is the same
+// church on every seed and at every zoom band.
+// Limestone, sitting a shade under the rubble wall base so the tower belongs
+// to the same village. Brighter than this and the belfry reads as concrete.
+const STONE_FACE = '#8f8879';
+const STONE_LIT = '#a49c88';
+const STONE_DEEP = '#645e51';
+const STONE_VOID = '#1d1b17';
+
+// A belfry opening: dressed surround, recessed void, and the louvre boards
+// across it. `alongU` is true when the slats run along x (a north or south
+// face) and false when they run along y. The void has to stay the darkest
+// thing on the tower — a pale louvre is a vent, a black one is a bell.
+function louvreInto(g: CanvasRenderingContext2D, r: Rect, alongU: boolean, band: number): void {
+  const f = 0.06;
+  g.fillStyle = STONE_LIT;
+  g.fillRect(r.x - f, r.y - f, r.w + f * 2, r.h + f * 2);
+  g.fillStyle = STONE_DEEP;
+  g.fillRect(r.x - f, r.y + r.h, r.w + f * 2, f);
+  g.fillStyle = STONE_VOID;
+  g.fillRect(r.x, r.y, r.w, r.h);
+  if (band < 16) return;
+  // Three fat boards, not five hairlines: at 24 px/m the opening is fifteen
+  // pixels deep and a fine louvre resolves as a solid black slot.
+  g.fillStyle = 'rgba(158,150,131,0.5)';
+  const n = 3;
+  for (let k = 0; k < n; k++) {
+    if (alongU) g.fillRect(r.x, r.y + (r.h * (k + 0.28)) / n, r.w, (r.h / n) * 0.44);
+    else g.fillRect(r.x + (r.w * (k + 0.28)) / n, r.y, (r.w / n) * 0.44, r.h);
+  }
+}
+
+// A cross, outlined light and filled dark so it survives landing on a black
+// belfry opening at 24 px/m and on pale limestone at 8. `dx, dy` is the up-sun
+// lean every tall thing in this renderer takes; the ARM stays on a world axis,
+// because a crossbar is horizontal in the world and drawing it perpendicular
+// to the leaning staff turns a cross into an X.
+function crossInto(g: CanvasRenderingContext2D, x: number, y: number, dx: number, dy: number, barAlongX: boolean, band: number): void {
+  const half = Math.hypot(dx, dy) * 0.42;
+  const bx = barAlongX ? half : 0;
+  const by = barAlongX ? 0 : half;
+  const mx = x + dx * 0.66;
+  const my = y + dy * 0.66;
+  const line = (x0: number, y0: number, x1: number, y1: number): void => {
+    g.beginPath();
+    g.moveTo(x0, y0);
+    g.lineTo(x1, y1);
+    g.stroke();
+  };
+  const [sdx, sdy] = shadowOffset(1.2);
+  g.lineCap = 'round';
+  g.lineWidth = Math.max(0.09, 2.4 / band);
+  g.strokeStyle = 'rgba(14,12,9,0.45)';
+  line(x + sdx, y + sdy, x + dx + sdx, y + dy + sdy);
+  line(mx - bx + sdx, my - by + sdy, mx + bx + sdx, my + by + sdy);
+  g.lineWidth = Math.max(0.16, 4.2 / band); // the halo, so the dark core reads on anything
+  g.strokeStyle = 'rgba(236,230,214,0.55)';
+  line(x, y, x + dx, y + dy);
+  line(mx - bx, my - by, mx + bx, my + by);
+  g.lineWidth = Math.max(0.075, 2 / band);
+  g.strokeStyle = '#241f1a';
+  line(x, y, x + dx, y + dy);
+  line(mx - bx, my - by, mx + bx, my + by);
+  g.lineCap = 'butt';
+}
+
+function spireInto(g: CanvasRenderingContext2D, art: RoofArt, key: number, band: number): void {
+  const r = art.rr;
+  const cx = r.x + r.w / 2;
+  const cy = r.y + r.h / 2;
+  const side = Math.min(r.w, r.h);
+  const fine = band >= 16;
+
+  // 1 — the belfry stage, as a stone slab with a lit NW lip and a SE undercut.
+  // The gradient across it is what stops a big pale square reading as a card.
+  g.fillStyle = STONE_FACE;
+  g.fillRect(r.x, r.y, r.w, r.h);
+  const wash = g.createLinearGradient(r.x, r.y, r.x + r.w, r.y + r.h);
+  wash.addColorStop(0, 'rgba(238,232,216,0.24)');
+  wash.addColorStop(0.55, 'rgba(238,232,216,0)');
+  wash.addColorStop(1, 'rgba(18,17,14,0.26)');
+  g.fillStyle = wash;
+  g.fillRect(r.x, r.y, r.w, r.h);
+  if (fine) {
+    g.fillStyle = 'rgba(58,54,45,0.20)';
+    for (let u = r.x + 0.55; u < r.x + r.w - 0.05; u += 0.55) g.fillRect(u, r.y, 0.035, r.h);
+    for (let v = r.y + 0.55; v < r.y + r.h - 0.05; v += 0.55) g.fillRect(r.x, v, r.w, 0.035);
+  }
+  const lip = Math.max(0.1, side * 0.028);
+  g.fillStyle = STONE_LIT;
+  g.fillRect(r.x, r.y, r.w, lip);
+  g.fillRect(r.x, r.y, lip, r.h);
+  g.fillStyle = 'rgba(14,12,9,0.45)';
+  g.fillRect(r.x, r.y + r.h - lip, r.w, lip);
+  g.fillRect(r.x + r.w - lip, r.y, lip, r.h);
+
+  // 2 — belfry openings on all four faces. Foreshortened from above, but all
+  // four are there: a tower with two louvres reads as a shed with two vents.
+  const lw = side * 0.4;
+  const ld = side * 0.105;
+  const inset = side * 0.032;
+  louvreInto(g, { x: cx - lw / 2, y: r.y + inset, w: lw, h: ld }, true, band);
+  louvreInto(g, { x: cx - lw / 2, y: r.y + r.h - inset - ld, w: lw, h: ld }, true, band);
+  louvreInto(g, { x: r.x + inset, y: cy - lw / 2, w: ld, h: lw }, false, band);
+  louvreInto(g, { x: r.x + r.w - inset - ld, y: cy - lw / 2, w: ld, h: lw }, false, band);
+
+  // 3 — the spire. Four slated triangles from the base square to an apex that
+  // leans up-sun; the SE pair therefore reads big and dark and the NW pair as
+  // two bright slivers, which is exactly a slate pyramid under a NW sun.
+  const ss = side * 0.7;
+  const sp: Rect = { x: cx - ss / 2, y: cy - ss / 2, w: ss, h: ss };
+  // Enough lean to sell the height, not so much that the two up-sun faces
+  // shrink to slivers and the pyramid reads as one dark quad with a crease.
+  const lean = side * 0.14;
+  const ax = cx - SUN.dx * lean;
+  const ay = cy - SUN.dy * lean;
+  // The scrim is what separates the two lit faces from each other and the two
+  // shaded ones from each other: four planes at two values reads as two.
+  const faces: {
+    tri: [number, number][];
+    tx: number;
+    ty: number;
+    m: [number, number, number, number];
+    u: number;
+    v: number;
+    lit: boolean;
+    salt: number;
+    scrim: string;
+  }[] = [
+    // north: v runs from the apex plane out to the base edge, i.e. -y
+    { tri: [[sp.x, sp.y], [sp.x + ss, sp.y], [ax, ay]], tx: sp.x, ty: ay, m: [1, 0, 0, -1], u: ss, v: ay - sp.y, lit: true, salt: 31, scrim: 'rgba(252,248,238,0.22)' },
+    { tri: [[sp.x, sp.y + ss], [sp.x + ss, sp.y + ss], [ax, ay]], tx: sp.x, ty: ay, m: [1, 0, 0, 1], u: ss, v: sp.y + ss - ay, lit: false, salt: 37, scrim: 'rgba(8,9,12,0.26)' },
+    { tri: [[sp.x, sp.y], [sp.x, sp.y + ss], [ax, ay]], tx: ax, ty: sp.y, m: [0, 1, -1, 0], u: ss, v: ax - sp.x, lit: true, salt: 41, scrim: 'rgba(252,248,238,0.07)' },
+    { tri: [[sp.x + ss, sp.y], [sp.x + ss, sp.y + ss], [ax, ay]], tx: ax, ty: sp.y, m: [0, 1, 1, 0], u: ss, v: sp.x + ss - ax, lit: false, salt: 43, scrim: 'rgba(8,9,12,0.09)' },
+  ];
+  for (const f of faces) {
+    g.save();
+    g.beginPath();
+    g.moveTo(f.tri[0][0], f.tri[0][1]);
+    g.lineTo(f.tri[1][0], f.tri[1][1]);
+    g.lineTo(f.tri[2][0], f.tri[2][1]);
+    g.closePath();
+    g.clip();
+    g.save();
+    g.translate(f.tx, f.ty);
+    g.transform(f.m[0], f.m[1], f.m[2], f.m[3], 0, 0);
+    slopeInto(g, art, key + f.salt, band, f.u, f.v, f.lit);
+    g.restore();
+    g.fillStyle = f.scrim;
+    g.fillRect(sp.x, sp.y, ss, ss);
+    g.restore();
+  }
+  // the four hip arrises, dark-cored with a bone highlight so they read
+  // whichever pair of faces they happen to divide
+  g.lineWidth = Math.max(0.07, 2 / band);
+  g.strokeStyle = 'rgba(16,15,14,0.5)';
+  g.beginPath();
+  for (const c of [[sp.x, sp.y], [sp.x + ss, sp.y], [sp.x, sp.y + ss], [sp.x + ss, sp.y + ss]]) {
+    g.moveTo(c[0], c[1]);
+    g.lineTo(ax, ay);
+  }
+  g.stroke();
+  g.lineWidth = Math.max(0.035, 1 / band);
+  g.strokeStyle = 'rgba(230,226,214,0.42)';
+  g.beginPath();
+  for (const c of [[sp.x, sp.y], [sp.x + ss, sp.y], [sp.x, sp.y + ss], [sp.x + ss, sp.y + ss]]) {
+    g.moveTo(c[0] - 0.03, c[1] - 0.035);
+    g.lineTo(ax - 0.03, ay - 0.035);
+  }
+  g.stroke();
+
+  // 4 — corner pinnacles, after the spire so they stand in front of its base
+  const pin = side * 0.13;
+  const [px, py] = shadowOffset(0.55);
+  for (const c of [
+    [r.x, r.y],
+    [r.x + r.w - pin, r.y],
+    [r.x, r.y + r.h - pin],
+    [r.x + r.w - pin, r.y + r.h - pin],
+  ]) {
+    g.fillStyle = 'rgba(14,12,9,0.40)';
+    g.fillRect(c[0] + px, c[1] + py, pin, pin);
+    g.fillStyle = STONE_FACE;
+    g.fillRect(c[0], c[1], pin, pin);
+    g.fillStyle = STONE_LIT;
+    g.fillRect(c[0], c[1], pin, pin * 0.34);
+    g.fillRect(c[0], c[1], pin * 0.34, pin);
+    g.fillStyle = STONE_DEEP;
+    g.fillRect(c[0], c[1] + pin * 0.72, pin, pin * 0.28);
+    g.fillRect(c[0] + pin * 0.72, c[1], pin * 0.28, pin);
+  }
+
+  // 5 — the cross finial. A few pixels at the far-LOD camera, and still the
+  // thing that says "church" there.
+  const fl = side * 0.34;
+  g.fillStyle = STONE_LIT;
+  g.beginPath();
+  g.arc(ax, ay, Math.max(0.08, side * 0.03), 0, TAU);
+  g.fill();
+  crossInto(g, ax, ay, -SUN.dx * fl, -SUN.dy * fl, art.ridgeAlongX, band);
 }
 
 // Impact damage, painted last so it cuts through courses, dormers and stacks
@@ -925,9 +1246,15 @@ function damageInto(g: CanvasRenderingContext2D, art: RoofArt, d: Damage, band: 
   g.stroke();
 }
 
-function drawRoof(g: CanvasRenderingContext2D, art: RoofArt, i: number, band: number, damage: Damage[] = []): void {
+function drawRoof(g: CanvasRenderingContext2D, art: RoofArt, band: number, damage: Damage[] = []): void {
+  const i = art.key;
   const r = art.rr;
   const along = art.ridgeAlongX;
+  if (art.plan === 'spire') {
+    spireInto(g, art, i, band);
+    drawRoofTrim(g, art, band, damage);
+    return;
+  }
 
   // lean-to first: it tucks under the main eave, so the main roof paints over
   // the joint rather than the other way round
@@ -954,7 +1281,7 @@ function drawRoof(g: CanvasRenderingContext2D, art: RoofArt, i: number, band: nu
     g.strokeRect(l.x, l.y, l.w, l.h);
   }
 
-  gablePair(g, art, i, band, r, along, art.fracNW, art.plan !== 'hip');
+  gablePair(g, art, i, band, r, along, art.fracNW, art.verge);
 
   if (art.plan === 'hip') {
     // Two end planes replace the gables. They carry the same courses as the
@@ -999,7 +1326,11 @@ function drawRoof(g: CanvasRenderingContext2D, art: RoofArt, i: number, band: nu
             scrim: 'rgba(250,246,238,0.09)',
           },
         ];
-    for (const e of ends) {
+    for (let ei = 0; ei < ends.length; ei++) {
+      // A half-hip: the end that butts another mass of the same structure gets
+      // no hip plane at all, so an apse runs straight into its nave.
+      if (!art.hipEnds[ei]) continue;
+      const e = ends[ei];
       g.save();
       g.beginPath();
       g.moveTo(e.tri[0][0], e.tri[0][1]);
@@ -1029,7 +1360,7 @@ function drawRoof(g: CanvasRenderingContext2D, art: RoofArt, i: number, band: nu
 
   if (art.wing) {
     const wg = art.wing;
-    gablePair(g, art, i + 3, band, wg, !along, 0.5, true);
+    gablePair(g, art, i + 3, band, wg, !along, 0.5, [true, true]);
     g.strokeStyle = 'rgba(16,14,10,0.30)';
     g.lineWidth = 0.1;
     g.beginPath();
@@ -1048,6 +1379,22 @@ function drawRoof(g: CanvasRenderingContext2D, art: RoofArt, i: number, band: nu
   }
 
   for (const d of art.dormers) dormerInto(g, art, d, along, band);
+
+  // A gable cross on each free end of the transept. The nave's own gable ends
+  // butt the tower and the apse, so these two are the only apexes the church
+  // has left — and they are what keeps the nave reading as a nave at 24 px/m,
+  // where the spire beside it is a dozen pixels of slate.
+  if (art.wing && art.spireCross > 0) {
+    const wg = art.wing;
+    const fl = art.spireCross;
+    if (along) {
+      crossInto(g, wg.x + wg.w / 2, wg.y + 0.2, -SUN.dx * fl, -SUN.dy * fl, true, band);
+      crossInto(g, wg.x + wg.w / 2, wg.y + wg.h - 0.2, -SUN.dx * fl, -SUN.dy * fl, true, band);
+    } else {
+      crossInto(g, wg.x + 0.2, wg.y + wg.h / 2, -SUN.dx * fl, -SUN.dy * fl, false, band);
+      crossInto(g, wg.x + wg.w - 0.2, wg.y + wg.h / 2, -SUN.dx * fl, -SUN.dy * fl, false, band);
+    }
+  }
 
   // barns vent the ridge instead of dormering it, and get one roof hatch
   if (art.mat === 'iron' && band >= 16) {
@@ -1098,6 +1445,13 @@ function drawRoof(g: CanvasRenderingContext2D, art: RoofArt, i: number, band: nu
   g.restore();
   for (let k = 0; k < art.chimneys.length; k++) chimneyInto(g, art.chimneys[k], i, k, band);
 
+  drawRoofTrim(g, art, band, damage);
+}
+
+// Damage, eave outline and the eave's own shadow — the part every plan ends
+// with, spire included.
+function drawRoofTrim(g: CanvasRenderingContext2D, art: RoofArt, band: number, damage: Damage[]): void {
+  const r = art.rr;
   // Battle damage, clipped to the roof planes. A hole that spilled past the
   // eave would read as a breached WALL, which is a lie: the sim still gives
   // this building full cover and a soldier can still walk the ground floor.
@@ -1126,14 +1480,14 @@ function drawRoof(g: CanvasRenderingContext2D, art: RoofArt, i: number, band: nu
   g.fillRect(r.x + r.w, r.y, 0.08, r.h);
 }
 
-function bakeRoof(art: RoofArt, i: number, band: number, damage: Damage[]): HTMLCanvasElement {
+function bakeRoof(art: RoofArt, band: number, damage: Damage[]): HTMLCanvasElement {
   const c = document.createElement('canvas');
   c.width = Math.max(1, Math.round(art.ow * band));
   c.height = Math.max(1, Math.round(art.oh * band));
   const g = c.getContext('2d')!;
   g.scale(band, band);
   g.translate(-art.ox, -art.oy);
-  drawRoof(g, art, i, band, damage);
+  drawRoof(g, art, band, damage);
   return c;
 }
 
@@ -1162,6 +1516,21 @@ function bakeShadow(b: Building, art: RoofArt, stories: number, band: number): H
   g.filter = `blur(${(0.12 * band).toFixed(2)}px)`;
   g.fillStyle = `rgba(12,15,10,${SHADOW_ALPHA})`;
   cast(sdx, sdy);
+  if (art.spireCast > 0) {
+    // A spire throws a tapering finger far past the tower's own shadow. At the
+    // far-LOD camera the tower is fifteen pixels of dark slate and this is what
+    // tells the player which fifteen pixels they are.
+    const [tdx, tdy] = shadowOffset(1.1 * stories + art.spireCast);
+    const cx = r.x + r.w / 2;
+    const cy = r.y + r.h / 2;
+    const half = Math.min(r.w, r.h) * 0.24;
+    g.beginPath();
+    g.moveTo(cx + sdx - half, cy + sdy - half);
+    g.lineTo(cx + sdx + half, cy + sdy + half);
+    g.lineTo(cx + tdx, cy + tdy);
+    g.closePath();
+    g.fill();
+  }
   g.filter = 'none';
   // contact occlusion sits on the true footprint and stays crisp
   const aoW = 0.22;
@@ -1249,7 +1618,7 @@ function wallFace(
   g.fillRect(0, hp - 0.06, uLen, 0.06);
 }
 
-function bakeWall(b: Building, art: RoofArt, i: number, band: number, south: boolean): HTMLCanvasElement {
+function bakeWall(b: Building, art: RoofArt, band: number, south: boolean): HTMLCanvasElement {
   const hp = art.hp;
   const uLen = south ? b.w + hp : b.h;
   const c = document.createElement('canvas');
@@ -1262,7 +1631,7 @@ function bakeWall(b: Building, art: RoofArt, i: number, band: number, south: boo
   wallFace(
     g,
     art,
-    i,
+    art.key,
     band,
     uLen,
     hp,
@@ -1273,6 +1642,40 @@ function bakeWall(b: Building, art: RoofArt, i: number, band: number, south: boo
     south ? 261 : 262,
   );
   return c;
+}
+
+// --- structure grouping (T15 / T17) ------------------------------------------
+//
+// Two things in the contract mean "these masses are ONE structure": a
+// `terraceRun` (a party-wall range along one frontage) and a `groupId` (a
+// church's nave + tower + apse). Both want the same treatment where their
+// masses touch — no overhang across the joint — and a terrace additionally
+// wants one ridge, one axis and one material for the whole range.
+//
+// Pure and exported so the art gate can assert the grouping on a real bourg
+// plan without a canvas: RoofLayer only ever consumes what this returns.
+export function artContexts(buildings: Building[]): ArtCtx[] {
+  const kin = (a: Building, b: Building): boolean => a.groupId !== undefined && a.groupId === b.groupId;
+
+  return buildings.map((b) => {
+    const butt: Sides = { n: false, s: false, e: false, w: false };
+    for (const o of buildings) {
+      if (o === b || !kin(b, o)) continue;
+      const ovX = o.x < b.x + b.w && b.x < o.x + o.w;
+      const ovY = o.y < b.y + b.h && b.y < o.y + o.h;
+      if (ovY && o.x + o.w === b.x) butt.w = true;
+      if (ovY && b.x + b.w === o.x) butt.e = true;
+      if (ovX && o.y + o.h === b.y) butt.n = true;
+      if (ovX && b.y + b.h === o.y) butt.s = true;
+    }
+    let alongX: boolean | null = null;
+    if (b.role === 'church_apse' || b.role === 'church_tower') {
+      // the apse continues the nave's ridge, whichever way the nave was laid
+      const nave = buildings.find((o) => o.role === 'church' && o.groupId !== undefined && o.groupId === b.groupId);
+      if (nave) alongX = nave.w >= nave.h;
+    }
+    return { butt, alongX };
+  });
 }
 
 interface Baked {
@@ -1311,7 +1714,8 @@ export class RoofLayer {
         }
         return Math.max(1, m);
       });
-      this.art = this.buildings.map((b, i) => buildArt(b, i, this.stories[i], this.smallOfPair(i), sim.map));
+      const ctx = artContexts(this.buildings);
+      this.art = this.buildings.map((b, i) => buildArt(b, this.stories[i], this.smallOfPair(i), sim.map, ctx[i] ?? SOLO));
       // Damage is per-battle render state and nothing else: a new buildings
       // list is a new battle, and every hole goes with it.
       this.damage = this.buildings.map(() => []);
@@ -1387,6 +1791,8 @@ export class RoofLayer {
     for (let j = 0; j < this.buildings.length; j++) {
       if (j === i) continue;
       const o = this.buildings[j];
+      // …and a church tower is not its own nave's shed
+      if (b.groupId !== undefined && o.groupId === b.groupId) continue;
       const gx = Math.max(0, Math.max(b.x - (o.x + o.w), o.x - (b.x + b.w)));
       const gy = Math.max(0, Math.max(b.y - (o.y + o.h), o.y - (b.y + b.h)));
       if (Math.hypot(gx, gy) <= 4 && o.w * o.h > area) return true;
@@ -1450,12 +1856,12 @@ export class RoofLayer {
       const b = this.buildings[i];
       const art = this.art[i];
       cur[i] = {
-        roof: bakeRoof(art, i, this.band, this.damage[i]),
+        roof: bakeRoof(art, this.band, this.damage[i]),
         // walls and shadow are damage-independent; a rebake driven by a hit
         // reuses them rather than redrawing masonry that did not change
         shadow: cur[i]?.shadow ?? bakeShadow(b, art, this.stories[i], sBand),
-        wallS: cur[i]?.wallS ?? bakeWall(b, art, i, this.band, true),
-        wallE: cur[i]?.wallE ?? bakeWall(b, art, i, this.band, false),
+        wallS: cur[i]?.wallS ?? bakeWall(b, art, this.band, true),
+        wallE: cur[i]?.wallE ?? bakeWall(b, art, this.band, false),
         ver: this.dmgVer[i],
       };
     }
@@ -1571,12 +1977,12 @@ export class RoofLayer {
         const a = this.alphas[i];
         if (a < 0.05) continue;
         if (art.smoke) {
-          const n = 3 + ((hash(i, 274) * 2) | 0);
+          const n = 3 + ((hash(art.key, 274) * 2) | 0);
           for (const st of art.chimneys) {
             const cx = st.x + st.w / 2;
             const cy = st.y + st.h / 2;
             for (let k = 0; k < n; k++) {
-              const life = (t * 0.45 + k / n + hash(i, 273 + k)) % 1;
+              const life = (t * 0.45 + k / n + hash(art.key, 273 + k)) % 1;
               wisp(cx, cy, life, k, 3.2, 0.18, 0.7, '196,190,178', 0.26 * a);
             }
           }
@@ -1587,7 +1993,7 @@ export class RoofLayer {
           const d = dmg[j];
           if (!d.direct) continue;
           for (let k = 0; k < 3; k++) {
-            const life = (t * 0.3 + k / 3 + hash(i, j, 292 + k)) % 1;
+            const life = (t * 0.3 + k / 3 + hash(art.key, j, 292 + k)) % 1;
             wisp(d.x, d.y, life, k + j * 3, 4.2, 0.4, 1.4, '140,132,120', 0.22 * a);
           }
         }
