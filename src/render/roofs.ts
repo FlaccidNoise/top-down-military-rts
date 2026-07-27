@@ -115,15 +115,49 @@ interface Damage {
   direct: boolean; // inside the footprint → hole; outside → scorch and slipped tiles only
 }
 
-// Fake-oblique mass. The roof blits PARALLAX metres up-sun of the footprint so
-// the SE wall face is uncovered; it stays well under OVERHANG, or the roof
-// would pull back off the NW footprint edge and break the wall-line read.
-const PARALLAX = 0.26;
-const H_PROJ = 0.5; // metres of wall face shown per storey
+// --- walls, in plan ----------------------------------------------------------
+//
+// STRICT PLAN PROJECTION. Nothing here is drawn in elevation: the roof blits AT
+// its footprint (no up-sun parallax uncovering a south face), and the walls are
+// what a plan drawing shows — a band of masonry on the footprint outline, one
+// wall thick, with the windows and doors as openings cut through it. Height is
+// carried entirely by the baked ground shadow and by occlusion.
+//
+// The band is under the roof at every zoom, so it is the roof FADE that reveals
+// it, alongside terrain.ts's interior partitions. It therefore has to agree
+// with those: WALL_T matches drawEdge's 0.3 m stroke and WALL_SEAM is that
+// function's own outer tone, so a partition running into the exterior band
+// meets it in one colour instead of crossing a lighter rectangle.
+const WALL_T = 0.3;
+// Plan value on the material base. Well under the plank floor it sits beside
+// (terrain.ts FLOOR is 160,145,122) and next door to drawEdge's #4a4034 core,
+// which is what makes the ring read as wall rather than as furniture.
+const WALL_V = 0.62;
 type WallMat = 'rubble' | 'colombage' | 'brick';
 const WALL_BASES: Record<WallMat, string> = { rubble: '#8d867a', colombage: '#9a917c', brick: '#6f5041' };
-const FACE_S = 0.56; // the south face is the more backlit of the two visible sides
-const FACE_E = 0.66;
+const WALL_SEAM = '#2c241a'; // terrain.ts drawEdge's outer wall tone, shared verbatim
+const WALL_GLASS = '#7d8a8f'; // ...and its glass
+const WALL_LEAF = '#7d5028'; // ...and its door leaf
+const SIDE_N = 0;
+const SIDE_S = 1;
+const SIDE_W = 2;
+const SIDE_E = 3;
+
+// Metres of shadow thrown per storey. The whole verticality budget is in these
+// two numbers now that no wall face is drawn, so they are named and shared —
+// bakeShadow and the sprite that has to contain its throw read the same pair,
+// which they did not when both were spelled inline.
+//
+// The values do NOT move. CAST_CORE is the house convention the rest of the
+// scene is calibrated against — renderer.ts:161 derives a man's 0.42 m and a
+// hull's 0.58 m step from "0.71 m per 3 m storey" — so lengthening it here to
+// buy back the mass the deleted wall faces used to carry would put the houses
+// under a lower sun than the men standing beside them. It was tried at
+// 0.95/1.5 and judged against 0.71/1.1 at the place and terrace crops: the
+// difference is ~6 px at the tactical camera, buildings do not read flat
+// without it, and it is not worth breaking one sun over.
+const CAST_SOFT = 1.1; // outer feathered layer
+const CAST_CORE = 0.71; // core
 
 // Keyed on (building index, salt) — same arithmetic as the old local copy.
 import { hash } from './noise';
@@ -244,14 +278,10 @@ interface RoofArt {
   sy: number;
   sw: number;
   sh: number;
-  hp: number; // wall-face projection depth, metres
   wall: WallMat;
-  wallS: string; // the two visible faces, both in shade under a NW sun
-  wallE: string;
-  wallSTones: string[];
-  wallETones: string[];
-  openS: Uint8Array; // per-tile edge type along the south / east walls
-  openE: Uint8Array;
+  wallFlat: string; // the plan band's body tone…
+  wallTones: string[]; // …and its per-stone ramp
+  opens: Uint8Array[]; // per-tile edge type along each footprint side, SIDE_N..SIDE_E
   chimneys: Rect[];
   smoke: boolean;
 }
@@ -499,11 +529,20 @@ function buildArt(b: Building, stories: number, smallOfPair: boolean, map: GameM
   const wbase = hexToRgb(WALL_BASES[wall]);
   // Openings come from the map, not from decoration: mapgen puts a window at
   // every third edge tile and the door mid-span, which is what terrain.ts
-  // already strokes, so the face lines up with the walls the player sees.
-  const openS = new Uint8Array(b.w);
-  for (let k = 0; k < b.w; k++) openS[k] = map.hEdge(b.x + k, b.y + b.h);
-  const openE = new Uint8Array(b.h);
-  for (let k = 0; k < b.h; k++) openE[k] = map.vEdge(b.x + b.w, b.y + k);
+  // already strokes, so the band lines up with the walls the player sees. All
+  // FOUR sides now, because a plan band is the whole outline — the two-face
+  // list was a property of the oblique projection that has just been deleted,
+  // and an EDGE.NONE tile (a church arcade, an open barn front) is a real gap
+  // in the ring rather than a tile to paint masonry over.
+  const opens: Uint8Array[] = [new Uint8Array(b.w), new Uint8Array(b.w), new Uint8Array(b.h), new Uint8Array(b.h)];
+  for (let k = 0; k < b.w; k++) {
+    opens[SIDE_N][k] = map.hEdge(b.x + k, b.y);
+    opens[SIDE_S][k] = map.hEdge(b.x + k, b.y + b.h);
+  }
+  for (let k = 0; k < b.h; k++) {
+    opens[SIDE_W][k] = map.vEdge(b.x, b.y + k);
+    opens[SIDE_E][k] = map.vEdge(b.x + b.w, b.y + k);
+  }
 
   // Belfry plus slate spire is ~12 m of stone above the eave the walls stop
   // at, so its shadow reaches far past the tower's own. That long finger
@@ -512,7 +551,7 @@ function buildArt(b: Building, stories: number, smallOfPair: boolean, map: GameM
   // the roof itself is 15 px wide, it is the whole church read.
   const spireCast = plan === 'spire' ? 12 : 0;
   const spireCross = role === 'church' ? Math.min(1.5, spanLen * 0.2) : 0;
-  const [csdx, csdy] = shadowOffset(1.1 * stories + spireCast);
+  const [csdx, csdy] = shadowOffset(CAST_SOFT * stories + spireCast);
   const blurPad = 0.6;
 
   // The sprite must contain every plan feature or wings and lean-tos clip.
@@ -568,14 +607,12 @@ function buildArt(b: Building, stories: number, smallOfPair: boolean, map: GameM
     sy: ny - blurPad,
     sw: mx - nx + csdx + blurPad * 2,
     sh: my - ny + csdy + blurPad * 2,
-    hp: H_PROJ * stories,
     wall,
-    wallS: rgbStr(tint(wbase, FACE_S, -3)),
-    wallE: rgbStr(tint(wbase, FACE_E, -1)),
-    wallSTones: ramp(wbase, FACE_S, -3, 0.09),
-    wallETones: ramp(wbase, FACE_E, -1, 0.09),
-    openS,
-    openE,
+    // No lit/shade pair: a wall head seen in plan is one surface, and giving it
+    // a sun side would be re-introducing the elevation this pass removed.
+    wallFlat: rgbStr(tint(wbase, WALL_V, 0)),
+    wallTones: ramp(wbase, WALL_V, 0, 0.1),
+    opens,
     chimneys,
     // hash-driven ambience only — never garrison state, which would leak intel
     smoke: !sacred && mat !== 'iron' && hash(i, 272) < 0.45,
@@ -1582,8 +1619,8 @@ function bakeShadow(b: Building, art: RoofArt, stories: number, band: number): H
   g.translate(-art.sx, -art.sy);
   const r = art.rr;
   const l = art.lean;
-  const [sdx, sdy] = shadowOffset(0.71 * stories);
-  const [fdx, fdy] = shadowOffset(1.1 * stories);
+  const [sdx, sdy] = shadowOffset(CAST_CORE * stories);
+  const [fdx, fdy] = shadowOffset(CAST_SOFT * stories);
   // the silhouette is whatever the roof actually is, lean-to included
   const cast = (ox: number, oy: number): void => {
     g.fillRect(r.x + ox, r.y + oy, r.w, r.h);
@@ -1599,7 +1636,7 @@ function bakeShadow(b: Building, art: RoofArt, stories: number, band: number): H
     // A spire throws a tapering finger far past the tower's own shadow. At the
     // far-LOD camera the tower is fifteen pixels of dark slate and this is what
     // tells the player which fifteen pixels they are.
-    const [tdx, tdy] = shadowOffset(1.1 * stories + art.spireCast);
+    const [tdx, tdy] = shadowOffset(CAST_SOFT * stories + art.spireCast);
     const cx = r.x + r.w / 2;
     const cy = r.y + r.h / 2;
     const side = Math.min(r.w, r.h);
@@ -1651,108 +1688,106 @@ function bakeShadow(b: Building, art: RoofArt, stories: number, band: number): H
   return c;
 }
 
-// One wall face in a local frame: u runs along the wall, v runs outward from
-// the footprint edge to the bottom of the projected face.
-function wallFace(
+// --- the wall ring, in plan --------------------------------------------------
+//
+// One side of the footprint outline, in a local frame where u runs along the
+// wall and v runs across its WALL_T thickness. Every fill is OPAQUE and the ring
+// is tiled exactly once — the two horizontal strips own the corner squares and
+// the two vertical ones are inset by a thickness — because two units of a
+// terrace both draw the band on their shared party wall, and a translucent seam
+// painted twice is a darker seam.
+function wallBandInto(
   g: CanvasRenderingContext2D,
   art: RoofArt,
   i: number,
   band: number,
-  uLen: number,
-  hp: number,
-  tones: string[],
-  flat: string,
   open: Uint8Array,
-  openAt: number,
+  caps: boolean,
   salt: number,
 ): void {
-  g.fillStyle = flat;
-  g.fillRect(0, 0, uLen, hp);
-  if (art.wall === 'rubble') {
-    const row = hp / Math.max(2, Math.round(hp / 0.28));
-    for (let v = 0, r = 0; v < hp - 0.001; v += row, r++) {
-      const stag = (r & 1) * 0.22;
-      for (let u = -stag, k = 0; u < uLen; u += 0.45, k++) {
-        const u0 = Math.max(0, u);
-        const u1 = Math.min(uLen, u + 0.45 - 0.04);
-        if (u1 - u0 <= 0.001) continue;
-        g.fillStyle = tones[Math.min(TONE_STEPS - 1, (hash(i, r * 131 + k, salt) * TONE_STEPS) | 0)];
-        g.fillRect(u0, v, u1 - u0, row - 0.035);
+  const t = WALL_T;
+  const total = caps ? open.length + t : open.length - t;
+  const u0 = caps ? t / 2 : -t / 2; // world u of tile 0's start, in the local frame
+  const fine = band >= 16;
+  // every primitive clips to the strip, so a tile hanging off an inset end and
+  // a door jamb at u = -0.03 both land inside the sprite
+  const rect = (a: number, w: number, v: number, h: number, color: string): void => {
+    const a0 = Math.max(0, a);
+    const a1 = Math.min(total, a + w);
+    if (a1 - a0 <= 0.001) return;
+    g.fillStyle = color;
+    g.fillRect(a0, v, a1 - a0, h);
+  };
+  // A run of masonry: body, coursing, and the two long arrises in drawEdge's own
+  // tone so an interior partition meeting this band does not cross a lighter bar.
+  const masonry = (a: number, w: number): void => {
+    const a0 = Math.max(0, a);
+    const a1 = Math.min(total, a + w);
+    if (a1 - a0 <= 0.001) return;
+    rect(a0, a1 - a0, 0, t, art.wallFlat);
+    if (fine) {
+      if (art.wall === 'colombage') {
+        // the frame, read down through the wall head
+        for (let u = Math.ceil(a0 / 0.7) * 0.7; u < a1; u += 0.7) rect(u, 0.09, 0.045, t - 0.09, '#4a3c2c');
+      } else {
+        // Stones stepped off the STRIP origin, not off the run, so the courses
+        // carry straight through a window reveal instead of restarting at it.
+        const stone = art.wall === 'brick' ? 0.24 : 0.46;
+        for (let u = Math.floor(a0 / stone) * stone; u < a1; u += stone) {
+          const k = Math.round(u * 8);
+          rect(u, stone - 0.05, 0.045, t - 0.09, art.wallTones[Math.min(TONE_STEPS - 1, (hash(i, k, salt) * TONE_STEPS) | 0)]);
+        }
       }
     }
-    g.fillStyle = 'rgba(60,54,44,0.35)';
-    for (let v = row; v < hp - 0.001; v += row) g.fillRect(0, v - 0.03, uLen, 0.03);
-  } else if (art.wall === 'colombage') {
-    g.fillStyle = '#4a3c2c';
-    for (let u = 0; u < uLen; u += 0.7) g.fillRect(u, 0, 0.1, hp);
-    g.fillRect(0, hp * 0.45, uLen, 0.08);
-  } else {
-    const row = 0.22;
-    for (let v = 0, r = 0; v < hp - 0.001; v += row, r++) {
-      const stag = (r & 1) * 0.11;
-      for (let u = -stag, k = 0; u < uLen; u += 0.22, k++) {
-        const u0 = Math.max(0, u);
-        const u1 = Math.min(uLen, u + 0.22 - 0.03);
-        if (u1 - u0 <= 0.001) continue;
-        g.fillStyle = tones[Math.min(TONE_STEPS - 1, (hash(i, r * 131 + k, salt) * TONE_STEPS) | 0)];
-        g.fillRect(u0, v, u1 - u0, row - 0.03);
-      }
-    }
+    rect(a0, a1 - a0, 0, 0.045, WALL_SEAM);
+    rect(a0, a1 - a0, t - 0.045, 0.045, WALL_SEAM);
+  };
+
+  if (caps) {
+    masonry(0, t / 2);
+    masonry(total - t / 2, t / 2);
   }
-  // openings, straight off the map's edge types
   for (let k = 0; k < open.length; k++) {
     const e = open[k];
-    if (e !== EDGE.WINDOW && e !== EDGE.DOOR) continue;
-    const u = openAt + k;
+    if (e === EDGE.NONE) continue; // an arcade bay or an open barn front is a real hole in the ring
+    const a = u0 + k;
+    masonry(a, 1);
+    if (e === EDGE.WALL) continue;
+    // An opening is masonry REMOVED, not a rectangle painted on: the reveal goes
+    // down to the seam tone across the full thickness and the leaf or the
+    // glazing hangs in the middle of it. Spans are drawEdge's, to the metre.
     if (e === EDGE.DOOR) {
-      g.fillStyle = '#5f4426';
-      g.fillRect(u + 0.18, 0, 0.64, hp);
-      g.fillStyle = 'rgba(14,11,7,0.5)';
-      g.fillRect(u + 0.18, 0, 0.64, hp * 0.28);
-      g.strokeStyle = '#3a3128';
-      g.lineWidth = Math.max(0.03, 1 / band);
-      g.strokeRect(u + 0.18, 0, 0.64, hp);
+      rect(a + 0.12, 0.76, 0, t, WALL_SEAM);
+      rect(a + 0.12, 0.76, (t - 0.16) / 2, 0.16, WALL_LEAF);
       continue;
     }
-    const py = hp * 0.22;
-    const ph = hp * 0.5;
-    g.fillStyle = '#39424a';
-    g.fillRect(u + 0.2, py, 0.6, ph);
-    g.fillStyle = 'rgba(226,214,190,0.35)';
-    g.fillRect(u + 0.17, py + ph, 0.66, Math.max(0.045, hp * 0.1));
-    g.strokeStyle = '#3a3128';
-    g.lineWidth = Math.max(0.03, 1 / band);
-    g.strokeRect(u + 0.2, py, 0.6, ph);
+    rect(a + 0.15, 0.7, 0, t, WALL_SEAM);
+    rect(a + 0.2, 0.6, (t - 0.11) / 2, 0.11, WALL_GLASS);
   }
-  // the wall meets the ground here
-  g.fillStyle = 'rgba(10,12,8,0.45)';
-  g.fillRect(0, hp - 0.06, uLen, 0.06);
 }
 
-function bakeWall(b: Building, art: RoofArt, band: number, south: boolean): HTMLCanvasElement {
-  const hp = art.hp;
-  const uLen = south ? b.w + hp : b.h;
+function bakeWallBand(b: Building, art: RoofArt, band: number, side: number): HTMLCanvasElement {
+  const t = WALL_T;
+  const horiz = side === SIDE_N || side === SIDE_S;
+  const len = horiz ? b.w + t : b.h - t;
   const c = document.createElement('canvas');
-  c.width = Math.max(1, Math.round((south ? uLen : hp) * band));
-  c.height = Math.max(1, Math.round((south ? hp : uLen) * band));
+  c.width = Math.max(1, Math.round((horiz ? len : t) * band));
+  c.height = Math.max(1, Math.round((horiz ? t : len) * band));
   const g = c.getContext('2d')!;
   g.scale(band, band);
-  if (south) g.translate(0, 0);
-  else g.transform(0, 1, 1, 0, 0, 0);
-  wallFace(
-    g,
-    art,
-    art.key,
-    band,
-    uLen,
-    hp,
-    south ? art.wallSTones : art.wallETones,
-    south ? art.wallS : art.wallE,
-    south ? art.openS : art.openE,
-    0,
-    south ? 261 : 262,
-  );
+  if (!horiz) g.transform(0, 1, 1, 0, 0, 0);
+  wallBandInto(g, art, art.key, band, art.opens[side], horiz, 261 + side);
   return c;
+}
+
+// Where each baked strip lands in the world: [x, y, w, h], the ring centred on
+// the footprint outline exactly as terrain.ts centres an edge stroke on its edge.
+function wallRect(b: Building, side: number): [number, number, number, number] {
+  const t = WALL_T;
+  if (side === SIDE_N) return [b.x - t / 2, b.y - t / 2, b.w + t, t];
+  if (side === SIDE_S) return [b.x - t / 2, b.y + b.h - t / 2, b.w + t, t];
+  if (side === SIDE_W) return [b.x - t / 2, b.y + t / 2, t, b.h - t];
+  return [b.x + b.w - t / 2, b.y + t / 2, t, b.h - t];
 }
 
 // --- structure grouping (T15 / T17) ------------------------------------------
@@ -1849,8 +1884,7 @@ export function bakeBudgetMs(prewarm: boolean, still: number): number {
 interface Baked {
   roof: HTMLCanvasElement;
   shadow: HTMLCanvasElement;
-  wallS: HTMLCanvasElement;
-  wallE: HTMLCanvasElement;
+  walls: HTMLCanvasElement[]; // the plan band, one strip per side, SIDE_N..SIDE_E
   ver: number; // damage version this was baked at — stale sprites keep serving until the rebake lands
 }
 
@@ -2051,8 +2085,7 @@ export class RoofLayer {
         // walls and shadow are damage-independent; a rebake driven by a hit
         // reuses them rather than redrawing masonry that did not change
         shadow: cur[i]?.shadow ?? bakeShadow(b, art, this.stories[i], sBand),
-        wallS: cur[i]?.wallS ?? bakeWall(b, art, this.band, true),
-        wallE: cur[i]?.wallE ?? bakeWall(b, art, this.band, false),
+        walls: cur[i]?.walls ?? [SIDE_N, SIDE_S, SIDE_W, SIDE_E].map((s) => bakeWallBand(b, art, this.band, s)),
         ver: this.dmgVer[i],
       };
     }
@@ -2089,8 +2122,9 @@ export class RoofLayer {
     });
   }
 
-  // Wall faces, drawn in the shadow slot so soldiers pass in front of them.
-  // Always opaque: a revealed interior does not remove the building's walls.
+  // The plan wall band, drawn in the shadow slot so soldiers pass in front of
+  // it. Always opaque: a revealed interior does not remove the building's walls,
+  // and this ring IS the revealed building's silhouette.
   drawWalls(ctx: CanvasRenderingContext2D, cam: Camera, cw: number, ch: number): void {
     this.withWorldTransform(ctx, cam, cw, ch, () => {
       for (let i = 0; i < this.buildings.length; i++) {
@@ -2098,39 +2132,36 @@ export class RoofLayer {
         const spr = this.serving(i);
         if (!spr) continue;
         const b = this.buildings[i];
-        const hp = this.art[i].hp;
-        ctx.drawImage(spr.wallE, b.x + b.w, b.y, hp, b.h);
-        ctx.drawImage(spr.wallS, b.x, b.y + b.h, b.w + hp, hp);
+        for (let s = 0; s < spr.walls.length; s++) {
+          const [x, y, w, h] = wallRect(b, s);
+          ctx.drawImage(spr.walls[s], x, y, w, h);
+        }
       }
     });
   }
 
+  // Roofs, blitted AT their footprints. There is no parallax offset any more —
+  // displacing the roof up-sun was a fake-oblique projection, and the mass it
+  // was faking is now carried by bakeShadow alone.
+  //
+  // The fade's silhouette went with it: the ghost strokeRect that used to rise
+  // as a roof faded was standing in for a wall line the parallax had moved off
+  // the footprint, and drawWalls now paints an opaque WALL_T band straight down
+  // that same line. Stroking over it would only put a dark spine along the
+  // middle of the masonry.
   drawTops(ctx: CanvasRenderingContext2D, cam: Camera, cw: number, ch: number): void {
     this.setBand(roofBandFor(cam.scale));
     this.pump(cam, cw, ch);
-    const px = -SUN.dx * PARALLAX;
-    const py = -SUN.dy * PARALLAX;
     this.withWorldTransform(ctx, cam, cw, ch, () => {
       for (let i = 0; i < this.buildings.length; i++) {
         if (!this.onScreen(cam, i, cw, ch)) continue;
         const a = this.alphas[i];
+        if (a < 0.01) continue;
         const art = this.art[i];
         const spr = this.serving(i);
-        if (spr && a >= 0.01) {
-          ctx.globalAlpha = a;
-          ctx.drawImage(spr.roof, art.ox + px, art.oy + py, art.ow, art.oh);
-        }
-        // The silhouette is gameplay, not decoration. It sits on the true
-        // footprint (the parallax has moved the baked eave line off it) and
-        // rises as the roof fades, so a revealed building still reads as one.
-        const ghost = 0.6 * (1 - Math.min(1, a / 0.85));
-        if (ghost > 0.02) {
-          const b = this.buildings[i];
-          ctx.globalAlpha = 1;
-          ctx.strokeStyle = `rgba(20,16,12,${ghost.toFixed(3)})`;
-          ctx.lineWidth = 0.09;
-          ctx.strokeRect(b.x, b.y, b.w, b.h);
-        }
+        if (!spr) continue;
+        ctx.globalAlpha = a;
+        ctx.drawImage(spr.roof, art.ox, art.oy, art.ow, art.oh);
       }
       ctx.globalAlpha = 1;
     });

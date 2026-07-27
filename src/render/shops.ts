@@ -9,21 +9,21 @@ import type { Detail } from './terrain';
 // the same roof over the same wall, so a high street read as a terrace of
 // dwellings and the place had no commerce on it.
 //
-// All of it is plan-view and lives in the terrain chunk, deliberately NOT in
-// the roof layer's wall-face pass: the wall faces only exist on the south and
-// east sides (`roofs.ts` bakes wallS/wallE), and a third of every bourg's
-// shops front north or west. An awning, a bracket sign and a pavement of
-// crates read from directly above and read on all four frontages. The
-// ground-floor shopfront band on the visible wall faces is the one piece of
-// N3 that belongs in roofs.ts, and is not done here.
+// All of it is plan-view and lives in the terrain chunk. An awning, a bracket
+// sign and a pavement of crates read from directly above and read on all four
+// frontages, which is the whole reason the dressing lives out here on the
+// pavement rather than on a wall: `roofs.ts` draws no wall face at all now (the
+// projected south/east elevations, and the up-sun roof parallax that uncovered
+// them, are gone), so a shopfront painted on a wall would be a shopfront the
+// player never sees.
 //
 // Salts 340-359.
 
 type Face = 'n' | 's' | 'e' | 'w';
 
 export interface Shopfront {
-  // The frontage line, in world metres, already pushed clear of whatever the
-  // roof layer projects over it.
+  // The frontage line, in world metres, already pushed out clear of the eave
+  // the roof layer overhangs the footprint edge by.
   ax: number;
   ay: number;
   bx: number;
@@ -38,16 +38,15 @@ export interface Shopfront {
   maxY: number;
 }
 
-// `roofs.ts` projects H_PROJ metres of wall face per storey onto the south and
-// east sides. Anything drawn inside that band is painted over by drawWalls, so
-// the awning starts beyond it. Mirrored rather than imported: terrain must not
-// take a value dependency on the roof layer to place a canvas blind.
-const WALL_PROJ = 0.5;
-// North and west faces carry no projected wall, but the roof does overhang
-// them: OVERHANG 0.35 plus the roof layer's NW parallax puts the drawn eave
-// about 0.55 m past the footprint. An awning tucked inside that is invisible,
-// which is exactly what the first cut of this looked like.
-const EAVE = 0.55;
+// Every frontage now clears the same distance, because there is nothing
+// asymmetric left to clear. `roofs.ts` blits the roof AT the footprint with a
+// 0.35 m OVERHANG on all four sides and projects no wall face on any of them,
+// so the drawn eave is 0.35 m out whichever way the shop faces. An awning
+// tucked inside that is invisible from directly above — which is exactly what
+// the first cut of this looked like — so the frontage line sits a little past
+// it. Mirrored rather than imported: terrain must not take a value dependency
+// on the roof layer to place a canvas blind.
+const EAVE = 0.42;
 const AWNING = 1.2; // metres of projection
 const SIGN_ARM = 1;
 // How high off the pavement each piece hangs. These are the ONLY numbers that
@@ -75,17 +74,14 @@ export function shopfrontsFor(map: GameMap, buildings: readonly Building[]): Sho
     if (b.role !== 'shop' || !b.frontage) continue;
     const f = b.frontage;
     const [nx, ny] = normalOf(f);
-    let stories = 1;
-    for (let y = b.y; y < b.y + b.h; y++) for (let x = b.x; x < b.x + b.w; x++) stories = Math.max(stories, map.storiesAt(x, y));
-    const clear = f === 's' || f === 'e' ? stories * WALL_PROJ : EAVE;
     const along = f === 'n' || f === 's' ? b.w : b.h;
     if (along < 2.5) continue;
     const u0 = (f === 'n' || f === 's' ? b.x : b.y) + 0.25;
     const u1 = u0 + along - 0.5;
-    // the wall line, pushed out past the projection
+    // the footprint edge, pushed out past the eave
     const horizontal = f === 'n' || f === 's';
     const base = f === 'n' ? b.y : f === 's' ? b.y + b.h : f === 'e' ? b.x + b.w : b.x;
-    const t = base + (horizontal ? ny : nx) * clear;
+    const t = base + (horizontal ? ny : nx) * EAVE;
     const ax = horizontal ? u0 : t;
     const ay = horizontal ? t : u0;
     const bx = horizontal ? u1 : t;
