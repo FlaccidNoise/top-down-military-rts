@@ -612,12 +612,26 @@ export function setCoarseNightMult(m: number): void {
   coarseNightMult = m;
 }
 
+// Trivial-mismatch auto-resolve (owner-decided): once one side outnumbers the
+// other by this much, staging a full battle is ceremony for a foregone
+// conclusion — offer the player resolveCoarse's forced outcome instead.
+export const TRIVIAL_RATIO = 5;
+
+export function trivialMismatchWinner(attacker: Chit, defender: Chit): 'attacker' | 'defender' | null {
+  if (attacker.strength <= 0 || defender.strength <= 0) return null; // never offer, never divide by zero
+  if (attacker.strength >= defender.strength * TRIVIAL_RATIO) return 'attacker';
+  if (defender.strength >= attacker.strength * TRIVIAL_RATIO) return 'defender';
+  return null;
+}
+
 // Resolve an engagement without running a Sim — coarse Lanchester-style
-// resolution for AI-vs-AI battles.
+// resolution for AI-vs-AI battles, and for the player's offered trivial-
+// mismatch auto-resolve (forcedWinner).
 export function resolveCoarse(
   c: Campaign,
   front: Front,
   e: Engagement,
+  forcedWinner?: 'attacker' | 'defender',
 ): { record: BattleRecord; attackerWon: boolean } {
   const attacker = front.chits.find((ch) => ch.id === e.attackerId)!;
   const defender = front.chits.find((ch) => ch.id === e.defenderId)!;
@@ -641,7 +655,9 @@ export function resolveCoarse(
 
   const score = attacker.strength / (attacker.strength + defender.strength * terrainMult);
   const clampedScore = Math.max(0.05, Math.min(0.95, score));
-  const attackerWins = rng.next() < clampedScore;
+  // clampedScore still allows a 5% upset either way — a forced outcome (the
+  // player accepted an offered "foregone conclusion") must never roll for it.
+  const attackerWins = forcedWinner ? forcedWinner === 'attacker' : rng.next() < clampedScore;
 
   const winnerStrength = attackerWins ? attacker.strength : defender.strength;
   const loserStrength = attackerWins ? defender.strength : attacker.strength;

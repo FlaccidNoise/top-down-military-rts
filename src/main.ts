@@ -11,7 +11,7 @@ import type { RedCommander } from './sim/ai';
 import { WEAPONS } from './sim/data';
 import type { OrderKind, TeamOrder } from './sim/orders';
 import { DT, fanOffsets, SQUAD_FAN, type Side, type Sim, type Soldier } from './sim/sim';
-import { applyEngagementOutcome, makeStrategicBattle, newFront, resolveCoarse, syncStrengths } from './strategic/bridge';
+import { applyEngagementOutcome, makeStrategicBattle, newFront, resolveCoarse, syncStrengths, trivialMismatchWinner } from './strategic/bridge';
 import { StrategicCommander, RED_DEFENDER, BLUE_ATTACKER } from './strategic/command';
 import { operationStatus, REINFORCE_CYCLE_DAYS, REINFORCE_PER_COMPANY, type Chit, type Engagement, type Front } from './strategic/front';
 import { loadGame, saveGame } from './strategic/save';
@@ -368,6 +368,7 @@ function showContactModal(e: Engagement): void {
   const stakes = cell.objective
     ? `Objective — ${held}/${objectives.length} held toward victory`
     : 'Front cell — losing shifts the front line';
+  const forced = trivialMismatchWinner(attacker, defender);
   debriefEl.innerHTML = `<div class="db-scroll"><div class="db">
     <h1>CONTACT</h1>
     <p class="sub">${attacker.name} has met ${defender.name}.</p>
@@ -377,6 +378,7 @@ function showContactModal(e: Engagement): void {
     </div></div>
     <div class="db-actions">
       <button id="fight" class="primary">Attack</button>
+      ${forced ? '<button id="autoresolve">Auto-resolve</button>' : ''}
       <button id="standdown">Stand down</button>
     </div>`;
   debriefEl.style.display = 'flex';
@@ -385,6 +387,16 @@ function showContactModal(e: Engagement): void {
     coach.maybeShow('first-engagement', fight ?? debriefEl, 'Staging — review the force comparison, then Attack or Stand down.');
   }
   document.getElementById('fight')!.onclick = () => startEngagementBattle(e);
+  if (forced) {
+    document.getElementById('autoresolve')!.onclick = () => {
+      const result = resolveCoarse(campaign, front, e, forced);
+      stratView.flash(`${attacker.name} vs ${defender.name}: ${result.attackerWon ? 'attacker wins' : 'defender holds'}`);
+      debriefEl.style.display = 'none';
+      pendingEngagement = null;
+      stratPaused = !(aiSides.has('red') && aiSides.has('blue'));
+      save();
+    };
+  }
   document.getElementById('standdown')!.onclick = () => {
     debriefEl.style.display = 'none';
     pendingEngagement = null;
@@ -1151,7 +1163,8 @@ function frame(now: number): void {
           } else if (attackerIsAI && !defenderIsAI) {
             pendingEngagement = e;
             stratPaused = true;
-            startEngagementBattle(e);
+            if (trivialMismatchWinner(attacker, defender)) showContactModal(e);
+            else startEngagementBattle(e);
           } else {
             pendingEngagement = e;
             stratPaused = true;
