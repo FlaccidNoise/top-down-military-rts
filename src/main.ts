@@ -27,6 +27,7 @@ import { coach } from './ui/coach';
 import { showFloorMenu } from './ui/floormenu';
 import { MainMenu, type SaveProbe } from './ui/mainmenu';
 import { TheaterView } from './render/theater-view';
+import { TheaterHud } from './ui/theater-hud';
 import { DEFAULT_PRESET, presetSpec } from './campaign/presets';
 import { SPEC_TAG, specStream } from './campaign/spec';
 import { makeTheater, TheaterGenError } from './strategic/theatergen';
@@ -380,6 +381,10 @@ if (touchbarEl && typeof ResizeObserver === 'function') {
   publishBarHeight();
 }
 const stratHud = new StratHud({
+  togglePause: () => { stratPaused = !stratPaused; },
+  setSpeed: (i) => { speedIdx = i; },
+});
+const theaterHud = new TheaterHud({
   togglePause: () => { stratPaused = !stratPaused; },
   setSpeed: (i) => { speedIdx = i; },
 });
@@ -1468,6 +1473,7 @@ function frame(now: number): void {
   }
   hud.root.style.display = mode === 'battle' ? '' : 'none';
   stratHud.root.style.display = mode === 'strategic' && !S().v2 ? '' : 'none';
+  theaterHud.root.style.display = mode === 'strategic' && S().v2 ? '' : 'none';
   if (mode === 'menu') {
     requestAnimationFrame(frame);
     return;
@@ -1505,6 +1511,7 @@ function frame(now: number): void {
     }
     v2.view.clampPan(view.w, view.h);
     v2.view.draw(ctx, v2.front, v2.selectedForce, stratPaused, SPEEDS[speedIdx], view.w, view.h);
+    theaterHud.update(v2.front, v2.goals, v2.selectedForce, stratPaused, speedIdx);
     if (touchHold) drawHoldRing(ctx, touchHold, now);
   } else if (mode === 'strategic') {
     hud.updateIdle('strategic', selectedChit >= 0 || stratPaused);

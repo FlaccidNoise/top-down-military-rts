@@ -256,13 +256,9 @@ export class TheaterView {
       ctx.setLineDash([]);
     }
 
-    // Chrome: clock + speed + flash. The event log is DOM (strat HUD).
-    ctx.fillStyle = 'rgba(230, 220, 200, 0.9)';
-    ctx.font = '12px ui-monospace, monospace';
-    ctx.textAlign = 'left';
-    const hh = Math.floor((front.clockMin % 1440) / 60).toString().padStart(2, '0');
-    const mm = (front.clockMin % 60).toString().padStart(2, '0');
-    ctx.fillText(`Day ${front.day}  ${hh}${mm}  ${paused ? 'PAUSED' : `x${speed}`}`, 10, h - 12);
+    // Chrome lives in the TheaterHud DOM; the canvas keeps only the flash.
+    void paused;
+    void speed;
     if (this.flashText && performance.now() < this.flashUntil) {
       ctx.textAlign = 'center';
       ctx.fillStyle = '#e8dcc4';
