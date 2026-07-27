@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { EDGE, GameMap } from '../src/sim/map';
 import { CHARGE_BALK_REASON } from '../src/sim/orders';
-import { Sim } from '../src/sim/sim';
+import { Sim, smokePuff } from '../src/sim/sim';
 
 // Assault order (decision log 2026-07-23): the charge that feeds the melee
 // lock. Soldiers are dried by default so melee/pathing is what's under test.
@@ -81,7 +81,7 @@ describe('assault order', () => {
     ]);
     sim.addSquad('red', 'D', [{ name: 'D1', weapon: 'kar98k', x: 35.5, y: 10.5 }]);
     // two puffs on the sightline = opacity 1, LOS blocked — the doctrine loop
-    sim.smoke.push({ x: 23, y: 10.4, z0: 0, h: 3.5, ttl: 60 }, { x: 23, y: 10.6, z0: 0, h: 3.5, ttl: 60 });
+    sim.smoke.push(smokePuff(23, 10.4, 0, 60, 0, 3), smokePuff(23, 10.6, 0, 60, 0, 3));
     sim.orderTeam(atk.teamIds[0], { kind: 'assault', x: 35.5, y: 10.5 });
     expect(sim.teams[atk.teamIds[0]].orderState.phase).toBe('executing');
   });

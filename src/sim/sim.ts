@@ -27,6 +27,7 @@ import type { Building } from './mapgen';
 import { ambushThreshold, ASSAULT_DANGER_MULT, BALK_REASON, CHARGE_BALK_REASON, compliance, dangerScore, type OrderState, type TeamOrder } from './orders';
 import { astar } from './path';
 import { mulberry32, type Rng } from './rng';
+import { LEAN_K, WIND } from './wind';
 
 export const DT = 1 / 30; // fixed timestep, seconds
 const BASE_SPEED = 2; // m/s
@@ -295,9 +296,13 @@ interface Barrage {
   nextTick: number;
 }
 
-// Smoke column height (m). Blinds ground-floor eyes (EYE_H 1.6m); a floor-2
-// eye (elev + FLOOR_H + EYE_H = 4.6m) sees over it. Plan §4 open question 1:
-// 3.5, not 4.5 — floor-2 should clear it decisively, not marginally.
+// Shell smoke's height three seconds after deploy (m) — the calibration anchor
+// for PLUME[0], not a constant the sim reads any more. It used to be THE column
+// height: fixed at 3.5 so a ground eye (1.6m) was blind and a floor-2 eye
+// (elev + FLOOR_H + EYE_H = 4.6m) saw over. The column now ages (see PLUME),
+// and grow(3, …) lands within 1% of this number, so the first seconds of a
+// screen behave as they always did. A test pins that agreement, which is what
+// stops a future retune of PLUME[0] from silently rewriting smoke doctrine.
 export const SMOKE_H = 3.5;
 // Suppression addend multiplier per floor slab between blast and soldier
 // (plan 2026-07-23-3d-height-sim §5): felt through the floor, not lethal.
@@ -307,8 +312,47 @@ export interface Smoke {
   x: number;
   y: number;
   z0: number; // column base z: ground elevation + deployer level * FLOOR_H at deploy
-  h: number; // column height, m (SMOKE_H)
+  h: number; // CURRENT column height, m — recomputed from age once per tick
   ttl: number; // seconds left
+  age: number; // seconds since deploy
+  kind: 0 | 1; // 0 = shell/grenade smoke, 1 = fire (burning wreck or building)
+  r: number; // CURRENT column radius, m
+  r2max: number; // cached (r + LEAN_K*h)^2 — the per-ray early-reject radius, squared
+}
+
+// Growth curves per smoke kind. Rational and saturating, never exponential:
+// Math.exp/pow/hypot are not guaranteed correctly-rounded across JS engines,
+// while + − × ÷ are IEEE-exact, so a/(a+T) replays identically everywhere.
+const PLUME = [
+  { h0: 1.5, hMax: 10, T: 10, r0: 1.5, rMax: 3.0 }, // 0 shell/grenade smoke
+  { h0: 2.0, hMax: 20, T: 8, r0: 2.0, rMax: 4.5 }, // 1 fire
+] as const;
+
+export function grow(a: number, v0: number, vMax: number, T: number): number {
+  return v0 + (vMax - v0) * (a / (a + T));
+}
+
+// The single construction path for a puff, so the age-derived fields can never
+// disagree with the curve the LOS test reads. `age` is a parameter because a
+// screen is only a screen once it has grown: a puff deployed this tick is
+// 1.5 m tall and a standing man (1.6 m) can still see over it for the ~4 ticks
+// it takes to climb past his eye. Tests that want a developed screen pass 3 s,
+// the height the old constant-height model always had.
+export function smokePuff(x: number, y: number, z0: number, ttl: number, kind: 0 | 1 = 0, age = 0): Smoke {
+  const p: Smoke = { x, y, z0, h: 0, ttl, age, kind, r: 0, r2max: 0 };
+  agePuff(p);
+  return p;
+}
+
+// Evaluate the age-dependent geometry ONCE per puff per tick (never per ray):
+// sightBetween's smoke loop is O(puffs) on the hottest path in the game, so it
+// must see nothing but comparisons.
+function agePuff(p: Smoke): void {
+  const k = PLUME[p.kind];
+  p.h = grow(p.age, k.h0, k.hMax, k.T);
+  p.r = grow(p.age, k.r0, k.rMax, k.T);
+  const R = p.r + LEAN_K * p.h;
+  p.r2max = R * R;
 }
 
 export interface DroppedKit {
@@ -451,12 +495,30 @@ export function sightBetween(sim: Sim, x0: number, y0: number, x1: number, y1: n
   const zEye1 = sim.map.elevAt(Math.floor(x1), Math.floor(y1)) + l1 * FLOOR_H + e1;
   let opacity = 0;
   for (const p of sim.smoke) {
+    // 1. Cheap reject against the ENLARGED radius (column + full lean), one
+    // projection and no z arithmetic. Prunes nearly every puff.
     const t = closestT(p.x, p.y, x0, y0, x1, y1);
     const cx = p.x - (x0 + t * dx);
     const cy = p.y - (y0 + t * dy);
-    if (cx * cx + cy * cy > 2.25) continue; // 1.5m gate, squared
+    if (cx * cx + cy * cy > p.r2max) continue;
+    // 2. Height of the eye-line where the column's BASE sits.
     const lineZ = zEye0 + (zEye1 - zEye0) * t;
-    if (lineZ < p.z0 || lineZ > p.z0 + p.h) continue; // eye-line passes over/under the column
+    if (lineZ < p.z0) continue; // the ray passes under the column
+    const top = p.z0 + p.h;
+    const zc = lineZ < top ? lineZ : top; // clamp to the column top
+    // 3. Re-project against the axis AT that height: the column leans downwind
+    // by LEAN_K metres per metre of rise, so a tall plume blocks a line its
+    // base does not. One fixed-point refinement, no iteration.
+    const off = LEAN_K * (zc - p.z0);
+    const ax = p.x + WIND.dx * off;
+    const ay = p.y + WIND.dy * off;
+    const t2 = closestT(ax, ay, x0, y0, x1, y1);
+    const bx = ax - (x0 + t2 * dx);
+    const by = ay - (y0 + t2 * dy);
+    if (bx * bx + by * by > p.r * p.r) continue;
+    // 4. Confirm the z-interval at the refined parameter.
+    const lineZ2 = zEye0 + (zEye1 - zEye0) * t2;
+    if (lineZ2 < p.z0 || lineZ2 > top) continue;
     opacity += 0.5;
   }
   if (opacity >= 1) return { visible: false, cover: 0, conceal: 1 };
@@ -1086,7 +1148,7 @@ export class Sim {
     this.mortarShells = this.mortarShells.filter((sh) => {
       if (this.tick < sh.tick) return true;
           // Mortar/barrage smoke lands at ground level 0, wherever it falls.
-      if (sh.smoke) this.smoke.push({ x: sh.x, y: sh.y, z0: this.map.elevAt(Math.floor(sh.x), Math.floor(sh.y)), h: SMOKE_H, ttl: 60 });
+      if (sh.smoke) this.smoke.push(smokePuff(sh.x, sh.y, this.map.elevAt(Math.floor(sh.x), Math.floor(sh.y)), 60));
       else this.explode(sh.x, sh.y, { suppRadius: 10, fragRadius: 5, frags: 2, dmg: [25, 75] });
       return false;
     });
@@ -1494,8 +1556,8 @@ export class Sim {
     // from an upstairs window screens that floor, not the street.
     const deployer = team.soldierIds.map((id) => this.soldiers[id]).find((s) => s.alive);
     const z0 = this.map.elevAt(Math.floor(order.x), Math.floor(order.y)) + (deployer?.level ?? 0) * FLOOR_H;
-    this.smoke.push({ x: order.x - 1, y: order.y, z0, h: SMOKE_H, ttl: 60 });
-    this.smoke.push({ x: order.x + 1, y: order.y, z0, h: SMOKE_H, ttl: 60 });
+    this.smoke.push(smokePuff(order.x - 1, order.y, z0, 60));
+    this.smoke.push(smokePuff(order.x + 1, order.y, z0, 60));
   }
 
   private inArc(fx: number, fy: number, tx: number, ty: number, arc: [number, number]): boolean {
@@ -1713,7 +1775,11 @@ export class Sim {
 
   private stepSmoke(): void {
     if (this.smoke.length === 0) return;
-    for (const p of this.smoke) p.ttl -= DT;
+    for (const p of this.smoke) {
+      p.ttl -= DT;
+      p.age += DT;
+      agePuff(p); // once per puff per tick; sightBetween only ever reads the cache
+    }
     this.smoke = this.smoke.filter((p) => p.ttl > 0);
   }
 
@@ -3463,7 +3529,16 @@ export class Sim {
         e.hasTarget,
         e.smokeRoundsLeft,
       ]),
-      smoke: this.smoke.map((p) => [Math.round(p.x * 1e6), Math.round(p.y * 1e6), Math.round(p.z0 * 1e6), Math.round(p.h * 1e6), Math.round(p.ttl * 1e6)]),
+      smoke: this.smoke.map((p) => [
+        Math.round(p.x * 1e6),
+        Math.round(p.y * 1e6),
+        Math.round(p.z0 * 1e6),
+        Math.round(p.h * 1e6),
+        Math.round(p.ttl * 1e6),
+        Math.round(p.age * 1e6),
+        p.kind,
+        Math.round(p.r * 1e6),
+      ]),
       pendingGrenades: this.pendingGrenades.map((g) => [Math.round(g.x * 1e6), Math.round(g.y * 1e6), g.fuse, g.l]),
       droppedKit: this.droppedKit.map((k) => [
         k.side,

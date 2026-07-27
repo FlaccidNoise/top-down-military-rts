@@ -23,3 +23,14 @@ export const WIND_SPEED = 1.6; // m/s
 // and sightBetween both lean by this, so the drawn column and the blocking
 // column are the same object.
 export const LEAN_K = 0.35;
+
+// Where a plume's axis sits at height z. sightBetween re-projects the ray
+// against this line before blocking, and the renderer stacks its puff sprites
+// along the same one, so what you see is what blocks sight — structurally, from
+// one formula in one file, not by two implementations agreeing today.
+// Structurally typed rather than importing Smoke, so this file keeps zero
+// dependencies (sim.ts imports it, not the other way round).
+export function smokeAxisAt(p: { x: number; y: number; z0: number }, z: number): [number, number] {
+  const off = LEAN_K * (z - p.z0);
+  return [p.x + WIND.dx * off, p.y + WIND.dy * off];
+}
