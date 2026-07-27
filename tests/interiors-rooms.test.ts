@@ -248,7 +248,8 @@ describe('interiors rooms — the three townhouse variants (§3.3)', () => {
     expect(planRooms(map, it, 'townhouse', rng(9))).not.toBeNull();
     expect(planRooms(map, it, 'halle', rng(9))).toBeNull();
     expect(planRooms(map, it, 'halt', rng(9))).toBeNull();
-    expect(planRooms(map, it, 'church', rng(9))).toBeNull(); // I6's
+    resetInterior(map, it);
+    expect(planRooms(map, it, 'church', rng(9))).not.toBeNull(); // I6's, and it is wired
   });
 });
 

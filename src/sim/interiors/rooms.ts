@@ -1,6 +1,7 @@
 import type { GameMap } from '../map';
 import type { BuildingRole } from '../mapgen';
 import type { Rng } from '../rng';
+import { planChurch } from './church';
 import { inMass, wallRun, type Interior } from './kernel';
 import { PLAN_BY_ROLE, type Room, type RoomKind, type RoomPlan } from './types';
 
@@ -419,8 +420,8 @@ function tackRoom(map: GameMap, it: Interior, f: Frame, p: Plan): Room | null {
 // ═══ dispatch ═══════════════════════════════════════════════════════════════
 
 /**
- * Partition one structure by its role. Returns null for the roles this slice
- * does not own: 'church' is I6's, 'none' (halle, halt) is never partitioned.
+ * Partition one structure by its role. Returns null only for 'none' (halle,
+ * halt), which is never partitioned and never furnished.
  *
  * The caller must have run `resetInterior` first — every plan here assumes it
  * owns a clean interior. `role` follows the Building contract, where absent
@@ -431,5 +432,6 @@ export function planRooms(map: GameMap, it: Interior, role: BuildingRole | undef
   if (kind === 'house') return planHouse(map, it, s1, role === 'townhouse');
   if (kind === 'shop') return planShop(map, it, s1);
   if (kind === 'barn') return planBarn(map, it, s1);
+  if (kind === 'church') return planChurch(map, it, s1);
   return null;
 }
