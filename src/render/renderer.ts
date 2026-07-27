@@ -3,6 +3,7 @@ import { MELEE_STRIKE_RANGE, type MeleeEvent, type ShotEvent, type Side, type Si
 import type { Camera } from './camera';
 import { DecalLayer } from './decals';
 import { bandFor, CRAWL_FRAMES, DUDE_SCALE, getShadowSprite, getSprite, glintSprite, headOffset, kitVariant, SPRITE_MIN_SCALE, SPRITE_SPAN, tier, WALK_FRAMES, weaponClass, type Pose } from './dudes';
+import { emplacementBandFor, emplacementFootprintRadius, emplacementSpan, getEmplacementShadow, getEmplacementSprite } from './emplacements';
 import { ballistic, blit, FLASH, flashClass, fxDetail, hazeBand, hotPass, SPIKE_SIDES, traceOvershoot, WIND, type FlashSpec, type FxKind, type Overshoot } from './fx';
 import { SHADOW_SOFT_ALPHA, SUN } from './light';
 import { MarkLayer } from './marks';
@@ -10,7 +11,7 @@ import { craterSpots } from './props';
 import { RoofLayer } from './roofs';
 import { TerrainLayer } from './terrain';
 import { view } from './view';
-import { getVehicleShadow, getVehicleSprite, turretBlob, turretCenter, vehicleBandFor, VEHICLE_SPAN } from './vehicles';
+import { getVehicleShadow, getVehicleSprite, occBucket, trackGauge, turretBlob, turretCenter, vehicleBandFor, VEHICLE_SPAN } from './vehicles';
 
 interface Tracer extends ShotEvent {
   at: number; // ms timestamp
@@ -49,6 +50,26 @@ interface RState {
   wy: number;
   dfacing: number; // drawn facing, including the dead man's per-id jitter
 }
+
+// Render-only per-vehicle state (U7), mirroring the soldier `rs` map. Every
+// motion cue here is driven by the ODOMETER, not by wall-clock: `dist` only
+// grows when the hull actually moves, so a paused game freezes the track
+// churn, the dust and the rut stamping exactly like it freezes a walk cycle.
+interface VState {
+  px: number;
+  py: number;
+  dist: number; // metres travelled, the clock for everything below
+  dust: { x: number; y: number; at: number }[]; // ring buffer, `at` in odometer metres
+  di: number; // ring write index
+  puffAt: number; // odometer of the last puff
+  markAt: number; // odometer of the last rut stamp
+}
+
+const DUST_RING = 6;
+const DUST_EVERY = 0.5; // m of travel per puff
+const DUST_LIFE = 2.5; // m of travel a puff survives
+const MARK_EVERY = 0.7; // m of travel per rut stamp
+const TRACK_PITCH = 0.16; // m of travel per track-phase step
 
 interface Boom {
   x: number;
@@ -147,6 +168,9 @@ const HULL_SHADOW_OFF = 0.58;
 // A 30-tonne hull blocks more light than a man does: the soft-layer alpha the
 // soldiers use reads as a smudge under something this big.
 const HULL_SHADOW_ALPHA = 0.22;
+// A gun on a mount stands about as tall as a kneeling man, so it steps down-sun
+// less than a hull does and gets the soldiers' soft alpha, not the hull's.
+const EMPL_SHADOW_OFF = 0.35;
 const SHADOW_OFF: Record<Pose, number> = {
   idle: 0.42,
   walk: 0.42,
@@ -186,6 +210,7 @@ export class Renderer {
   private tracers: Tracer[] = [];
   private meleeFx: (MeleeEvent & { at: number })[] = [];
   private rs = new Map<number, RState>();
+  private vrs = new Map<number, VState>();
   private deadVehicles = new Set<number>(); // scorch stamped once, on first dead frame
   private lastNow = 0;
   private booms: Boom[] = [];
@@ -412,6 +437,10 @@ export class Renderer {
     // player's side — the renderer never re-derives vision.
     const vis = (s: Soldier) => this.sim.soldierVisibleTo(PLAYER_SIDE, s);
     const visV = (v: Vehicle) => this.sim.vehicleVisibleTo(PLAYER_SIDE, v);
+    // Travel dust goes down as its own pass, before ANY hull: a puff thrown by
+    // one tank must not be painted over by the tank itself and must not paint
+    // over the tank parked next to it.
+    for (const v of this.sim.vehicles) if (v.alive && visV(v)) this.drawVehicleDust(ctx, cam, v, cw, ch);
     for (const v of this.sim.vehicles) if (!v.alive && visV(v)) this.drawVehicle(ctx, cam, v, cw, ch);
     // Floor-aware draw order: within each category pass, lower floors first
     // so upper floors paint on top. maxStories===0 collapses to the exact
@@ -523,6 +552,23 @@ export class Renderer {
       ctx.drawImage(turretBlob(), bx - br, by - br, br * 2, br * 2);
       ctx.globalAlpha = 1;
     }
+    const eband = emplacementBandFor(cam.scale);
+    for (const e of this.sim.emplacements) {
+      if (!this.sim.emplacementVisibleTo(PLAYER_SIDE, e)) continue;
+      const [x, y] = cam.worldToScreen(e.x, e.y, cw, ch);
+      const epad = emplacementSpan(e.kind) * cam.scale;
+      if (x < -epad || y < -epad || x > cw + epad || y > ch + epad) continue;
+      ctx.save();
+      ctx.globalAlpha = SHADOW_SOFT_ALPHA;
+      ctx.translate(x, y);
+      ctx.rotate(SUN_A);
+      ctx.translate(EMPL_SHADOW_OFF * cam.scale, 0);
+      ctx.scale(1.1, 1);
+      ctx.rotate(-SUN_A);
+      ctx.rotate(e.facing);
+      ctx.drawImage(getEmplacementShadow(e.kind, e.state === 'deployed' ? 'deployed' : 'packed', eband), -epad / 2, -epad / 2, epad, epad);
+      ctx.restore();
+    }
   }
 
   // Band-change prewarm: bakes are lazy and inside the frame, so crossing a
@@ -550,7 +596,9 @@ export class Renderer {
         getSprite(s.side, s.weapon, 'aim', 0, band, v);
         for (let f = 0; f < WALK_FRAMES; f++) getSprite(s.side, s.weapon, 'walk', f, band, v);
       }
-      for (const v of this.sim.vehicles) getVehicleSprite(v.kind, v.side, v.alive ? 'ok' : 'dead', vband);
+      // Phase 0 only: the churn variants are minted lazily by whatever
+      // actually drives, so a band change never pays for three tracks per kind.
+      for (const v of this.sim.vehicles) getVehicleSprite(v.kind, v.side, v.alive ? 'ok' : 'dead', vband, 0, v.alive ? occBucket(v.kind, this.aboard(v)) : 0);
     };
     if (typeof requestIdleCallback === 'function') requestIdleCallback(run, { timeout: 400 });
     else setTimeout(run, 0);
@@ -889,6 +937,51 @@ export class Renderer {
     }
   }
 
+  // Odometer bookkeeping (U7): distance travelled since the last frame, with
+  // the same >2 m teleport guard drawSoldier uses, plus the rut stamps and
+  // dust puffs that fall out of it. Returns the track phase to bake with.
+  private vehicleMotion(v: Vehicle, band: number, scale: number): number {
+    let st = this.vrs.get(v.id);
+    if (!st) {
+      st = { px: v.x, py: v.y, dist: 0, dust: [], di: 0, puffAt: 0, markAt: 0 };
+      this.vrs.set(v.id, st);
+    }
+    const step = Math.hypot(v.x - st.px, v.y - st.py);
+    st.px = v.x;
+    st.py = v.y;
+    if (!v.alive) return 0;
+    if (step < 2) st.dist += step; // a bigger jump is a respawn/teleport, not a drive
+    const gauge = trackGauge(v.kind);
+    if (st.dist - st.markAt >= MARK_EVERY) {
+      st.markAt = st.dist;
+      this.decals.trackMark(v.x, v.y, v.facing, gauge);
+    }
+    if (tier(band) >= 2 && scale >= 8 && st.dist - st.puffAt >= DUST_EVERY) {
+      st.puffAt = st.dist;
+      // alternate rear corners, so the trail staggers instead of pulsing
+      const s = st.di % 2 === 0 ? -1 : 1;
+      const cs = Math.cos(v.facing);
+      const sn = Math.sin(v.facing);
+      const rx = -VEHICLE_SPAN * 0.28; // roughly the rear of any hull in this set
+      const p = { x: v.x + rx * cs - s * gauge * sn, y: v.y + rx * sn + s * gauge * cs, at: st.dist };
+      if (st.dust.length < DUST_RING) st.dust.push(p);
+      else st.dust[st.di % DUST_RING] = p;
+      st.di++;
+    }
+    return tier(band) >= 2 ? Math.floor(st.dist / TRACK_PITCH) % 3 : 0;
+  }
+
+  private drawVehicleDust(ctx: CanvasRenderingContext2D, cam: Camera, v: Vehicle, cw: number, ch: number): void {
+    const st = this.vrs.get(v.id);
+    if (!st) return;
+    for (const p of st.dust) {
+      const age = (st.dist - p.at) / DUST_LIFE;
+      if (age >= 1) continue;
+      const [sx, sy] = cam.worldToScreen(p.x, p.y, cw, ch);
+      blit(ctx, 'dustTan', sx, sy, (0.6 + age * 1.1) * cam.scale, 0.26 * (1 - age));
+    }
+  }
+
   private drawVehicle(ctx: CanvasRenderingContext2D, cam: Camera, v: Vehicle, cw: number, ch: number): void {
     const [x, y] = cam.worldToScreen(v.x, v.y, cw, ch);
     const pad = VEHICLE_SPAN * cam.scale;
@@ -897,7 +990,10 @@ export class Renderer {
       this.deadVehicles.add(v.id);
       this.decals.scorch(v.x, v.y); // stamped once, under the wreck sprite from here on
     }
-    const spr = getVehicleSprite(v.kind, v.side, v.alive ? 'ok' : 'dead', vehicleBandFor(cam.scale));
+    const band = vehicleBandFor(cam.scale);
+    const tphase = this.vehicleMotion(v, band, cam.scale);
+    const occ = v.alive ? occBucket(v.kind, this.aboard(v)) : 0;
+    const spr = getVehicleSprite(v.kind, v.side, v.alive ? 'ok' : 'dead', band, tphase, occ);
     ctx.save();
     ctx.translate(x, y);
     ctx.rotate(v.facing);
@@ -914,32 +1010,42 @@ export class Renderer {
     // a brew-up has to sit above the roofs a wreck can be parked against.
   }
 
-  // Simple crewed-weapon glyph — follows drawVehicle's scheme (team-colored
-  // hull + barrel line) at ~40% of a vehicle's footprint. Dashed while
-  // packed/transitioning, solid once dug in.
+  // Living bodies aboard: crew plus every passenger team. Only ever consumed
+  // through occBucket, which collapses it to four cache-affordable states.
+  private aboard(v: Vehicle): number {
+    let n = 0;
+    for (const id of v.crewIds) if (this.sim.soldiers[id]?.alive) n++;
+    for (const t of v.passengerTeamIds) for (const id of this.sim.teams[t]?.soldierIds ?? []) if (this.sim.soldiers[id]?.alive) n++;
+    return n;
+  }
+
+  // Baked crewed weapon (U8), on the vehicle pattern: one rotated drawImage,
+  // then the selection ring and — while the gun is being set up or torn down —
+  // the dashed outline that has always signalled "not in action yet".
+  //
+  // The crew are NOT in this sprite: an emplacement's men have inEmplacement
+  // >= 0 but inVehicle < 0, so the soldier passes already drew every one of
+  // them. This draws the weapon and its mount only.
   private drawEmplacement(ctx: CanvasRenderingContext2D, cam: Camera, e: Emplacement, selectedSquads: number[], cw: number, ch: number): void {
     const [x, y] = cam.worldToScreen(e.x, e.y, cw, ch);
-    const pad = VEHICLE_SPAN * cam.scale * 0.4;
+    const pad = emplacementSpan(e.kind) * cam.scale;
     if (x < -pad || y < -pad || x > cw + pad || y > ch + pad) return;
-    const color = TEAM[e.side];
+    const deployed = e.state === 'deployed';
     ctx.save();
     ctx.translate(x, y);
     ctx.rotate(e.facing);
-    if (e.state !== 'deployed') ctx.setLineDash([3, 3]);
-    ctx.strokeStyle = color;
-    ctx.lineWidth = Math.max(1, cam.scale * 0.12);
-    ctx.fillStyle = 'rgba(60, 58, 50, 0.85)';
-    const r = Math.max(2.5, cam.scale * 0.34 * 0.4 * 10); // mount footprint, ~40% of a soldier's read
-    ctx.beginPath();
-    ctx.arc(0, 0, r * 0.5, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.moveTo(0, 0);
-    ctx.lineTo(r * 1.6, 0);
-    ctx.stroke();
-    ctx.setLineDash([]);
+    ctx.drawImage(getEmplacementSprite(e.kind, e.side, deployed ? 'deployed' : 'packed', emplacementBandFor(cam.scale)), -pad / 2, -pad / 2, pad, pad);
     ctx.restore();
+    const r = emplacementFootprintRadius(e.kind) * cam.scale;
+    if (!deployed) {
+      ctx.save();
+      ctx.setLineDash([3, 3]);
+      ctx.strokeStyle = TEAM[e.side];
+      ctx.lineWidth = Math.max(1, cam.scale * 0.08);
+      const b = r * 0.72; // hugs the mount, not the barrel's reach
+      ctx.strokeRect(x - b, y - b, b * 2, b * 2);
+      ctx.restore();
+    }
     if (selectedSquads.includes(this.sim.teams[e.crewTeamId]?.squadId ?? -1)) {
       ctx.strokeStyle = '#ffe9a0';
       ctx.lineWidth = 2;

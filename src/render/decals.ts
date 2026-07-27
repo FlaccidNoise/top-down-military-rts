@@ -116,6 +116,26 @@ export class DecalLayer {
     }
   }
 
+  // Where armour has been (U7): two parallel ruts at the track centres,
+  // stamped every 0.7 m of a vehicle's odometer. The alpha is deliberately low
+  // — overlapping passes have to darken into a lane, not smear the field to
+  // mud — and the ends jitter so a long straight run doesn't read as a stencil.
+  trackMark(x: number, y: number, facing: number, gauge: number): void {
+    const g = this.g;
+    g.save();
+    g.translate(x, y);
+    g.rotate(facing);
+    g.strokeStyle = 'rgba(58,48,34,0.3)';
+    g.lineWidth = 0.5;
+    g.beginPath();
+    for (const s of [-1, 1]) {
+      g.moveTo(-0.175, s * gauge);
+      g.lineTo(0.175 + (Math.random() - 0.5) * 0.12, s * gauge);
+    }
+    g.stroke();
+    g.restore();
+  }
+
   // Permanent blood pool stamped once at death — earth-dark red, soft edge.
   pool(x: number, y: number, r: number): void {
     const g = this.g;

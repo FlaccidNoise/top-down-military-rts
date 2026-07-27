@@ -15,7 +15,7 @@
 //   Output: .screenshots/sweep/s<seed>-<crop>.png + index.html contact sheet
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { arg, launch, gotoStaged, deriveTargets, place } from './lib/stage.mjs';
+import { arg, launch, gotoStaged, deriveTargets, place, stageEmplacements } from './lib/stage.mjs';
 
 const PORT = Number(arg('port', '5198'));
 const SEEDS = arg('seeds', '1,2,3,4,5,6,7,8,9,10').split(',').map(Number);
@@ -54,6 +54,13 @@ for (const seed of SEEDS) {
     await page.screenshot({ path: join(OUT, file) });
     shots.push({ seed, crop: name, file });
   }
+  // Guns last, always: staging emplacements spawns crew squads into the live
+  // sim, so any crop shot after it would be comparing a different battle.
+  const gt = await stageEmplacements(page, targets.units);
+  await place(page, gt.x, gt.y, gt.scale);
+  const gfile = `s${seed}-guns.png`;
+  await page.screenshot({ path: join(OUT, gfile) });
+  shots.push({ seed, crop: 'guns', file: gfile });
 }
 await browser.close();
 

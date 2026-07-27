@@ -15,7 +15,7 @@
 //   node scripts/shot.mjs --list                             # presets + effects
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { arg, launch, gotoStaged, deriveTargets, deriveBuilding, wallStage, place, burst, stageVehicles } from './lib/stage.mjs';
+import { arg, launch, gotoStaged, deriveTargets, deriveBuilding, wallStage, place, burst, stageEmplacements, stageVehicles } from './lib/stage.mjs';
 
 const has = (name) => process.argv.includes(`--${name}`);
 const PORT = Number(arg('port', '5198'));
@@ -26,7 +26,7 @@ const FORCE = arg('force', null); // bridge|river|... to force the defended cell
 const OUT = arg('out', '.screenshots/shot.png');
 const MAP_W = 320;
 const MAP_H = 240;
-const PRESETS = ['village', 'woods', 'hamlet', 'farm', 'bocage', 'units', 'enemy', 'soldiers48', 'vehicles', 'farlod', 'bridge'];
+const PRESETS = ['village', 'woods', 'hamlet', 'farm', 'bocage', 'units', 'enemy', 'soldiers48', 'vehicles', 'guns', 'farlod', 'bridge'];
 // `anchor: 'wall'|'building'` stages against the masonry nearest the village
 // instead of the blue squad; `hold` swaps the burst for a plain screenshot
 // after N ms, which is how a sim-tick-lived effect (a building fire) is shot.
@@ -134,6 +134,8 @@ if (has('map')) {
   scale = Number(arg('scale', '24'));
 } else if (arg('preset', 'units') === 'vehicles') {
   ({ x, y, scale } = await stageVehicles(page, targets.units));
+} else if (arg('preset', 'units') === 'guns') {
+  ({ x, y, scale } = await stageEmplacements(page, targets.units));
 } else {
   const t = targets[arg('preset', 'units')];
   if (!t) throw new Error(`unknown preset "${arg('preset')}" — one of: ${PRESETS.join(', ')}`);

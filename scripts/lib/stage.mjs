@@ -159,6 +159,35 @@ export function stageVehicles(page, { x, y }) {
   );
 }
 
+// Emplacement art gate: one of every kind on two headings, plus one still
+// packed, so the setup/teardown read is in frame too. Same heading-spread
+// rationale as stageVehicles — a mount whose highlight is baked into the
+// rotating sprite looks fine on one bearing and wrong on the next. Mutates the
+// sim, so it is opt-in.
+export function stageEmplacements(page, { x, y }) {
+  return page.evaluate(
+    ({ x, y }) => {
+      const sim = window.__game.sim;
+      const row = [
+        ['blue', 'm1919_tripod', 0, 'deployed'],
+        ['red', 'mg42_lafette', Math.PI / 2, 'deployed'],
+        ['blue', 'mortar60', Math.PI, 'deployed'],
+        ['red', 'mortar81', -Math.PI / 4, 'deployed'],
+        ['blue', 'at57', 0, 'deployed'],
+        ['red', 'pak40', Math.PI / 2, 'deployed'],
+        ['red', 'pak40', Math.PI, 'packed'],
+      ];
+      const cx = Math.max(20, Math.min(sim.map.w - 20, x));
+      const cy = Math.max(14, Math.min(sim.map.h - 14, y));
+      row.forEach(([side, kind, facing, state], i) => {
+        sim.addEmplacement(side, kind, cx + ((i % 4) - 1.5) * 9, cy + (((i / 4) | 0) - 0.5) * 10, facing, state);
+      });
+      return { x: cx, y: cy, scale: 26 };
+    },
+    { x, y }
+  );
+}
+
 // Point the camera and settle until the frame stops changing. Two frames used
 // to be enough, but bake work is now amortized across frames (terrain chunks
 // rebake on a band change), so a fixed settle captures a half-drawn world.
