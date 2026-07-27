@@ -1,5 +1,5 @@
 import { EDGE, type GameMap } from '../sim/map';
-import { AO_ALPHA, WIND, shadowAlpha, shadowOffset, shadowSoftAlpha } from './light';
+import { AO_ALPHA, WIND, shadowAlpha, shadowOffset, shadowOffsetLegible, shadowSoftAlpha, sweptStrokePath } from './light';
 import { hash } from './noise';
 import type { BuildingBox, PatchIndex } from './patches';
 import type { Detail } from './terrain';
@@ -235,10 +235,24 @@ function strokeSegs(g: Ctx, segs: Seg[], w: number, style: string, odx = 0, ody 
 const WALL_TONES = ['rgb(128,122,110)', 'rgb(112,108,98)', 'rgb(140,132,118)', 'rgb(101,100,90)'];
 
 function drawWallRun(g: Ctx, y: Yard, d: Detail): void {
-  const [sdx, sdy] = shadowOffset(0.55);
+  // Swept, not translated: the cast layers fill the hull from the wall line
+  // to the throw (one connected slab, like the enclosure walls) — a
+  // translated stroke floats free of its own wall at the dawn rake.
+  const [sdx, sdy] = shadowOffsetLegible(0.55);
+  const sweep = (w: number, style: string, odx: number, ody: number): void => {
+    g.fillStyle = style;
+    g.beginPath();
+    for (const [ax, ay, bx, by] of y.runs) {
+      const len = Math.hypot(bx - ax, by - ay) || 1;
+      const ux = ((bx - ax) / len) * (w / 2);
+      const uy = ((by - ay) / len) * (w / 2);
+      sweptStrokePath(g, ax - ux, ay - uy, bx + ux, by + uy, w, odx, ody);
+    }
+    g.fill();
+  };
   strokeSegs(g, y.runs, WALL_W * 1.5, `rgba(8,10,7,${(AO_ALPHA * 0.6).toFixed(3)})`);
-  strokeSegs(g, y.runs, WALL_W * 1.25, `rgba(10,14,8,${shadowSoftAlpha()})`, sdx * 1.6, sdy * 1.6);
-  strokeSegs(g, y.runs, WALL_W * 1.15, `rgba(10,14,8,${shadowAlpha()})`, sdx, sdy);
+  sweep(WALL_W * 1.25, `rgba(10,14,8,${shadowSoftAlpha()})`, sdx * 1.6, sdy * 1.6);
+  sweep(WALL_W * 1.15, `rgba(10,14,8,${shadowAlpha()})`, sdx, sdy);
   // Mass in 0.45 m blocks with value jitter, bucketed into four tones so the
   // whole wall is four strokes rather than one per block.
   const buckets: Seg[][] = [[], [], [], []];
@@ -311,7 +325,7 @@ function shadowFinger(g: Ctx, x: number, y: number, dx: number, dy: number, w: n
 }
 
 function drawFenceRun(g: Ctx, y: Yard, d: Detail): void {
-  const [sdx, sdy] = shadowOffset(FENCE_H);
+  const [sdx, sdy] = shadowOffsetLegible(FENCE_H);
   // Two thirds of the wall's core alpha: a picket run is more air than timber,
   // so what it throws is a broken grey band, not a second wall. The BAND is
   // the read and the posts only thicken it — fat per-post fingers over a faint
@@ -354,7 +368,7 @@ function drawFenceRun(g: Ctx, y: Yard, d: Detail): void {
 }
 
 function drawGate(g: Ctx, y: Yard): void {
-  const [sdx, sdy] = shadowOffset(PIER_H);
+  const [sdx, sdy] = shadowOffsetLegible(PIER_H);
   // A gate pier is a 0.22 m square of masonry from up here; the 0.6 m of
   // upright the old code drew was its elevation.
   for (const [gx, gy] of y.gate) {
@@ -472,7 +486,7 @@ function drawGarden(g: Ctx, map: GameMap, patches: PatchIndex, y: Yard, d: Detai
   // Bean poles. A 1.8 m cane is a dot from up here and a long thin line of
   // shade on the ground — it used to lean north out of the last row, which is
   // the same fake-height cheat the fence rails were doing.
-  const [pdx, pdy] = shadowOffset(1.8);
+  const [pdx, pdy] = shadowOffsetLegible(1.8);
   for (let i = 0; i < 2; i++) {
     const u = uMid - span / 2 + (0.3 + i * 0.4) * span;
     const bx = px(b, side, u, t1 - 0.2);

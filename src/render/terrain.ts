@@ -2,7 +2,7 @@ import { TERRAIN, type TerrainKey } from '../sim/data';
 import { BREACH_WIDE, EDGE, type GameMap } from '../sim/map';
 import type { Building } from '../sim/mapgen';
 import type { Camera } from './camera';
-import { AO_ALPHA, SUN, SUN_PIN_BAND, shadowAlpha, shadowOffset, shadowSoftAlpha, sun, sunStepFor } from './light';
+import { AO_ALPHA, SUN, SUN_PIN_BAND, shadowAlpha, shadowOffset, shadowOffsetLegible, shadowSoftAlpha, sun, sunStepFor } from './light';
 import { MOBILE } from './view';
 
 // Terrain is rendered lazily into 16x16-tile chunk canvases at the nearest
@@ -342,7 +342,8 @@ function drawHedgeRun(g: Ctx, map: GameMap, tx0: number, ty0: number, tx1: numbe
     }
   }
   if (tiles.length === 0) return;
-  const [sdx, sdy] = shadowOffset(0.4);
+  const [sdx, sdy] = shadowOffsetLegible(0.4);
+  const oLen = Math.hypot(sdx, sdy);
   const pass = (widthOf: (t: (typeof tiles)[0]) => number, styleOf: (t: (typeof tiles)[0]) => string, odx: number, ody: number) => {
     for (const t of tiles) {
       g.lineWidth = widthOf(t);
@@ -353,9 +354,13 @@ function drawHedgeRun(g: Ctx, map: GameMap, tx0: number, ty0: number, tx1: numbe
   };
   // base AO: subtle all-around ground darkening at the hedge's foot
   pass((t) => t.width * 1.3, () => `rgba(8,10,7,${AO_ALPHA * 0.6})`, 0, 0);
-  // soft two-layer cast shadow (down-sun; alpha rides the sun's own ramp)
-  pass((t) => t.width * 1.15, () => `rgba(10,14,8,${shadowSoftAlpha()})`, sdx * 1.6, sdy * 1.6);
-  pass((t) => t.width * 1.1, () => `rgba(10,14,8,${shadowAlpha()})`, sdx, sdy);
+  // Soft two-layer cast shadow, SWEPT: stroked at half throw and widened by
+  // the throw, so the down-sun edge lands exactly where the translated stroke
+  // used to and the up-sun edge stays anchored under the hedge — at the dawn
+  // rake the old full-offset stroke floated as a parallel sausage a metre off
+  // its own hedge. (Alpha rides the sun's own ramp.)
+  pass((t) => t.width * 1.15 + oLen * 1.6, () => `rgba(10,14,8,${shadowSoftAlpha()})`, sdx * 0.8, sdy * 0.8);
+  pass((t) => t.width * 1.1 + oLen, () => `rgba(10,14,8,${shadowAlpha()})`, sdx * 0.5, sdy * 0.5);
   // earth bank under the foliage: a bocage hedge grows out of a raised bank,
   // and without it the run reads as a green sausage lying on the lawn
   pass((t) => t.width * 1.25, () => 'rgba(72,58,38,0.35)', 0.06, 0.08);

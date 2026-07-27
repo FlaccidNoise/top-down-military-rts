@@ -1,5 +1,5 @@
 import { EDGE, type GameMap } from '../sim/map';
-import { AO_ALPHA, shadowOffset, sunStepFor } from './light';
+import { AO_ALPHA, shadowOffset, shadowOffsetLegible, sunStepFor, sweptRectPath } from './light';
 import { hash } from './noise';
 import type { PatchIndex } from './patches';
 import { stamp } from './stamps';
@@ -50,12 +50,26 @@ const POST_H = 1;
 // but receives none of its ink at the current hour is a few wasted path ops
 // per bake, never a pixel.
 const CAST_PAD = 3; // solar LEN_MAX
+// Cast height per kind, for the pad: the swept lobes/rects reach base + h *
+// lenMul down-sun, and a kind missing here would clip at a chunk seam at dawn.
+const CAST_H: Record<PropKind, number> = {
+  haystack: 1.2,
+  cart: 0.7,
+  barrels: 0.35,
+  crates: 0.45,
+  well: WELL_FRAME_H,
+  trough: 0.4,
+  muckheap: 0.6,
+  fencepost: POST_H * 1.1, // rail throw
+  gate: POST_H * 1.1,
+  telegraph: POLE_H,
+};
 export function propExtent(p: Prop): [number, number, number, number] {
   const ax = p.axis === 0 ? 1 : 0;
   const ay = p.axis === 0 ? 0 : 1;
   const fwd = p.link ? (p.kind === 'telegraph' ? POLE_SPACING : POST_SPACING) : 0;
   const r = p.kind === 'haystack' ? 2.4 : p.kind === 'telegraph' ? 3 : p.kind === 'cart' || p.kind === 'well' || p.kind === 'gate' ? 2 : 1.4;
-  const cast = (p.kind === 'telegraph' ? POLE_H : p.kind === 'well' ? WELL_FRAME_H : 0) * CAST_PAD;
+  const cast = CAST_H[p.kind] * CAST_PAD;
   return [p.x - r - cast, p.y - r - cast, p.x + r + ax * fwd + cast, p.y + r + ay * fwd + cast];
 }
 
@@ -353,18 +367,21 @@ function finger(g: Ctx, x: number, y: number, dx: number, dy: number, w: number,
 
 // A fence post from directly above is its 0.11 m section and a finger of
 // shade — not the 0.4 m of side elevation this used to draw standing north of
-// its own base. The stamp is 1.4 m so the throw has somewhere to land.
-const POST_SPRITE = 1.4;
+// its own base. The post sits at the CENTRE of the stamp: the sun swings a
+// full circle over the day, and the old 1.4 m box with the post near a corner
+// cut the dawn/dusk throw off mid-air whenever it pointed up-map.
+const POST_SPRITE = 5.2;
+const POST_C = POST_SPRITE / 2;
 
 function postStamp(v: number, band: number): HTMLCanvasElement {
   // shadowOffset below makes the stamp sun-dependent — the key carries the step
   return stamp(`prop:post:${v}:${sunStepFor(band)}`, band, POST_SPRITE, (g) => {
-    const [sx, sy] = shadowOffset(POST_H);
-    finger(g, 0.4, 0.4, sx, sy, 0.13, 0.18);
+    const [sx, sy] = shadowOffsetLegible(POST_H);
+    finger(g, POST_C, POST_C, sx, sy, 0.13, 0.18);
     g.fillStyle = hash(v, 0, 274) > 0.5 ? 'rgb(72,60,42)' : 'rgb(60,50,36)';
-    g.fillRect(0.345, 0.345, 0.11, 0.11);
+    g.fillRect(POST_C - 0.055, POST_C - 0.055, 0.11, 0.11);
     g.fillStyle = 'rgba(178,164,132,0.22)';
-    g.fillRect(0.345, 0.345, 0.11, 0.035);
+    g.fillRect(POST_C - 0.055, POST_C - 0.055, 0.11, 0.035);
   });
 }
 
@@ -372,10 +389,16 @@ function postStamp(v: number, band: number): HTMLCanvasElement {
 // far tier nothing BUT that lobe plus a base colour, so a distant field shows
 // readable specks instead of mush.
 function lobe(g: Ctx, x: number, y: number, rx: number, ry: number, len: number, alpha: number): void {
-  const [sx, sy] = shadowOffset(len);
+  // Swept, not translated: centred at HALF the throw and elongated along the
+  // sun by the other half, so the far edge lands where the old offset copy's
+  // did while the near edge stays under the mass — a lobe translated the full
+  // throw floats clear of its own prop at the dawn rake. At night the throw
+  // is 0 and this is exactly the contact blob it always was.
+  const [sx, sy] = shadowOffsetLegible(len);
+  const o = Math.hypot(sx, sy);
   g.fillStyle = `rgba(18,20,14,${alpha})`;
   g.beginPath();
-  g.ellipse(x + sx, y + sy, rx, ry, 0, 0, Math.PI * 2);
+  g.ellipse(x + sx / 2, y + sy / 2, rx + o / 2, ry, Math.atan2(sy, sx), 0, Math.PI * 2);
   g.fill();
 }
 
@@ -419,11 +442,13 @@ export function drawProp(g: Ctx, p: Prop, band: number, d: Detail): void {
     case 'cart': {
       const w = 2.2;
       const h = 1.1;
-      const [sx, sy] = shadowOffset(0.7);
+      const [sx, sy] = shadowOffsetLegible(0.7);
       const rx = (u: number, v: number) => x + (ax ? u : v);
       const ry = (u: number, v: number) => y + (ax ? v : u);
       g.fillStyle = 'rgba(18,20,14,0.28)';
-      g.fillRect(rx(-w / 2, -h / 2) + sx, ry(-w / 2, -h / 2) + sy, ax ? w : h, ax ? h : w);
+      g.beginPath();
+      sweptRectPath(g, rx(-w / 2, -h / 2), ry(-w / 2, -h / 2), ax ? w : h, ax ? h : w, sx, sy);
+      g.fill();
       g.fillStyle = '#6e5a3c';
       g.fillRect(rx(-w / 2, -h / 2), ry(-w / 2, -h / 2), ax ? w : h, ax ? h : w);
       g.fillStyle = '#5a4830';
@@ -474,9 +499,11 @@ export function drawProp(g: Ctx, p: Prop, band: number, d: Detail): void {
       return;
     }
     case 'crates': {
-      const [sx, sy] = shadowOffset(0.45);
+      const [sx, sy] = shadowOffsetLegible(0.45);
       g.fillStyle = 'rgba(18,20,14,0.26)';
-      g.fillRect(x - 0.35 + sx, y - 0.35 + sy, 0.7, 0.7);
+      g.beginPath();
+      sweptRectPath(g, x - 0.35, y - 0.35, 0.7, 0.7, sx, sy);
+      g.fill();
       g.fillStyle = '#6b5940';
       g.fillRect(x - 0.35, y - 0.35, 0.7, 0.7);
       g.strokeStyle = 'rgba(40,32,22,0.5)';
@@ -511,7 +538,7 @@ export function drawProp(g: Ctx, p: Prop, band: number, d: Detail): void {
       // on the SAME line as their feet — and the beam's shadow thrown clear of
       // the whole thing. The old version drew 0.74 m of upright standing north
       // of the rim, which is the side of the well.
-      const [sx, sy] = shadowOffset(WELL_FRAME_H);
+      const [sx, sy] = shadowOffsetLegible(WELL_FRAME_H);
       finger(g, x - 0.52, y, sx, sy, 0.11, 0.2);
       finger(g, x + 0.52, y, sx, sy, 0.11, 0.2);
       g.strokeStyle = 'rgba(18,20,14,0.20)';
@@ -544,11 +571,13 @@ export function drawProp(g: Ctx, p: Prop, band: number, d: Detail): void {
     case 'trough': {
       const w = 1.6;
       const h = 0.5;
-      const [sx, sy] = shadowOffset(0.4);
+      const [sx, sy] = shadowOffsetLegible(0.4);
       const rw = ax ? w : h;
       const rh = ax ? h : w;
       g.fillStyle = 'rgba(18,20,14,0.26)';
-      g.fillRect(x - rw / 2 + sx, y - rh / 2 + sy, rw, rh);
+      g.beginPath();
+      sweptRectPath(g, x - rw / 2, y - rh / 2, rw, rh, sx, sy);
+      g.fill();
       g.fillStyle = '#4c4a42';
       g.fillRect(x - rw / 2, y - rh / 2, rw, rh);
       g.fillStyle = 'rgba(92,104,104,0.50)';
@@ -589,7 +618,7 @@ export function drawProp(g: Ctx, p: Prop, band: number, d: Detail): void {
         // the fence's vertical plane — from directly above they project onto
         // the SAME line. One rail band plus the run's own shadow, then; the
         // old pair of lines offset north was an elevation of the panel.
-        const [rdx, rdy] = shadowOffset(POST_H * (p.kind === 'gate' ? 1.1 : 0.85));
+        const [rdx, rdy] = shadowOffsetLegible(POST_H * (p.kind === 'gate' ? 1.1 : 0.85));
         const bar = (odx: number, ody: number, w: number, style: string): void => {
           g.strokeStyle = style;
           g.lineWidth = w;
@@ -602,7 +631,7 @@ export function drawProp(g: Ctx, p: Prop, band: number, d: Detail): void {
         bar(0, 0, p.kind === 'gate' ? 0.1 : 0.06, p.kind === 'gate' ? 'rgba(112,88,54,0.80)' : 'rgba(96,80,56,0.70)');
         bar(-0.02, -0.025, 0.02, 'rgba(186,172,140,0.24)');
       }
-      g.drawImage(postStamp(seed & 3, band), x - 0.4, y - 0.4, POST_SPRITE, POST_SPRITE);
+      g.drawImage(postStamp(seed & 3, band), x - POST_C, y - POST_C, POST_SPRITE, POST_SPRITE);
       return;
     }
     case 'telegraph': {

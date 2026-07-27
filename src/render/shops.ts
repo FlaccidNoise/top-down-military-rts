@@ -1,6 +1,6 @@
 import { EDGE, type GameMap } from '../sim/map';
 import type { Building } from '../sim/mapgen';
-import { AO_ALPHA, shadowOffset } from './light';
+import { AO_ALPHA, capsulePath, shadowOffsetLegible, sun, sweptRectPath, sweptStrokePath } from './light';
 import { hash } from './noise';
 import type { Detail } from './terrain';
 
@@ -156,7 +156,7 @@ const qy = (s: Shopfront, uy: number, u: number, v: number): number => s.ay + uy
 
 function awning(g: Ctx, s: Shopfront, ux: number, uy: number, u0: number, u1: number, d: Detail): void {
   const span = u1 - u0;
-  const [sdx, sdy] = shadowOffset(AWNING_H);
+  const [sdx, sdy] = shadowOffsetLegible(AWNING_H);
   const quad = (a: number, b: number, v0: number, v1: number, odx = 0, ody = 0): void => {
     g.beginPath();
     g.moveTo(qx(s, ux, a, v0) + odx, qy(s, uy, a, v0) + ody);
@@ -166,8 +166,25 @@ function awning(g: Ctx, s: Shopfront, ux: number, uy: number, u0: number, u1: nu
     g.closePath();
     g.fill();
   };
-  g.fillStyle = `rgba(10,12,8,${(AO_ALPHA * 0.75).toFixed(3)})`;
-  quad(u0, u1, 0, AWNING, sdx, sdy);
+  // Swept from the frontage line, not a translated copy: the canvas hangs on
+  // this wall, so its shade leaves the wall base — a copy of the quad 7 m out
+  // in the street is what dawn used to draw. Alpha rides the sun's ramp.
+  g.fillStyle = `rgba(10,12,8,${(AO_ALPHA * 0.75 * sun().alphaMul).toFixed(3)})`;
+  {
+    const cs = [
+      [qx(s, ux, u0, 0), qy(s, uy, u0, 0)],
+      [qx(s, ux, u1, 0), qy(s, uy, u1, 0)],
+      [qx(s, ux, u1, AWNING), qy(s, uy, u1, AWNING)],
+      [qx(s, ux, u0, AWNING), qy(s, uy, u0, AWNING)],
+    ];
+    const x0 = Math.min(cs[0][0], cs[1][0], cs[2][0], cs[3][0]);
+    const y0 = Math.min(cs[0][1], cs[1][1], cs[2][1], cs[3][1]);
+    const x1 = Math.max(cs[0][0], cs[1][0], cs[2][0], cs[3][0]);
+    const y1 = Math.max(cs[0][1], cs[1][1], cs[2][1], cs[3][1]);
+    g.beginPath();
+    sweptRectPath(g, x0, y0, x1 - x0, y1 - y0, sdx, sdy);
+    g.fill();
+  }
   // Striped canvas: the stripes run OUT from the wall, which is what an awning
   // does and also what tells the eye which way the shop faces.
   const trim = AWNING_TRIM[(hash(s.seed, 0, 341) * AWNING_TRIM.length) | 0];
@@ -202,10 +219,10 @@ function awning(g: Ctx, s: Shopfront, ux: number, uy: number, u0: number, u1: nu
 function sign(g: Ctx, s: Shopfront, ux: number, uy: number, len: number): void {
   const end = hash(s.seed, 1, 342) > 0.5;
   const u = end ? Math.min(len - 0.5, len - 0.7) : 0.7;
-  const [sdx, sdy] = shadowOffset(SIGN_H);
+  const [sdx, sdy] = shadowOffsetLegible(SIGN_H);
   const bx = qx(s, ux, u, SIGN_ARM);
   const by = qy(s, uy, u, SIGN_ARM);
-  g.strokeStyle = 'rgba(12,14,9,0.26)';
+  g.strokeStyle = `rgba(12,14,9,${(0.26 * sun().alphaMul).toFixed(3)})`;
   g.lineWidth = 0.09;
   g.beginPath();
   g.moveTo(qx(s, ux, u, 0.05) + sdx, qy(s, uy, u, 0.05) + sdy);
@@ -227,7 +244,7 @@ function sign(g: Ctx, s: Shopfront, ux: number, uy: number, len: number): void {
     g.fillRect(-bw / 2, -bh / 2, bw, bh);
     g.restore();
   };
-  board(bx + sdx, by + sdy, 'rgba(10,12,8,0.32)');
+  board(bx + sdx, by + sdy, `rgba(10,12,8,${(0.32 * sun().alphaMul).toFixed(3)})`);
   board(bx, by, SIGN_BOARD[(hash(s.seed, 2, 342) * SIGN_BOARD.length) | 0]);
   g.save();
   g.translate(bx, by);
@@ -247,7 +264,8 @@ function sign(g: Ctx, s: Shopfront, ux: number, uy: number, len: number): void {
 // the wall. Goods beside the door, stall in front of it — which is also where
 // a real shopkeeper put them.
 function apron(g: Ctx, s: Shopfront, ux: number, uy: number, len: number, aw0: number, aw1: number, d: Detail): void {
-  const [sdx, sdy] = shadowOffset(0.55);
+  const [sdx, sdy] = shadowOffsetLegible(0.55);
+  const am = sun().alphaMul;
   const n = 2 + ((hash(s.seed, 3, 343) * 3) | 0);
   for (let i = 0; i < n; i++) {
     const k = s.seed * 11 + i;
@@ -261,11 +279,18 @@ function apron(g: Ctx, s: Shopfront, ux: number, uy: number, len: number, aw0: n
     const kind = hash(k, 2, 344);
     if (kind < 0.42) {
       const w = 0.44 + hash(k, 3, 345) * 0.2;
+      const rot = Math.atan2(uy, ux) + (hash(k, 4, 345) - 0.5) * 0.5;
+      // the one sun, rotated into crate space (the old code rotated the
+      // OFFSET with the crate, then translated the whole silhouette)
+      const ldx = sdx * Math.cos(rot) + sdy * Math.sin(rot);
+      const ldy = -sdx * Math.sin(rot) + sdy * Math.cos(rot);
       g.save();
       g.translate(cx, cy);
-      g.rotate(Math.atan2(uy, ux) + (hash(k, 4, 345) - 0.5) * 0.5);
-      g.fillStyle = 'rgba(12,14,9,0.30)';
-      g.fillRect(-w / 2 + sdx, -w / 2 + sdy, w, w);
+      g.rotate(rot);
+      g.fillStyle = `rgba(12,14,9,${(0.3 * am).toFixed(3)})`;
+      g.beginPath();
+      sweptRectPath(g, -w / 2, -w / 2, w, w, ldx, ldy);
+      g.fill();
       g.fillStyle = 'rgb(126,102,68)';
       g.fillRect(-w / 2, -w / 2, w, w);
       g.fillStyle = 'rgba(206,182,132,0.30)';
@@ -282,9 +307,9 @@ function apron(g: Ctx, s: Shopfront, ux: number, uy: number, len: number, aw0: n
       g.restore();
     } else if (kind < 0.72) {
       const r = 0.24 + hash(k, 3, 345) * 0.07;
-      g.fillStyle = 'rgba(12,14,9,0.30)';
+      g.fillStyle = `rgba(12,14,9,${(0.3 * am).toFixed(3)})`;
       g.beginPath();
-      g.arc(cx + sdx, cy + sdy, r, 0, Math.PI * 2);
+      capsulePath(g, cx, cy, cx + sdx, cy + sdy, r);
       g.fill();
       g.fillStyle = 'rgb(104,78,50)';
       g.beginPath();
@@ -304,9 +329,9 @@ function apron(g: Ctx, s: Shopfront, ux: number, uy: number, len: number, aw0: n
       for (let j = 0; j < 2; j++) {
         const ox = cx + ux * j * 0.34;
         const oy = cy + uy * j * 0.34;
-        g.fillStyle = 'rgba(12,14,9,0.26)';
+        g.fillStyle = `rgba(12,14,9,${(0.26 * am).toFixed(3)})`;
         g.beginPath();
-        g.ellipse(ox + sdx, oy + sdy, 0.22, 0.28, hash(k, j, 346) * Math.PI, 0, Math.PI * 2);
+        capsulePath(g, ox, oy, ox + sdx, oy + sdy, 0.24);
         g.fill();
         g.fillStyle = j ? 'rgb(158,146,116)' : 'rgb(142,131,104)';
         g.beginPath();
@@ -317,18 +342,16 @@ function apron(g: Ctx, s: Shopfront, ux: number, uy: number, len: number, aw0: n
   }
   if (d < 2 || hash(s.seed, 4, 347) > 0.55) return;
   // trestle stall: a board on two Xs, with produce heaped on it
-  const [tdx, tdy] = shadowOffset(TRESTLE_H);
+  const [tdx, tdy] = shadowOffsetLegible(TRESTLE_H);
   const su = Math.max(0.9, Math.min(len - 0.9, s.doorAt >= 0 ? s.doorAt + 1.7 : len * 0.65));
   const half = 0.85;
   const v = AWNING + 0.42;
   const a0 = su - half;
   const a1 = su + half;
-  g.strokeStyle = 'rgba(12,14,9,0.28)';
-  g.lineWidth = 0.5;
+  g.fillStyle = `rgba(12,14,9,${(0.28 * sun().alphaMul).toFixed(3)})`;
   g.beginPath();
-  g.moveTo(qx(s, ux, a0, v) + tdx, qy(s, uy, a0, v) + tdy);
-  g.lineTo(qx(s, ux, a1, v) + tdx, qy(s, uy, a1, v) + tdy);
-  g.stroke();
+  sweptStrokePath(g, qx(s, ux, a0, v), qy(s, uy, a0, v), qx(s, ux, a1, v), qy(s, uy, a1, v), 0.5, tdx, tdy);
+  g.fill();
   g.strokeStyle = 'rgb(134,112,78)';
   g.lineWidth = 0.46;
   g.beginPath();
