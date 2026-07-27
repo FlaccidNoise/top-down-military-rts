@@ -247,6 +247,13 @@ export class RedCommander {
     for (const [dx, dy] of offsets) {
       const p = { x: c.x + dx, y: c.y + dy };
       if (!sim.map.inBounds(Math.floor(p.x), Math.floor(p.y))) continue;
+      // DELIBERATE EYE DEFAULT: this scores a HYPOTHETICAL position nobody
+      // occupies yet, so there is no soldier to take a stance from. V8 makes it
+      // evaluate the stance the team will actually adopt at the post
+      // (defend && !path -> crouch) so the AI's model matches its own future
+      // reality; until then it slightly over-values overwatch spots on relief
+      // maps. Blue has no auto-positioner, so there is no mirror-image
+      // handicap. On the grep gate's allow-list.
       const los = sightBetween(sim, p.x, p.y, post.x, post.y).visible ? 1 : 0;
       const cover = sim.inCover(p.x, p.y) ? 1 : 0;
       const score = los * 2 + cover - dangerScore(sim, team, p);

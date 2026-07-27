@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { EYE_H, GameMap, los } from '../src/sim/map';
+import { makeScenario } from '../src/sim/scenario';
 import { EYE_CROUCH, EYE_PRONE, EYE_STAND, eyeOf, stanceOf, type Soldier } from '../src/sim/sim';
 
 // V6: eye-height plumbing + the derived stance. The whole point of this commit
@@ -54,6 +55,31 @@ describe('stanceOf', () => {
             expect(['stand', 'crouch', 'prone']).toContain(st);
           }
   });
+});
+
+describe('stance liveness under natural dynamics', () => {
+  // A test that FORCES a gate's inputs proves the mechanism, not that the
+  // feature ever fires. stanceOf's non-standing branches depend on `mental` and
+  // `suppression` reaching thresholds nothing in the unit tests above produces
+  // organically, so probe a real battle: if a refactor ever makes crouch or
+  // prone unreachable, every eye-height assertion in the suite would still pass
+  // while the feature was silently dead.
+  it('a real battle produces all three stances', () => {
+    const sim = makeScenario(7);
+    const tally = { stand: 0, crouch: 0, prone: 0 };
+    for (let i = 0; i < 4500; i++) {
+      sim.step();
+      if (i % 30 === 0) for (const s of sim.soldiers) if (s.alive && !s.downed) tally[stanceOf(s)]++;
+    }
+    expect(tally.stand).toBeGreaterThan(0);
+    expect(tally.crouch, 'crouch never fired — the kneel branch is dead').toBeGreaterThan(0);
+    expect(tally.prone, 'prone never fired — the pinned/broken branch is dead').toBeGreaterThan(0);
+    // Recorded for V8, which adds the doctrine stances (ambush -> prone,
+    // defend -> crouch) and should move these sharply: at 2026-07-26 a
+    // 150-second battle on a flat 160x120 map ran ~1.4% crouch, ~2.8% prone.
+    const total = tally.stand + tally.crouch + tally.prone;
+    expect((tally.crouch + tally.prone) / total).toBeLessThan(0.5);
+  }, 60000);
 });
 
 describe('eyeOf', () => {

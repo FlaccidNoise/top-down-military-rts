@@ -474,13 +474,11 @@ export function sightBetween(sim: Sim, x0: number, y0: number, x1: number, y1: n
 // no RNG. Every soldier-target sense (acquire, live fire, ambush trigger,
 // honest vision, fog-of-war spotting) routes through this; sight to a map
 // point stays on sightBetween.
-// The target's eye is derived here, never passed: no caller may disagree with
-// stanceOf about how tall the man it is looking at is. (V6 keeps the trailing
-// EYE_H so the plumbing commit is provably inert; V7 swaps it for eyeOf(t) in
-// the same commit that threads observer eyes, so the whole balance change
-// bisects to one revision.)
+// The target's eye is DERIVED here, never passed: no caller may disagree with
+// stanceOf about how tall the man it is looking at is. Observers still pass
+// their own eye — a vehicle looking at a soldier is EYE_VEHICLE.
 export function sightToSoldier(sim: Sim, x0: number, y0: number, t: Soldier, l0 = 0, e0 = EYE_H): LosResult {
-  const sight = sightBetween(sim, x0, y0, t.x, t.y, l0, t.level, e0, EYE_H);
+  const sight = sightBetween(sim, x0, y0, t.x, t.y, l0, t.level, e0, eyeOf(t));
   const order = sim.teams[t.teamId].orderState.order;
   if (
     sight.visible &&
@@ -1226,7 +1224,7 @@ export class Sim {
     for (const v of this.vehicles) {
       if (!v.alive || v.side === e.side) continue;
       const d = Math.hypot(v.x - e.x, v.y - e.y);
-      if (d <= w.range && d < bestD && sightBetween(this, e.x, e.y, v.x, v.y).visible) {
+      if (d <= w.range && d < bestD && sightBetween(this, e.x, e.y, v.x, v.y, 0, 0, EYE_H, HULL_VEHICLE).visible) {
         bestD = d;
         best = v;
       }
@@ -1242,13 +1240,15 @@ export class Sim {
     const crewTeam = this.teams[e.crewTeamId];
     const order = crewTeam.orderState.order;
     const arc = order?.kind === 'defend' || order?.kind === 'ambush' ? order.arc : undefined;
-    const targetId = this.acquireSoldierTarget(e.x, e.y, e.side, w.range, arc);
+    // A served gun sights at about chest height, so emplacements keep EYE_H
+    // (passed explicitly, not defaulted, so the grep gate sees an answer here).
+    const targetId = this.acquireSoldierTarget(e.x, e.y, e.side, w.range, arc, 0, EYE_H);
     if (targetId < 0) return;
     const t = this.soldiers[targetId];
     let aim = this.aimFactor(firer) * this.crewAimMult(firer, w);
     if (arc && this.inArc(e.x, e.y, t.x, t.y, arc)) aim *= 1.25;
     if (order?.kind === 'defend' && crewTeam.ambushBonusTick === this.tick) aim *= 1.3;
-    const p = this.shotPreview(e.x, e.y, def.weapon, t, false, aim);
+    const p = this.shotPreview(e.x, e.y, def.weapon, t, false, aim, 0, EYE_H);
     if (!p.visible) return;
     if (!this.consumeEmplacementAmmo(e, firer, w.ammo.type)) return;
     firer.crewSkill.mg = Math.min(1, (firer.crewSkill.mg ?? 0) + 0.0005);
@@ -1521,7 +1521,7 @@ export class Sim {
         if (!e.alive || e.downed || e.captured || e.side !== enemySide) continue;
         if (order.arc && !this.inArc(s.x, s.y, e.x, e.y, order.arc)) continue;
         const d = Math.hypot(e.x - s.x, e.y - s.y);
-        if (d <= thresh && sightToSoldier(this, s.x, s.y, e, s.level).visible) {
+        if (d <= thresh && sightToSoldier(this, s.x, s.y, e, s.level, eyeOf(s)).visible) {
           triggered = true;
           break outer;
         }
@@ -1807,6 +1807,9 @@ export class Sim {
       for (let i = Math.abs(s.level - l); i > 0; i--) atten *= SLAB_SUPP_FACTOR;
       s.suppression = Math.min(1, s.suppression + 0.6 * (1 - d / p.suppRadius) * (1.3 - s.courage * 0.6) * mult * atten);
       if (d > p.fragRadius) continue;
+      // Blast LOS is deliberately stance-NEUTRAL (both eyes default to EYE_H):
+      // threading a prone body height in here would silently change explosion
+      // lethality on every map that already exists. Pinned by a test.
       if (!los(this.map, x, y, s.x, s.y, l, s.level).visible) continue; // walls/floors stop fragments
       const frags = d < 2 ? p.frags : d < p.fragRadius * 0.55 ? Math.max(1, p.frags - 1) : 1;
       for (let i = 0; i < frags; i++) {
@@ -1866,7 +1869,7 @@ export class Sim {
       for (const s of this.soldiers) {
         if (!s.alive || s.downed || s.captured || s.side === v.side || s.inVehicle >= 0) continue;
         const d = Math.hypot(s.x - v.x, s.y - v.y);
-        if (d < 30 && sightBetween(this, v.x, v.y, s.x, s.y, 0, s.level).visible) {
+        if (d < 30 && sightBetween(this, v.x, v.y, s.x, s.y, 0, s.level, EYE_VEHICLE, eyeOf(s)).visible) {
           s.suppression = Math.min(1, s.suppression + 0.05 * (1.3 - s.courage * 0.6));
         }
       }
@@ -1882,7 +1885,7 @@ export class Sim {
       for (const e of this.vehicles) {
         if (!e.alive || e.side === v.side) continue;
         const d = Math.hypot(e.x - v.x, e.y - v.y);
-        if (d <= def.gunRange && d < bestD && sightBetween(this, v.x, v.y, e.x, e.y).visible) {
+        if (d <= def.gunRange && d < bestD && sightBetween(this, v.x, v.y, e.x, e.y, 0, 0, EYE_VEHICLE, HULL_VEHICLE).visible) {
           bestD = d;
           v.targetVehicleId = e.id;
         }
@@ -1890,7 +1893,7 @@ export class Sim {
     }
     if (v.targetVehicleId >= 0 && v.gunCooldown <= 0 && v.ammo.ap > 0) {
       const e = this.vehicles[v.targetVehicleId];
-      if (e.alive && sightBetween(this, v.x, v.y, e.x, e.y).visible) {
+      if (e.alive && sightBetween(this, v.x, v.y, e.x, e.y, 0, 0, EYE_VEHICLE, HULL_VEHICLE).visible) {
         if (this.turretBearingReady(v, def, e.x, e.y)) {
           this.fireApAt(v.x, v.y, def.gunPen, def.gunAccuracy, def.gunRange, e, v.path !== null);
           v.ammo.ap--;
@@ -1904,7 +1907,7 @@ export class Sim {
 
     // otherwise work the infantry: HE from the gun, bursts from the hull MG
     if ((this.tick + v.id) % RETARGET_TICKS === 0 || v.targetSoldierId < 0) {
-      v.targetSoldierId = this.acquireSoldierTarget(v.x, v.y, v.side, def.mgRange);
+      v.targetSoldierId = this.acquireSoldierTarget(v.x, v.y, v.side, def.mgRange, undefined, 0, EYE_VEHICLE);
     }
     const t = v.targetSoldierId >= 0 ? this.soldiers[v.targetSoldierId] : null;
     if (t && (!t.alive || t.downed || t.captured)) {
@@ -1912,7 +1915,7 @@ export class Sim {
       return;
     }
     if (t) {
-      if (!sightToSoldier(this, v.x, v.y, t, 0).visible) {
+      if (!sightToSoldier(this, v.x, v.y, t, 0, EYE_VEHICLE).visible) {
         v.targetSoldierId = -1;
         return;
       }
@@ -1958,7 +1961,7 @@ export class Sim {
   // "members only acquire targets inside arc"). Vehicle crew are normally
   // hull-protected and untargetable — except an open-top vehicle's pintle
   // gunner, who's standing up in the back exposed to small arms.
-  private acquireSoldierTarget(x: number, y: number, side: Side, range: number, arc?: [number, number], l0 = 0): number {
+  private acquireSoldierTarget(x: number, y: number, side: Side, range: number, arc?: [number, number], l0 = 0, e0 = EYE_H): number {
     const candidates: { id: number; d: number }[] = [];
     for (const e of this.soldiers) {
       if (!e.alive || e.downed || e.captured || e.side === side) continue;
@@ -1973,7 +1976,7 @@ export class Sim {
     for (const c of candidates) {
       const e = this.soldiers[c.id];
       if (arc && !this.inArc(x, y, e.x, e.y, arc)) continue;
-      if (sightToSoldier(this, x, y, e, l0).visible) return c.id;
+      if (sightToSoldier(this, x, y, e, l0, e0).visible) return c.id;
     }
     return -1;
   }
@@ -2033,8 +2036,8 @@ export class Sim {
 
   // The exact accuracy math live fire uses, exposed for hit-chance previews —
   // the UI must never re-derive (and drift from) this formula.
-  shotPreview(fx: number, fy: number, weapon: WeaponKey, t: Soldier, shooterMoving: boolean, aim: number, l0 = 0): ShotPreview {
-    const sight = sightToSoldier(this, fx, fy, t, l0);
+  shotPreview(fx: number, fy: number, weapon: WeaponKey, t: Soldier, shooterMoving: boolean, aim: number, l0 = 0, e0 = EYE_H): ShotPreview {
+    const sight = sightToSoldier(this, fx, fy, t, l0, e0);
     const d = Math.hypot(t.x - fx, t.y - fy);
     if (!sight.visible) return { visible: false, dist: d, cover: 0, acc: 0, concealed: sight.concealed };
     const w = WEAPONS[weapon];
@@ -2065,8 +2068,8 @@ export class Sim {
   }
 
   // Shared small-arms resolution used by soldiers and vehicle MGs.
-  private resolveSmallArmsShot(fx: number, fy: number, weapon: WeaponKey, t: Soldier, shooterMoving: boolean, aim: number, l0 = 0): { fired: boolean; kill: boolean } {
-    const p = this.shotPreview(fx, fy, weapon, t, shooterMoving, aim, l0);
+  private resolveSmallArmsShot(fx: number, fy: number, weapon: WeaponKey, t: Soldier, shooterMoving: boolean, aim: number, l0 = 0, e0 = EYE_H): { fired: boolean; kill: boolean } {
+    const p = this.shotPreview(fx, fy, weapon, t, shooterMoving, aim, l0, e0);
     if (!p.visible) return { fired: false, kill: false };
     const w = WEAPONS[weapon];
     const hit = this.rng.next() < p.acc;
@@ -2078,13 +2081,16 @@ export class Sim {
   }
 
   // Vehicle hull MGs: unlimited ammo — no vehicle ammo model until Task 10.
+  // EYE_VEHICLE, not EYE_H: the acquire path already sights from the cupola, so
+  // resolving the shot at rifleman height would let a hull-down tank acquire a
+  // target across an embankment and then never be able to fire at it.
   private fireVehicleMg(fx: number, fy: number, weapon: WeaponKey, t: Soldier, shooterMoving: boolean): boolean {
-    return this.resolveSmallArmsShot(fx, fy, weapon, t, shooterMoving, 1).kill;
+    return this.resolveSmallArmsShot(fx, fy, weapon, t, shooterMoving, 1, 0, EYE_VEHICLE).kill;
   }
 
   // Infantry small-arms fire: consumes the shooter's mag and builds barrel heat.
   private fireSmallArms(shooter: Soldier, t: Soldier, shooterMoving: boolean, aim = 1): boolean {
-    const r = this.resolveSmallArmsShot(shooter.x, shooter.y, shooter.weapon, t, shooterMoving, aim, shooter.level);
+    const r = this.resolveSmallArmsShot(shooter.x, shooter.y, shooter.weapon, t, shooterMoving, aim, shooter.level, eyeOf(shooter));
     if (!r.fired) return false;
     shooter.magLeft--;
     const w: WeaponDef = WEAPONS[shooter.weapon];
@@ -2345,7 +2351,7 @@ export class Sim {
       for (const v of this.vehicles) {
         if (!v.alive || v.side === s.side) continue;
         const d = Math.hypot(v.x - s.x, v.y - s.y);
-        if (d <= w.range && d < bestD && sightBetween(this, s.x, s.y, v.x, v.y, s.level, 0).visible) {
+        if (d <= w.range && d < bestD && sightBetween(this, s.x, s.y, v.x, v.y, s.level, 0, eyeOf(s), HULL_VEHICLE).visible) {
           bestD = d;
           bestV = v;
         }
@@ -2368,7 +2374,7 @@ export class Sim {
       for (const v of this.vehicles) {
         if (!v.alive || v.side === s.side) continue;
         const d = Math.hypot(v.x - s.x, v.y - s.y);
-        if (d <= faust.range && d < bestD && sightBetween(this, s.x, s.y, v.x, v.y, s.level, 0).visible) {
+        if (d <= faust.range && d < bestD && sightBetween(this, s.x, s.y, v.x, v.y, s.level, 0, eyeOf(s), HULL_VEHICLE).visible) {
           bestD = d;
           bestV = v;
         }
@@ -2835,22 +2841,24 @@ export class Sim {
   sideSeesPoint(side: Side, x: number, y: number): boolean {
     for (const s of this.soldiers) {
       if (!s.alive || s.downed || s.captured || s.side !== side || s.inVehicle >= 0) continue;
-      if (Math.hypot(s.x - x, s.y - y) <= SPOT_RANGE && sightBetween(this, s.x, s.y, x, y, s.level, 0).visible) return true;
+      if (Math.hypot(s.x - x, s.y - y) <= SPOT_RANGE && sightBetween(this, s.x, s.y, x, y, s.level, 0, eyeOf(s), EYE_H).visible) return true;
     }
     for (const v of this.vehicles) {
       if (!v.alive || v.side !== side) continue;
-      if (Math.hypot(v.x - x, v.y - y) <= SPOT_RANGE && sightBetween(this, v.x, v.y, x, y, 0, 0).visible) return true;
+      if (Math.hypot(v.x - x, v.y - y) <= SPOT_RANGE && sightBetween(this, v.x, v.y, x, y, 0, 0, EYE_VEHICLE, EYE_H).visible) return true;
     }
     return false;
   }
 
   private updateSpotting(side: Side): void {
     const enemySide: Side = side === 'blue' ? 'red' : 'blue';
-    const spotters: { x: number; y: number; l: number }[] = [];
+    // `e` is the spotter's eye height: a prone man's fog-of-war sweep is as
+    // blind as his rifle is, and a tank sweeps from the cupola.
+    const spotters: { x: number; y: number; l: number; e: number }[] = [];
     for (const s of this.soldiers) {
-      if (s.alive && !s.downed && !s.captured && s.side === side && s.inVehicle < 0) spotters.push({ x: s.x, y: s.y, l: s.level });
+      if (s.alive && !s.downed && !s.captured && s.side === side && s.inVehicle < 0) spotters.push({ x: s.x, y: s.y, l: s.level, e: eyeOf(s) });
     }
-    for (const v of this.vehicles) if (v.alive && v.side === side) spotters.push({ x: v.x, y: v.y, l: 0 });
+    for (const v of this.vehicles) if (v.alive && v.side === side) spotters.push({ x: v.x, y: v.y, l: 0, e: EYE_VEHICLE });
     const spotted = this.spotted[side];
     const spottedV = this.spottedVehicles[side];
     const seen = this.seenStatic[side];
@@ -2872,7 +2880,7 @@ export class Sim {
         contacts.delete(key); // and any foot-position ghost is moot
       } else if (t.alive) {
         const now = meleeContact.has(t.id) ||
-          spotters.some((p) => Math.hypot(t.x - p.x, t.y - p.y) <= SPOT_RANGE && sightToSoldier(this, p.x, p.y, t, p.l).visible);
+          spotters.some((p) => Math.hypot(t.x - p.x, t.y - p.y) <= SPOT_RANGE && sightToSoldier(this, p.x, p.y, t, p.l, p.e).visible);
         if (now) {
           spotted.set(t.id, { x: t.x, y: t.y });
           contacts.delete(key);
@@ -3020,7 +3028,7 @@ export class Sim {
     for (const e of this.soldiers) {
       if (!e.alive || e.downed || e.captured || e.side === s.side || e.inVehicle >= 0) continue;
       if (Math.hypot(e.x - order.x, e.y - order.y) > ASSAULT_RADIUS) continue;
-      if (sightToSoldier(this, s.x, s.y, e, s.level).visible) out.push(e);
+      if (sightToSoldier(this, s.x, s.y, e, s.level, eyeOf(s)).visible) out.push(e);
     }
     return out;
   }
@@ -3087,7 +3095,7 @@ export class Sim {
       if (!e.alive || e.downed || e.captured || e.side === s.side || e.inVehicle >= 0) continue;
       const d = Math.hypot(e.x - s.x, e.y - s.y);
       if (d > GRENADE_RANGE || d >= bestD) continue;
-      if (!sightToSoldier(this, s.x, s.y, e, s.level).visible) continue;
+      if (!sightToSoldier(this, s.x, s.y, e, s.level, eyeOf(s)).visible) continue;
       bestD = d;
       best = e;
     }
@@ -3286,11 +3294,11 @@ export class Sim {
   private acquire(s: Soldier): number {
     const order = this.teams[s.teamId].orderState.order;
     const arc = (order?.kind === 'defend' || order?.kind === 'ambush') ? order.arc : undefined;
-    return this.acquireSoldierTarget(s.x, s.y, s.side, WEAPONS[s.weapon].range, arc, s.level);
+    return this.acquireSoldierTarget(s.x, s.y, s.side, WEAPONS[s.weapon].range, arc, s.level, eyeOf(s));
   }
 
   private fire(s: Soldier, t: Soldier): void {
-    if (!sightToSoldier(this, s.x, s.y, t, s.level).visible) {
+    if (!sightToSoldier(this, s.x, s.y, t, s.level, eyeOf(s)).visible) {
       s.targetId = -1;
       return;
     }

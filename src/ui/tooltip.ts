@@ -1,7 +1,7 @@
 import type { Camera } from '../render/camera';
 import { woundLabel } from '../sim/body';
 import { TERRAIN, VEHICLES, WEAPONS, type TerrainDef, type TerrainKey, type WeaponDef } from '../sim/data';
-import { sightBetween, sightToSoldier, type Sim, type Soldier, type Vehicle } from '../sim/sim';
+import { EYE_VEHICLE, HULL_VEHICLE, eyeOf, sightBetween, sightToSoldier, type Sim, type Soldier, type Vehicle } from '../sim/sim';
 import { STATE_COLOR } from './hud';
 import { formatCoverBreakdown, formatCoverBreakdownForFloor } from './tooltip-format';
 import { MOBILE } from '../render/view';
@@ -66,7 +66,7 @@ export function computeShot(sim: Sim, squadId: number, vehicleId: number, pick: 
     const v = sim.vehicles[vehicleId];
     if (!v?.alive || pick.v.side === v.side) return null;
     const def = VEHICLES[v.kind];
-    return apSolution(sim, v.x, v.y, def.gunPen, def.gunAccuracy, def.gunRange, pick.v, v.path !== null, `GUN — ${def.name}`);
+    return apSolution(sim, v.x, v.y, def.gunPen, def.gunAccuracy, def.gunRange, pick.v, v.path !== null, `GUN — ${def.name}`, 0, EYE_VEHICLE);
   }
 
   if (squadId < 0) return null;
@@ -82,7 +82,7 @@ export function computeShot(sim: Sim, squadId: number, vehicleId: number, pick: 
     for (const at of shooters) {
       const w: WeaponDef = WEAPONS[at.weapon];
       if (w.pen === undefined) continue;
-      const sol = apSolution(sim, at.x, at.y, w.pen, w.accuracy * sim.aimFactor(at), w.range, pick.v, at.path !== null, `${w.name.toUpperCase()} — ${at.name}`);
+      const sol = apSolution(sim, at.x, at.y, w.pen, w.accuracy * sim.aimFactor(at), w.range, pick.v, at.path !== null, `${w.name.toUpperCase()} — ${at.name}`, at.level, eyeOf(at));
       if (!best || (sol.ok && (!best.ok || sol.acc > best.acc))) best = sol;
     }
     return best;
@@ -97,7 +97,7 @@ export function computeShot(sim: Sim, squadId: number, vehicleId: number, pick: 
     let anyRange = false;
     let anyConcealed = false;
     for (const s of shooters) {
-      const p = sim.shotPreview(s.x, s.y, s.weapon, t, s.path !== null, sim.aimFactor(s), s.level);
+      const p = sim.shotPreview(s.x, s.y, s.weapon, t, s.path !== null, sim.aimFactor(s), s.level, eyeOf(s));
       if (p.dist < nd) {
         nd = p.dist;
         nearest = s;
@@ -113,7 +113,10 @@ export function computeShot(sim: Sim, squadId: number, vehicleId: number, pick: 
       // floor-blocked cue: when the block is LOS only, re-run the SAME sight
       // check with the observer forced onto the target's level. If that
       // clears, the separator is the floor/ceiling, not a wall — say so.
-      const floorBlocked = baseReason === 'no-los' && sightToSoldier(sim, nearest.x, nearest.y, t, t.level).visible;
+      // The eye stays the shooter's own (eyeOf) precisely so the LEVEL is the
+      // only thing that differs from the shotPreview call above; defaulting it
+      // would let a prone shooter's wall-block read as "blocked by floor".
+      const floorBlocked = baseReason === 'no-los' && sightToSoldier(sim, nearest.x, nearest.y, t, t.level, eyeOf(nearest)).visible;
       const reason = floorBlocked ? 'floor-blocked' : baseReason;
       const text = floorBlocked
         ? 'blocked by floor/ceiling'
@@ -134,9 +137,14 @@ export function computeShot(sim: Sim, squadId: number, vehicleId: number, pick: 
   return null;
 }
 
-function apSolution(sim: Sim, fx: number, fy: number, pen: number, accuracy: number, range: number, target: Vehicle, moving: boolean, title: string): ShotSolution {
+// l0/e0 are the SHOOTER's floor level and eye height. They were missing: live
+// AT fire passes the shooter's level (sim.ts, `sightBetween(this, s.x, s.y,
+// v.x, v.y, s.level, 0, ...)`) but this mirror defaulted l0 to 0, so an AT man
+// upstairs got a ground-floor shot preview — a direct violation of the "the UI
+// must never re-derive (and drift from) this formula" contract on shotPreview.
+function apSolution(sim: Sim, fx: number, fy: number, pen: number, accuracy: number, range: number, target: Vehicle, moving: boolean, title: string, l0: number, e0: number): ShotSolution {
   const base = { fx, fy, tx: target.x, ty: target.y, title };
-  if (!sightBetween(sim, fx, fy, target.x, target.y).visible) return { ...base, ok: false, acc: 0, reason: 'no-los', lines: ['no line of sight'] };
+  if (!sightBetween(sim, fx, fy, target.x, target.y, l0, 0, e0, HULL_VEHICLE).visible) return { ...base, ok: false, acc: 0, reason: 'no-los', lines: ['no line of sight'] };
   const p = sim.apShotPreview(fx, fy, pen, accuracy, range, target, moving);
   if (p.dist > range) return { ...base, ok: false, acc: 0, reason: 'out-of-range', lines: [`out of range — ${range} m weapon, target ${Math.round(p.dist)} m`] };
   return {

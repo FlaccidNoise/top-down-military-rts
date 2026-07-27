@@ -1,5 +1,5 @@
 import { EMPLACEMENTS, type EmplacementKey, type LoadKey } from './data';
-import { sightBetween, type Side, type Sim, type Soldier } from './sim';
+import { EYE_STAND, eyeOf, sightBetween, type Side, type Sim, type Soldier } from './sim';
 
 // Crewed-weapon entity (spec §4): reuses the vehicle-crew pattern — an
 // emplacement bound to a crew team by crewTeamId, same data shape as a
@@ -86,13 +86,16 @@ export function pickFirer(sim: Sim, e: Emplacement): Soldier | null {
 export function friendlyHasLos(sim: Sim, side: Side, x: number, y: number): boolean {
   for (const s of sim.soldiers) {
     if (!s.alive || s.downed || s.side !== side || s.inVehicle >= 0) continue;
-    if (sightBetween(sim, s.x, s.y, x, y, s.level, 0).visible) return true;
+    if (sightBetween(sim, s.x, s.y, x, y, s.level, 0, eyeOf(s), EYE_STAND).visible) return true;
   }
   return false;
 }
 
 // The crew's OWN eyes on the target point (tighter scatter) vs shared vision
 // from elsewhere on the map (wider scatter) — the gun sits at (e.x, e.y).
+// DELIBERATE EYE DEFAULT: a served gun sights at about chest height, so the
+// crew keeps EYE_H on both ends. Giving it a stance would move mortar-spotting
+// balance for no verticality gain. On the grep gate's allow-list.
 export function crewHasLos(sim: Sim, e: Emplacement, x: number, y: number): boolean {
   return sightBetween(sim, e.x, e.y, x, y).visible;
 }
