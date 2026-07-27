@@ -285,12 +285,142 @@ function partySide(map: GameMap, it: Interior, f: Frame): number {
   return span(0, -1) >= span(f.A - 1, 1) ? 0 : f.A - 1;
 }
 
+// ═══ I5 · shop (§3.4) ═══════════════════════════════════════════════════════
+
+/**
+ * Storefront across the frontage, then a back room and a store behind it.
+ *
+ * The store is the building's dead end and its best hiding place: exactly one
+ * door, off the back room. The counter that makes the storefront a choke on the
+ * shop door is I7's furniture table — this only guarantees it has the depth to
+ * stand a counter in.
+ */
+export function planShop(map: GameMap, it: Interior, s1: Rng): RoomPlan {
+  const f = frameOf(map, it);
+  const p = new Plan(map, it, f);
+  const { A, D } = f;
+  // Both draws happen unconditionally, in this order, so the shop's stream
+  // shape does not depend on its dimensions.
+  const dS = clamp(3 + s1.int(2), 2, Math.max(2, D - 2));
+  const ak = clamp(3 + s1.int(Math.max(1, A - 5)), 3, Math.max(3, A - 3));
+
+  if (D < 5) {
+    p.room('storefront', 0, A, 0, D);
+    return p.done();
+  }
+  p.cross(dS, 0, A);
+  p.room('storefront', 0, A, 0, dS);
+  if (A < 6) {
+    p.room('backroom', 0, A, dS, D);
+    return p.done();
+  }
+  p.long(ak, dS, D);
+  // The larger child is the back room (it holds the stair); the smaller is the
+  // store. Ties to the low across index.
+  const backLow = ak >= A - ak;
+  p.room(backLow ? 'backroom' : 'store', 0, ak, dS, D);
+  p.room(backLow ? 'store' : 'backroom', ak, A, dS, D);
+  return p.done();
+}
+
+// ═══ I5 · barn (§3.5) ═══════════════════════════════════════════════════════
+
+const TACK = 3; // the tack room is 3x3
+const STALL_LO = 0.2; // the stall line covers the middle ~60% of the wall
+const STALL_HI = 0.8;
+
+/**
+ * A barn is a volume, not a plan. Two interventions only.
+ *
+ * The stall line is 1-long WALL stubs off the longer interior wall. Walls grant
+ * no cover at all (los() never sources cover from an edge), so these are
+ * honestly CONCEALMENT: they break enfilade down the wall and give a defender
+ * somewhere to be that is not the open bay. They are stubs, not partitions — no
+ * stub separates two rooms — so they sit outside the three-wall-line cap, and
+ * the connectivity BFS is what proves they seal nothing.
+ */
+export function planBarn(map: GameMap, it: Interior, _s1: Rng): RoomPlan {
+  const f = frameOf(map, it);
+  const p = new Plan(map, it, f);
+  stallLine(map, it, f);
+  const tack = tackRoom(map, it, f, p);
+  const bay = p.room('bay', 0, f.A, 0, f.D);
+  if (bay && tack) {
+    const inTack = new Set(tack.tiles);
+    bay.tiles = bay.tiles.filter((t) => !inTack.has(t));
+  }
+  return p.done();
+}
+
+function stallLine(map: GameMap, it: Interior, f: Frame): void {
+  const alongX = it.w >= it.h;
+  const runLen = alongX ? it.w : it.h;
+  const door = f.seed;
+  // Of the two walls on the longer axis, the one FARTHER from the way in —
+  // stalls at the back, not across the entrance. Ties to the low row/column.
+  const loEnd = alongX ? it.y0 : it.x0;
+  const hiEnd = (alongX ? it.y0 + it.h : it.x0 + it.w) - 1;
+  const perp = alongX ? door.y : door.x;
+  const row = Math.abs(perp - loEnd) >= Math.abs(perp - hiEnd) ? loEnd : hiEnd;
+  const base = alongX ? it.x0 : it.y0;
+  const from = base + Math.floor(runLen * STALL_LO);
+  const to = base + Math.ceil(runLen * STALL_HI);
+  // Both cases read `(axis, k, row, row+1)`: for 'v' the fixed coordinate is
+  // the x grid line and the span is the single row y=row; for 'h' it is the y
+  // grid line and the span is the single column x=row. A stub that lands on the
+  // envelope has one flank outside the mass and wallRun drops it.
+  for (let k = from; k < to; k += 2)
+    wallRun(map, it, alongX ? 'v' : 'h', k, row, row + 1, it.top, null, { doors: false });
+}
+
+// A 3x3 room in the corner farthest from the primary door, one door. Skipped
+// unless both interior dimensions are >= 7 and all nine tiles are in the mass.
+function tackRoom(map: GameMap, it: Interior, f: Frame, p: Plan): Room | null {
+  if (it.w < 7 || it.h < 7) return null;
+  const door = f.seed;
+  const corners: [number, number][] = [
+    [it.x0, it.y0],
+    [it.x0 + it.w - TACK, it.y0],
+    [it.x0, it.y0 + it.h - TACK],
+    [it.x0 + it.w - TACK, it.y0 + it.h - TACK],
+  ];
+  let best = -1;
+  let bestD2 = -1;
+  for (let i = 0; i < corners.length; i++) {
+    const [cx, cy] = corners[i];
+    const d2 = (cx + 1 - door.x) * (cx + 1 - door.x) + (cy + 1 - door.y) * (cy + 1 - door.y);
+    if (d2 <= bestD2) continue;
+    let full = true;
+    for (let y = cy; y < cy + TACK && full; y++) for (let x = cx; x < cx + TACK; x++) if (!inMass(it, x, y)) full = false;
+    if (!full) continue;
+    bestD2 = d2;
+    best = i;
+  }
+  if (best < 0) return null;
+  const [cx, cy] = corners[best];
+  const vFixed = cx === it.x0 ? cx + TACK : cx; // the leg of the L parallel to y
+  const hFixed = cy === it.y0 ? cy + TACK : cy; // the leg parallel to x
+  const vD = Math.abs(vFixed - door.x) + Math.abs(cy + 1 - door.y);
+  const hD = Math.abs(cx + 1 - door.x) + Math.abs(hFixed - door.y);
+  const doorOnV = vD <= hD; // one door only, on the leg nearer the way in
+  wallRun(map, it, 'v', vFixed, cy, cy + TACK, it.top, f.seed, { doors: doorOnV });
+  wallRun(map, it, 'h', hFixed, cx, cx + TACK, it.top, f.seed, { doors: !doorOnV });
+  const tiles: number[] = [];
+  for (const t of it.tiles) {
+    const x = t % map.w;
+    const y = (t / map.w) | 0;
+    if (x >= cx && x < cx + TACK && y >= cy && y < cy + TACK) tiles.push(t);
+  }
+  const room: Room = { kind: 'tackroom', tiles };
+  p.rooms.push(room);
+  return room;
+}
+
 // ═══ dispatch ═══════════════════════════════════════════════════════════════
 
 /**
  * Partition one structure by its role. Returns null for the roles this slice
- * does not own: 'shop' and 'barn' are I5's, 'church' is I6's, and 'none'
- * (halle, halt) is never partitioned at all.
+ * does not own: 'church' is I6's, 'none' (halle, halt) is never partitioned.
  *
  * The caller must have run `resetInterior` first — every plan here assumes it
  * owns a clean interior. `role` follows the Building contract, where absent
@@ -299,5 +429,7 @@ function partySide(map: GameMap, it: Interior, f: Frame): number {
 export function planRooms(map: GameMap, it: Interior, role: BuildingRole | undefined, s1: Rng): RoomPlan | null {
   const kind = PLAN_BY_ROLE[role ?? 'house'];
   if (kind === 'house') return planHouse(map, it, s1, role === 'townhouse');
-  return null; // 'shop' and 'barn' are I5's, 'church' is I6's
+  if (kind === 'shop') return planShop(map, it, s1);
+  if (kind === 'barn') return planBarn(map, it, s1);
+  return null;
 }

@@ -8,7 +8,7 @@ import {
   unreachedFrom,
   type Interior,
 } from '../src/sim/interiors/kernel';
-import { frameOf, planHouse, planRooms } from '../src/sim/interiors/rooms';
+import { frameOf, planBarn, planHouse, planRooms, planShop } from '../src/sim/interiors/rooms';
 import type { RoomKind, RoomPlan } from '../src/sim/interiors/types';
 import { EDGE, GameMap } from '../src/sim/map';
 import type { Building, BuildingRole, DoorEdge } from '../src/sim/mapgen';
@@ -70,14 +70,16 @@ function wallEdgesPerLine(map: GameMap, it: Interior): Map<string, number> {
 
 // The cap of §3.1 counts PARTITION lines: a line separating two rooms. A line
 // broken into spans (a cross wall interrupted by the hall) counts once, which
-// is what the cap is about, so a line is only counted when it carries at least
-// two interior WALL edges.
+// is what the cap is about. A barn's stall stubs are 1 edge each on their own
+// grid line and are explicitly not partitions — no stub separates two rooms —
+// so they are measured separately by `stubLines`.
 const wallLines = (map: GameMap, it: Interior): string[] =>
   [...wallEdgesPerLine(map, it)]
     .filter(([, n]) => n >= 2)
     .map(([id]) => id)
     .sort();
 
+const stubLines = (map: GameMap, it: Interior): number => [...wallEdgesPerLine(map, it).values()].filter((n) => n === 1).length;
 
 const roomOf = (plan: RoomPlan, kind: RoomKind) => plan.rooms.filter((r) => r.kind === kind);
 const kinds = (plan: RoomPlan) => plan.rooms.map((r) => r.kind);
@@ -250,8 +252,135 @@ describe('interiors rooms — the three townhouse variants (§3.3)', () => {
   });
 });
 
+describe('interiors rooms — the shop (§3.4)', () => {
+  test('storefront across the frontage, back room and store behind it', () => {
+    const map = fresh();
+    const it = stamp(map, { x: 10, y: 10, w: 9, h: 8, role: 'shop', doors: [{ x: 14, y: 17, side: 's', width: 1 }] });
+    const plan = planned(map, it, () => planShop(map, it, rng(4)));
+    expect(kinds(plan).sort()).toEqual(['backroom', 'store', 'storefront']);
+    const front = roomOf(plan, 'storefront')[0];
+    // full width, 3 or 4 deep, hard against the door wall
+    expect(new Set(front.tiles.map((t) => t % MAP)).size).toBe(9);
+    const depth = new Set(front.tiles.map((t) => (t / MAP) | 0)).size;
+    expect(depth === 3 || depth === 4).toBe(true);
+    expect(Math.max(...front.tiles.map((t) => (t / MAP) | 0))).toBe(17);
+    // the store is the smaller child and is the dead end: exactly one door
+    const store = roomOf(plan, 'store')[0];
+    const back = roomOf(plan, 'backroom')[0];
+    expect(store.tiles.length).toBeLessThan(back.tiles.length);
+    expect(interiorDoorsAround(map, it, store.tiles)).toBe(1);
+  });
+
+  test('a narrow shop skips the back split; a shallow one is a storefront only', () => {
+    const map = fresh();
+    const narrow = stamp(map, { x: 10, y: 10, w: 5, h: 8, role: 'shop', doors: [{ x: 12, y: 17, side: 's', width: 1 }] });
+    const p1 = planned(map, narrow, () => planShop(map, narrow, rng(6)));
+    expect(kinds(p1)).toEqual(['storefront', 'backroom']);
+
+    const map2 = fresh();
+    const shallow = stamp(map2, { x: 10, y: 10, w: 9, h: 4, role: 'shop', doors: [{ x: 14, y: 13, side: 's', width: 1 }] });
+    const p2 = planned(map2, shallow, () => planShop(map2, shallow, rng(6)));
+    expect(kinds(p2)).toEqual(['storefront']);
+    expect(wallLines(map2, shallow)).toEqual([]);
+  });
+
+  test('the shop stream shape does not depend on the mass size', () => {
+    // both draws happen before any geometry test, so two shops of different
+    // sizes consume exactly the same number of values from their stream
+    const draw = (w: number, h: number): number => {
+      const map = fresh();
+      const it = stamp(map, {
+        x: 10,
+        y: 10,
+        w,
+        h,
+        role: 'shop',
+        doors: [{ x: 10 + (w >> 1), y: 10 + h - 1, side: 's', width: 1 }],
+      });
+      resetInterior(map, it);
+      let n = 0;
+      const base = mulberry32(99);
+      planShop(map, it, {
+        next: () => {
+          n++;
+          return base.next();
+        },
+        range: base.range,
+        int: (k) => {
+          n++;
+          return base.int(k);
+        },
+      });
+      return n;
+    };
+    expect(draw(9, 8)).toBe(draw(5, 4));
+  });
+});
+
+// how many DOOR edges lead into a set of tiles from outside it
+function interiorDoorsAround(map: GameMap, it: Interior, tiles: number[]): number {
+  const set = new Set(tiles);
+  let n = 0;
+  for (const t of tiles) {
+    const x = t % map.w;
+    const y = (t / map.w) | 0;
+    if (map.hEdge(x, y) === EDGE.DOOR && !set.has((y - 1) * map.w + x) && map.buildingIdAt(x, y - 1) === it.id) n++;
+    if (map.hEdge(x, y + 1) === EDGE.DOOR && !set.has((y + 1) * map.w + x) && map.buildingIdAt(x, y + 1) === it.id) n++;
+    if (map.vEdge(x, y) === EDGE.DOOR && !set.has(y * map.w + x - 1) && map.buildingIdAt(x - 1, y) === it.id) n++;
+    if (map.vEdge(x + 1, y) === EDGE.DOOR && !set.has(y * map.w + x + 1) && map.buildingIdAt(x + 1, y) === it.id) n++;
+  }
+  return n;
+}
+
+describe('interiors rooms — the barn (§3.5)', () => {
+  test('stall stubs run off the wall farthest from the door and seal nothing', () => {
+    const map = fresh();
+    const it = stamp(map, { x: 10, y: 10, w: 12, h: 6, role: 'barn', doors: [{ x: 15, y: 15, side: 's', width: 1 }] });
+    const plan = planned(map, it, () => planBarn(map, it, rng(8)));
+    expect(kinds(plan)).toEqual(['bay']);
+    // the long axis is x, and the door is on the south wall, so the stubs hang
+    // off the NORTH row — 1-long vertical edges, every 2 columns
+    let north = 0;
+    let south = 0;
+    for (let x = it.x0 + 1; x < it.x0 + it.w; x++) {
+      if (map.vEdge(x, 10) === EDGE.WALL) north++;
+      if (map.vEdge(x, 15) === EDGE.WALL) south++;
+    }
+    expect(north).toBeGreaterThan(2);
+    expect(south).toBe(0);
+    // stubs are stubs: none of them reaches the next row, and none of them is a
+    // partition line
+    for (let x = it.x0 + 1; x < it.x0 + it.w; x++) if (map.vEdge(x, 10) === EDGE.WALL) expect(map.vEdge(x, 11)).toBe(EDGE.NONE);
+    expect(wallLines(map, it)).toEqual([]);
+    expect(stubLines(map, it)).toBe(north);
+  });
+
+  test('a barn at least 7x7 gets a 3x3 tack room in the far corner with exactly one door', () => {
+    const map = fresh();
+    const it = stamp(map, { x: 10, y: 10, w: 9, h: 8, role: 'barn', doors: [{ x: 14, y: 17, side: 's', width: 1 }] });
+    const plan = planned(map, it, () => planBarn(map, it, rng(8)));
+    const tack = roomOf(plan, 'tackroom');
+    expect(tack.length).toBe(1);
+    expect(tack[0].tiles.length).toBe(9);
+    const xs = tack[0].tiles.map((t) => t % MAP);
+    const ys = tack[0].tiles.map((t) => (t / MAP) | 0);
+    expect(Math.min(...ys)).toBe(10); // the door is south, so the room is north
+    expect(interiorDoorsAround(map, it, tack[0].tiles)).toBe(1);
+    // and the bay does not double-count the tack room's tiles
+    expect(roomOf(plan, 'bay')[0].tiles.length).toBe(9 * 8 - 9);
+    expect(Math.min(...xs) === 10 || Math.max(...xs) === 18).toBe(true);
+  });
+
+  test('a barn under 7x7 skips the tack room', () => {
+    const map = fresh();
+    const it = stamp(map, { x: 10, y: 10, w: 8, h: 5, role: 'barn', doors: [{ x: 14, y: 14, side: 's', width: 1 }] });
+    const plan = planned(map, it, () => planBarn(map, it, rng(8)));
+    expect(kinds(plan)).toEqual(['bay']);
+  });
+});
+
 describe('interiors rooms — the invariants over a size sweep', () => {
-  const ROLES: BuildingRole[] = ['house', 'farmhouse', 'townhouse', 'civic'];
+  const ROLES: BuildingRole[] = ['house', 'farmhouse', 'townhouse', 'civic', 'shop', 'barn'];
 
   test('nothing seals, nothing exceeds three wall lines, no stair moves', () => {
     let count = 0;
