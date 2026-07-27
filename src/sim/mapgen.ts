@@ -1,9 +1,19 @@
 import { buildObjectives } from './bourg/objectives';
 import { planBourg, stampBourg, type BourgPlan } from './bourg/plan';
 import { zoneOf } from './bourg/rural';
+import { stampStructure } from './bourg/stamp';
 import { subStream, TAG } from './bourg/streets';
 import { EDGE, FLOOR_H, GameMap } from './map';
-import { applyRelief, laneRuns, NO_RELIEF, type FlatZone, type ReliefContext, type ReliefProfile } from './relief';
+import {
+  applyRelief,
+  laneRuns,
+  NO_RELIEF,
+  planHalt,
+  stampHalt,
+  type FlatZone,
+  type ReliefContext,
+  type ReliefProfile,
+} from './relief';
 import { mulberry32, type Rng } from './rng';
 
 // Roads-first Normandy generator: a wandering arterial road west→east, a
@@ -34,7 +44,8 @@ export type BuildingRole =
   | 'halle'
   | 'church'
   | 'church_tower'
-  | 'church_apse';
+  | 'church_apse'
+  | 'halt'; // V5: the railway halt beside the embankment (bourg only)
 
 // A door opening on one face of a structure: the DOOR edge on `side` of tile
 // (x,y). (x,y) is the structure's OWN floor tile and `side` faces outward, so
@@ -80,7 +91,7 @@ export interface Vec {
 
 // What each objective IS, so tooling stops index-guessing. Parallel to
 // MapPlan.objectives.
-export type ObjectiveKind = 'place' | 'woods' | 'faubourg' | 'church' | 'street';
+export type ObjectiveKind = 'place' | 'woods' | 'faubourg' | 'church' | 'street' | 'halt';
 
 export interface MapPlan {
   map: GameMap;
@@ -154,8 +165,8 @@ export const RELIEF_BY_KIND: Record<MapKind, ReliefProfile> = {
 
 // H7's size gate. 320x240 is the design scale; 240x180 is the smallest map that
 // still holds a 7-10 tile embankment footprint clear of everything else.
-export const RELIEF_MIN_W = 240;
-export const RELIEF_MIN_H = 180;
+const RELIEF_MIN_W = 240;
+const RELIEF_MIN_H = 180;
 
 export interface GenerateOpts {
   // 'none' forces the null profile at any size; an explicit profile forces that
@@ -498,11 +509,13 @@ function tryGenerateBourg(rng: Rng, w: number, h: number, relief: ReliefProfile)
   // actually built — see bourgFlatMask). Two consumers, one region.
   const flat = bourgFlatMask(map, plan);
   elevateBourg(map, bourgBase, flat); // stage 13 — last, always
+  let buildings = plan.fp.buildings;
 
   if (reliefActive(relief)) {
     const reliefBase = rng.int(0x7fffffff); // ONE draw on the shared stream (§1.5)
+    const S = reliefStreams(reliefBase);
     const flatZone: FlatZone = (x, y) => flat[y * w + x] === 1;
-    const ctx: ReliefContext = {
+    const res = applyRelief(map, relief, S, flatZone, {
       // The place is the bourg's junction; the railway keeps its 40 tiles of
       // clearance from it exactly as it does from a legacy village crossroads.
       // nearBuilding is already folded into `flat` (buildings dilated by 1),
@@ -511,13 +524,31 @@ function tryGenerateBourg(rng: Rng, w: number, h: number, relief: ReliefProfile)
       nearBuilding: () => false,
       lanes: relief.sunken > 0 ? laneRuns(map, flatZone) : undefined,
       spawns: plan.spawns,
-    };
-    applyRelief(map, relief, reliefStreams(reliefBase), flatZone, ctx);
+    });
+    // V5 · the halt. Strictly optional: no embankment or no candidate band
+    // leaves the map exactly as the relief stage left it.
+    if (res.rail) {
+      const halt = planHalt(map, res.rail, plan.sk.env.x + plan.sk.env.w / 2, S(23), flatZone);
+      if (halt) {
+        stampHalt(map, halt);
+        const b: Building = {
+          ...halt.rect,
+          role: 'halt',
+          frontage: halt.side < 0 ? 'e' : 'w', // the booking hall faces its own platform
+        };
+        // Appended AFTER every bourg building, so the bourg's own emission
+        // order — and therefore every buildingId it stamped — is untouched.
+        map.maxStories = Math.max(map.maxStories, stampStructure(map, b, buildings.length));
+        buildings = [...buildings, b];
+        objectives.push(halt.centre);
+        objectiveKinds.push('halt');
+      }
+    }
   }
 
   return {
     map,
-    buildings: plan.fp.buildings,
+    buildings,
     spawns: plan.spawns,
     objectives,
     objectiveKinds,

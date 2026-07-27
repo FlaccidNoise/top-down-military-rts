@@ -3,10 +3,10 @@ import { GameMap } from '../src/sim/map';
 import { generateMap, RELIEF_BY_KIND, type MapKind, type MapPlan, type Vec } from '../src/sim/mapgen';
 import { astar } from '../src/sim/path';
 
-// V3 — wiring micro-relief into generateMap
-// (docs/plans/2026-07-26-verticality-design.md §1). tests/relief.test.ts owns the
+// V3 (wiring micro-relief into generateMap) and V5 (the bourg halt) of
+// docs/plans/2026-07-26-verticality-design.md. tests/relief.test.ts owns the
 // geometry against hand-built maps; this file owns the GENERATOR contract:
-// where the stage fires and what it is forbidden to move.
+// where the stage fires, what it is forbidden to move, and what the halt is.
 
 const KINDS: MapKind[] = ['open', 'road', 'woods', 'town', 'river', 'bridge', 'bourg'];
 const W = 320;
@@ -111,9 +111,12 @@ describe('V3 additivity', () => {
       for (const seed of [1, 2, 5]) {
         const on = gen(seed, W, H, kind);
         const off = gen(seed, W, H, kind, true);
+        // relief appends at most the halt; every earlier entry — and therefore
+        // every buildingId already stamped into the map — is untouched
         expect([kind, seed, on.buildings.slice(0, off.buildings.length)]).toEqual([kind, seed, off.buildings]);
         expect([kind, seed, on.spawns]).toEqual([kind, seed, off.spawns]);
         expect([kind, seed, on.woodsStands]).toEqual([kind, seed, off.woodsStands]);
+        // relief appends at most the halt objective; the prefix is untouched
         expect([kind, seed, on.objectives.slice(0, off.objectives.length)]).toEqual([kind, seed, off.objectives]);
       }
   });
@@ -201,5 +204,91 @@ describe('V3 the level crossing and the vehicle route', () => {
           expect([kind, seed, o, astar(p.map, p.spawns.east.x, p.spawns.east.y, o.x, o.y) !== null]).toEqual([kind, seed, o, true]);
         }
       }
+  });
+});
+
+describe('V5 the bourg halt', () => {
+  const SEEDS = [1, 2, 3, 4, 5, 6, 7, 8];
+  const haltOf = (p: MapPlan) => p.buildings.filter((b) => b.role === 'halt');
+
+  it('stands exactly one 7x4 halt on every bourg seed, appended after the bourg', () => {
+    for (const seed of SEEDS) {
+      const p = gen(seed, W, H, 'bourg');
+      const halts = haltOf(p);
+      expect([seed, halts.length]).toEqual([seed, 1]);
+      expect([seed, halts[0].w, halts[0].h]).toEqual([seed, 7, 4]);
+      // appended LAST, so every buildingId the bourg pipeline stamped is
+      // exactly the index it had before V5
+      expect([seed, p.buildings[p.buildings.length - 1].role]).toEqual([seed, 'halt']);
+      const off = gen(seed, W, H, 'bourg', true);
+      expect([seed, p.buildings.slice(0, -1)]).toEqual([seed, off.buildings]);
+    }
+  });
+
+  it('only the bourg gets one — never a legacy kind, never with relief off', () => {
+    for (const kind of KINDS)
+      for (const seed of [1, 5]) {
+        expect([kind, seed, haltOf(gen(seed, W, H, kind, true)).length]).toEqual([kind, seed, 0]);
+        if (kind !== 'bourg') expect([kind, seed, haltOf(gen(seed, W, H, kind)).length]).toEqual([kind, seed, 0]);
+      }
+  });
+
+  it('tags a passable road platform objective one metre under the crest', () => {
+    for (const seed of SEEDS) {
+      const p = gen(seed, W, H, 'bourg');
+      const i = (p.objectiveKinds ?? []).indexOf('halt');
+      expect([seed, i >= 0]).toEqual([seed, true]);
+      const o = p.objectives[i];
+      expect([seed, p.objectiveKinds!.length]).toEqual([seed, p.objectives.length]);
+      expect([seed, p.map.terrainKeyAt(o.x, o.y)]).toEqual([seed, 'road']);
+      expect([seed, p.map.terrainAt(o.x, o.y).passable]).toEqual([seed, true]);
+      expect([seed, p.map.isCrossing(o.x, o.y)]).toEqual([seed, false]);
+      // the deck sits against the crest, exactly one terrace below it
+      const deck = p.map.elevAt(o.x, o.y);
+      const crest = [
+        [1, 0],
+        [-1, 0],
+      ]
+        .map(([dx]) => ({ k: p.map.terrainKeyAt(o.x + dx, o.y), e: p.map.elevAt(o.x + dx, o.y) }))
+        .find((n) => n.k === 'rail');
+      expect([seed, crest !== undefined]).toEqual([seed, true]);
+      expect([seed, crest!.e - deck]).toEqual([seed, 1]);
+    }
+  });
+
+  it('puts the halt on the town side of the line, and garrisons it', () => {
+    for (const seed of SEEDS) {
+      const p = gen(seed, W, H, 'bourg');
+      const b = haltOf(p)[0];
+      const row = b.y + (b.h >> 1);
+      const crest: number[] = [];
+      for (let x = 0; x < W; x++) if (p.map.terrainKeyAt(x, row) === 'rail') crest.push(x);
+      expect([seed, crest.length > 0]).toEqual([seed, true]);
+      const west = (v: Vec | { x: number }) => v.x < crest[0];
+      expect([seed, west({ x: b.x })]).toEqual([seed, west(p.objectives[0])]);
+      // bridge.ts drops a building centre farther than GARRISON_RADIUS from
+      // every objective, so an ungarrisoned halt is a strongpoint nobody holds
+      const c = { x: b.x + b.w / 2, y: b.y + b.h / 2 };
+      const near = p.objectives.some((o) => (c.x - o.x) ** 2 + (c.y - o.y) ** 2 <= 45 * 45);
+      expect([seed, near]).toEqual([seed, true]);
+    }
+  });
+
+  it('stands on level ground and is clearable from the west spawn', () => {
+    for (const seed of SEEDS) {
+      const p = gen(seed, W, H, 'bourg');
+      const b = haltOf(p)[0];
+      const e = p.map.elevAt(b.x, b.y);
+      const bad: string[] = [];
+      for (let y = b.y; y < b.y + b.h; y++)
+        for (let x = b.x; x < b.x + b.w; x++) {
+          if (p.map.terrainKeyAt(x, y) !== 'floor') bad.push(`${x},${y} is ${p.map.terrainKeyAt(x, y)}`);
+          if (p.map.elevAt(x, y) !== e) bad.push(`${x},${y} elev ${p.map.elevAt(x, y)} != ${e}`);
+          if (p.map.buildingIdAt(x, y) !== p.buildings.length - 1) bad.push(`${x},${y} wrong buildingId`);
+        }
+      expect([seed, bad]).toEqual([seed, []]);
+      const c = { x: b.x + (b.w >> 1), y: b.y + (b.h >> 1) };
+      expect([seed, astar(p.map, p.spawns.west.x, p.spawns.west.y, c.x, c.y) !== null]).toEqual([seed, true]);
+    }
   });
 });

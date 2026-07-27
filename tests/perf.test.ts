@@ -278,7 +278,14 @@ describe('perf: bourg generation (§5.5)', () => {
       const { objectives, objectiveKinds } = buildObjectives(plan.sk, plan.land, plan.fp, st.woodsStands);
       return { map, buildings: plan.fp.buildings, spawns: plan.spawns, objectives, objectiveKinds, woodsStands: st.woodsStands };
     };
-    for (const seed of [1, 7]) expect(attempt0(seed).buildings).toEqual(generateMap(seed, MAP_W, MAP_H, 'bourg').buildings);
+    // `relief: 'none'`, because the replay above stops where T11's pipeline
+    // stops: V3's relief stage runs after it and can append a halt to the
+    // building list. The reject rate measured below is therefore the
+    // pre-relief plan's, which is the right thing to measure — relief cannot
+    // sever the vehicle route (it reverts the embankment if it would) and the
+    // halt only lands on ground it has already proved clear.
+    for (const seed of [1, 7])
+      expect(attempt0(seed).buildings).toEqual(generateMap(seed, MAP_W, MAP_H, 'bourg', { relief: 'none' }).buildings);
 
     let rejects = 0;
     const rejected: number[] = [];
