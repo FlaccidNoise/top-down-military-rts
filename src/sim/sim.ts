@@ -57,6 +57,12 @@ const AID_SECONDS = 8;
 const BARRAGE_DELAY_TICKS = 20 * 30;
 const BARRAGE_ROUNDS = 12;
 const BOUND_LEG = 15; // meters per bounding rush (spec's "15m legs")
+// Mid-execution refusal re-audit cadence (balance 2026-07): a move/fast order
+// used to be compliance-checked only at issuance — the one instant a
+// map-length order is guaranteed to read safe (pre-contact danger caps at
+// ~0.4 vs a ~0.85 threshold) — then owned the team to the far map edge. Under
+// fire, the same ladder re-runs every 2s, staggered by team id.
+const REAUDIT_TICKS = 60;
 // Melee (decision log 2026-07-23): proximity-triggered close combat.
 const MELEE_ENGAGE = 2.0; // m — an enemy this close (and reachable on foot) locks both into melee
 const MELEE_CONTACT = 0.9; // m — combatants close to here, then hold
@@ -1244,9 +1250,11 @@ export class Sim {
   // and binds its one team to a new Emplacement, same shape as addVehicle's
   // crew binding. Crew are snapped onto tight (<=3m) formation offsets so
   // they start well inside CREW_RADIUS instead of addSquadFromDef's wider scatter.
-  addEmplacement(side: Side, kind: EmplacementKey, x: number, y: number, facing = 0, initialState: 'packed' | 'deployed' = 'packed'): Emplacement {
+  // `roster` passes through to addSquadFromDef: campaign staging fields crew
+  // squads as emplacements without losing named men, pids, or attrition.
+  addEmplacement(side: Side, kind: EmplacementKey, x: number, y: number, facing = 0, initialState: 'packed' | 'deployed' = 'packed', roster?: Partial<MemberInit>[][]): Emplacement {
     const def: EmplacementDef = EMPLACEMENTS[kind];
-    const squad = this.addSquadFromDef(side, EMPLACEMENT_CREW[kind], x, y);
+    const squad = this.addSquadFromDef(side, EMPLACEMENT_CREW[kind], x, y, roster);
     const crewTeamId = squad.teamIds[0];
     const e: Emplacement = {
       id: this.emplacements.length,
@@ -1614,7 +1622,7 @@ export class Sim {
     firer.crewSkill.mg = Math.min(1, (firer.crewSkill.mg ?? 0) + 0.0005);
     const hit = this.rng.next() < p.acc;
     const kill = hit ? this.wound(t, this.rng.range(w.damage[0], w.damage[1])) : false;
-    this.suppressAround(t.x, t.y, t.side, w.suppression);
+    this.suppressAround(t.x, t.y, t.side, w.suppression, w.suppRadius);
     this.pendingEvents.push({ fx: e.x, fy: e.y, tx: t.x, ty: t.y, hit, kill, weapon: def.weapon });
     if (w.heat) {
       const heatMult = firer.role !== 'gunner' ? 1.5 : 1;
@@ -2163,6 +2171,26 @@ export class Sim {
           st.order = null;
           st.phase = 'idle';
           st.reason = '';
+        } else if (order.kind !== 'sneak' && (this.tick + team.id) % REAUDIT_TICKS === 0 && this.teamUnderFire(team)) {
+          // Refusal re-audit mid-execution (see REAUDIT_TICKS). Sneak keeps
+          // its own break rule; assault stays committed by design (1702-1705).
+          // Balk latches — the existing no-oscillation semantics; cautious
+          // drops into the same bounding machinery issuance would have used.
+          const danger = dangerScore(this, team, { x: order.x, y: order.y });
+          const verdict = compliance(this, team, danger);
+          if (verdict === 'balk') {
+            st.phase = 'balked';
+            st.reason = BALK_REASON;
+            for (const id of eligibleIds) this.soldiers[id].path = null;
+          } else if (verdict === 'cautious') {
+            if (order.kind === 'fast') st.order = { ...order, kind: 'move' };
+            const eff = st.order!;
+            st.phase = 'bounding_a';
+            st.reason = 'moving cautiously';
+            const [a, b] = this.teamHalves(team);
+            for (const id of b) this.soldiers[id].path = null;
+            this.dispatchLeg(a, eff);
+          }
         }
       } else if (order.kind === 'assault' && st.phase === 'executing' && (this.tick + team.id) % ASSAULT_REPATH_TICKS === 0) {
         // position taken: everyone arrived, out of melee, and no member sees
@@ -2648,6 +2676,12 @@ export class Sim {
     // apply to sneak). Live fire and this preview share this one formula.
     if (t.path && this.teams[t.teamId].orderState.order?.kind !== 'sneak') acc *= 0.75;
     acc = Math.min(0.95, Math.max(0.02, acc));
+    // Marching fire past close range is walking noise, not aimed fire
+    // (balance 2026-07): applied AFTER the floor clamp, because 130 walking
+    // rifles riding the 2% floor was measured killing a garrison's posts
+    // east-to-west from 80-150m before the wave ever arrived. Close-in
+    // (<=40m) marching fire keeps its full clamped value.
+    if (shooterMoving && d > 40) acc *= 0.35;
     return { visible: true, dist: d, cover, acc };
   }
 
@@ -2668,11 +2702,15 @@ export class Sim {
   private resolveSmallArmsShot(fx: number, fy: number, weapon: WeaponKey, t: Soldier, shooterMoving: boolean, aim: number, l0 = 0, e0 = EYE_H): { fired: boolean; kill: boolean } {
     const p = this.shotPreview(fx, fy, weapon, t, shooterMoving, aim, l0, e0);
     if (!p.visible) return { fired: false, kill: false };
-    const w = WEAPONS[weapon];
+    const w: WeaponDef = WEAPONS[weapon];
     const hit = this.rng.next() < p.acc;
     let kill = false;
     if (hit) kill = this.wound(t, this.rng.range(w.damage[0], w.damage[1]));
-    this.suppressAround(t.x, t.y, t.side, w.suppression);
+    // Marching fire suppresses at half weight: accuracy already pays the
+    // ×0.5 shooter-moving tax (2644), but suppression used to be delivered
+    // at 100% while walking — a company advancing at a steady walk got its
+    // full stationary suppression output for free (balance 2026-07).
+    this.suppressAround(t.x, t.y, t.side, w.suppression * (shooterMoving ? 0.5 : 1), w.suppRadius);
     this.pendingEvents.push({ fx, fy, tx: t.x, ty: t.y, hit, kill, weapon });
     return { fired: true, kill };
   }
@@ -4021,23 +4059,34 @@ export class Sim {
     this.moraleShock(t, 0.08);
   }
 
-  // Seeing a squadmate hit hurts in proportion to how much he meant to you.
+  // Seeing a man hit hurts in proportion to how much he meant to you.
+  // Side-wide within the radius, not own-squad-only (balance 2026-07): a
+  // packed crowd in the open carries its shock as a crowd — each casualty
+  // rattles every exposed friendly close enough to see it (strangers at the
+  // bond-0 floor, 0.4×), while teams spaced at doctrine intervals keep their
+  // morale pools apart. Cover insulates STRANGERS only: a garrison fighting
+  // from buildings keeps its squad-local pools (else the density tax routs a
+  // packed defense as fast as the crowd it was aimed at — measured, bourg s1),
+  // but a squadmate down is a squadmate down, wall or no wall.
   private moraleShock(t: Soldier, amount: number): void {
-    for (const sid of this.squads[t.squadId].soldierIds) {
-      const m = this.soldiers[sid];
-      if (m.id === t.id || !m.alive) continue;
-      if (Math.hypot(m.x - t.x, m.y - t.y) < 15) {
-        m.morale = Math.max(0, m.morale - amount * (0.4 + this.bond(m, t) * 1.6));
-      }
+    for (const m of this.soldiers) {
+      if (m.id === t.id || m.side !== t.side || !m.alive) continue;
+      if (Math.hypot(m.x - t.x, m.y - t.y) >= 15) continue;
+      if (m.squadId !== t.squadId && this.inCover(m.x, m.y)) continue;
+      m.morale = Math.max(0, m.morale - amount * (0.4 + this.bond(m, t) * 1.6));
     }
   }
 
-  private suppressAround(x: number, y: number, side: Side, amount: number): void {
+  // `radius` is the weapon's suppression footprint (WeaponDef.suppRadius) —
+  // a belt MG's burst beats a wider zone than one rifle round, which is what
+  // makes shoulder-to-shoulder massing eat more of each burst than spread
+  // teams do (balance 2026-07: the density tax).
+  private suppressAround(x: number, y: number, side: Side, amount: number, radius: number = SUPPRESS_RADIUS): void {
     for (const m of this.soldiers) {
       if (!m.alive || m.side !== side) continue;
       const d = Math.hypot(m.x - x, m.y - y);
-      if (d < SUPPRESS_RADIUS) {
-        const gain = amount * (1 - d / SUPPRESS_RADIUS) * (1.3 - m.courage * 0.6) * (1 - Math.min(m.xp, 5) * 0.05);
+      if (d < radius) {
+        const gain = amount * (1 - d / radius) * (1.3 - m.courage * 0.6) * (1 - Math.min(m.xp, 5) * 0.05);
         m.suppression = Math.min(1, m.suppression + gain);
       }
     }

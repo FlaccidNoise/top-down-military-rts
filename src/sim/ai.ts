@@ -22,6 +22,11 @@ export interface CommanderConfig {
   side: Side;
   stance: 'defend' | 'attack';
   posts: Record<number, { x: number; y: number }>; // squadId -> objective/anchor
+  // Briefed enemy avenue of approach (defend stance): with it, long-range
+  // squads fight the approach from a pre-registered arc instead of lying in
+  // a 40-60m ambush; without it, every squad keeps the legacy ambush.
+  // Static briefing like posts — never an intel read.
+  approach?: { x: number; y: number };
 }
 
 interface ThreatContact {
@@ -51,6 +56,26 @@ const BOF_SETTLE_RADIUS = 5; // close enough to the scored firing spot to stop m
 // the new sightline for free, but only at the next sampling, which for a
 // settled base of fire is never. Dropping the cache makes the drift immediate.
 const BREACH_RESCORE_RADIUS = 40;
+// Defend stance (balance 2026-07): half-width of the pre-registered arc a
+// long-range squad covers toward cfg.approach (120° total).
+const DEFEND_ARC_HALF = Math.PI / 3;
+// Defensive mortar missions fire on a spotted mass of at least CLUSTER men
+// inside RADIUS meters — deliberately ABOVE one full team, so a spread
+// doctrine attack never trips it while a shoulder-to-shoulder mass does —
+// and never onto a point within SAFETY meters of a friendly (danger close).
+// SAFETY must beat worst-case shell placement: scatterNoLos (10m) plus the
+// 9m frag radius reaches 19m from the aim point — at 15 the tubes were
+// fragging their own forward outposts once the fights entangled.
+const DEFEND_HE_CLUSTER = 8;
+const DEFEND_HE_RADIUS = 12;
+const DEFEND_HE_SAFETY = 25;
+// Fire discipline releases against a massed attack (balance 2026-07): ambush
+// is sited for infiltrators and patrols; once the commander's own intel shows
+// this many enemies AT ONCE, the garrison is looking at a company in the open
+// and every rifle switches to fire-at-will at full range. A doctrine attack
+// that exposes one or two bounding teams at a time stays under the count and
+// keeps facing the ambush it was designed to beat.
+const MASS_RELEASE = 20;
 
 export class RedCommander {
   private lastEval = -EVAL_TICKS;
@@ -333,7 +358,12 @@ export class RedCommander {
   }
 
   // ---- defend stance: each squad holds its own post, counterattacking the
-  // instant a known contact sits on it; settles into ambush once in place.
+  // instant a known contact sits on it. Settled squads split by armament
+  // (balance 2026-07): with a briefed approach, a squad carrying a belt MG or
+  // a 150m+ weapon fights from a pre-registered 'defend' arc — ambush's
+  // 40-60m hold-fire forfeited exactly the ranges those weapons were sited
+  // for, handing a massed attacker a free approach march. Rifle squads (and
+  // everyone, when no approach is briefed) keep the legacy ambush.
   // One order kind per pass (never both 'move' and 'ambush' to the same
   // squad in the same eval), so the squad-level broadcast here doesn't hit
   // the fire/move clobber that attack stance's split roles need orderTeam for.
@@ -351,9 +381,70 @@ export class RedCommander {
       const team = sim.teams[squad.teamIds[0]];
       if (confAtPost > 0 && distToPost > 8 && !moving) {
         sim.orderSquad(squad.id, { kind: 'move', x: post.x, y: post.y }); // counterattack a lost post
-      } else if (distToPost <= 8 && !moving && team.orderState.order === null) {
-        sim.orderSquad(squad.id, { kind: 'ambush', x: post.x, y: post.y }); // settled in, holding fire
+      } else if (distToPost <= 8 && !moving) {
+        const order = team.orderState.order;
+        const approach = this.cfg.approach;
+        const arcDefend = (): void => {
+          if (approach) {
+            const center = Math.atan2(approach.y - post.y, approach.x - post.x);
+            sim.orderSquad(squad.id, { kind: 'defend', x: post.x, y: post.y, arc: [center - DEFEND_ARC_HALF, center + DEFEND_ARC_HALF] });
+          } else {
+            sim.orderSquad(squad.id, { kind: 'defend', x: post.x, y: post.y });
+          }
+        };
+        if (order === null) {
+          const longRange = members.some((s) => {
+            const w: WeaponDef = WEAPONS[s.weapon];
+            return !!w.heat || w.range >= 150;
+          });
+          if (approach && longRange) {
+            arcDefend();
+          } else {
+            sim.orderSquad(squad.id, { kind: 'ambush', x: post.x, y: post.y }); // settled in, holding fire
+          }
+        } else if (order.kind === 'ambush' && this.spottedPositions(sim).length >= MASS_RELEASE) {
+          arcDefend(); // see MASS_RELEASE: fire-at-will against a spotted mass
+        }
       }
+    }
+    this.maybeDefendHE(sim);
+  }
+
+  // Defensive fires (balance 2026-07): task every ready mortar onto the
+  // densest spotted mass, re-aimed each eval so the mission tracks it. The
+  // only defensive weapon whose effect scales with target density is the
+  // 81mm shell (15m suppression, 9m fragments) — without this the garrison's
+  // tubes sit silent while a company crosses the open in a crowd. Honest
+  // vision throughout: the cluster comes from spottedPositions (the sim's
+  // own intel layer) and every mission is gated on friendlyHasLos, the same
+  // shared-vision spotting rule the player's own fire missions obey.
+  private maybeDefendHE(sim: Sim): void {
+    const seen = this.spottedPositions(sim);
+    if (seen.length < DEFEND_HE_CLUSTER) return;
+    let best: { x: number; y: number; n: number } | null = null;
+    for (const b of seen) {
+      const cluster = seen.filter((o) => Math.hypot(o.x - b.x, o.y - b.y) < DEFEND_HE_RADIUS);
+      if (cluster.length < DEFEND_HE_CLUSTER || (best && cluster.length <= best.n)) continue;
+      best = {
+        x: cluster.reduce((a, s) => a + s.x, 0) / cluster.length,
+        y: cluster.reduce((a, s) => a + s.y, 0) / cluster.length,
+        n: cluster.length,
+      };
+    }
+    if (!best) return;
+    for (const s of sim.soldiers) {
+      if (s.side !== this.cfg.side || !s.alive || s.downed) continue;
+      if (Math.hypot(s.x - best.x, s.y - best.y) < DEFEND_HE_SAFETY) return; // danger close
+    }
+    for (const e of sim.emplacements) {
+      if (e.side !== this.cfg.side || e.state !== 'deployed' || e.smokeRoundsLeft > 0) continue;
+      const w: WeaponDef = WEAPONS[EMPLACEMENTS[e.kind].weapon];
+      if (!w.arc) continue;
+      const d = Math.hypot(e.x - best.x, e.y - best.y);
+      if (d < w.arc.minRange || d > w.range) continue;
+      if (!friendlyHasLos(sim, e.side, best.x, best.y)) continue;
+      if (!crewNear(sim, e).some((s) => (s.ammo[w.ammo.type] ?? 0) > 0)) continue;
+      sim.orderFire(e.id, best.x, best.y);
     }
   }
 

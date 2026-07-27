@@ -1,6 +1,6 @@
 import { applyBattleResults, fitRoster, squadMembers, type BattleRecord, type Campaign, type RosterEntry } from '../campaign/campaign';
 import { RedCommander } from '../sim/ai';
-import { SQUADS, TEAMS, type SquadKey } from '../sim/data';
+import { EMPLACEMENTS, SQUADS, TEAMS, WEAPONS, type EmplacementKey, type SquadKey } from '../sim/data';
 import { BREACH_LIP, BREACH_WIDE, EDGE, type GameMap } from '../sim/map';
 import { generateMap, type Building, type Vec } from '../sim/mapgen';
 import { mulberry32, type Rng } from '../sim/rng';
@@ -84,6 +84,37 @@ function nudgePassable(map: GameMap, x: number, y: number): Vec {
 }
 
 const DIRECT_FIRE = new Set<SquadKey>(['de_gruppe', 'de_smg42']);
+// Crew-served staging (balance 2026-07): these squads field as DEPLOYED
+// emplacements bound to their own crew squad (addEmplacement roster
+// passthrough keeps campaign names/pids/attrition), instead of bare foot
+// squads whose "MG42"/"mortar81" degenerate to personal pseudo-rifles —
+// sim.emplacements was EMPTY on every campaign battle, so the garrison's
+// heavy weapons never fought as heavy weapons and the AI's mortar doctrine
+// (readyMortar scans sim.emplacements) was structurally dead. Defenders
+// emplace MGs and mortars; attackers only mortars — an attacking MG team
+// must stay on its feet for the base-of-fire displacement game.
+const ATTACKER_EMPLACED: Partial<Record<SquadKey, EmplacementKey>> = {
+  us_mortar60: 'mortar60',
+  de_mortar81: 'mortar81',
+};
+const DEFENDER_EMPLACED: Partial<Record<SquadKey, EmplacementKey>> = {
+  ...ATTACKER_EMPLACED,
+  us_m1919: 'm1919_tripod',
+  de_smg42: 'mg42_lafette',
+};
+// A prepared position stockpiles ammunition for the gun it was dug for
+// (balance 2026-07): the measured defense fired its tubes dry inside 90
+// seconds against a company attack. Defender-emplaced crews only — an
+// attacker's crews carry what marching order allows.
+const STOCKPILE_MULT = 2;
+function stockpileAmmo(sim: Sim, e: { kind: EmplacementKey; crewTeamId: number }): void {
+  const type = WEAPONS[EMPLACEMENTS[e.kind].weapon].ammo.type;
+  for (const id of sim.teams[e.crewTeamId].soldierIds) {
+    const s = sim.soldiers[id];
+    if (s.ammo[type]) s.ammo[type] = s.ammo[type]! * STOCKPILE_MULT;
+  }
+}
+
 const GARRISON_RADIUS = 45; // meters from an objective a garrison post may sit
 const ATTACK_POST_MARGIN = 32; // attack posts start this far east of the west spawn (see attackObjectives)
 const FORD_SUPPRESSION = 0.45; // crossing under fire: shaken at spawn (fast-decaying)
@@ -188,6 +219,17 @@ export function makeStrategicBattle(
           crewSkill: r.crewSkill,
         })),
       );
+      const empKind = ATTACKER_EMPLACED[c.squads[si].def];
+      if (empKind) {
+        // Tube fielded in battery at the deployment line, crew bound to it. No
+        // post: the commander's smoke/HE missions find tubes via sim.emplacements,
+        // and a post would make runAttack march the crew off the gun.
+        const e2 = sim.addEmplacement('blue', empKind, anchor.x, anchor.y, 0, 'deployed', roster);
+        const squad = sim.squads[sim.teams[e2.crewTeamId].squadId];
+        squad.name = c.squads[si].name;
+        rosters.push(teamRosters.flat());
+        return;
+      }
       const squad = sim.addSquadFromDef('blue', c.squads[si].def, anchor.x, anchor.y, roster);
       squad.name = c.squads[si].name;
       const nearestObj = attackObjectives.reduce((best, o) => distSq(anchor, o) < distSq(anchor, best) ? o : best, attackObjectives[0]);
@@ -217,6 +259,14 @@ export function makeStrategicBattle(
     atkFielded.forEach(({ key, take }, i) => {
       const anchor = nudgePassable(plan.map, west.x + 7, yLo + yBandH * (i + 0.5));
       const roster = take === squadHeadcount(key) ? undefined : partialRoster(key, take);
+      const empKind = ATTACKER_EMPLACED[key];
+      if (empKind) {
+        // In battery at the deployment line; no post (see blue attacker branch).
+        const e2 = sim.addEmplacement('red', empKind, anchor.x, anchor.y, 0, 'deployed', roster);
+        const squad = sim.squads[sim.teams[e2.crewTeamId].squadId];
+        squad.name = `${i + 1}. ${SQUADS[key].name}`;
+        return;
+      }
       const squad = sim.addSquadFromDef('red', key, anchor.x, anchor.y, roster);
       const nearestObj = attackObjectives.reduce((best, o) => distSq(anchor, o) < distSq(anchor, best) ? o : best, attackObjectives[0]);
       commanderPosts[squad.id] = nearestObj;
@@ -292,7 +342,19 @@ export function makeStrategicBattle(
     fielded.forEach(({ key, take }, i) => {
       const anchor = anchorForSquad[i];
       const roster = take === squadHeadcount(key) ? undefined : partialRoster(key, take);
-      const squad = sim.addSquadFromDef('red', key, anchor.x, anchor.y, roster);
+      const empKind = DEFENDER_EMPLACED[key];
+      let squad;
+      if (empKind) {
+        // Prepared defense: the gun is dug in on the post, laid on the western
+        // approach, crew bound. The post stays so runDefend's arc'd defend
+        // order covers the crew (and re-mans the gun if pushed off).
+        const facing = Math.atan2(west.y - anchor.y, west.x - anchor.x);
+        const e2 = sim.addEmplacement('red', empKind, anchor.x, anchor.y, facing, 'deployed', roster);
+        stockpileAmmo(sim, e2);
+        squad = sim.squads[sim.teams[e2.crewTeamId].squadId];
+      } else {
+        squad = sim.addSquadFromDef('red', key, anchor.x, anchor.y, roster);
+      }
       commanderPosts[squad.id] = anchor;
       squad.name = `${i + 1}. ${SQUADS[key].name}`;
     });
@@ -351,7 +413,17 @@ export function makeStrategicBattle(
           crewSkill: r.crewSkill,
         })),
       );
-      const squad = sim.addSquadFromDef('blue', c.squads[si].def, anchor.x, anchor.y, roster);
+      const empKind = DEFENDER_EMPLACED[key];
+      let squad;
+      if (empKind) {
+        // Same prepared-defense staging as the red defender branch.
+        const facing = Math.atan2(west.y - anchor.y, west.x - anchor.x);
+        const e2 = sim.addEmplacement('blue', empKind, anchor.x, anchor.y, facing, 'deployed', roster);
+        stockpileAmmo(sim, e2);
+        squad = sim.squads[sim.teams[e2.crewTeamId].squadId];
+      } else {
+        squad = sim.addSquadFromDef('blue', c.squads[si].def, anchor.x, anchor.y, roster);
+      }
       squad.name = c.squads[si].name;
       bluePosts[squad.id] = anchor;
       defRosters.push(teamRosters.flat());
@@ -367,14 +439,23 @@ export function makeStrategicBattle(
   if (blueChit.companyIndex < 0) {
     throw new Error(`makeStrategicBattle: blue chit '${blueChit.name}' has no campaign company`);
   }
+  // Briefed avenue of approach for whichever side defends: every attacker
+  // (either side) deploys at the west spawn, and the defense is sited on it —
+  // the same knowledge the garrison anchors already encode.
   const blueCommander = new RedCommander({
     side: 'blue',
     stance: attackerSide === 'blue' ? 'attack' : 'defend',
     posts: bluePosts,
+    ...(attackerSide === 'red' ? { approach: { x: west.x, y: west.y } } : {}),
   });
   return {
     sim,
-    commander: new RedCommander({ side: 'red', stance, posts: commanderPosts }),
+    commander: new RedCommander({
+      side: 'red',
+      stance,
+      posts: commanderPosts,
+      ...(stance === 'defend' ? { approach: { x: west.x, y: west.y } } : {}),
+    }),
     blueCommander,
     name: `${defender.name} at (${x}, ${y})`,
     companyIndex: blueChit.companyIndex,
