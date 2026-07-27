@@ -1,5 +1,5 @@
 import { TERRAIN, type TerrainKey } from '../sim/data';
-import { EDGE, type GameMap } from '../sim/map';
+import { BREACH_WIDE, EDGE, type GameMap } from '../sim/map';
 import type { Building } from '../sim/mapgen';
 import type { Camera } from './camera';
 import { AO_ALPHA, SHADOW_ALPHA, SHADOW_SOFT_ALPHA, SUN, shadowOffset } from './light';
@@ -1654,7 +1654,11 @@ function drawTree(g: Ctx, map: GameMap, x: number, y: number, band: number, d: D
 // A church is also the one role that keeps MASONRY on its interior edges: a
 // chancel wall is 0.6 m of the same stone as the nave's outside, and drawing it
 // as a stud partition made the arch read like a bedroom door.
-function drawEdge(g: Ctx, e: number, x0: number, y0: number, x1: number, y1: number, interior = false, pier = false): void {
+// Broken limestone, in the same family as the enclosure walls' TONES but a
+// shade dirtier: a stone that has just come out of a wall carries its mortar.
+const RUBBLE = ['rgb(134,127,113)', 'rgb(117,111,100)', 'rgb(146,138,122)', 'rgb(104,100,91)'];
+
+function drawEdge(g: Ctx, e: number, x0: number, y0: number, x1: number, y1: number, interior = false, pier = false, top = 0): void {
   if (e === EDGE.NONE) return;
   const line = (w: number, color: string, t0 = 0, t1 = 1) => {
     g.strokeStyle = color;
@@ -1664,6 +1668,94 @@ function drawEdge(g: Ctx, e: number, x0: number, y0: number, x1: number, y1: num
     g.lineTo(x0 + (x1 - x0) * t1, y0 + (y1 - y0) * t1);
     g.stroke();
   };
+  // A hole blown or crushed through masonry (D10). Strict plan projection: from
+  // up here a breach is the two broken ends of the wall, the stone that came
+  // out of it lying on the ground, and the shadow that stone throws. There is
+  // no elevation view of a hole.
+  //
+  // The width code is the SIM's, not decoration — `map.ts` reads the same byte
+  // to decide who can cross. BREACH_LIP keeps a knee-high ridge of spoil across
+  // the gap (which is what BREACH_COVER is cover behind, and what SCRAMBLE
+  // costs time to climb); BREACH_WIDE is what a tank drove through, swept clear
+  // down the middle with the stone shouldered out to the sides.
+  if (e === EDGE.BREACH) {
+    const ux = x1 - x0;
+    const uy = y1 - y0;
+    const nx = -uy;
+    const ny = ux;
+    const cx = (x0 + x1) / 2;
+    const cy = (y0 + y1) / 2;
+    const wide = top === BREACH_WIDE;
+    const k = x0 * 2 + uy; // h and v edges on the same tile are different walls
+    const [rdx, rdy] = shadowOffset(0.28);
+    const spread = wide ? 0.6 : 0.46;
+    const bar = (w: number, color: string, t0: number, t1: number, ox = 0, oy = 0) => {
+      g.strokeStyle = color;
+      g.lineWidth = w;
+      g.beginPath();
+      g.moveTo(x0 + ux * t0 + ox, y0 + uy * t0 + oy);
+      g.lineTo(x0 + ux * t1 + ox, y0 + uy * t1 + oy);
+      g.stroke();
+    };
+    // pulverised mortar on the ground, under everything: the pale halo that
+    // says a wall came down here rather than never having been built
+    g.fillStyle = 'rgba(198,188,164,0.18)';
+    g.beginPath();
+    g.ellipse(cx, cy, Math.abs(ux) * 0.5 + Math.abs(nx) * spread, Math.abs(uy) * 0.5 + Math.abs(ny) * spread, 0, 0, Math.PI * 2);
+    g.fill();
+    // the wall did not vanish, it BROKE — two stubs, in EDGE.WALL's own pair
+    const stub = wide ? 0.1 : 0.2;
+    for (const [t0, t1] of [[0, stub], [1 - stub, 1]] as const) {
+      bar(0.3, '#2c241a', t0, t1);
+      bar(0.14, '#4a4034', t0, t1);
+    }
+    if (!wide) {
+      // the lip: spoil heaped across the opening, lower and wider than the wall
+      bar(0.34, `rgba(12,14,9,${SHADOW_SOFT_ALPHA})`, 0.24, 0.76, rdx * 1.3, rdy * 1.3);
+      bar(0.3, `rgba(12,14,9,${SHADOW_ALPHA})`, 0.26, 0.74, rdx * 0.7, rdy * 0.7);
+      bar(0.26, RUBBLE[1], 0.26, 0.74);
+      bar(0.1, 'rgba(224,216,194,0.24)', 0.3, 0.7, -rdx * 0.5, -rdy * 0.5);
+    }
+    const n = wide ? 9 : 11;
+    const st: [number, number, number, number][] = [];
+    for (let i = 0; i < n; i++) {
+      // Along the gap for a lip, shouldered out of it for a wide breach — the
+      // scatter has to agree with what the sim says can drive through.
+      const a = (hash(k, y0, 350 + i) - 0.5) * (wide ? 1.1 : 0.72);
+      const off = wide ? 0.3 + hash(k, y0, 362 + i) * 0.48 : hash(k, y0, 362 + i) * 0.42;
+      const b = (i & 1 ? off : -off) * (wide ? 1 : 0.9);
+      st.push([
+        cx + ux * a + nx * b,
+        cy + uy * a + ny * b,
+        0.05 + hash(k, y0, 374 + i) * 0.07,
+        (hash(k, y0, 386 + i) - 0.5) * Math.PI,
+      ]);
+    }
+    g.fillStyle = `rgba(12,14,9,${SHADOW_ALPHA})`;
+    for (const [sx, sy, r] of st) {
+      g.beginPath();
+      g.ellipse(sx + rdx, sy + rdy, r * 1.2, r * 0.86, 0, 0, Math.PI * 2);
+      g.fill();
+    }
+    for (let i = 0; i < st.length; i++) {
+      const [sx, sy, r, rot] = st[i];
+      g.save();
+      g.translate(sx, sy);
+      g.rotate(rot);
+      g.fillStyle = RUBBLE[i & 3];
+      g.fillRect(-r, -r * 0.7, r * 2, r * 1.4);
+      g.restore();
+      // lit crown: the same footprint again, smaller and up-sun. Never a
+      // rotated highlight — that would give every stone its own sun.
+      g.save();
+      g.translate(sx - rdx * 0.5, sy - rdy * 0.5);
+      g.rotate(rot);
+      g.fillStyle = 'rgba(228,220,198,0.26)';
+      g.fillRect(-r * 0.66, -r * 0.46, r * 1.32, r * 0.92);
+      g.restore();
+    }
+    return;
+  }
   if (e === EDGE.WALL && pier) {
     const cx = (x0 + x1) / 2;
     const cy = (y0 + y1) / 2;
@@ -1912,7 +2004,7 @@ export class TerrainLayer {
         const church = this.roleAt(x, y) === ROLE.CHURCH;
         const inside = this.sameBuilding(x, y - 1, x, y);
         const pier = inside && church && this.map.hEdge(x - 1, y) === EDGE.NONE && this.map.hEdge(x + 1, y) === EDGE.NONE;
-        drawEdge(g, this.map.hEdge(x, y), x, y, x + 1, y, inside && !church, pier);
+        drawEdge(g, this.map.hEdge(x, y), x, y, x + 1, y, inside && !church, pier, this.map.hEdgeTop(x, y));
       }
     }
     for (let y = ty0; y < ty1; y++) {
@@ -1921,7 +2013,7 @@ export class TerrainLayer {
         const church = this.roleAt(x, y) === ROLE.CHURCH;
         const inside = this.sameBuilding(x - 1, y, x, y);
         const pier = inside && church && this.map.vEdge(x, y - 1) === EDGE.NONE && this.map.vEdge(x, y + 1) === EDGE.NONE;
-        drawEdge(g, this.map.vEdge(x, y), x, y, x, y + 1, inside && !church, pier);
+        drawEdge(g, this.map.vEdge(x, y), x, y, x, y + 1, inside && !church, pier, this.map.vEdgeTop(x, y));
       }
     }
     drawEnclosureWalls(g, this.enclos, tx0, ty0, tx1, ty1, d);
