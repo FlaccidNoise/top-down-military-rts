@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { BREACH_COVER, BREACH_LIP, BREACH_WIDE, ECLASS, EDGE, FLOOR_H, GameMap, edgeClass, los } from '../src/sim/map';
-import { astar, BREACH_STEP } from '../src/sim/path';
+import { astar, BREACH_STEP, CRUSH_STEP } from '../src/sim/path';
 import { Sim, type BreachEvent } from '../src/sim/sim';
 
 // Destructible terrain (docs/plans/2026-07-27-destructible-terrain-design.md).
@@ -394,5 +394,168 @@ describe('D3 scramble timer', () => {
     expect(stalledTick).toBeGreaterThan(0); // he really did clamber through
     expect(sim.soldiers[0].x).toBeGreaterThan(12); // and he got to the far side
     expect(sim.soldiers[0].scrambleLeft).toBe(0);
+  });
+});
+
+// ── D4: vehicle crush ──────────────────────────────────────────────────────
+
+describe('D4 crush modes in canStep', () => {
+  // One free-standing edge of each class on the west side of column 10.
+  function classRow(): GameMap {
+    const m = new GameMap(24, 24);
+    m.setVEdge(10, 2, EDGE.WALL); //                       WALL_LOW
+    m.vEdgeTops[2 * (m.w + 1) + 10] = 1;
+    m.setVEdge(10, 3, EDGE.WALL); //                       WALL_HIGH
+    m.vEdgeTops[3 * (m.w + 1) + 10] = 2;
+    m.setVEdge(10, 4, EDGE.DOOR); //                       GATE
+    m.setVEdge(10, 5, EDGE.BREACH); //                     lip
+    m.vEdgeTops[5 * (m.w + 1) + 10] = BREACH_LIP;
+    m.setVEdge(10, 6, EDGE.BREACH); //                     wide
+    m.vEdgeTops[6 * (m.w + 1) + 10] = BREACH_WIDE;
+    return m;
+  }
+
+  it('matches the §2.1 table exactly', () => {
+    const m = classRow();
+    const row = (y: number) => (['vehicle', 'crush_light', 'crush_heavy'] as const).map((mode) => m.canStep(9, y, 10, y, mode));
+    expect(row(1)).toEqual([true, true, true]); //   NONE
+    expect(row(2)).toEqual([false, true, true]); //  WALL_LOW  — crushed by both tiers
+    expect(row(3)).toEqual([false, false, true]); // WALL_HIGH — tank only
+    expect(row(4)).toEqual([false, true, true]); //  GATE
+    expect(row(5)).toEqual([false, true, true]); //  BREACH lip — a hull widens it
+    expect(row(6)).toEqual([true, true, true]); //   BREACH wide
+  });
+
+  it('never opens a building to a hull, at any tier', () => {
+    const b = buildingMap();
+    for (const mode of ['vehicle', 'crush_light', 'crush_heavy'] as const) {
+      expect(b.canStep(4, 5, 5, 5, mode)).toBe(false); // masonry
+      expect(b.canStep(4, 6, 5, 6, mode)).toBe(false); // window
+      expect(b.canStep(4, 7, 5, 7, mode)).toBe(false); // house door
+      expect(b.canStep(5, 5, 6, 5, mode)).toBe(false); // and the floor itself (noVehicle)
+    }
+  });
+
+  it('hedges stay hard for every tier — the bocage is the map, not an obstacle', () => {
+    const m = new GameMap(24, 24);
+    m.setTerrain(10, 10, 'hedge');
+    for (const mode of ['vehicle', 'crush_light', 'crush_heavy'] as const) {
+      expect(m.canStep(9, 10, 10, 10, mode)).toBe(false);
+    }
+    expect(m.canStep(9, 10, 10, 10, 'foot')).toBe(true);
+  });
+});
+
+describe('D4 crush pathing cost', () => {
+  function sealed(): GameMap {
+    const m = new GameMap(24, 24);
+    for (let y = 0; y < 24; y++) {
+      m.setVEdge(10, y, EDGE.WALL);
+      m.vEdgeTops[y * (m.w + 1) + 10] = 1; // waist wall the whole way
+    }
+    return m;
+  }
+
+  it('a careful hull finds no route where a crushing one drives through', () => {
+    const m = sealed();
+    expect(astar(m, 8, 12, 12, 12, 'vehicle')).toBeNull();
+    expect(astar(m, 8, 12, 12, 12, 'crush_light')).not.toBeNull();
+    expect(astar(m, 8, 12, 12, 12, 'crush_heavy')).not.toBeNull();
+  });
+
+  it('takes the open gap when one is close, and drives through when it is not', () => {
+    const near = sealed();
+    for (let y = 13; y <= 14; y++) near.setVEdge(10, y, EDGE.NONE);
+    expect(astar(near, 8, 12, 12, 12, 'crush_light')!.some((n) => n.x === 10 && n.y >= 13)).toBe(true);
+
+    const far = sealed();
+    far.setVEdge(10, 23, EDGE.NONE); // open, but eleven rows away
+    expect(astar(far, 8, 12, 12, 12, 'crush_light')!.every((n) => n.y < 20)).toBe(true);
+  });
+
+  it('crush mode never leaks into the plain vehicle mode', () => {
+    const m = sealed();
+    expect(m.canStep(9, 12, 10, 12, 'vehicle')).toBe(false);
+    expect(astar(m, 8, 12, 12, 12, 'vehicle')).toBeNull();
+    expect(CRUSH_STEP).toBeGreaterThan(BREACH_STEP);
+  });
+});
+
+describe('D4 the crush event', () => {
+  // A single waist-high wall segment with a tank/halftrack west of it.
+  function oneWall(top: 1 | 2): GameMap {
+    const m = new GameMap(40, 20);
+    for (let y = 0; y < 20; y++) {
+      m.setVEdge(20, y, EDGE.WALL);
+      m.vEdgeTops[y * (m.w + 1) + 20] = top;
+    }
+    return m;
+  }
+
+  function drive(kind: 'sherman' | 'm3_halftrack', top: 1 | 2, ticks = 900): Sim {
+    const sim = new Sim(oneWall(top), 11);
+    const v = sim.addVehicle('blue', kind, 10.5, 10.5, 0);
+    sim.orderVehicleMove(v.id, 30.5, 10.5);
+    for (let i = 0; i < ticks; i++) sim.step();
+    return sim;
+  }
+
+  it('a halftrack flattens a waist wall flush — no rubble lip left behind', () => {
+    const sim = drive('m3_halftrack', 1);
+    expect(sim.vehicles[0].x).toBeGreaterThan(20);
+    const ev = sim.breachLog.filter((b) => b.cause === 'crush');
+    expect(ev.length).toBeGreaterThan(0);
+    expect(ev[0].cls).toBe(ECLASS.WALL_LOW);
+    expect(sim.map.vEdge(20, ev[0].y)).toBe(EDGE.NONE); // flattened, not holed
+    expect(sim.map.vEdgeTop(20, ev[0].y)).toBe(0);
+  });
+
+  it('a halftrack cannot take a head-high wall; a Sherman can, and leaves a hull-wide breach', () => {
+    const light = drive('m3_halftrack', 2);
+    expect(light.vehicles[0].x).toBeLessThan(20);
+    expect(light.breachLog).toHaveLength(0);
+
+    const heavy = drive('sherman', 2);
+    expect(heavy.vehicles[0].x).toBeGreaterThan(20);
+    const ev = heavy.breachLog.filter((b) => b.cause === 'crush');
+    expect(ev).toHaveLength(1);
+    expect(ev[0].cls).toBe(ECLASS.WALL_HIGH);
+    expect(ev[0].wide).toBe(true);
+    expect(heavy.map.vEdge(20, ev[0].y)).toBe(EDGE.BREACH);
+    expect(heavy.map.vEdgeTop(20, ev[0].y)).toBe(BREACH_WIDE);
+  });
+
+  it('the tank stalls in the gap and rattles both sides while it does it', () => {
+    const sim = new Sim(oneWall(2), 11);
+    const v = sim.addVehicle('blue', 'sherman', 10.5, 10.5, 0);
+    // one man each side of the wall, neither of them the tank's crew
+    sim.addSquad('blue', 'a', [{ name: 'W', weapon: 'garand', x: 18.5, y: 10.5, courage: 0.5 }]);
+    sim.addSquad('red', 'b', [{ name: 'E', weapon: 'kar98k', x: 22.5, y: 10.5, courage: 0.5 }]);
+    const blue = sim.soldiers.find((s) => s.name === 'W')!;
+    const red = sim.soldiers.find((s) => s.name === 'E')!;
+    sim.orderVehicleMove(v.id, 30.5, 10.5);
+    let stalled = 0;
+    let suppAtCrush = { blue: 0, red: 0 };
+    for (let i = 0; i < 900; i++) {
+      sim.step();
+      if (v.crushLeft > 0) {
+        if (stalled === 0) suppAtCrush = { blue: blue.suppression, red: red.suppression };
+        stalled++;
+      }
+    }
+    expect(stalled).toBeGreaterThan(0);
+    expect(suppAtCrush.blue).toBeGreaterThan(0); // both sides flinch, not just the enemy
+    expect(suppAtCrush.red).toBeGreaterThan(0);
+  });
+
+  it('a crush is not a boom and draws no rng — two same-seed runs match byte for byte', () => {
+    const snap = (): string => {
+      const sim = new Sim(oneWall(2), 11);
+      const v = sim.addVehicle('blue', 'sherman', 10.5, 10.5, 0);
+      sim.orderVehicleMove(v.id, 30.5, 10.5);
+      for (let i = 0; i < 600; i++) sim.step();
+      return sim.snapshot() + JSON.stringify(sim.breachLog);
+    };
+    expect(snap()).toBe(snap());
   });
 });

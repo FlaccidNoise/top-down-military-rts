@@ -37,6 +37,11 @@ export const BREACH_THRESH: readonly number[] = [Infinity, 1.5, 1.0, 3.0, 5.0, 4
 // channel windows and hedgerow banks already use in los().
 export const BREACH_COVER = 0.35;
 
+// How a mover treats edges. The two crush tiers are a hull that will drive
+// THROUGH something rather than round it — one boolean's worth of difference,
+// expressed as two modes rather than by threading a vehicle class into canStep.
+export type StepMode = 'foot' | 'vehicle' | 'crush_light' | 'crush_heavy';
+
 const TERRAIN_KEYS = Object.keys(TERRAIN) as TerrainKey[];
 
 export const FLOOR_H = 3; // m per story
@@ -170,11 +175,15 @@ export class GameMap {
   // carries multi-metre elevation steps straight against its roads (the mapgen
   // dome pass skips road/water/floor tiles), so a global max-grade check would
   // wall off the arterial on maps that generate fine today.
-  canStep(x0: number, y0: number, x1: number, y1: number, mode: 'foot' | 'vehicle' = 'foot'): boolean {
+  canStep(x0: number, y0: number, x1: number, y1: number, mode: StepMode = 'foot'): boolean {
     if (!this.inBounds(x1, y1)) return false;
     const t = this.terrainAt(x1, y1);
     if (!t.passable) return false;
-    if (mode === 'vehicle' && t.noVehicle) return false;
+    // noVehicle applies to a crushing hull exactly as it does to a careful one:
+    // hedgerows are a 2 m earth bank with a root mat through them, not a hedge,
+    // and a Sherman that climbs one shows its belly plate to the far side. The
+    // bocage grid is the map's flanking layer and stays hard (design §2.3).
+    if (mode !== 'foot' && t.noVehicle) return false;
     let e: EdgeType = EDGE.NONE;
     let ex = 0;
     let ey = 0;
@@ -199,13 +208,62 @@ export class GameMap {
       e = this.hEdge(ex, ey);
     }
     if (e === EDGE.NONE) return true;
+    if (mode === 'foot') return e === EDGE.DOOR || e === EDGE.BREACH; // walls and windows block movement
     if (e === EDGE.BREACH) {
-      // Foot always scrambles a lip; a hull needs the wide code.
-      if (mode === 'foot') return true;
+      // A careful hull needs the wide code; a crushing one widens a lip.
+      if (mode !== 'vehicle') return true;
       return (horiz ? this.hEdgeTop(ex, ey) : this.vEdgeTop(ex, ey)) === BREACH_WIDE;
     }
     if (mode === 'vehicle') return false;
-    return e === EDGE.DOOR; // walls and windows block movement
+    // Crush tiers (§2.1). A window, a house door and masonry stop every hull:
+    // the sim has no building HP and a tank that can drive through a house
+    // makes every interior fight pointless.
+    const cls = edgeClass(this, ex, ey, horiz);
+    if (cls === ECLASS.GATE || cls === ECLASS.FENCE || cls === ECLASS.WALL_LOW) return true;
+    return cls === ECLASS.WALL_HIGH && mode === 'crush_heavy';
+  }
+
+  // Which edge lies between two orthogonally adjacent tiles, addressed the way
+  // hEdge/vEdge want it. Cold path only: canStep and crushesBetween inline the
+  // same arithmetic because they run per A* expansion and must not allocate.
+  edgeAddr(x0: number, y0: number, x1: number, y1: number): { x: number; y: number; horiz: boolean } | null {
+    if (x1 === x0 + 1) return { x: x1, y: y0, horiz: false };
+    if (x1 === x0 - 1) return { x: x0, y: y0, horiz: false };
+    if (y1 === y0 + 1) return { x: x0, y: y1, horiz: true };
+    if (y1 === y0 - 1) return { x: x0, y: y0, horiz: true };
+    return null;
+  }
+
+  // Does this step exist only because the hull is willing to flatten something?
+  // Edge-only: terrain passability is canStep's job and is already settled by
+  // the time A* asks for the surcharge.
+  crushesBetween(x0: number, y0: number, x1: number, y1: number): boolean {
+    let e: EdgeType = EDGE.NONE;
+    let ex = 0;
+    let ey = 0;
+    let horiz = false;
+    if (x1 === x0 + 1) {
+      ex = x1;
+      ey = y0;
+      e = this.vEdge(ex, ey);
+    } else if (x1 === x0 - 1) {
+      ex = x0;
+      ey = y0;
+      e = this.vEdge(ex, ey);
+    } else if (y1 === y0 + 1) {
+      ex = x0;
+      ey = y1;
+      horiz = true;
+      e = this.hEdge(ex, ey);
+    } else if (y1 === y0 - 1) {
+      ex = x0;
+      ey = y0;
+      horiz = true;
+      e = this.hEdge(ex, ey);
+    }
+    if (e === EDGE.NONE) return false;
+    if (e === EDGE.BREACH) return (horiz ? this.hEdgeTop(ex, ey) : this.vEdgeTop(ex, ey)) !== BREACH_WIDE;
+    return true;
   }
 
   // Does a step between two orthogonally adjacent tiles cross a rubble lip?

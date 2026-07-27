@@ -334,6 +334,14 @@ export interface VehicleDef {
   mgRange: number;
   ammo: { ap: number; he: number };
   turret: 'full' | number; // number = traverse degrees (StuG: 12)
+  // What this hull can drive through (destructible-terrain design §2.1). Stated
+  // per vehicle rather than inferred from armour or openTop: those are proxies
+  // that go wrong the first time an open-topped tank destroyer joins the
+  // roster, and this codebase has already been bitten by hand-kept blacklists
+  // drifting from the rule they stand in for (see canStep/reachField).
+  // 'light' flattens fences, gates and waist walls; 'heavy' also takes a
+  // head-high enclosure wall. Neither ever drives through a house.
+  crush: 'light' | 'heavy';
   crew: SoldierSlot[]; // replaces hardcoded crew
   seats?: number; // transport capacity
   towHook?: boolean;
@@ -352,6 +360,7 @@ export const VEHICLES = {
     mgRange: 100,
     ammo: { ap: 30, he: 40 },
     turret: 'full',
+    crush: 'heavy',
     crew: [
       { role: 'leader', weapon: 'carbine', ammo: { mag_carbine: 6 } },
       { role: 'gunner', weapon: 'carbine', ammo: { mag_carbine: 6 } },
@@ -369,6 +378,7 @@ export const VEHICLES = {
     mgRange: 100,
     ammo: { ap: 30, he: 40 },
     turret: 'full',
+    crush: 'heavy',
     crew: [
       { role: 'leader', weapon: 'mp40', ammo: { mag_mp40: 5 } },
       { role: 'gunner', weapon: 'mp40', ammo: { mag_mp40: 5 } },
@@ -386,6 +396,7 @@ export const VEHICLES = {
     mgRange: 100,
     ammo: { ap: 30, he: 40 },
     turret: 12, // casemate: hull traverse only, ±12°
+    crush: 'heavy',
     crew: [
       { role: 'leader', weapon: 'mp40', ammo: { mag_mp40: 5 } },
       { role: 'gunner', weapon: 'mp40', ammo: { mag_mp40: 5 } },
@@ -403,6 +414,7 @@ export const VEHICLES = {
     mgRange: 100,
     ammo: { ap: 0, he: 0 },
     turret: 'full',
+    crush: 'light',
     crew: [
       { role: 'driver', weapon: 'carbine', ammo: { mag_carbine: 6 } },
       { role: 'gunner', weapon: 'carbine', ammo: { mag_carbine: 6 } },
@@ -422,6 +434,7 @@ export const VEHICLES = {
     mgRange: 100,
     ammo: { ap: 0, he: 0 },
     turret: 'full',
+    crush: 'light',
     crew: [
       { role: 'driver', weapon: 'mp40', ammo: { mag_mp40: 5 } },
       { role: 'gunner', weapon: 'mp40', ammo: { mag_mp40: 5 } },

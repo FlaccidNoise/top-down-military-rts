@@ -22,7 +22,7 @@ import {
   type WeaponKey,
 } from './data';
 import { crewDegrade, crewHasLos, crewNear, friendlyHasLos, loadsReady, pickFirer, type Emplacement } from './emplacement';
-import { BREACH_LIP, BREACH_THRESH, BREACH_WIDE, EDGE, EYE_H, FLOOR_H, GameMap, edgeClass, los, type LosResult } from './map';
+import { BREACH_LIP, BREACH_THRESH, BREACH_WIDE, ECLASS, EDGE, EYE_H, FLOOR_H, GameMap, edgeClass, los, type EdgeType, type LosResult, type StepMode } from './map';
 import type { Building } from './mapgen';
 import { ambushThreshold, ASSAULT_DANGER_MULT, BALK_REASON, CHARGE_BALK_REASON, compliance, dangerScore, type OrderState, type TeamOrder } from './orders';
 import { astar } from './path';
@@ -80,6 +80,12 @@ const BREACH_FACE_EPS = 0.01;
 // Ticks a man spends getting himself over a rubble lip (0.3 s), the climbLeft
 // shape applied to a horizontal obstacle.
 const SCRAMBLE_TICKS = 18;
+// Ticks of stalled movement after a hull drives through something: half a
+// second for a fence or a garden wall, a second and a quarter for a tank
+// grinding a head-high enclosure wall down under its tracks.
+const CRUSH_STALL_LIGHT = 30;
+const CRUSH_STALL_HEAVY = 75;
+const CRUSH_SUPPRESSION = 0.25;
 
 // A wall (or gate, or window) that opened mid-battle. Insertion-ordered:
 // `pendingBreaches` is the render channel (drained every frame like booms),
@@ -222,6 +228,7 @@ export interface Vehicle {
   ammo: { ap: number; he: number };
   passengerTeamIds: number[];
   turning: boolean; // rotating a restricted-arc turret (StuG) toward a target instead of firing
+  crushLeft: number; // ticks of stalled MOVEMENT after driving through something; the gun still works
 }
 
 // Which armor arc does a shot from (fx,fy) strike?
@@ -465,6 +472,11 @@ export function formationSlots(count: number, facing?: number, width?: number): 
 function isOpenTop(kind: VehicleKey): boolean {
   const def: VehicleDef = VEHICLES[kind];
   return def.openTop === true;
+}
+
+function crushMode(kind: VehicleKey): StepMode {
+  const def: VehicleDef = VEHICLES[kind];
+  return def.crush === 'heavy' ? 'crush_heavy' : 'crush_light';
 }
 
 // Closest-approach parameter t (in [0,1]) of a point to a segment — used to
@@ -966,6 +978,7 @@ export class Sim {
       ammo: { ...def.ammo },
       passengerTeamIds: [],
       turning: false,
+      crushLeft: 0,
     };
     for (const sid of squad.soldierIds) this.soldiers[sid].inVehicle = v.id;
     this.vehicles.push(v);
@@ -1075,7 +1088,10 @@ export class Sim {
     if (!v || !v.alive) return;
     const spot = this.findVehicleSpot(Math.floor(wx), Math.floor(wy));
     if (!spot) return;
-    const path = astar(this.map, Math.floor(v.x), Math.floor(v.y), spot.x, spot.y, 'vehicle');
+    // Crush mode, not plain 'vehicle': the pathfinder is where a hull decides
+    // it would rather go through the garden wall than the long way round, and
+    // CRUSH_STEP is what stops it doing so casually.
+    const path = astar(this.map, Math.floor(v.x), Math.floor(v.y), spot.x, spot.y, crushMode(v.kind));
     if (path && path.length > 1) {
       v.path = path.slice(1).map((p) => ({ x: p.x + 0.5, y: p.y + 0.5 }));
       v.pathI = 0;
@@ -2051,25 +2067,65 @@ export class Sim {
 
   // The one place an edge byte is allowed to change mid-battle. State lives on
   // the map and nowhere else; the two event lists are derived records.
-  private breachEdge(horiz: boolean, x: number, y: number, cls: number, wide: boolean, cause: 'blast' | 'crush'): void {
+  // `code` is BREACH — a hole with a rubble lip in it — except when a hull
+  // flattens a fence or snaps a gate off its hinges, which leaves nothing to
+  // climb and so leaves NONE (§2.2).
+  private breachEdge(horiz: boolean, x: number, y: number, cls: number, wide: boolean, cause: 'blast' | 'crush', code: EdgeType = EDGE.BREACH): void {
     const map = this.map;
-    map.hasBreach = true;
+    const top = code === EDGE.BREACH ? (wide ? BREACH_WIDE : BREACH_LIP) : 0;
+    if (code === EDGE.BREACH) map.hasBreach = true;
     if (horiz) {
-      map.setHEdge(x, y, EDGE.BREACH);
-      map.hEdgeTops[y * map.w + x] = wide ? BREACH_WIDE : BREACH_LIP;
+      map.setHEdge(x, y, code);
+      map.hEdgeTops[y * map.w + x] = top;
     } else {
-      map.setVEdge(x, y, EDGE.BREACH);
-      map.vEdgeTops[y * (map.w + 1) + x] = wide ? BREACH_WIDE : BREACH_LIP;
+      map.setVEdge(x, y, code);
+      map.vEdgeTops[y * (map.w + 1) + x] = top;
     }
     const ev: BreachEvent = { horiz, x, y, cls, wide, cause };
     this.pendingBreaches.push(ev);
     this.breachLog.push(ev);
   }
 
+  // A hull that has just consumed a waypoint drives through whatever stood on
+  // the edge it crossed. Nothing is re-checked here: canStep in the crush mode
+  // this vehicle paths with is what decided the step was legal at all, so this
+  // only has to say what the wreckage looks like.
+  private resolveCrush(v: Vehicle, x0: number, y0: number, x1: number, y1: number): void {
+    const map = this.map;
+    if (!map.crushesBetween(x0, y0, x1, y1)) return;
+    const a = map.edgeAddr(x0, y0, x1, y1);
+    if (!a) return;
+    const cls = edgeClass(map, a.x, a.y, a.horiz);
+    if (cls === ECLASS.NONE) {
+      // Already a rubble lip: the tracks shove it aside into a hull-wide gap.
+      this.breachEdge(a.horiz, a.x, a.y, cls, true, 'crush');
+      v.crushLeft = CRUSH_STALL_LIGHT;
+      return;
+    }
+    if (cls === ECLASS.WALL_HIGH) {
+      this.breachEdge(a.horiz, a.x, a.y, cls, true, 'crush');
+      v.crushLeft = CRUSH_STALL_HEAVY;
+      // Both sides flinch. suppressAround is side-filtered, so it takes two
+      // calls: a Sherman coming through a garden wall eight metres away should
+      // rattle the men behind it whoever they are. Neither call draws rng.
+      const mx = a.horiz ? a.x + 0.5 : a.x;
+      const my = a.horiz ? a.y : a.y + 0.5;
+      this.suppressAround(mx, my, 'blue', CRUSH_SUPPRESSION);
+      this.suppressAround(mx, my, 'red', CRUSH_SUPPRESSION);
+      return;
+    }
+    // Fence, gate, waist wall: flattened flush, nothing left to climb.
+    this.breachEdge(a.horiz, a.x, a.y, cls, true, 'crush', EDGE.NONE);
+    v.crushLeft = CRUSH_STALL_LIGHT;
+  }
+
   private updateVehicle(v: Vehicle): void {
     const def = VEHICLES[v.kind];
-    // movement
-    if (v.path) {
+    // movement — a hull grinding through a wall stalls; its gun does not, so
+    // this gates the movement block only and everything below runs as usual.
+    if (v.crushLeft > 0) {
+      v.crushLeft--;
+    } else if (v.path) {
       const wp = v.path[v.pathI];
       const dx = wp.x - v.x;
       const dy = wp.y - v.y;
@@ -2078,6 +2134,12 @@ export class Sim {
       let remaining = def.speed * (onRoad ? 1.3 : 1) * DT;
       if (d > 0.01) v.facing = Math.atan2(dy, dx);
       if (d <= remaining) {
+        // Which tile he came from, taken off the path: waypoints are tile
+        // centres, so v.x has already crossed the boundary by the time the
+        // waypoint is consumed (same trap as advance()'s scramble).
+        const prev = v.pathI > 0 ? v.path[v.pathI - 1] : null;
+        const px = prev ? Math.floor(prev.x) : Math.floor(v.x);
+        const py = prev ? Math.floor(prev.y) : Math.floor(v.y);
         v.x = wp.x;
         v.y = wp.y;
         v.pathI++;
@@ -2085,6 +2147,7 @@ export class Sim {
           v.path = null;
           v.pathI = 0;
         }
+        this.resolveCrush(v, px, py, Math.floor(wp.x), Math.floor(wp.y));
       } else {
         v.x += (dx / d) * remaining;
         v.y += (dy / d) * remaining;
@@ -3742,6 +3805,7 @@ export class Sim {
         v.ammo.ap,
         v.ammo.he,
         v.turning,
+        v.crushLeft,
         v.passengerTeamIds.join(','),
       ]),
       teams: this.teams.map((t) => [t.id, t.orderState.phase, t.orderState.order?.kind ?? '', t.smokeLeft, t.ambushBonusTick]),
