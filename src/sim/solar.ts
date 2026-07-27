@@ -174,6 +174,24 @@ export function ambientAt(el: number): readonly [number, number, number, number]
   return [lerp(DUSK[0], NIGHT[0], t), lerp(DUSK[1], NIGHT[1], t), lerp(DUSK[2], NIGHT[2], t), lerp(0.42, 0.62, t)];
 }
 
+// --- Sim-side light level ----------------------------------------------------
+//
+// One scalar 0..1 for the sim's night rules (spot cap, concealment ramps).
+// Piecewise-linear in ELEVATION with knots at the landmarks the ambient ramp
+// uses (+25 full day, 0 sunrise, -6 civil dusk, -12 astronomical dark), so the
+// gameplay ramps and the visual grade move together. CONTINUOUS, not bucketed:
+// quantization exists for bake keys; the sim has no cache to key.
+// Exactly 1 through the nine-hour core of the day (el >= 25), exactly 0 below
+// astronomical dark. Monotone in elevation.
+export function lightAt(clockMin: number): number {
+  const el = elevationAt(clockMin);
+  if (el >= 25) return 1;
+  if (el >= 0) return 0.5 + (el / 25) * 0.5;
+  if (el >= -6) return 0.25 + ((el + 6) / 6) * 0.25;
+  if (el >= -12) return ((el + 12) / 6) * 0.25;
+  return 0;
+}
+
 export interface SunState {
   /** Quantization bucket — the ONLY thing that enters a bake key. */
   step: number;

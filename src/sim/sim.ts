@@ -44,6 +44,7 @@ import type { Building } from './mapgen';
 import { ambushThreshold, ASSAULT_DANGER_MULT, BALK_REASON, CHARGE_BALK_REASON, compliance, dangerScore, type OrderState, type TeamOrder } from './orders';
 import { astar } from './path';
 import { mulberry32, type Rng } from './rng';
+import { CANON_CLOCK_MIN, lightAt } from './solar';
 import { LEAN_K, WIND } from './wind';
 
 export const DT = 1 / 30; // fixed timestep, seconds
@@ -687,6 +688,14 @@ export interface Contact {
 export class Sim {
   tick = 0;
   rng: Rng;
+  // The battle's wall clock (design §7.3): makeStrategicBattle sets startMin
+  // from front.clockMin; every direct constructor (tests, scenario.ts) keeps
+  // the canonical default, under which light === 1 and every night rule is
+  // exactly the shipped day behaviour. NOT in snapshot(): clockMin and light
+  // are derivable from (startMin, tick), which snapshot already pins.
+  startMin = CANON_CLOCK_MIN;
+  private lightTick = -1;
+  private lightMemo = 1;
   buildings: Building[] = []; // set by the scenario from the map plan; render + placement data
   soldiers: Soldier[] = [];
   squads: Squad[] = [];
@@ -738,6 +747,25 @@ export class Sim {
 
   constructor(readonly map: GameMap, seed: number) {
     this.rng = mulberry32(seed);
+  }
+
+  /** Wall-clock minute of the battle: startMin + elapsed sim time (30 ticks/s = 1800 ticks a minute). Pure in (startMin, tick). */
+  get clockMin(): number {
+    return this.startMin + this.tick / 1800;
+  }
+
+  // Light level 0..1 (solar.ts lightAt): 1 through the core of the day, 0 in
+  // astronomical dark. A pure function of (startMin, tick) — no RNG, no
+  // accumulation; the memo is keyed on the tick and only skips recomputing
+  // the same value. Read INSIDE the sense funnel (sightToSoldier,
+  // updateSpotting, sideSeesPoint), never passed as an argument — a new
+  // per-observer argument is the trap the sight-funnel-callers note records.
+  get light(): number {
+    if (this.lightTick !== this.tick) {
+      this.lightTick = this.tick;
+      this.lightMemo = lightAt(this.clockMin);
+    }
+    return this.lightMemo;
   }
 
   private spawnSoldier(side: Side, squadId: number, teamId: number, role: Role, m: MemberInit): Soldier {

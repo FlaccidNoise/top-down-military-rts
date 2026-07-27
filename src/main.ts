@@ -3,6 +3,7 @@ import { advanceDays, fillReplacements, newCampaign, squadMembers, type Campaign
 import { AudioEngine } from './render/audio';
 import { Camera } from './render/camera';
 import { Renderer } from './render/renderer';
+import { setSun } from './render/light';
 import { StrategicView, TERRAIN_LABELS } from './render/strategic';
 import { bootCamera as bootCameraFor, capInset, FRAME_M_DESKTOP, FRAME_M_MOBILE, type Inset } from './render/framing';
 import { MOBILE, view, viewSize } from './render/view';
@@ -238,6 +239,15 @@ const urlSeed = new URLSearchParams(location.search).get('seed'); // debug: ?see
 if (urlSeed !== null && !Number.isFinite(Number(urlSeed))) console.warn(`?seed=${urlSeed} is not a number; ignoring`);
 const fowOff = new URLSearchParams(location.search).get('fow') === '0'; // debug: ?fow=0 disables fog of war (render-only; never touches sim outcomes)
 const hazeOff = new URLSearchParams(location.search).get('haze') === '0'; // debug: ?haze=0 drops the ambient haze bands so the art sweep can shoot both
+// debug: ?hour=HHMM sets the campaign clock at boot (day 1), so a battle can be
+// staged at any sun. Same contract as ?fow: a boot-time staging switch, never
+// read by step() — the clock it sets flows through the normal startMin path.
+const urlHour = new URLSearchParams(location.search).get('hour');
+if (urlHour !== null) {
+  const m = /^(\d{1,2}):?(\d{2})$/.exec(urlHour);
+  if (m && Number(m[1]) < 24 && Number(m[2]) < 60) front.clockMin = Number(m[1]) * 60 + Number(m[2]);
+  else console.warn(`?hour=${urlHour} is not HHMM; ignoring`);
+}
 const hud = new Hud({
   selectSquad,
   selectVehicle,
@@ -1178,6 +1188,10 @@ function frame(now: number): void {
     } else {
       acc = 0;
     }
+    // The one call that makes the sun move (N3): the render side is fully
+    // reactive — light.ts quantizes, and every sun-keyed cache queues its own
+    // rebakes off the step. Near-free when the step hasn't changed.
+    setSun(sim.clockMin);
     const cw = view.w;
     const chh = view.h;
     const shots = sim.takeEvents();

@@ -137,6 +137,9 @@ export function makeStrategicBattle(
   // <=4-argument form and are unaffected.
   const plan = generateMap(seed, 320, 240, viaFord ? 'river' : front.sector.cells[e.cell].terrain, { interiors: true });
   const sim = new Sim(plan.map, seed);
+  // The campaign clock reaches the battlefield here and nowhere else: the sun,
+  // the ambient grade and the night spotting rules all derive from startMin.
+  sim.startMin = front.clockMin;
   sim.buildings = plan.buildings;
 
   const { west } = plan.spawns;
