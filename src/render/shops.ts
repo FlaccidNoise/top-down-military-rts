@@ -50,6 +50,14 @@ const WALL_PROJ = 0.5;
 const EAVE = 0.55;
 const AWNING = 1.2; // metres of projection
 const SIGN_ARM = 1;
+// How high off the pavement each piece hangs. These are the ONLY numbers that
+// say "this thing is above the ground" in a strict plan projection, so they
+// are real heights fed straight to shadowOffset — not a scaled-down fudge of
+// one. A blind and a bracket sign both throw their shape clear into the
+// street, which is exactly what an overhead photograph of a high street shows.
+const AWNING_H = 2.3;
+const SIGN_H = 2.5;
+const TRESTLE_H = 0.8;
 
 // Muted awning canvas — sun-bleached ticking, not a beach parasol. The pale
 // stripe is the one that sets the value, so it stays well under the roof
@@ -152,7 +160,7 @@ const qy = (s: Shopfront, uy: number, u: number, v: number): number => s.ay + uy
 
 function awning(g: Ctx, s: Shopfront, ux: number, uy: number, u0: number, u1: number, d: Detail): void {
   const span = u1 - u0;
-  const [sdx, sdy] = shadowOffset(1.5);
+  const [sdx, sdy] = shadowOffset(AWNING_H);
   const quad = (a: number, b: number, v0: number, v1: number, odx = 0, ody = 0): void => {
     g.beginPath();
     g.moveTo(qx(s, ux, a, v0) + odx, qy(s, uy, a, v0) + ody);
@@ -163,7 +171,7 @@ function awning(g: Ctx, s: Shopfront, ux: number, uy: number, u0: number, u1: nu
     g.fill();
   };
   g.fillStyle = `rgba(10,12,8,${(AO_ALPHA * 0.75).toFixed(3)})`;
-  quad(u0, u1, 0, AWNING, sdx * 0.8, sdy * 0.8);
+  quad(u0, u1, 0, AWNING, sdx, sdy);
   // Striped canvas: the stripes run OUT from the wall, which is what an awning
   // does and also what tells the eye which way the shop faces.
   const trim = AWNING_TRIM[(hash(s.seed, 0, 341) * AWNING_TRIM.length) | 0];
@@ -198,14 +206,14 @@ function awning(g: Ctx, s: Shopfront, ux: number, uy: number, u0: number, u1: nu
 function sign(g: Ctx, s: Shopfront, ux: number, uy: number, len: number): void {
   const end = hash(s.seed, 1, 342) > 0.5;
   const u = end ? Math.min(len - 0.5, len - 0.7) : 0.7;
-  const [sdx, sdy] = shadowOffset(2.2);
+  const [sdx, sdy] = shadowOffset(SIGN_H);
   const bx = qx(s, ux, u, SIGN_ARM);
   const by = qy(s, uy, u, SIGN_ARM);
   g.strokeStyle = 'rgba(12,14,9,0.26)';
   g.lineWidth = 0.09;
   g.beginPath();
-  g.moveTo(qx(s, ux, u, 0.05) + sdx * 0.5, qy(s, uy, u, 0.05) + sdy * 0.5);
-  g.lineTo(bx + sdx * 0.5, by + sdy * 0.5);
+  g.moveTo(qx(s, ux, u, 0.05) + sdx, qy(s, uy, u, 0.05) + sdy);
+  g.lineTo(bx + sdx, by + sdy);
   g.stroke();
   g.strokeStyle = 'rgb(52,46,38)';
   g.lineWidth = 0.075;
@@ -223,7 +231,7 @@ function sign(g: Ctx, s: Shopfront, ux: number, uy: number, len: number): void {
     g.fillRect(-bw / 2, -bh / 2, bw, bh);
     g.restore();
   };
-  board(bx + sdx * 0.55, by + sdy * 0.55, 'rgba(10,12,8,0.32)');
+  board(bx + sdx, by + sdy, 'rgba(10,12,8,0.32)');
   board(bx, by, SIGN_BOARD[(hash(s.seed, 2, 342) * SIGN_BOARD.length) | 0]);
   g.save();
   g.translate(bx, by);
@@ -313,6 +321,7 @@ function apron(g: Ctx, s: Shopfront, ux: number, uy: number, len: number, aw0: n
   }
   if (d < 2 || hash(s.seed, 4, 347) > 0.55) return;
   // trestle stall: a board on two Xs, with produce heaped on it
+  const [tdx, tdy] = shadowOffset(TRESTLE_H);
   const su = Math.max(0.9, Math.min(len - 0.9, s.doorAt >= 0 ? s.doorAt + 1.7 : len * 0.65));
   const half = 0.85;
   const v = AWNING + 0.42;
@@ -321,8 +330,8 @@ function apron(g: Ctx, s: Shopfront, ux: number, uy: number, len: number, aw0: n
   g.strokeStyle = 'rgba(12,14,9,0.28)';
   g.lineWidth = 0.5;
   g.beginPath();
-  g.moveTo(qx(s, ux, a0, v) + sdx * 1.4, qy(s, uy, a0, v) + sdy * 1.4);
-  g.lineTo(qx(s, ux, a1, v) + sdx * 1.4, qy(s, uy, a1, v) + sdy * 1.4);
+  g.moveTo(qx(s, ux, a0, v) + tdx, qy(s, uy, a0, v) + tdy);
+  g.lineTo(qx(s, ux, a1, v) + tdx, qy(s, uy, a1, v) + tdy);
   g.stroke();
   g.strokeStyle = 'rgb(134,112,78)';
   g.lineWidth = 0.46;
