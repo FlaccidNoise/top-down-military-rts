@@ -699,6 +699,117 @@ export function drawFurniture(
   }
 }
 
+// ── I15 · rugs ─────────────────────────────────────────────────────────────
+
+// A rug is render-only: no terrain key, no sim effect. Anchored on a plain
+// floor tile beside a heavy piece in a dwelling, hash-gated, and grown to 2x1
+// or 2x2 where the neighbouring tiles are also plain floor — so it crosses tile
+// seams as one object, which is why it is drawn straight into the chunk instead
+// of being a per-tile stamp.
+const RUG_A: RGB = [124, 64, 52]; // faded madder
+const RUG_B: RGB = [70, 74, 92]; // indigo
+const RUG_C: RGB = [116, 98, 58]; // old gold
+
+export function drawRugs(
+  g: Ctx,
+  map: GameMap,
+  roleAt: (x: number, y: number) => number,
+  tx0: number,
+  ty0: number,
+  tx1: number,
+  ty1: number,
+  d: number,
+): void {
+  if (!map.hasFurniture) return;
+  const plain = (x: number, y: number) => map.inBounds(x, y) && map.terrainKeyAt(x, y) === 'floor' && map.buildingIdAt(x, y) >= 0;
+  for (let y = ty0 - 1; y < ty1; y++) {
+    for (let x = tx0 - 1; x < tx1; x++) {
+      if (!plain(x, y) || hash(x, y, 420) >= 0.16) continue;
+      const role = roleAt(x, y);
+      if (role !== ROLE.OTHER && role !== ROLE.TOWNHOUSE && role !== ROLE.CIVIC) continue;
+      const heavy = (dx: number, dy: number) => map.inBounds(x + dx, y + dy) && map.terrainKeyAt(x + dx, y + dy) === 'furn_heavy';
+      if (!heavy(-1, 0) && !heavy(1, 0) && !heavy(0, -1) && !heavy(0, 1) && !heavy(1, 1) && !heavy(-1, -1)) continue;
+      const w = plain(x + 1, y) ? 2 : 1;
+      const h = plain(x, y + 1) && (w === 1 || plain(x + 1, y + 1)) && hash(x, y, 421) < 0.6 ? 2 : 1;
+      const t = hash(x, y, 422);
+      const col = t < 0.4 ? RUG_A : t < 0.72 ? RUG_B : RUG_C;
+      const x0 = x + 0.14;
+      const y0 = y + 0.16;
+      const x1 = x + w - 0.14;
+      const y1 = y + h - 0.16;
+      g.fillStyle = `rgba(${col[0] | 0},${col[1] | 0},${col[2] | 0},0.60)`;
+      g.fillRect(x0, y0, x1 - x0, y1 - y0);
+      if (d < 1) continue;
+      g.strokeStyle = 'rgba(28,22,18,0.28)';
+      g.lineWidth = 0.05;
+      g.strokeRect(x0 + 0.09, y0 + 0.09, x1 - x0 - 0.18, y1 - y0 - 0.18);
+      g.strokeStyle = 'rgba(226,214,190,0.24)';
+      g.lineWidth = 0.035;
+      g.strokeRect(x0 + 0.16, y0 + 0.16, x1 - x0 - 0.32, y1 - y0 - 0.32);
+      if (d < 2) continue;
+      g.fillStyle = 'rgba(40,32,26,0.22)'; // fringe on the two short ends
+      for (let i = 0; i < 8; i++) {
+        const fx = x0 + ((x1 - x0) * (i + 0.5)) / 8;
+        g.fillRect(fx - 0.015, y0 - 0.05, 0.03, 0.05);
+        g.fillRect(fx - 0.015, y1, 0.03, 0.05);
+      }
+    }
+  }
+}
+
+// ── I15 · hearth glow ──────────────────────────────────────────────────────
+
+/**
+ * Firelight, in the FRAME LOOP. It cannot live in a chunk bake: a baked flicker
+ * is a still, and rebaking a chunk per frame is 2-5 ms of chunk work per frame.
+ * Gated on the roof fade exactly like drawStairs — no roof up, no firelight.
+ * World transform is applied by the caller.
+ */
+export function drawHearthGlow(
+  g: Ctx,
+  map: GameMap,
+  hearths: readonly number[],
+  x0: number,
+  y0: number,
+  x1: number,
+  y1: number,
+  now: number,
+  visible: (x: number, y: number) => boolean,
+): void {
+  const t = now / 1000;
+  g.save();
+  g.globalCompositeOperation = 'lighter';
+  for (const i of hearths) {
+    const x = i % map.w;
+    const y = (i / map.w) | 0;
+    if (x < x0 || x > x1 || y < y0 || y > y1 || !visible(x, y)) continue;
+    const ph = hash(x, y, 423) * 100;
+    // two incommensurate rates so the flicker never reads as a loop, clamped
+    // well under the one-sun key light — this is a warm bloom on the floor, not
+    // a light source
+    const amp = 0.72 + 0.19 * Math.sin(t * 5.1 + ph) + 0.11 * Math.sin(t * 11.3 + ph * 1.7);
+    const wall = wallMaskAt(map, x, y);
+    const dx = wall & N ? 0 : wall & S ? 0 : wall & W ? 0.18 : -0.18;
+    const dy = wall & N ? 0.18 : wall & S ? -0.18 : 0;
+    const cx = x + 0.5 + dx;
+    const cy = y + 0.5 + dy;
+    const r = 1.15 + amp * 0.22;
+    const grad = g.createRadialGradient(cx, cy, 0.05, cx, cy, r);
+    grad.addColorStop(0, `rgba(196,116,52,${(0.30 * amp).toFixed(3)})`);
+    grad.addColorStop(0.45, `rgba(150,84,36,${(0.13 * amp).toFixed(3)})`);
+    grad.addColorStop(1, 'rgba(120,64,28,0)');
+    g.fillStyle = grad;
+    g.beginPath();
+    g.arc(cx, cy, r, 0, Math.PI * 2);
+    g.fill();
+    g.fillStyle = `rgba(228,150,70,${(0.34 * amp).toFixed(3)})`;
+    g.beginPath();
+    g.ellipse(cx, cy, 0.2 + amp * 0.05, 0.14 + amp * 0.04, 0, 0, Math.PI * 2);
+    g.fill();
+  }
+  g.restore();
+}
+
 /** Tile indices of every hearth on the map — scanned once, iterated per frame. */
 export function hearthTiles(map: GameMap): number[] {
   if (!map.hasFurniture) return [];

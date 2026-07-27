@@ -55,7 +55,7 @@ import { buildYards, drawYardGround, drawYardStructures, type Yard } from './yar
 import { drawProp, propExtent, propsFor, type Prop } from './props';
 import { EnclosureIndex, drawEnclosureGround, drawEnclosurePlanting, drawEnclosureWalls } from './enclos';
 import { drawShopfronts, shopfrontsFor, type Shopfront } from './shops';
-import { ROLE, buildingIndex, drawFurniture, hearthTiles } from './furniture';
+import { ROLE, buildingIndex, drawFurniture, drawHearthGlow, drawRugs, hearthTiles } from './furniture';
 
 // Bilinear value noise on an 8m lattice — smooth patches, no hard square edges.
 function coarse(x: number, y: number): number {
@@ -1515,9 +1515,10 @@ export class TerrainLayer {
     drawYardGround(g, this.map, this.patches, this.yards, tx0, ty0, tx1, ty1, d);
     drawEnclosureGround(g, this.map, this.enclos, tx0, ty0, tx1, ty1, d);
     drawDoorTrails(g, this.map, tx0, ty0, tx1, ty1);
-    // Interiors, under the roof: a post-pass because a piece's contact shadow
-    // spills into the tile SE of it and the base loop would paint the next
-    // floor straight over it.
+    // Interiors, under the roof: rugs lie on the floor, furniture stands on the
+    // rug, and both are post-passes because a piece's contact shadow spills
+    // into the tile SE of it — the base loop would paint the next floor over it.
+    drawRugs(g, this.map, this.roleAt, tx0, ty0, tx1, ty1, d);
     drawFurniture(g, this.map, this.roleAt, this.acrossAt, tx0, ty0, tx1, ty1, band);
     drawYardStructures(g, this.map, this.patches, this.yards, tx0, ty0, tx1, ty1, d);
     drawHedgeRun(g, this.map, tx0, ty0, tx1, ty1, d);
@@ -1635,6 +1636,21 @@ export class TerrainLayer {
         ctx.drawImage(this.chunk(cx, cy, band), band, band, CHUNK * band, CHUNK * band, sx, sy, size, size);
       }
     }
+  }
+
+  // Firelight from every revealed hearth. Same gating as drawStairs and for the
+  // same reason, plus one of its own: a flicker cannot be baked, and rebaking a
+  // chunk per frame is 2-5 ms of chunk work every frame.
+  drawHearthGlow(ctx: Ctx, cam: Camera, cw: number, ch: number, now: number, visible: (x: number, y: number) => boolean): void {
+    if (this.hearths.length === 0) return;
+    const [wx0, wy0] = cam.screenToWorld(0, 0, cw, ch);
+    const [wx1, wy1] = cam.screenToWorld(cw, ch, cw, ch);
+    ctx.save();
+    const [ox, oy] = cam.worldToScreen(0, 0, cw, ch);
+    ctx.translate(ox, oy);
+    ctx.scale(cam.scale, cam.scale);
+    drawHearthGlow(ctx, this.map, this.hearths, Math.floor(wx0) - 2, Math.floor(wy0) - 2, Math.ceil(wx1) + 2, Math.ceil(wy1) + 2, now, visible);
+    ctx.restore();
   }
 
   // Stair glyphs over the visible window only — a dynamic pass (not baked
