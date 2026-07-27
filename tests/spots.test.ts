@@ -90,6 +90,24 @@ describe('cover-snap scorer fixtures (design §4.3)', () => {
     expect(spot.covered).toBe(true);
   });
 
+  // The flank rule used to hold ONLY on an exactly axis-aligned bearing: the
+  // along-run hedge neighbours sit at 90° − Δ, so any off-axis enemy pulled
+  // them into the cone and the hedge tile itself outscored its flank
+  // (0.875 vs 0.850). cos Δ weighting projects the lip onto the threat
+  // direction instead, so the answer no longer turns on a staged coincidence.
+  it('a-offaxis: the flank still wins when the enemy is not exactly on the axis', () => {
+    for (const dy of [0.1, 1, 3, 6, -4]) {
+      const { sim, ids } = hedgeSim();
+      const red = addOne(sim, 'red', 40.5, 8.5 + dy);
+      sim.spotted.blue.set(red, { x: 40.5, y: 8.5 + dy });
+      const q: SpotQuery = { soldierIds: ids, x: HX - 2 + 0.5, y: 8.5, kind: 'move' };
+      const [spot] = resolveMoveSpots(sim, q, new Set());
+      expect(sim.map.terrainKeyAt(spot.x, spot.y), `enemy dy=${dy} put the man on`).toBe('grass');
+      expect(spot.x).toBe(HX - 1);
+      expect(spot.covered).toBe(true);
+    }
+  });
+
   it('a-mirror: the same order with the enemy WEST crosses to the east flank', () => {
     const { sim, ids } = hedgeSim();
     const red = addOne(sim, 'red', 4.5, 8.5);

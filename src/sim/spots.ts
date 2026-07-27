@@ -155,21 +155,32 @@ const ORTHO: { dx: number; dy: number; ang: number }[] = [
 // must sit between the man and the threat, crossed within 2 m of him).
 //
 // Deviation from the design text, on purpose: §1.2 writes |Δbearing| <= 90°,
-// but at exactly 90° the neighbor is ALONGSIDE the man, not between him and
-// the threat — and along a hedge run the two along-run hedge neighbors would
-// credit the hedge tile itself (2.0×0.5 + 0.5×0.35 − 0.30 = 0.875) above its
-// true flank tile (0.85), putting men ON the hedge and failing the design's
-// own fixture §4.3(a). Strict < keeps the scorer honest to los().
+// but a neighbor at 90° is ALONGSIDE the man, not between him and the threat.
+// The lip is therefore projected onto the threat direction (× cos Δ), not
+// counted whole inside a cone.
+//
+// M3 tried a hard cutoff just under 90° for this, and it only held when the
+// bearing was EXACTLY axis-aligned. Along a N-S hedge run the two along-run
+// hedge neighbors sit at 90° − Δ, so an enemy 0.2 m off the axis at 12 m
+// (Δ = 0.017 rad) pulled them inside the cone and credited the hedge tile
+// itself 2.0×0.5 + 0.5×0.35 − 0.30 = 0.875 over its true flank tile's 0.85 —
+// men stood IN the hedge on every bearing except the one the fixture staged
+// (measured: dy 0.1 m of enemy offset flips it). cos Δ makes the same
+// neighbors worth ~0.009 instead of 0.5, and unlike a tighter cutoff it keeps
+// working on a diagonal bearing, where both orthogonals legitimately count
+// (0.707 each) and any hard cone would credit either both or neither.
 function directionalCover(sim: Sim, x: number, y: number, bearing: number, stance: Stance): number {
   let best = 0;
   for (const o of ORTHO) {
-    if (Math.abs(angDiff(o.ang, bearing)) >= Math.PI / 2 - 1e-9) continue;
+    const off = Math.abs(angDiff(o.ang, bearing));
+    if (off >= Math.PI / 2) continue;
+    const facing = Math.cos(off);
     const nx = x + o.dx;
     const ny = y + o.dy;
-    const lip = sim.map.terrainAt(nx, ny).coverBehind ?? 0;
+    const lip = (sim.map.terrainAt(nx, ny).coverBehind ?? 0) * facing;
     if (lip > best) best = lip;
-    if (stance === 'prone' && BANK_PRONE_LIP > best && sim.map.inBounds(nx, ny) && sim.map.terrainKeyAt(nx, ny) === 'bank') {
-      best = BANK_PRONE_LIP;
+    if (stance === 'prone' && BANK_PRONE_LIP * facing > best && sim.map.inBounds(nx, ny) && sim.map.terrainKeyAt(nx, ny) === 'bank') {
+      best = BANK_PRONE_LIP * facing;
     }
   }
   return best;
