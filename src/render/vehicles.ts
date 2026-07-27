@@ -1,5 +1,6 @@
 import { VEHICLES, type VehicleKey } from '../sim/data';
 import type { Side } from '../sim/sim';
+import { bolts, type Ctx, detailFor, type Detail, hair, plate, roundRectPath, TAU, teamRim, weld } from './bakekit';
 import { DUDE_SCALE, kitTones, tier } from './dudes';
 import { AO_ALPHA } from './light';
 import { hash } from './noise';
@@ -10,20 +11,11 @@ import { SpriteCache } from './spritecache';
 
 export const VEHICLE_SPAN = 8; // meters covered by the sprite canvas
 const BANDS = [6, 12, 24, 48];
-const TAU = Math.PI * 2;
-
 export function vehicleBandFor(scale: number): number {
   return BANDS.find((b) => b >= scale) ?? 48;
 }
 
-// One device pixel in metres: the vehicle bake ctx is scaled by band alone
-// (no DUDE_SCALE oversize), so panel lines clamp against this.
-function hair(band: number): number {
-  return 1 / band;
-}
-
 type State = 'ok' | 'dead';
-type Ctx = CanvasRenderingContext2D;
 
 interface Palette {
   hullTop: string; // upper deck plate — lighter, catches the light
@@ -93,21 +85,6 @@ function dims(kind: VehicleKey): { long: number; wide: number } {
   }
 }
 
-function roundRectPath(g: Ctx, x: number, y: number, w: number, h: number, r: number): void {
-  const rr = Math.min(r, w / 2, h / 2);
-  g.beginPath();
-  g.moveTo(x + rr, y);
-  g.lineTo(x + w - rr, y);
-  g.arcTo(x + w, y, x + w, y + rr, rr);
-  g.lineTo(x + w, y + h - rr);
-  g.arcTo(x + w, y + h, x + w - rr, y + h, rr);
-  g.lineTo(x + rr, y + h);
-  g.arcTo(x, y + h, x, y + h - rr, rr);
-  g.lineTo(x, y + rr);
-  g.arcTo(x, y, x + rr, y, rr);
-  g.closePath();
-}
-
 // --- Surface fidelity kit (U5) ----------------------------------------------
 // Everything below is bake-only and hairline-clamped. The rule that makes a
 // bevel legal in a rotating sprite: the light offset goes along +X of BAKE
@@ -115,68 +92,6 @@ function roundRectPath(g: Ctx, x: number, y: number, w: number, h: number, r: nu
 // would swing with the hull and break the one-sun contract the cast-shadow
 // pass (renderer.drawUnitShadows) upholds. A rotation-invariant edge pair
 // reads as "this is a plate with thickness" without claiming a light angle.
-
-// How much surface treatment a band can carry. `d1` is structure (welds,
-// hatches, louvres, stowage); `d2` is grime and paint (bolts, mud, chipping,
-// hand-painted numbers) — at band 12 a 0.035 m bolt is a third of a pixel.
-interface Detail {
-  d1: boolean;
-  d2: boolean;
-  d3: boolean;
-}
-
-function detailFor(band: number, on: boolean): Detail {
-  const t = on ? tier(band) : 0;
-  return { d1: t >= 1, d2: t >= 2, d3: t >= 3 };
-}
-
-// The single most important addition in this file: a seam stroked dark, then
-// re-stroked one hairline along +X in a whisper of white. Flat plates become
-// plates.
-function weld(g: Ctx, band: number, path: () => void): void {
-  const hw = Math.max(0.028, hair(band));
-  g.lineWidth = hw;
-  g.strokeStyle = 'rgba(0,0,0,0.30)';
-  g.beginPath();
-  path();
-  g.stroke();
-  g.save();
-  g.translate(hw, 0);
-  g.strokeStyle = 'rgba(255,255,255,0.07)';
-  g.beginPath();
-  path();
-  g.stroke();
-  g.restore();
-}
-
-// Fill an armour facet and weld its outline in one call.
-function plate(g: Ctx, band: number, tone: string, d: Detail, path: () => void): void {
-  g.fillStyle = tone;
-  g.beginPath();
-  path();
-  g.fill();
-  if (d.d1) weld(g, band, path);
-}
-
-function bolts(g: Ctx, band: number, x0: number, y0: number, x1: number, y1: number, n: number, d: Detail): void {
-  if (!d.d2) return;
-  const r = Math.max(hair(band), 0.035);
-  for (let i = 0; i < n; i++) {
-    const u = n === 1 ? 0.5 : i / (n - 1);
-    const x = x0 + (x1 - x0) * u;
-    const y = y0 + (y1 - y0) * u;
-    g.fillStyle = 'rgba(0,0,0,0.28)';
-    g.beginPath();
-    g.arc(x, y, r, 0, TAU);
-    g.fill();
-    if (d.d3) {
-      g.fillStyle = 'rgba(255,255,255,0.06)';
-      g.beginPath();
-      g.arc(x - r * 0.28, y - r * 0.28, r * 0.5, 0, TAU);
-      g.fill();
-    }
-  }
-}
 
 // Crew hatch: a disc a shade off the deck, a rim ring, an inner arc that gives
 // it a lip, a hinge tab on the -X side and a handle tick.
@@ -454,20 +369,6 @@ function hullAO(g: Ctx, long: number, wide: number, band: number): void {
   g.lineWidth = Math.max(0.22, hair(band) * 2);
   roundRectPath(g, -long / 2 - 0.04, -wide / 2 - 0.04, long + 0.08, wide + 0.08, 0.4);
   g.stroke();
-}
-
-// Team-color rim: strong at close bake bands (6/12), a whisper at the far
-// ones (24/48) — same "everyone doesn't look selected" fix as the soldiers.
-function teamRim(g: Ctx, long: number, wide: number, band: number, color: string): void {
-  const strong = band <= 12;
-  g.save();
-  g.globalAlpha = strong ? 1 : 0.35;
-  g.strokeStyle = color;
-  g.lineWidth = strong ? 0.16 : 0.07;
-  const pad = 0.14;
-  roundRectPath(g, -long / 2 - pad, -wide / 2 - pad, long + pad * 2, wide + pad * 2, 0.4);
-  g.stroke();
-  g.restore();
 }
 
 // --- Motion state carried into the bake (U7) --------------------------------
@@ -1123,7 +1024,7 @@ export function getVehicleSprite(kind: VehicleKey, side: Side, state: State, ban
   const pal = paletteFor(side, state);
 
   hullAO(g, long, wide, band);
-  teamRim(g, long, wide, band, pal.rim);
+  teamRim(g, -long / 2, -wide / 2, long, wide, band, pal.rim);
   drawBody(g, kind, side, pal, wreck, long, wide, true, band);
   if (wreck) ashPatches(g, long, wide, detailFor(band, true));
 

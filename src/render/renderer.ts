@@ -3,6 +3,7 @@ import { MELEE_STRIKE_RANGE, type MeleeEvent, type ShotEvent, type Side, type Si
 import type { Camera } from './camera';
 import { DecalLayer } from './decals';
 import { bandFor, CRAWL_FRAMES, DUDE_SCALE, getShadowSprite, getSprite, glintSprite, headOffset, kitVariant, SPRITE_MIN_SCALE, SPRITE_SPAN, tier, WALK_FRAMES, weaponClass, type Pose } from './dudes';
+import { emplacementBandFor, emplacementFootprintRadius, emplacementSpan, getEmplacementShadow, getEmplacementSprite } from './emplacements';
 import { ballistic, blit, FLASH, flashClass, fxDetail, hazeBand, hotPass, SPIKE_SIDES, traceOvershoot, WIND, type FlashSpec, type FxKind, type Overshoot } from './fx';
 import { SHADOW_SOFT_ALPHA, SUN } from './light';
 import { MarkLayer } from './marks';
@@ -167,6 +168,9 @@ const HULL_SHADOW_OFF = 0.58;
 // A 30-tonne hull blocks more light than a man does: the soft-layer alpha the
 // soldiers use reads as a smudge under something this big.
 const HULL_SHADOW_ALPHA = 0.22;
+// A gun on a mount stands about as tall as a kneeling man, so it steps down-sun
+// less than a hull does and gets the soldiers' soft alpha, not the hull's.
+const EMPL_SHADOW_OFF = 0.35;
 const SHADOW_OFF: Record<Pose, number> = {
   idle: 0.42,
   walk: 0.42,
@@ -547,6 +551,23 @@ export class Renderer {
       ctx.globalAlpha = 0.24;
       ctx.drawImage(turretBlob(), bx - br, by - br, br * 2, br * 2);
       ctx.globalAlpha = 1;
+    }
+    const eband = emplacementBandFor(cam.scale);
+    for (const e of this.sim.emplacements) {
+      if (!this.sim.emplacementVisibleTo(PLAYER_SIDE, e)) continue;
+      const [x, y] = cam.worldToScreen(e.x, e.y, cw, ch);
+      const epad = emplacementSpan(e.kind) * cam.scale;
+      if (x < -epad || y < -epad || x > cw + epad || y > ch + epad) continue;
+      ctx.save();
+      ctx.globalAlpha = SHADOW_SOFT_ALPHA;
+      ctx.translate(x, y);
+      ctx.rotate(SUN_A);
+      ctx.translate(EMPL_SHADOW_OFF * cam.scale, 0);
+      ctx.scale(1.1, 1);
+      ctx.rotate(-SUN_A);
+      ctx.rotate(e.facing);
+      ctx.drawImage(getEmplacementShadow(e.kind, e.state === 'deployed' ? 'deployed' : 'packed', eband), -epad / 2, -epad / 2, epad, epad);
+      ctx.restore();
     }
   }
 
@@ -998,32 +1019,33 @@ export class Renderer {
     return n;
   }
 
-  // Simple crewed-weapon glyph — follows drawVehicle's scheme (team-colored
-  // hull + barrel line) at ~40% of a vehicle's footprint. Dashed while
-  // packed/transitioning, solid once dug in.
+  // Baked crewed weapon (U8), on the vehicle pattern: one rotated drawImage,
+  // then the selection ring and — while the gun is being set up or torn down —
+  // the dashed outline that has always signalled "not in action yet".
+  //
+  // The crew are NOT in this sprite: an emplacement's men have inEmplacement
+  // >= 0 but inVehicle < 0, so the soldier passes already drew every one of
+  // them. This draws the weapon and its mount only.
   private drawEmplacement(ctx: CanvasRenderingContext2D, cam: Camera, e: Emplacement, selectedSquads: number[], cw: number, ch: number): void {
     const [x, y] = cam.worldToScreen(e.x, e.y, cw, ch);
-    const pad = VEHICLE_SPAN * cam.scale * 0.4;
+    const pad = emplacementSpan(e.kind) * cam.scale;
     if (x < -pad || y < -pad || x > cw + pad || y > ch + pad) return;
-    const color = TEAM[e.side];
+    const deployed = e.state === 'deployed';
     ctx.save();
     ctx.translate(x, y);
     ctx.rotate(e.facing);
-    if (e.state !== 'deployed') ctx.setLineDash([3, 3]);
-    ctx.strokeStyle = color;
-    ctx.lineWidth = Math.max(1, cam.scale * 0.12);
-    ctx.fillStyle = 'rgba(60, 58, 50, 0.85)';
-    const r = Math.max(2.5, cam.scale * 0.34 * 0.4 * 10); // mount footprint, ~40% of a soldier's read
-    ctx.beginPath();
-    ctx.arc(0, 0, r * 0.5, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.moveTo(0, 0);
-    ctx.lineTo(r * 1.6, 0);
-    ctx.stroke();
-    ctx.setLineDash([]);
+    ctx.drawImage(getEmplacementSprite(e.kind, e.side, deployed ? 'deployed' : 'packed', emplacementBandFor(cam.scale)), -pad / 2, -pad / 2, pad, pad);
     ctx.restore();
+    const r = emplacementFootprintRadius(e.kind) * cam.scale;
+    if (!deployed) {
+      ctx.save();
+      ctx.setLineDash([3, 3]);
+      ctx.strokeStyle = TEAM[e.side];
+      ctx.lineWidth = Math.max(1, cam.scale * 0.08);
+      const b = r * 0.72; // hugs the mount, not the barrel's reach
+      ctx.strokeRect(x - b, y - b, b * 2, b * 2);
+      ctx.restore();
+    }
     if (selectedSquads.includes(this.sim.teams[e.crewTeamId]?.squadId ?? -1)) {
       ctx.strokeStyle = '#ffe9a0';
       ctx.lineWidth = 2;
