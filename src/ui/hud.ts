@@ -577,11 +577,12 @@ function squadContext(men: Soldier[]): string {
   return armed ? `<div class="ctxrow"><button class="hbtn" data-ctx="breach">Breach</button></div>` : '';
 }
 
+export const reserveAmmo = (s: Soldier): number => Object.values(s.ammo).reduce((a, n) => a + (n ?? 0), 0);
+
 function soldierRow(m: Soldier): string {
   if (!m.alive) return `<div class="srow kia"><span class="chip" style="background:#4a4a3e" title="KIA"></span><span class="nm">${m.name}</span></div>`;
   const wpn = `<span class="wp">${WEAPONS[m.weapon].name}</span>`;
-  const reserve = Object.values(m.ammo).reduce((a, n) => a + (n ?? 0), 0);
-  const ammo = `<span class="am" title="mag/belt left + reserve units">${m.magLeft}+${reserve}</span>`;
+  const ammo = `<span class="am" title="mag/belt left + reserve units">${m.magLeft}+${reserveAmmo(m)}</span>`;
   const cross = m.wounds.length ? `<span class="flag${m.stabilized || m.bleedRate <= 0 ? ' stab' : ''}">✚</span>` : '';
   if (m.downed) {
     return `<div class="srow urgent" data-soldier="${m.id}" tabindex="0" role="button" title="click to inspect ${m.name}"><span class="chip" style="background:#d05c50" title="DOWN"></span><span class="nm">${m.name}</span>${wpn}${cross}<span class="down">DOWN</span></div>`;
@@ -589,7 +590,7 @@ function soldierRow(m: Soldier): string {
   const supPct = Math.round(m.suppression * 100);
   const morPct = Math.round(m.morale * 100);
   return (
-    `<div class="srow" data-soldier="${m.id}"><span class="chip" style="background:${STATE_COLOR[m.mental]}" title="${m.mental.toUpperCase()}"></span>` +
+    `<div class="srow" data-soldier="${m.id}" tabindex="0" role="button" title="click to inspect ${m.name}"><span class="chip" style="background:${STATE_COLOR[m.mental]}" title="${m.mental.toUpperCase()}"></span>` +
     `<span class="nm">${m.name}</span>${wpn}${ammo}${cross}` +
     `<span class="bars"><span class="bar" title="Suppression ${supPct}%"><i style="width:${supPct}%;background:#e0a83c"></i></span>` +
     `<span class="bar" title="Morale ${morPct}%"><i style="width:${morPct}%;background:#7fbf6a"></i></span></span></div>`

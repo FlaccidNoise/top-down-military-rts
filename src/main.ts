@@ -840,14 +840,16 @@ function stratOrderMove(sx: number, sy: number): void {
     stratView.flash("Can't hold open water — ford across to the far bank");
 }
 
-/** Esc's cancel ladder: inspect → targetMode → armedOrder → team → selection. */
+/** Esc's cancel ladder: targetMode → inspect → armedOrder → team → selection. */
 function escapeLadder(): boolean {
   if (mode === 'strategic') {
     if (selectedChit >= 0) { selectedChit = -1; return true; }
     return false;
   }
-  if (inspectedSoldier >= 0) { inspectedSoldier = -1; return true; }
+  // targetMode first: an armed barrage/airstrike cursor is the hazardous
+  // state — Esc must never leave it live while merely closing a panel.
   if (targetMode) { setTargetMode(''); return true; }
+  if (inspectedSoldier >= 0) { inspectedSoldier = -1; return true; }
   if (armedOrder) { armedOrder = null; return true; }
   if (boxMode || addMode) { boxMode = false; addMode = false; boxRect = null; return true; }
   if (selectedTeam >= 0) { selectedTeam = -1; return true; }

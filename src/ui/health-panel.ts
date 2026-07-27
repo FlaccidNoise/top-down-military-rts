@@ -1,8 +1,8 @@
 import { capacities, consciousness, PARTS } from '../sim/body';
 import { WEAPONS } from '../sim/data';
 import type { Sim, Soldier } from '../sim/sim';
-import { STATE_COLOR } from './hud';
-import { barRow, pct } from './tooltip';
+import { reserveAmmo, STATE_COLOR } from './hud';
+import { barRow, downedCond, pct, rescuePhase, xpStars } from './tooltip';
 
 export type Severity = 'ok' | 'grazed' | 'wounded' | 'serious' | 'destroyed';
 
@@ -20,8 +20,6 @@ export function partSeverity(frac: number): Severity {
 function ramp(v: number): string {
   return v >= 0.9 ? 'var(--paper)' : v >= 0.6 ? 'var(--state-shaken)' : v >= 0.3 ? 'var(--state-pinned)' : 'var(--state-broken)';
 }
-
-const reserveOf = (s: Soldier): number => Object.values(s.ammo).reduce((a, n) => a + (n ?? 0), 0);
 
 // Front view, so the man's left arm sits on the viewer's right.
 const SHAPES: Record<string, string> = {
@@ -42,7 +40,7 @@ function silhouette(body: number[]): string {
   const shapes = PARTS.map((p, i) => {
     const f = body[i] / p.hp;
     const paint = f >= 1 ? 'fill="none" stroke="var(--muted)"' : f <= 0 ? 'fill="#3a2a2a" stroke="#6b4a44"' : `fill="${ramp(f)}" stroke="${ramp(f)}"`;
-    return `<g id="${p.key}" ${paint}>${SHAPES[p.key]}</g>`;
+    return `<g class="${p.key}" ${paint}>${SHAPES[p.key] ?? ''}</g>`;
   }).join('');
   return `<svg class="hp-fig" viewBox="0 0 90 180" stroke-width="1.5">${shapes}</svg>`;
 }
@@ -79,13 +77,11 @@ function stateRow(sim: Sim, s: Soldier): string {
   if (!s.alive) return `<div class="tt-kia">KIA</div>`;
   if (s.captured) return `<div class="tt-state"><span class="mchip" style="background:var(--muted)">CAPTURED</span></div>`;
   if (s.downed) {
-    const cond = s.stabilized ? 'stabilized' : s.bleedRate > 0.0005 ? 'bleeding out' : 'incapacitated';
-    let html = `<div class="tt-state"><span class="mchip" style="background:#d05c50">DOWN</span><span>${cond}</span></div>`;
+    let html = `<div class="tt-state"><span class="mchip" style="background:#d05c50">DOWN</span><span>${downedCond(s)}</span></div>`;
     if (s.carriedBy >= 0) html += `<div class="tt-note">${sim.soldiers[s.carriedBy].name} is carrying him</div>`;
     else if (s.rescuerId >= 0) {
       const r = sim.soldiers[s.rescuerId];
-      const phase = r.task?.phase === 'drag' ? 'dragging him to cover' : r.task?.phase === 'aid' ? 'applying first aid' : 'moving to him';
-      html += `<div class="tt-note">${r.name} is ${phase}</div>`;
+      html += `<div class="tt-note">${r.name} is ${rescuePhase(r)}</div>`;
     }
     return html;
   }
@@ -97,10 +93,9 @@ function stateRow(sim: Sim, s: Soldier): string {
 }
 
 function card(sim: Sim, s: Soldier): string {
-  const stars = s.xp > 0 ? ' · ' + '★'.repeat(Math.min(s.xp, 5)) : '';
   return (
     `<div class="hp-head"><b>${s.name}</b><button class="hp-x" title="close">✕</button></div>` +
-    `<div class="tt-note">${s.role} · ${WEAPONS[s.weapon].name} ${s.magLeft}+${reserveOf(s)}${stars}</div>` +
+    `<div class="tt-note">${s.role} · ${WEAPONS[s.weapon].name} ${s.magLeft}+${reserveAmmo(s)}${xpStars(s)}</div>` +
     stateRow(sim, s) +
     `<div class="tt-sec">CONDITION</div>` +
     `<div class="tt-grid">${barRow('Morale', s.morale, '#7fbf6a')}${barRow('Suppr.', s.suppression, '#e0a83c')}${barRow('Stamina', s.stamina, '#6fa8a0')}${barRow('Pain', s.pain, '#e08a3c')}${barRow('Blood', s.bloodLoss, '#d05c50')}</div>` +
@@ -120,7 +115,7 @@ function signature(sim: Sim, s: Soldier): string {
     s.id, s.alive, s.downed, s.captured, s.fleeing, s.stabilized, s.mental, s.weapon,
     s.body.reduce((a, b) => a + b, 0).toFixed(1), s.wounds.length,
     q(s.pain), q(s.bloodLoss), q(s.morale), q(s.suppression), q(s.stamina),
-    s.magLeft, reserveOf(s), s.carriedBy, s.rescuerId, s.rescuerId >= 0 ? sim.soldiers[s.rescuerId].task?.phase ?? '' : '',
+    s.magLeft, reserveAmmo(s), s.carriedBy, s.rescuerId, s.rescuerId >= 0 ? sim.soldiers[s.rescuerId].task?.phase ?? '' : '',
   ].join('|');
 }
 
@@ -153,6 +148,10 @@ export class HealthPanel {
     if (sig === this.sig) return;
     this.sig = sig;
     this.el.style.display = 'block';
+    // The card re-renders whenever a quantized value moves (often under fire);
+    // an innerHTML write resets scroll, which would pin a phone to the header.
+    const top = this.el.scrollTop;
     this.el.innerHTML = card(sim, s);
+    this.el.scrollTop = top;
   }
 }
