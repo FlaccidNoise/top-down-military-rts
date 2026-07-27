@@ -642,14 +642,48 @@ export function sightBetween(sim: Sim, x0: number, y0: number, x1: number, y1: n
   return base;
 }
 
+// --- Night rules (design 2026-07-27 §7): three ramps on sim.light ---
+// All three are read INSIDE the sense funnel off sim.light, never passed as
+// arguments (the sight-funnel-callers scar: a threaded arg must cover the
+// vehicle/AT callers, a field read has no call sites to miss). Zero RNG.
+// At light === 1 each returns its exact shipped constant, so the whole
+// existing suite and every canonical-hour battle is a no-op-by-default.
+
+// Spotting is an ABSOLUTE cap, not a multiplier: SPOT_RANGE=200 is
+// measured-inert above ~60 m (decision 2026-07-23 — LOS p95 is 48-56 m), so a
+// multiplier does nothing until it cliffs. The knots live in the band the map
+// operates in: 90 m sits just above the measured p95 (golden hour clips only
+// the rare long sightline), 45 m and 25 m genuinely bite.
+export function spotCapOf(light: number): number {
+  if (light >= 1) return Infinity; // full day: SPOT_RANGE unchanged
+  if (light >= 0.5) return 90 + ((light - 0.5) / 0.5) * (SPOT_RANGE - 90); // golden hour
+  if (light >= 0.25) return 45 + ((light - 0.25) / 0.25) * 45; // civil twilight
+  return 25 + (light / 0.25) * 20; // night, floored at 25 m
+}
+
+/** Concealment a hiding team needs on the ray: 0.5 by day, 0.18 at night — one woods tile or half a hedge hides a sneaking team in the dark. */
+export function concealNeedOf(light: number): number {
+  return light >= 1 ? 0.5 : 0.18 + 0.32 * light;
+}
+
+/** Range beyond which a concealed hider is unseen: 20 m by day, 8 m at night. */
+export function hideFloorOf(light: number): number {
+  return light >= 1 ? 20 : 8 + 12 * light;
+}
+
 // Sight to a soldier: sightBetween plus the spotting rule that completes the
 // sneak and ambush orders — a hiding target (sneaking, or lying in untriggered
-// ambush) with >= 0.5 accumulated concealment (one hedge, two woods tiles, or
-// a smoke puff on the ray) is unseen beyond 20m. An ambush trigger converts
-// the order to defend, so the first volley reveals the position. Deterministic,
+// ambush) with >= concealNeedOf(light) accumulated concealment (by day: one
+// hedge, two woods tiles, or a smoke puff on the ray) is unseen beyond
+// hideFloorOf(light) (20 m by day, 8 m at night). Darkness rewards the chosen
+// posture only — a squad standing in the open at midnight is still visible;
+// the spotCap is what shortens that. An ambush trigger converts the order to
+// defend, so the first volley reveals the position — and at night the muzzle
+// flash is the brightest thing on a graded-dark field. Deterministic,
 // no RNG. Every soldier-target sense (acquire, live fire, ambush trigger,
 // honest vision, fog-of-war spotting) routes through this; sight to a map
-// point stays on sightBetween.
+// point stays on sightBetween and keeps day behaviour (a map point is not
+// hiding; friendlyHasLos is a deliberately unlimited-range rule).
 // The target's eye is DERIVED here, never passed: no caller may disagree with
 // stanceOf about how tall the man it is looking at is. Observers still pass
 // their own eye — a vehicle looking at a soldier is EYE_VEHICLE.
@@ -658,9 +692,9 @@ export function sightToSoldier(sim: Sim, x0: number, y0: number, t: Soldier, l0 
   const order = sim.teams[t.teamId].orderState.order;
   if (
     sight.visible &&
-    sight.conceal >= 0.5 &&
+    sight.conceal >= concealNeedOf(sim.light) &&
     (order?.kind === 'sneak' || order?.kind === 'ambush') &&
-    Math.hypot(t.x - x0, t.y - y0) > 20
+    Math.hypot(t.x - x0, t.y - y0) > hideFloorOf(sim.light)
   ) {
     return { visible: false, cover: 0, conceal: sight.conceal, concealed: true };
   }
@@ -3463,19 +3497,21 @@ export class Sim {
   // unlimited-range mortar-spotting rule — different semantics, not this.)
   // Public: main.ts gates enemy unit-event pings on it.
   sideSeesPoint(side: Side, x: number, y: number): boolean {
+    const range = Math.min(SPOT_RANGE, spotCapOf(this.light)); // night cap (§7.1) — Infinity by day
     for (const s of this.soldiers) {
       if (!s.alive || s.downed || s.captured || s.side !== side || s.inVehicle >= 0) continue;
-      if (Math.hypot(s.x - x, s.y - y) <= SPOT_RANGE && sightBetween(this, s.x, s.y, x, y, s.level, 0, eyeOf(this, s), EYE_H).visible) return true;
+      if (Math.hypot(s.x - x, s.y - y) <= range && sightBetween(this, s.x, s.y, x, y, s.level, 0, eyeOf(this, s), EYE_H).visible) return true;
     }
     for (const v of this.vehicles) {
       if (!v.alive || v.side !== side) continue;
-      if (Math.hypot(v.x - x, v.y - y) <= SPOT_RANGE && sightBetween(this, v.x, v.y, x, y, 0, 0, EYE_VEHICLE, EYE_H).visible) return true;
+      if (Math.hypot(v.x - x, v.y - y) <= range && sightBetween(this, v.x, v.y, x, y, 0, 0, EYE_VEHICLE, EYE_H).visible) return true;
     }
     return false;
   }
 
   private updateSpotting(side: Side): void {
     const enemySide: Side = side === 'blue' ? 'red' : 'blue';
+    const spotRange = Math.min(SPOT_RANGE, spotCapOf(this.light)); // night cap (§7.1) — Infinity by day
     // `e` is the spotter's eye height: a prone man's fog-of-war sweep is as
     // blind as his rifle is, and a tank sweeps from the cupola.
     const spotters: { x: number; y: number; l: number; e: number }[] = [];
@@ -3504,7 +3540,7 @@ export class Sim {
         contacts.delete(key); // and any foot-position ghost is moot
       } else if (t.alive) {
         const now = meleeContact.has(t.id) ||
-          spotters.some((p) => Math.hypot(t.x - p.x, t.y - p.y) <= SPOT_RANGE && sightToSoldier(this, p.x, p.y, t, p.l, p.e).visible);
+          spotters.some((p) => Math.hypot(t.x - p.x, t.y - p.y) <= spotRange && sightToSoldier(this, p.x, p.y, t, p.l, p.e).visible);
         if (now) {
           spotted.set(t.id, { x: t.x, y: t.y });
           contacts.delete(key);
