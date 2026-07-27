@@ -1,6 +1,14 @@
-# HANDOFF — 2026-07-27 (post fidelity campaign, mid balance + movement)
+# HANDOFF — 2026-07-27 evening (mid balance takeover, designs in flight)
 
 Fresh session: read this, then docs/decisions/INDEX.md, then the project memory index. Act as the orchestrator of multi-agent workflows on this repo (Workflow tool, worktree lanes, sequential chains with structured handoffs).
+
+## OWNER DECISIONS (recorded this session — do not re-ask)
+
+- Blob-rush feel: REFUSE + BLEED (mix of mid-move balk and ranged attrition). Target: blob ≤35% wins on defended bourg+woods, ≥45% blue casualties on wins. Doctrine profile within 15 pts of baseline; doctrine-health suite green.
+- AI-doctrine attacker (0/18 baseline, WORSE vs tuned defense: 0W/1L/17H, ~34% KIA): fix in this balance pass.
+- NEW: trivial-mismatch engagements (owner blob-rushed a ~8-man bridge picket with 136 men — correct outcome, wrong ceremony) should offer coarse-resolve/fast-forward above a force-ratio threshold instead of staging a formality battle.
+- NEW: floors UX — buildings need an at-a-glance storey-count indicator + discoverable floor cycling (F-key floor-focus, Alt+right-click floor menu, and auto-top-floor garrison on defend/ambush ALL EXIST — the gap is visibility/discoverability, incl. touch). Fold into the movement chain near M4 (same overlay surface).
+- Mapgen-v3: owner saw the bourg live, loved it, wants the organic pipeline (tuned per kind) generating ALL map kinds.
 
 ## State of main (634d111)
 
@@ -13,18 +21,23 @@ Everything below is MERGED, gated, and deployed to joshtaylor.world/demos/close-
 
 Gates at last full run: 921+ tests green, tsc clean, bake.mjs ≤8ms, vfx.mjs 18/18, sweep 112 shots (canonical hour 1400 pinned — never sweep unpinned), smoke-dist PASS.
 
-## In flight: balance workflow (THE blocking item)
+## In flight at handoff time: balance — INTERACTIVE TAKEOVER state
 
-- Run wf_bd98002a-64c. Script: ~/.claude/projects/-Users-joshtaylor-CodingProjects-top-down-military-rts/cc0a7d57-f5e5-43a0-a61f-367d9a8a68ec/workflows/scripts/balance-blob-rush-wf_bd98002a-64c.js. Resume after a crash: Workflow({scriptPath, resumeFromRunId:'wf_bd98002a-64c'}). Per-agent reports: same session dir, subagents/workflows/wf_bd98002a-64c/journal.jsonl.
-- Worktree .claude/worktrees/lane-b, branch lane-b-balance (baseline commit 199f9e8). Harness: scripts/balance.mjs (blob/blob-fast/doctrine × open/woods/bourg × 6 seeds, cap 54000 ticks). Baseline: scripts/.balance-baseline.json.
-- Instrumented diagnosis (journal results 2–3): (1) runDefend puts garrisons on ambush; the 40m/60m trigger leash gives the blob a free approach march then a point-blank fight; (2) the defense generates so little fire that pinning/morale never engage (blue suppression 0.00–0.02 crossing open ground); (3) the blob never balks — dangerScore peaks 0.800 vs ~0.85 threshold. Also: AI-doctrine attacker won 0/18 — its own bug, in scope.
-- Tune phase: ≤3 iterations, each re-measures. TARGETS: blob/blob-fast ≤35% wins on bourg+woods with ≥45% blue casualties on wins; doctrine profile within 15 pts of its baseline; doctrine-health + determinism suites green.
-- When it lands: merge lane-b → main; re-run tests/perf.test.ts on a QUIET machine before believing failures (mapgen budgets sit at 39–45ms vs 40 under harness load); full gates; redeploy (recipe below); report the tuning table to the owner.
+The auto-loop workflow (wf_bd98002a-64c) was deliberately STOPPED mid-iteration-1-measurement; the orchestrator now drives tuning interactively with the owner. Exact state:
 
-## Next after balance: movement chain M2–M6
+- Worktree .claude/worktrees/lane-b, branch lane-b-balance. Iteration-1 tune is COMMITTED (91c0dd9 "the defense fights at range and mass pays for it": crew-served field deployed, long-range fire release, MASS_RELEASE early ambush trigger, suppression feeds dangerScore, mid-move balk phase; b28a70e adds --seed-start sharding to scripts/balance.mjs). Suites were green at commit.
+- Post-tune DOCTRINE measurement DONE: scripts/.bal-i1-[d-i].json — 0W/1L/17H, blueKIA ~32-35% (attacker got worse; see decisions).
+- Post-tune BLOB/BLOB-FAST measurement was RUNNING as 8 detached vite-node shard processes (survive session end) writing scripts/.bal-i1-blob*.json in lane-b/scripts. First action of a fresh session: ls those files; if 8 exist, merge (aggregate blueWins/redWins/holds/blueKiaPct per profile×kind across seed shards) and compare vs scripts/.balance-baseline.json (199f9e8: blob won 1-3/6 per kind, rest holds). If shards died early, relaunch: cd lane-b && npx vite-node scripts/balance.mjs -- --profiles blob --kinds open,woods --seed-start 1 --seeds 3 --out scripts/.bal-i1-blob-openwoods-1.json (etc; profiles×kinds×seed-halves; cap default 54000).
+- THEN, per owner decisions: (1) present the before/after table; (2) fix the AI-doctrine attacker (diagnosis inputs: journal results 2-3 of wf_bd98002a-64c in the PRIOR session dir ~/.claude/projects/.../cc0a7d57-f5e5-43a0-a61f-367d9a8a68ec/subagents/workflows/wf_bd98002a-64c/journal.jsonl — ambush-leash/fire-volume/balk-threshold findings; the attacker's assault preconditions never satisfy vs a ranged defense); (3) trivial-mismatch auto-resolve (force-ratio threshold at makeStrategicBattle/contact-modal level — offer, not force); (4) if blob still >35% on any defended kind, iterate knobs interactively with the owner; (5) merge lane-b → main, re-run tests/perf.test.ts QUIET (mapgen budgets flake under harness load: 39-45ms vs 40), full gates, redeploy, report.
+
+## Also in flight: mapgen-v3 design (relaunch if it died with the session)
+
+Design workflow wf_e8107e0c was writing docs/plans/2026-07-27-mapgen-v3-design.md (one organic pipeline, per-kind profiles: open=farmsteads+sunken lanes, woods=stands+forester pocket, road=linear street-village, river/bridge=bridge-head hamlet + existing water doctrine, bourg=current; migration recommendation big-bang re-baseline vs guarded cutover). If the doc doesn't exist or has no P-task list, relaunch: Workflow({scriptPath: '~/.claude/projects/-Users-joshtaylor-CodingProjects-top-down-military-rts/a4119349-6e50-40a4-8024-bd2b4c73ebd4/workflows/scripts/mapgen-v3-organic-everywhere-design-wf_e8107e0c-e6e.js'}). Implementation sequences AFTER movement M2–M6 (both touch mapgen/spawns peripherally). Commit the doc when it lands.
+
+## Next after balance: movement chain M2–M6 (+ floors UX)
 
 Spec: docs/plans/2026-07-27-movement-cover-design.md. M1 merged; the frozen interface + full M2 wiring contract live in the M1 workflow manifest (journal of wf_50ad21e1-a3e) — load-bearing points: pre-filter soldierIds with exported eligible() in team order; q.x/y = post-fan anchor; thread kind+arc from TeamOrder; ONE fresh used-Set per moveSoldiersTo call and the resolver adds tile keys itself; omitted soldiers = no footing (caller skips, M4 surfaces); findSpot keeps dismount/bail/flee; call once at order time (PATH_BUDGET amortization, INDEX.md order-burst entry). Known deviation: threat half-plane is strict <90°.
-- Run as ONE sequential chain on a worktree branched from post-balance main: M2 (wire moveSoldiersTo, re-record determinism baselines) → M3 (defend/ambush garrison audit; re-run balance.mjs, hand the delta to balance) → M4 (overlays preview: ghost dots, snap tails, refusal-early, "n/m covered" chip) → M5 (preview===execution parity test + resolver perf budget) → M6 (under-fire crawl-to-cover, LAST — attrition shifts, re-run the balance grid after).
+- Run as ONE sequential chain on a worktree branched from post-balance main: M2 (wire moveSoldiersTo, re-record determinism baselines) → M3 (defend/ambush garrison audit; re-run balance.mjs, hand the delta to balance) → M4 (overlays preview: ghost dots, snap tails, refusal-early, "n/m covered" chip) → M4b NEW, owner-requested (floors UX: per-building storey-count indicator at tactical zooms on the overlay/roof surface, discoverable floor cycling — surface the existing F floor-focus + Alt+right-click floor menu incl. a touch path; keep auto-top-floor garrison as the defend/ambush default; preview dots must show the TARGET FLOOR when ordering into a building) → M5 (preview===execution parity test + resolver perf budget) → M6 (under-fire crawl-to-cover, LAST — attrition shifts, re-run the balance grid after).
 - lane-m worktree/branch still exist; M1 is in main — reuse or delete.
 
 ## Open debts (small, tracked)
