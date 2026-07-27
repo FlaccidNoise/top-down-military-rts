@@ -312,10 +312,12 @@ function shadowFinger(g: Ctx, x: number, y: number, dx: number, dy: number, w: n
 
 function drawFenceRun(g: Ctx, y: Yard, d: Detail): void {
   const [sdx, sdy] = shadowOffset(FENCE_H);
-  // half the wall's core alpha: a picket run is more air than timber, so what
-  // it throws is a broken grey band, not a second wall
-  strokeSegs(g, y.runs, 0.15, `rgba(10,12,8,${SHADOW_SOFT_ALPHA})`, sdx, sdy);
-  strokeSegs(g, y.runs, 0.08, `rgba(10,12,8,${(SHADOW_ALPHA * 0.55).toFixed(3)})`, sdx, sdy);
+  // Two thirds of the wall's core alpha: a picket run is more air than timber,
+  // so what it throws is a broken grey band, not a second wall. The BAND is
+  // the read and the posts only thicken it — fat per-post fingers over a faint
+  // rail line turned the boundary into a comb.
+  strokeSegs(g, y.runs, 0.16, `rgba(10,12,8,${SHADOW_SOFT_ALPHA})`, sdx, sdy);
+  strokeSegs(g, y.runs, 0.1, `rgba(10,12,8,${(SHADOW_ALPHA * 0.68).toFixed(3)})`, sdx, sdy);
   strokeSegs(g, y.runs, 0.13, `rgba(10,12,8,${(AO_ALPHA * 0.4).toFixed(3)})`);
   strokeSegs(g, y.runs, 0.075, 'rgb(96,80,56)');
   strokeSegs(g, y.runs, 0.025, 'rgba(186,172,140,0.30)', -sdx * 0.05, -sdy * 0.05);
@@ -342,7 +344,7 @@ function drawFenceRun(g: Ctx, y: Yard, d: Detail): void {
   strokeSegs(g, pickets, 0.095, 'rgba(118,99,68,0.85)');
   strokeSegs(g, pickets, 0.03, 'rgba(196,180,146,0.22)', -sdx * 0.05, -sdy * 0.05);
   for (const [x, py2] of posts) {
-    shadowFinger(g, x, py2, sdx, sdy, 0.14, 0.26);
+    shadowFinger(g, x, py2, sdx, sdy, 0.11, 0.13);
     g.fillStyle = 'rgb(72,60,42)';
     g.fillRect(x - 0.07, py2 - 0.07, 0.14, 0.14);
     if (d < 1) continue;
