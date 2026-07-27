@@ -207,6 +207,20 @@ export class AudioEngine {
     }
   }
 
+  // A wall going down. No crack front and no sub thump — those are the blast,
+  // and the blast has already been voiced through addBooms. This is only the
+  // collapse: a short rush of falling stone on top of it.
+  addBreaches(list: { x: number; y: number; horiz: boolean }[], cam: Camera, cw: number, ch: number): void {
+    if (!this.live()) return;
+    for (const b of list) {
+      const placed = this.place(b.horiz ? b.x + 0.5 : b.x, b.horiz ? b.y : b.y + 0.5, cam, cw, ch);
+      if (!placed) continue;
+      const [g, pan] = placed;
+      this.burst(420, 0.7, 0.35, 0.7 * g, pan, 'lowpass'); // masonry rush
+      this.burst(2600, 2, 0.12, 0.22 * g, pan, 'bandpass'); // chips on the cobbles
+    }
+  }
+
   addMelee(events: MeleeEvent[], cam: Camera, cw: number, ch: number): void {
     if (!this.live()) return;
     for (const m of events) {

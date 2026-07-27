@@ -1,5 +1,5 @@
 import type { Emplacement } from '../sim/emplacement';
-import { MELEE_STRIKE_RANGE, stanceOf, type MeleeEvent, type ShotEvent, type Side, type Sim, type Soldier, type Vehicle } from '../sim/sim';
+import { MELEE_STRIKE_RANGE, stanceOf, type BreachEvent, type MeleeEvent, type ShotEvent, type Side, type Sim, type Soldier, type Vehicle } from '../sim/sim';
 import type { Camera } from './camera';
 import { DecalLayer } from './decals';
 import { bandFor, CRAWL_FRAMES, DUDE_SCALE, getShadowSprite, getSprite, glintSprite, headOffset, kitVariant, SPRITE_MIN_SCALE, SPRITE_SPAN, tier, WALK_FRAMES, weaponClass, type Pose } from './dudes';
@@ -92,6 +92,20 @@ interface Plane {
   x1: number;
   at: number;
 }
+
+// The moment a wall opens (D12). The debris goes along the wall's NORMAL, both
+// ways: a charge in a wall throws stone into both the room and the street, and
+// which side the burst was on is not something the render channel is told.
+interface BreachFx {
+  x: number; // edge midpoint, world
+  y: number;
+  nx: number; // unit normal, the axis the stone flies along
+  ny: number;
+  wide: boolean;
+  at: number;
+  k: number; // hash key — stable, so the same breach throws the same stone every frame
+}
+const BREACH_MS = 1300;
 
 // A thing on fire. One record serves both causes: a building stoked by booms
 // that landed inside it (key = buildingId), and a vehicle the sim says is
@@ -214,6 +228,7 @@ export class Renderer {
   private deadVehicles = new Set<number>(); // scorch stamped once, on first dead frame
   private lastNow = 0;
   private booms: Boom[] = [];
+  private breaches: BreachFx[] = [];
   private decals: DecalLayer;
   private marks = new MarkLayer();
   private barrageMarks: { x: number; y: number; tick: number }[] = [];
@@ -290,6 +305,39 @@ export class Renderer {
       if (bid >= 0) this.stoke(bid, b.x, b.y, -1);
       this.flush(b.x, b.y, now);
     }
+  }
+
+  // A wall the sim just opened. Deliberately NOT routed through addBooms: that
+  // path stamps a scorch and punches a roof hole, and a crushed fence is not a
+  // crater. What it does instead is the three things that make the hole real —
+  // it tells the baked art the map changed, it dirties the enclosure index, and
+  // it throws the stone.
+  //
+  // The invalidation is unconditional and must stay that way: a breach the
+  // player cannot see still changed the map, and a chunk that is never marked
+  // stale is never rebaked, so the wall would come back the moment the fog
+  // lifted. Only the PARTICLES are transient.
+  addBreaches(list: BreachEvent[], now: number): void {
+    if (list.length === 0) return;
+    for (const b of list) {
+      const mx = b.horiz ? b.x + 0.5 : b.x;
+      const my = b.horiz ? b.y : b.y + 0.5;
+      this.terrain.invalidateEdge(b.x, b.y);
+      this.roofs.noteBreach(b.x, b.y, b.horiz);
+      const nx = b.horiz ? 0 : 1;
+      const ny = b.horiz ? 1 : 0;
+      // Spill on the ground either side of the opening, and chipped stone
+      // round the lip — the two decal layers already built for exactly this.
+      for (const s of [-1, 1]) {
+        this.decals.grit(mx + nx * s * 0.55, my + ny * s * 0.55);
+        this.marks.add(mx + nx * s * 0.3 + ny * 0.2, my + ny * s * 0.3 + nx * 0.2);
+      }
+      this.marks.add(mx, my);
+      this.breaches.push({ x: mx, y: my, nx, ny, wide: b.wide, at: now, k: Math.round(mx * 8) * 977 + Math.round(my * 8) });
+    }
+    // Once for the batch, not once per edge: it re-derives the whole
+    // free-standing index, and a barrage delivers four breaches at a time.
+    this.terrain.breachEnclosures();
   }
 
   // Put birds up if this blast landed in or beside woods. The 1-in-2 gate is
@@ -1386,6 +1434,9 @@ export class Renderer {
     this.booms = this.booms.filter((b) => now - b.at < BOOM_MS);
     for (const b of this.booms) this.drawBoom(ctx, cam, b, now, cw, ch, tier);
 
+    this.breaches = this.breaches.filter((b) => now - b.at < BREACH_MS);
+    for (const b of this.breaches) this.drawBreach(ctx, cam, b, now, cw, ch, tier);
+
     // One additive batch for the whole frame: the composite mode flips twice,
     // never once per particle.
     hotPass(ctx, () => {
@@ -1480,6 +1531,57 @@ export class Renderer {
       ctx.beginPath();
       ctx.arc(g.x1, g.y1, (0.4 + kt * 2.2) * cam.scale, 0, Math.PI * 2);
       ctx.stroke();
+    }
+  }
+
+  // The stone leaving the wall. Reuses the overshoot vocabulary wholesale —
+  // 'masonry' spall for the pale stone dust, 'dustTan' for the mortar, and the
+  // CHUNKS on real ballistic arcs with ground shadows — because "a round hit
+  // that wall" and "that wall came down" should read as the same material,
+  // just more of it. No flash, no soot, no fireball: nothing here is burning.
+  private drawBreach(ctx: CanvasRenderingContext2D, cam: Camera, b: BreachFx, now: number, cw: number, ch: number, tier: 0 | 1 | 2): void {
+    const [x, y] = cam.worldToScreen(b.x, b.y, cw, ch);
+    const S = cam.scale;
+    if (!this.onScreen(x, y, cw, ch, 6 * S)) return;
+    const age = now - b.at;
+    const rs = b.wide ? 1.35 : 1; // a tank went through this one
+    const base = Math.atan2(b.ny, b.nx);
+
+    // 0-320 ms: the dust punch, thrown out of BOTH faces of the wall
+    if (age < 320) {
+      const t = age / 320;
+      const n = Math.round((tier >= 1 ? 7 : 4) * rs);
+      for (let i = 0; i < n; i++) {
+        const side = i & 1 ? 1 : -1;
+        const ca = base + (side < 0 ? Math.PI : 0) + (hash(b.k, i, 350) - 0.5) * 1.5;
+        const dist = (0.2 + t * (1.1 + hash(b.k, i, 351) * 0.9)) * rs * S;
+        blit(ctx, i % 3 === 0 ? 'dustTan' : 'masonry', x + Math.cos(ca) * dist, y + Math.sin(ca) * dist, (0.22 + t * 0.5) * rs * S, (1 - t) * 0.55);
+      }
+    }
+    // 0-1300 ms: mortar dust settling straight down over the gap, so the hole
+    // stays legible for a beat after the debris has landed
+    if (age < BREACH_MS) {
+      const t = age / BREACH_MS;
+      blit(ctx, 'dustTan', x, y, (0.5 + t * 1.4) * rs * S, (1 - t) * (1 - t) * 0.3);
+    }
+    // 40-900 ms: tumbling chunks. They stamp no grit — addBreaches already put
+    // the spill down at the moment of the breach, where it belongs.
+    if (tier >= 1 && age >= 40 && age < 900) {
+      const ts = (age - 40) / 1000;
+      const n = Math.round((b.wide ? 9 : 6) * tier);
+      for (let i = 0; i < n; i++) {
+        const side = i & 1 ? 1 : -1;
+        const ca = base + (side < 0 ? Math.PI : 0) + (hash(b.k, i, 352) - 0.5) * 1.7;
+        const [dist, z] = ballistic(ts, (2.5 + hash(b.k, i, 353) * 3.5) * rs, 2 + hash(b.k, i, 354) * 2.5);
+        const gx = x + Math.cos(ca) * dist * S;
+        const gy = y + Math.sin(ca) * dist * S;
+        if (z <= 0) continue;
+        ctx.fillStyle = `rgba(20,17,12,${0.18 * (1 - Math.min(1, z / 2))})`;
+        ctx.beginPath();
+        ctx.ellipse(gx, gy, S * 0.12, S * 0.07, 0, 0, Math.PI * 2);
+        ctx.fill();
+        blit(ctx, CHUNKS[i & 3], gx, gy - z * S * 0.9, (0.07 + hash(b.k, i, 355) * 0.05) * S, 1, ts * (4 + hash(b.k, i, 356) * 8));
+      }
     }
   }
 

@@ -1183,13 +1183,19 @@ function frame(now: number): void {
     const shots = sim.takeEvents();
     const melee = sim.takeMeleeEvents();
     const booms = sim.takeBooms();
+    // Drained beside the booms and never THROUGH them: a breach is a map
+    // mutation the renderer has to notice (stale chunks, stale enclosure runs,
+    // stale wall bands), where a boom is only ever a thing that was watched.
+    const breaches = sim.takeBreaches();
     renderer.addEvents(shots, now);
     renderer.addMeleeEvents(melee, now);
     renderer.addBooms(booms, now);
+    renderer.addBreaches(breaches, now);
     renderer.addPlanes(sim.takePlanes(), now);
     audio.addShots(shots, cam, cw, chh);
     audio.addMelee(melee, cam, cw, chh);
     audio.addBooms(booms, cam, cw, chh);
+    audio.addBreaches(breaches, cam, cw, chh);
     // fog of war: enemy unit events only ping where a friendly can see
     const unitEvents = sim.takeUnitEvents().filter((e) => e.side === 'blue' || sim.fowDisabled || sim.sideSeesPoint('blue', e.x, e.y));
     pings.add(unitEvents, sim.tick);
