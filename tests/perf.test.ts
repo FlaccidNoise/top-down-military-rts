@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { RedCommander } from '../src/sim/ai';
 import { GameMap, los } from '../src/sim/map';
-import { generateMap, validate, type Vec } from '../src/sim/mapgen';
+import { generateMap, validate, type MapPlan, type Vec } from '../src/sim/mapgen';
+import { buildObjectives } from '../src/sim/bourg/objectives';
+import { planBourg, stampBourg } from '../src/sim/bourg/plan';
+import { mulberry32 } from '../src/sim/rng';
+import { PatchIndex } from '../src/render/patches';
 import { Sim, type Squad } from '../src/sim/sim';
 import { COMPANY_TOE, companyHeadcount } from '../src/sim/toe';
 
@@ -207,6 +211,117 @@ describe('perf: mapgen validation gate', () => {
     expect(fat / bare).toBeLessThan(PADDED_MAX_RATIO);
     expect(means.open).toBeLessThan(GEN_SANITY_MS);
     expect(means.town).toBeLessThan(GEN_SANITY_MS);
+  }, 60_000);
+});
+
+describe('perf: bourg generation (§5.5)', () => {
+  // The whole pipeline, through generateMap, i.e. exactly what bridge.ts:135
+  // pays synchronously when the player commits an engagement. §5.5's budget,
+  // unmodified — but measured MIN-of-reps per seed, for the same reason the
+  // flood-fill gate's ratio is: generateMap is a pure deterministic function of
+  // (seed, w, h, kind), so repeating one seed measures nothing but scheduler
+  // noise, and the minimum is the least-contended sample. Measured standalone:
+  // mean 18.0 / max 31.3 over 200 seeds. Measured as a raw single pass under a
+  // full parallel suite: mean 31.8 / max 67.8 — inside the budget, but only
+  // 25 % clear of it, which is a flake waiting to happen and would make this
+  // test a contention detector rather than a generator-cost gate.
+  const BOURG_MEAN_MS = 40;
+  const BOURG_MAX_MS = 90;
+  const BOURG_REPS = 5;
+  // §2.2's gate: "if the measured rate exceeds 5 %, the failing constraint gets
+  // relaxed, not the budget raised". Measured 0/200. The hard assert sits at
+  // the doc's 15 % so a genuine regression fails CI rather than merely doubling
+  // the cost of every battle — a reject is otherwise INVISIBLE from outside,
+  // because generateMap just silently pays for another attempt.
+  const REJECT_HARD_LIMIT = 0.15;
+  const REJECT_SEEDS = 60;
+
+  it('bourg-gen: 320x240 stays inside the 40 ms mean / 90 ms max budget', () => {
+    generateMap(1, MAP_W, MAP_H, 'bourg'); // JIT warmup: the first call runs ~3x steady state
+    const ts: number[] = [];
+    const raw: number[] = [];
+    for (let seed = 1; seed <= 20; seed++) {
+      let best = Infinity;
+      for (let rep = 0; rep < BOURG_REPS; rep++) {
+        const t0 = performance.now();
+        generateMap(seed, MAP_W, MAP_H, 'bourg');
+        const dt = performance.now() - t0;
+        if (rep === 0) raw.push(dt);
+        best = Math.min(best, dt);
+      }
+      ts.push(best);
+    }
+    console.log(
+      `[perf] bourg-gen ${JSON.stringify({
+        mean: round(mean(ts)),
+        p95: round(p95(ts)),
+        max: round(max(ts)),
+        rawMean: round(mean(raw)),
+        rawMax: round(max(raw)),
+      })}`,
+    );
+    expect(mean(ts)).toBeLessThan(BOURG_MEAN_MS);
+    expect(max(ts)).toBeLessThan(BOURG_MAX_MS);
+  }, 60_000);
+
+  it('bourg-reject: the first attempt validates on essentially every seed', () => {
+    // generateMap's attempt-0 rng, reproduced (mapgen.ts:131) so the verdict of
+    // the FIRST attempt is observable at all. The replay is self-checking: if
+    // the seeding here ever drifts from mapgen's, the fidelity assertion below
+    // fails loudly instead of the rate quietly becoming meaningless.
+    const attempt0 = (seed: number): MapPlan => {
+      const base = mulberry32((seed ^ 0x51ab3fc7) >>> 0).int(0x7fffffff);
+      const plan = planBourg(base, MAP_W, MAP_H);
+      const map = new GameMap(MAP_W, MAP_H);
+      const st = stampBourg(map, plan);
+      map.maxStories = st.maxStories;
+      const { objectives, objectiveKinds } = buildObjectives(plan.sk, plan.land, plan.fp, st.woodsStands);
+      return { map, buildings: plan.fp.buildings, spawns: plan.spawns, objectives, objectiveKinds, woodsStands: st.woodsStands };
+    };
+    for (const seed of [1, 7]) expect(attempt0(seed).buildings).toEqual(generateMap(seed, MAP_W, MAP_H, 'bourg').buildings);
+
+    let rejects = 0;
+    const rejected: number[] = [];
+    for (let seed = 1; seed <= REJECT_SEEDS; seed++)
+      if (!validate(attempt0(seed))) {
+        rejects++;
+        rejected.push(seed);
+      }
+    console.log(`[perf] bourg-reject ${JSON.stringify({ rejects, seeds: REJECT_SEEDS, rate: round(rejects / REJECT_SEEDS), rejected })}`);
+    expect(rejects / REJECT_SEEDS).toBeLessThan(REJECT_HARD_LIMIT);
+  }, 120_000);
+
+  it('bourg-patches: PatchIndex construction is still O(w·h), not O(buildings)', () => {
+    // T13's second half. A bourg is the same 76,800 tiles as a 'town' with ~3x
+    // the buildings, so a construction cost that tracks the building list shows
+    // up here as a ratio and nowhere else — and PatchIndex is built once per
+    // battle load, on the same synchronous path as the generator.
+    const best = (map: GameMap): number => {
+      let b = Infinity;
+      for (let i = 0; i < 9; i++) {
+        const t0 = performance.now();
+        new PatchIndex(map);
+        b = Math.min(b, performance.now() - t0);
+      }
+      return b;
+    };
+    const townPlan = generateMap(SEED, MAP_W, MAP_H, 'town');
+    const bourgPlan = generateMap(SEED, MAP_W, MAP_H, 'bourg');
+    best(townPlan.map); // warmup
+    const townMs = best(townPlan.map);
+    const bourgMs = best(bourgPlan.map);
+    console.log(
+      `[perf] bourg-patches ${JSON.stringify({
+        townMs: round(townMs),
+        bourgMs: round(bourgMs),
+        ratio: round(bourgMs / townMs),
+        townBuildings: townPlan.buildings.length,
+        bourgBuildings: bourgPlan.buildings.length,
+      })}`,
+    );
+    // min-of-reps on both sides, as the flood-fill gate's ratio does; measured
+    // 1.08 with 21 vs 55 buildings, and an O(n²) regression is orders out
+    expect(bourgMs / townMs).toBeLessThan(2);
   }, 60_000);
 });
 
