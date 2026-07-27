@@ -2,7 +2,7 @@ import { EMPLACEMENTS, VEHICLES, WEAPONS, type EmplacementDef, type VehicleDef, 
 import { crewNear, loadsReady, type Emplacement } from '../sim/emplacement';
 import { BALK_HINT, canArm, ORDER_AFFORDANCE, type ArmTarget, type OrderAffordance } from './order-data';
 import type { OrderKind } from '../sim/orders';
-import type { Sim, Soldier, Squad, Vehicle } from '../sim/sim';
+import { canBreachByHand, type Sim, type Soldier, type Squad, type Vehicle } from '../sim/sim';
 import { objectiveStripText, type ObjectiveData } from './objective-strip';
 import { formatBinding, loadKeymap, type Keymap } from './keymap';
 import { MOBILE } from '../render/view';
@@ -24,6 +24,7 @@ export interface HudCallbacks {
   wheelEmplacement(): void;
   fireEmplacement(): void;
   smokeEmplacement(): void;
+  breachTarget(): void;
   mountVehicle(): void;
   dismountVehicle(): void;
   hitchVehicle(): void;
@@ -45,7 +46,7 @@ export interface HudState {
   selectedVehicle: number;
   paused: boolean;
   aiControl: boolean;
-  targetMode: '' | 'barrage' | 'air' | 'wheel' | 'empfire' | 'empsmoke';
+  targetMode: '' | 'barrage' | 'air' | 'wheel' | 'empfire' | 'empsmoke' | 'breach';
   armedOrder: OrderKind | null;
   title: string;
   keymap: Keymap;
@@ -74,6 +75,7 @@ const CTX_ACTIONS: Record<string, keyof HudCallbacks> = {
   wheel: 'wheelEmplacement',
   fire: 'fireEmplacement',
   smoke: 'smokeEmplacement',
+  breach: 'breachTarget',
   mount: 'mountVehicle',
   dismount: 'dismountVehicle',
   hitch: 'hitchVehicle',
@@ -317,6 +319,7 @@ export class Hud {
       if (st.targetMode === 'wheel') this.ml.textContent = `WHEEL GUN — click destination · ${cancelKey} cancels`;
       if (st.targetMode === 'empfire') this.ml.textContent = `MORTAR FIRE — click target · ${cancelKey} cancels`;
       if (st.targetMode === 'empsmoke') this.ml.textContent = `MORTAR SMOKE — click target · 4 rounds · ${cancelKey} cancels`;
+      if (st.targetMode === 'breach') this.ml.textContent = `BREACH — click a wall · one aimed round opens it · ${cancelKey} cancels`;
     } else if (!this.idleShown) {
       this.ml.style.display = 'none';
     }
@@ -553,12 +556,21 @@ function squadCard(sim: Sim, sq: Squad, st: HudState, km: Keymap): string {
   const empStateRow = emp ? emplacementStateRow(sim, emp) : '';
   const focus = isPrimary && st.selectedTeam >= 0 ? `<div class="focus">Team: ${sim.teams[st.selectedTeam]?.name ?? ''} <i>(esc widens)</i></div>` : '';
   const rows = isPrimary
-    ? focus + balkChip + orderBar(st, km, target) + empStateRow + (emp ? emplacementContext(sim, emp) : '') + (showLegend ? BARS_LEGEND : '') + men.map((m) => soldierRow(m)).join('')
+    ? focus + balkChip + orderBar(st, km, target) + empStateRow + (emp ? emplacementContext(sim, emp) : squadContext(men)) + (showLegend ? BARS_LEGEND : '') + men.map((m) => soldierRow(m)).join('')
     : '';
   return (
     `<div class="card panel${sel ? ' sel' : ''}" data-squad="${sq.id}" tabindex="0" role="button">` +
     `<div class="card-head"><b>${sq.name}</b>${squadAmmo}<span class="n">${men.filter((m) => m.alive).length}/${men.length}</span><div class="dots">${dots}</div></div>${rows}</div>`
   );
+}
+
+// Context-action row for a plain (non-crew) squad. Today that is just Breach:
+// a squad with a rocket launcher in it, or a stashed panzerfaust, gets the same
+// wall affordance the tank and the AT gun get. canBreachByHand is the sim's own
+// predicate, so the button appears exactly when Sim.orderSquadBreach will bite.
+function squadContext(men: Soldier[]): string {
+  const armed = men.some((m) => m.alive && !m.downed && m.inVehicle < 0 && canBreachByHand(m));
+  return armed ? `<div class="ctxrow"><button class="hbtn" data-ctx="breach">Breach</button></div>` : '';
 }
 
 function soldierRow(m: Soldier): string {
@@ -623,6 +635,9 @@ function emplacementContext(sim: Sim, e: Emplacement): string {
       btns.push(`<button class="hbtn" data-ctx="fire">Fire</button>`);
       btns.push(`<button class="hbtn" data-ctx="smoke">Smoke</button>`);
     }
+    // Direct-fire AT guns can be pointed at a wall (D5). Same predicate
+    // Sim.orderEmplacementBreach gates on, so the button never no-ops.
+    if (w.pen !== undefined) btns.push(`<button class="hbtn" data-ctx="breach">Breach</button>`);
   } else {
     btns.push(`<span class="ctxnote">${e.state} · ${Math.ceil(e.timer)}s</span>`);
   }
@@ -635,6 +650,8 @@ function emplacementContext(sim: Sim, e: Emplacement): string {
 function vehicleContext(sim: Sim, v: Vehicle): string {
   const def: VehicleDef = VEHICLES[v.kind];
   const btns: string[] = [];
+  // A main gun can be pointed at a wall (D5); a halftrack's gunPen 0 cannot.
+  if (def.gunPen > 0) btns.push(`<button class="hbtn" data-ctx="breach">Breach</button>`);
   if (def.seats !== undefined) {
     btns.push(`<button class="hbtn" data-ctx="mount">Mount</button>`);
     if (v.passengerTeamIds.length > 0) btns.push(`<button class="hbtn" data-ctx="dismount">Dismount</button>`);

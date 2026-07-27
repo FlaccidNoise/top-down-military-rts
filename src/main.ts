@@ -160,7 +160,7 @@ let selectedTeam = -1; // -1 = whole squad; narrowed to one team within selected
 let selectedVehicle = -1;
 let lastTeamId = -1; // most recently selected team, survives a later vehicle selection (Mount reads this)
 let armedOrder: OrderKind | null = null; // order kind armed via ⇧1-7 / order bar, issued by right-click
-let targetMode: '' | 'barrage' | 'air' | 'wheel' | 'empfire' | 'empsmoke' = '';
+let targetMode: '' | 'barrage' | 'air' | 'wheel' | 'empfire' | 'empsmoke' | 'breach' = '';
 let floorFocus = -1; // -1 = all floors; 0..maxStories-1 = only that floor, others dimmed (F key)
 let winnerAt = -1; // ms timestamp when winner appeared
 let debriefShown = false;
@@ -229,7 +229,7 @@ function selectVehicle(id: number): void {
   if (renderer) renderer.selectedVehicle = id;
 }
 
-function setTargetMode(m: '' | 'barrage' | 'air' | 'wheel' | 'empfire' | 'empsmoke'): void {
+function setTargetMode(m: '' | 'barrage' | 'air' | 'wheel' | 'empfire' | 'empsmoke' | 'breach'): void {
   targetMode = m;
   canvas.style.cursor = m ? 'crosshair' : '';
 }
@@ -270,6 +270,7 @@ const hud = new Hud({
   wheelEmplacement: () => setTargetMode(targetMode === 'wheel' ? '' : 'wheel'),
   fireEmplacement: () => setTargetMode(targetMode === 'empfire' ? '' : 'empfire'),
   smokeEmplacement: () => setTargetMode(targetMode === 'empsmoke' ? '' : 'empsmoke'),
+  breachTarget: () => setTargetMode(targetMode === 'breach' ? '' : 'breach'),
   mountVehicle: () => {
     if (selectedVehicle >= 0 && lastTeamId >= 0) sim.orderMount(lastTeamId, selectedVehicle);
   },
@@ -635,6 +636,9 @@ function tapSelect(sx: number, sy: number, additive: boolean): void {
     const e = emplacementOf(sim, getPrimary());
     if (e) sim.orderSmoke(e.id, wx, wy);
     setTargetMode('');
+  } else if (targetMode === 'breach') {
+    orderBreach(wx, wy);
+    setTargetMode('');
   } else {
     // vehicles first, then emplacement glyphs, then soldiers
     let vehicle = -1;
@@ -674,6 +678,25 @@ function tapSelect(sx: number, sy: number, additive: boolean): void {
       }
     }
   }
+}
+
+// D5: point the current selection's gun at a wall. Precedence mirrors
+// tapSelect's own pick order — the vehicle, then the crew-served gun, then the
+// squad's own AT men — so "what is selected" answers "who takes the shot"
+// exactly once, in one place. Each sim call re-checks that its firer can
+// actually do it and returns null otherwise, so a mis-click is a no-op.
+function orderBreach(wx: number, wy: number): void {
+  if (selectedVehicle >= 0) {
+    sim.orderVehicleBreach(selectedVehicle, wx, wy);
+    return;
+  }
+  const emp = emplacementOf(sim, getPrimary());
+  if (emp) {
+    sim.orderEmplacementBreach(emp.id, wx, wy);
+    return;
+  }
+  if (selectedTeam >= 0) sim.orderTeamBreach(selectedTeam, wx, wy);
+  else if (getPrimary() >= 0) sim.orderSquadBreach(getPrimary(), wx, wy);
 }
 
 function beginOrderAnchor(sx: number, sy: number): void {

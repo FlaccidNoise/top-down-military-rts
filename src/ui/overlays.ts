@@ -9,7 +9,7 @@ export interface OverlayState {
   pick: Pick;
   shot: ShotSolution | null;
   selectedSquad: number;
-  targetMode: '' | 'barrage' | 'air' | 'wheel' | 'empfire' | 'empsmoke';
+  targetMode: '' | 'barrage' | 'air' | 'wheel' | 'empfire' | 'empsmoke' | 'breach';
   focusTeams: number[]; // the selected squad's teams, or one narrowed team
   armedOrder: OrderKind | null;
   cursor: { x: number; y: number } | null; // world position, for the danger preview

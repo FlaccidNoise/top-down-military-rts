@@ -22,7 +22,24 @@ import {
   type WeaponKey,
 } from './data';
 import { crewDegrade, crewHasLos, crewNear, friendlyHasLos, loadsReady, pickFirer, type Emplacement } from './emplacement';
-import { BREACH_LIP, BREACH_THRESH, BREACH_WIDE, ECLASS, EDGE, EYE_H, FLOOR_H, GameMap, edgeClass, los, type EdgeType, type LosResult, type StepMode } from './map';
+import {
+  BREACH_LIP,
+  BREACH_THRESH,
+  BREACH_WIDE,
+  ECLASS,
+  EDGE,
+  EYE_H,
+  FLOOR_H,
+  GameMap,
+  edgeClass,
+  edgeMid,
+  los,
+  nearestBreachable,
+  type EdgeRef,
+  type EdgeType,
+  type LosResult,
+  type StepMode,
+} from './map';
 import type { Building } from './mapgen';
 import { ambushThreshold, ASSAULT_DANGER_MULT, BALK_REASON, CHARGE_BALK_REASON, compliance, dangerScore, type OrderState, type TeamOrder } from './orders';
 import { astar } from './path';
@@ -86,6 +103,22 @@ const SCRAMBLE_TICKS = 18;
 const CRUSH_STALL_LIGHT = 30;
 const CRUSH_STALL_HEAVY = 75;
 const CRUSH_SUPPRESSION = 0.25;
+// D5, the deliberate wall shot: the same warhead as a MISSED AT round (which
+// is where most accidental masonry breaching already comes from) with the
+// aiming put back in. 12 is the only energy on the field that clears every row
+// of BREACH_THRESH, so an aimed round always opens the edge it lands on —
+// which is what makes "assault routes you make" a rule rather than a lottery.
+const WALL_SHOT: { suppRadius: number; fragRadius: number; frags: number; dmg: [number, number]; breach: number } = {
+  suppRadius: 8,
+  fragRadius: 3,
+  frags: 1,
+  dmg: [20, 50],
+  breach: 12,
+};
+// How far from the click a wall target may be picked up. Two and a half metres
+// is a tile and a half: close enough that the player is unambiguously pointing
+// at a wall, loose enough that he need not hit the edge line to the pixel.
+export const WALL_TARGET_RADIUS = 2.5;
 
 // A wall (or gate, or window) that opened mid-battle. Insertion-ordered:
 // `pendingBreaches` is the render channel (drained every frame like booms),
@@ -204,6 +237,7 @@ export interface Soldier {
   level: number; // floor level, 0-based. vehicles/emplacements always 0
   climbLeft: number; // ticks remaining of a stair climb; >0 = on stairs transitioning
   scrambleLeft: number; // ticks remaining of a rubble-lip crossing; >0 = clambering through a breach
+  wallTarget: EdgeRef | null; // player-assigned wall to open with an AT weapon (D5), null = none
   grenadesLeft: number; // 2 for grenadiers, 0 for everyone else
   grenadeCooldownUntil: number; // tick when next grenade throw is allowed
   captured: boolean; // alive, out of the fight, untargetable (surrendered at melee contact)
@@ -229,6 +263,23 @@ export interface Vehicle {
   passengerTeamIds: number[];
   turning: boolean; // rotating a restricted-arc turret (StuG) toward a target instead of firing
   crushLeft: number; // ticks of stalled MOVEMENT after driving through something; the gun still works
+  wallTarget: EdgeRef | null; // player-assigned wall to open with the main gun (D5), null = none
+}
+
+// Can this man be pointed at a wall (D5)? A rocket launcher in his hands, or a
+// panzerfaust stashed in his pockets — the same two branches his anti-armour
+// fire already runs on, so the HUD's Breach button and the sim agree on who
+// can take the shot without either re-deriving it.
+export function canBreachByHand(s: Soldier): boolean {
+  const w: WeaponDef = WEAPONS[s.weapon];
+  return w.pen !== undefined || (s.ammo.faust ?? 0) > 0;
+}
+
+// A wall target as one snapshot cell. It is mutable state that gates which
+// weapon fires at what, so §4.2's rule applies: it goes in the determinism
+// snapshot or two same-seed runs can silently diverge on it.
+function refKey(t: EdgeRef | null): string {
+  return t ? `${t.horiz ? 'h' : 'v'}${t.x},${t.y}` : '';
 }
 
 // Which armor arc does a shot from (fx,fy) strike?
@@ -742,6 +793,7 @@ export class Sim {
       level: 0,
       climbLeft: 0,
       scrambleLeft: 0,
+      wallTarget: null,
       grenadesLeft: m.grenades ?? 0,
       grenadeCooldownUntil: 0,
       captured: false,
@@ -979,6 +1031,7 @@ export class Sim {
       passengerTeamIds: [],
       turning: false,
       crushLeft: 0,
+      wallTarget: null,
     };
     for (const sid of squad.soldierIds) this.soldiers[sid].inVehicle = v.id;
     this.vehicles.push(v);
@@ -1147,6 +1200,7 @@ export class Sim {
       hasTarget: false,
       smokeRoundsLeft: 0,
       moveTarget: null,
+      wallTarget: null,
     };
     this.teams[crewTeamId].soldierIds.forEach((sid, i) => {
       const [ox, oy] = OFFSETS[i % OFFSETS.length];
@@ -1212,6 +1266,96 @@ export class Sim {
     e.targetY = y;
     e.hasTarget = true;
     e.smokeRoundsLeft = 4;
+  }
+
+  // ── Player-directed breaching (design D5) ─────────────────────────────────
+  // The point-target affordance orderFire established for the mortar HE point,
+  // pointed at a wall instead of at ground. Each order resolves the click to
+  // ONE edge up front (nearestBreachable) and stores that edge, so the wall the
+  // player picked is the wall the gun shoots — the alternative, re-deriving the
+  // nearest edge from the click point every tick, silently retargets the moment
+  // the first hole changes what "nearest" means.
+  //
+  // All three return the edge that was taken, or null when nothing standing is
+  // near the click / the selection has no gun for the job. The UI shows the
+  // button off that same predicate, so a button that is there always fires.
+
+  // Tanks and assault guns. A halftrack (gunPen 0) has nothing to shoot with.
+  orderVehicleBreach(vehicleId: number, x: number, y: number): EdgeRef | null {
+    const v = this.vehicles[vehicleId];
+    if (!v || !v.alive || VEHICLES[v.kind].gunPen <= 0) return null;
+    const t = nearestBreachable(this.map, x, y, WALL_TARGET_RADIUS);
+    if (t) v.wallTarget = t;
+    return t;
+  }
+
+  // Deployed AT guns (at57 / pak40). Mortars are excluded by the pen test:
+  // 5 energy of 81 mm never opens masonry, so a wall order would be a lie.
+  orderEmplacementBreach(empId: number, x: number, y: number): EdgeRef | null {
+    const e = this.emplacements[empId];
+    if (!e) return null;
+    const w: WeaponDef = WEAPONS[EMPLACEMENTS[e.kind].weapon];
+    if (w.pen === undefined) return null;
+    const t = nearestBreachable(this.map, x, y, WALL_TARGET_RADIUS);
+    if (t) e.wallTarget = t;
+    return t;
+  }
+
+  // Every AT man in the team takes the same edge. Usually that is one bazooka
+  // gunner; a Gruppe with two stashed fausts double-taps the wall, which is
+  // fine — the second man's target self-clears the tick the hole appears.
+  orderTeamBreach(teamId: number, x: number, y: number): EdgeRef | null {
+    const team = this.teams[teamId];
+    if (!team) return null;
+    const t = nearestBreachable(this.map, x, y, WALL_TARGET_RADIUS);
+    if (!t) return null;
+    let any = false;
+    for (const id of team.soldierIds) {
+      const s = this.soldiers[id];
+      if (!this.eligible(s) || s.inVehicle >= 0 || !canBreachByHand(s)) continue;
+      s.wallTarget = t;
+      any = true;
+    }
+    return any ? t : null;
+  }
+
+  orderSquadBreach(squadId: number, x: number, y: number): EdgeRef | null {
+    const squad = this.squads[squadId];
+    if (!squad) return null;
+    let taken: EdgeRef | null = null;
+    for (const tid of squad.teamIds) taken = this.orderTeamBreach(tid, x, y) ?? taken;
+    return taken;
+  }
+
+  // Is this wall target still worth shooting at, and can the firer reach it?
+  // The sight ray aims at the firer's OWN FACE of the edge (the BREACH_FACE_EPS
+  // nudge breachScan uses, and for the same reason): the midpoint sits exactly
+  // on the edge line and floors into the far tile from one side, so asking for
+  // LOS to it would run the ray through the very wall under test and no gun
+  // could ever engage a head-high wall from that side.
+  private wallShotReady(t: EdgeRef, fx: number, fy: number, l: number, e0: number, range: number): boolean {
+    const m = edgeMid(t);
+    if (Math.hypot(m.x - fx, m.y - fy) > range) return false;
+    const gx = t.horiz ? m.x : fx < t.x ? t.x - BREACH_FACE_EPS : t.x + BREACH_FACE_EPS;
+    const gy = t.horiz ? (fy < t.y ? t.y - BREACH_FACE_EPS : t.y + BREACH_FACE_EPS) : m.y;
+    return sightBetween(this, fx, fy, gx, gy, l, 0, e0, EYE_H).visible;
+  }
+
+  // One aimed round into the edge, detonating ON the midpoint — which is what
+  // guarantees the aimed edge opens: breachScan reaches it at distance 0, where
+  // 12 energy clears even MASONRY's 9. Ground burst (l = 0) like every other
+  // explode caller; a wall is a wall whatever floor the gunner is standing on.
+  private fireWallShot(fx: number, fy: number, t: EdgeRef): void {
+    const m = edgeMid(t);
+    this.pendingEvents.push({ fx, fy, tx: m.x, ty: m.y, hit: true, kill: false });
+    this.explode(m.x, m.y, WALL_SHOT, 0);
+  }
+
+  // A wall target that somebody else already opened is spent. Called at the top
+  // of each firer's wall-shot branch so the order clears itself whoever got
+  // there first — the tank's own round, a sister team's faust, or a hull.
+  private wallTargetSpent(t: EdgeRef): boolean {
+    return edgeClass(this.map, t.x, t.y, t.horiz) === ECLASS.NONE;
   }
 
   private stepEmplacements(): void {
@@ -1301,6 +1445,21 @@ export class Sim {
       e.cooldown = w.heat.swapTime * degrade;
       e.heat = 0;
       return;
+    }
+    // A player-assigned wall outranks whatever the gun would have picked for
+    // itself — a deliberate order beats autonomous acquisition, and it is one
+    // round. If the shot is not on (out of range, no LOS, crew dry) the gun
+    // falls through and fights normally rather than sitting inert.
+    if (e.wallTarget && w.pen !== undefined) {
+      if (this.wallTargetSpent(e.wallTarget)) {
+        e.wallTarget = null;
+      } else if (this.wallShotReady(e.wallTarget, e.x, e.y, 0, EYE_H, w.range) && this.consumeEmplacementAmmo(e, firer, w.ammo.type)) {
+        firer.crewSkill.gun = Math.min(1, (firer.crewSkill.gun ?? 0) + 0.0005);
+        this.fireWallShot(e.x, e.y, e.wallTarget);
+        e.wallTarget = null;
+        e.cooldown = w.cooldown * degrade;
+        return;
+      }
     }
     if (w.arc) {
       this.fireEmplacementIndirect(e, w, firer, degrade);
@@ -2186,6 +2345,30 @@ export class Sim {
     if (v.gunCooldown > 0) v.gunCooldown -= DT;
     if (v.mgCooldown > 0) v.mgCooldown -= DT;
 
+    // A player-assigned wall owns the main gun (D5): a deliberate order beats
+    // autonomous acquisition, and it is one round — the wall opens and the
+    // order clears itself. HE for preference, AP if that is all that is left.
+    // A shot that is not on (turret still traversing, no LOS, out of range)
+    // falls through to normal engagement rather than freezing the tank.
+    if (v.wallTarget) {
+      if (this.wallTargetSpent(v.wallTarget)) {
+        v.wallTarget = null;
+      } else if (v.gunCooldown <= 0 && v.ammo.he + v.ammo.ap > 0) {
+        const m = edgeMid(v.wallTarget);
+        if (this.wallShotReady(v.wallTarget, v.x, v.y, 0, EYE_VEHICLE, def.gunRange) && this.turretBearingReady(v, def, m.x, m.y)) {
+          this.fireWallShot(v.x, v.y, v.wallTarget);
+          if (v.ammo.he > 0) v.ammo.he--;
+          else v.ammo.ap--;
+          // Flat, unjittered: an aimed round at a stationary wall is not a
+          // snap shot, and it keeps the whole player-breach path free of
+          // shared-stream draws beyond explode()'s own frag rolls.
+          v.gunCooldown = def.gunCooldown;
+          v.wallTarget = null;
+          return;
+        }
+      }
+    }
+
     // prefer enemy armor with the main gun
     if ((this.tick + v.id) % RETARGET_TICKS === 0 || v.targetVehicleId < 0) {
       v.targetVehicleId = -1;
@@ -2660,6 +2843,27 @@ export class Sim {
     // Order-level fire discipline: sneak and (untriggered) ambush hold fire
     // entirely; fast holds fire only while actually sprinting.
     if (order?.kind === 'sneak' || order?.kind === 'ambush' || (order?.kind === 'fast' && s.path)) return;
+
+    // A player-assigned wall outranks armour for this man (D5): he was pointed
+    // at that wall on purpose. One round, then the order clears — and it clears
+    // early if anyone else opens the edge first. Deliberately below the
+    // hold-fire gate above: a team told to sneak is told to sneak.
+    if (s.wallTarget) {
+      if (this.wallTargetSpent(s.wallTarget)) {
+        s.wallTarget = null;
+      } else if (s.cooldown <= 0) {
+        const at: WeaponDef | null = w.pen !== undefined ? w : (s.ammo.faust ?? 0) > 0 ? WEAPONS.panzerfaust : null;
+        if (at && this.wallShotReady(s.wallTarget, s.x, s.y, s.level, eyeOf(this, s), at.range)) {
+          this.fireWallShot(s.x, s.y, s.wallTarget);
+          if (w.pen !== undefined) s.magLeft--;
+          else s.ammo.faust!--;
+          s.crewSkill.gun = Math.min(1, (s.crewSkill.gun ?? 0) + 0.0005);
+          s.cooldown = at.cooldown; // aimed, not snapped: no jitter draw
+          s.wallTarget = null;
+          return;
+        }
+      }
+    }
 
     // AT men engage armor first
     if (w.pen !== undefined && s.cooldown <= 0) {
@@ -3793,6 +3997,7 @@ export class Sim {
         s.level,
         s.climbLeft,
         s.scrambleLeft,
+        refKey(s.wallTarget),
       ]),
       vehicles: this.vehicles.map((v) => [
         v.id,
@@ -3806,6 +4011,7 @@ export class Sim {
         v.ammo.he,
         v.turning,
         v.crushLeft,
+        refKey(v.wallTarget),
         v.passengerTeamIds.join(','),
       ]),
       teams: this.teams.map((t) => [t.id, t.orderState.phase, t.orderState.order?.kind ?? '', t.smokeLeft, t.ambushBonusTick]),
@@ -3821,6 +4027,7 @@ export class Sim {
         e.loadsPresent.length,
         e.hasTarget,
         e.smokeRoundsLeft,
+        refKey(e.wallTarget),
       ]),
       smoke: this.smoke.map((p) => [
         Math.round(p.x * 1e6),

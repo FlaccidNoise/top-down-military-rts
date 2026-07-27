@@ -301,6 +301,52 @@ export function edgeClass(map: GameMap, x: number, y: number, horiz: boolean): n
   return ECLASS.MASONRY;
 }
 
+// A single edge, addressed the way hEdge/vEdge and edgeClass want it. The
+// player-directed wall target (design D5) is one of these, resolved once when
+// the order is given rather than re-derived from the click point every tick —
+// so the wall the player picked is the wall the gun shoots, even if he nudged
+// the camera afterwards.
+export interface EdgeRef {
+  x: number;
+  y: number;
+  horiz: boolean;
+}
+
+// Midpoint of an edge's span, in world metres. A horizontal edge runs along
+// the north side of its tile, a vertical one down the west side.
+export function edgeMid(e: EdgeRef): { x: number; y: number } {
+  return e.horiz ? { x: e.x + 0.5, y: e.y } : { x: e.x, y: e.y + 0.5 };
+}
+
+// Which breachable edge is this click nearest to? Row-major, h before v — the
+// same fixed scan order breachScan uses, so a tie between two equidistant
+// edges resolves identically everywhere. Cold path (once per order), so it may
+// allocate. Returns null when nothing standing is within `radius`.
+export function nearestBreachable(map: GameMap, x: number, y: number, radius: number): EdgeRef | null {
+  let best: EdgeRef | null = null;
+  let bestD = radius;
+  const x0 = Math.floor(x - radius);
+  const x1 = Math.floor(x + radius) + 1;
+  const y0 = Math.floor(y - radius);
+  const y1 = Math.floor(y + radius) + 1;
+  for (let ty = y0; ty <= y1; ty++) {
+    for (let tx = x0; tx <= x1; tx++) {
+      for (let k = 0; k < 2; k++) {
+        const horiz = k === 0;
+        if (edgeClass(map, tx, ty, horiz) === ECLASS.NONE) continue;
+        const mx = horiz ? tx + 0.5 : tx;
+        const my = horiz ? ty : ty + 0.5;
+        const d = Math.hypot(mx - x, my - y);
+        if (d < bestD) {
+          bestD = d;
+          best = { x: tx, y: ty, horiz };
+        }
+      }
+    }
+  }
+  return best;
+}
+
 export interface LosResult {
   visible: boolean;
   cover: number;

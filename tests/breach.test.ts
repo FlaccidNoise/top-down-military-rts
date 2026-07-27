@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { BREACH_COVER, BREACH_LIP, BREACH_WIDE, ECLASS, EDGE, FLOOR_H, GameMap, edgeClass, los } from '../src/sim/map';
+import { BREACH_COVER, BREACH_LIP, BREACH_WIDE, ECLASS, EDGE, FLOOR_H, GameMap, edgeClass, edgeMid, los, nearestBreachable } from '../src/sim/map';
 import { astar, BREACH_STEP, CRUSH_STEP } from '../src/sim/path';
 import { Sim, type BreachEvent } from '../src/sim/sim';
 
@@ -557,5 +557,125 @@ describe('D4 the crush event', () => {
       return sim.snapshot() + JSON.stringify(sim.breachLog);
     };
     expect(snap()).toBe(snap());
+  });
+});
+
+// ── D5: player-directed breaching ──────────────────────────────────────────
+
+describe('D5 wall-target resolution', () => {
+  it('picks the nearest standing edge and ignores an already-open one', () => {
+    const m = wallRun(2);
+    expect(nearestBreachable(m, 10.2, 10.4, 2.5)).toEqual({ x: 10, y: 10, horiz: false });
+    expect(nearestBreachable(m, 10.2, 13.4, 2.5)).toEqual({ x: 10, y: 13, horiz: false });
+    expect(nearestBreachable(m, 3.5, 3.5, 2.5)).toBeNull(); // open ground
+
+    m.setVEdge(10, 10, EDGE.BREACH); // the hole is not a target
+    expect(nearestBreachable(m, 10.0, 10.5, 0.9)).toBeNull();
+  });
+
+  it('edgeMid straddles the tile boundary the edge actually sits on', () => {
+    expect(edgeMid({ x: 10, y: 4, horiz: false })).toEqual({ x: 10, y: 4.5 });
+    expect(edgeMid({ x: 10, y: 4, horiz: true })).toEqual({ x: 10.5, y: 4 });
+  });
+});
+
+describe('D5 the tank gun', () => {
+  it('one aimed round opens masonry, and the order clears itself', () => {
+    const sim = new Sim(buildingMap(), 9);
+    const v = sim.addVehicle('blue', 'sherman', 2.5, 5.5, 0);
+    const he = v.ammo.he;
+    expect(sim.orderVehicleBreach(v.id, 5.0, 5.5)).toEqual({ x: 5, y: 5, horiz: false });
+    sim.step();
+    expect(sim.map.vEdge(5, 5)).toBe(EDGE.BREACH);
+    expect(sim.map.vEdgeTop(5, 5)).toBe(BREACH_WIDE); // 12 energy: a hull-wide hole
+    expect(v.wallTarget).toBeNull();
+    expect(v.ammo.he).toBe(he - 1);
+    expect(sim.breachLog.some((b) => b.x === 5 && b.y === 5 && !b.horiz && b.cls === ECLASS.MASONRY)).toBe(true);
+  });
+
+  it('a halftrack has nothing to shoot with', () => {
+    const sim = new Sim(buildingMap(), 9);
+    const v = sim.addVehicle('blue', 'm3_halftrack', 2.5, 5.5, 0);
+    expect(sim.orderVehicleBreach(v.id, 5.0, 5.5)).toBeNull();
+    expect(v.wallTarget).toBeNull();
+  });
+
+  it('holds the order — and its ammunition — while the wall is out of sight', () => {
+    const sim = new Sim(buildingMap(), 9);
+    const v = sim.addVehicle('blue', 'sherman', 2.5, 5.5, 0);
+    const he = v.ammo.he;
+    // The far (east) face of the house: the west face is between it and the gun.
+    expect(sim.orderVehicleBreach(v.id, 9.0, 5.5)).toEqual({ x: 9, y: 5, horiz: false });
+    for (let i = 0; i < 120; i++) sim.step();
+    expect(sim.map.vEdge(9, 5)).toBe(EDGE.WALL);
+    expect(v.wallTarget).not.toBeNull(); // still standing by, not cancelled
+    expect(v.ammo.he).toBe(he);
+  });
+
+  it('a target somebody else opened is spent — no round is wasted on a hole', () => {
+    const sim = new Sim(buildingMap(), 9);
+    const v = sim.addVehicle('blue', 'sherman', 2.5, 5.5, 0);
+    const he = v.ammo.he;
+    sim.orderVehicleBreach(v.id, 5.0, 5.5);
+    boom(sim)(5.0, 5.5, WALL_SHOT); // a faust team gets there first
+    sim.step();
+    expect(v.wallTarget).toBeNull();
+    expect(v.ammo.he).toBe(he);
+  });
+});
+
+describe('D5 infantry and crew-served AT', () => {
+  it('a bazooka team opens the garden wall it was pointed at', () => {
+    const sim = new Sim(wallRun(2), 9);
+    const squad = sim.addSquad('blue', 'Z', [{ name: 'Z', weapon: 'bazooka', x: 7.5, y: 10.5 }]);
+    const z = sim.soldiers[squad.soldierIds[0]];
+    expect(sim.orderTeamBreach(squad.teamIds[0], 10.0, 10.5)).toEqual({ x: 10, y: 10, horiz: false });
+    for (let i = 0; i < 30 && z.wallTarget; i++) sim.step();
+    expect(sim.map.vEdge(10, 10)).toBe(EDGE.BREACH);
+    expect(z.wallTarget).toBeNull();
+    expect(z.magLeft).toBe(0); // the rocket went downrange
+  });
+
+  it('a rifle squad has nothing to breach with', () => {
+    const sim = new Sim(wallRun(2), 9);
+    const squad = sim.addSquad('blue', 'R', [{ name: 'R', weapon: 'garand', x: 7.5, y: 10.5 }]);
+    expect(sim.orderSquadBreach(squad.id, 10.0, 10.5)).toBeNull();
+    for (let i = 0; i < 60; i++) sim.step();
+    expect(sim.map.vEdge(10, 10)).toBe(EDGE.WALL);
+  });
+
+  it('a deployed AT gun opens masonry; a mortar is never offered the order', () => {
+    const gun = new Sim(buildingMap(), 9);
+    const e = gun.addEmplacement('blue', 'at57', 2.5, 5.5, 0, 'deployed');
+    expect(gun.orderEmplacementBreach(e.id, 5.0, 5.5)).toEqual({ x: 5, y: 5, horiz: false });
+    for (let i = 0; i < 90 && e.wallTarget; i++) gun.step();
+    expect(gun.map.vEdge(5, 5)).toBe(EDGE.BREACH);
+
+    const tube = new Sim(buildingMap(), 9);
+    const m = tube.addEmplacement('blue', 'mortar60', 2.5, 5.5, 0, 'deployed');
+    expect(tube.orderEmplacementBreach(m.id, 5.0, 5.5)).toBeNull();
+    expect(m.wallTarget).toBeNull();
+  });
+});
+
+describe('D5 determinism', () => {
+  it('a wall order replays byte for byte, snapshot and breach log alike', () => {
+    const snap = (): string => {
+      const sim = new Sim(buildingMap(), 21);
+      const v = sim.addVehicle('blue', 'sherman', 2.5, 5.5, 0);
+      sim.addSquad('red', 'D', [{ name: 'D', weapon: 'kar98k', x: 6.5, y: 5.5 }]);
+      sim.orderVehicleBreach(v.id, 5.0, 5.5);
+      for (let i = 0; i < 300; i++) sim.step();
+      return sim.snapshot() + JSON.stringify(sim.breachLog);
+    };
+    expect(snap()).toBe(snap());
+  });
+
+  it('the wall target rides in the snapshot — an unshot order is visible state', () => {
+    const sim = new Sim(buildingMap(), 9);
+    const v = sim.addVehicle('blue', 'sherman', 2.5, 5.5, 0);
+    const before = sim.snapshot();
+    sim.orderVehicleBreach(v.id, 9.0, 5.5); // out of sight: the order persists
+    expect(sim.snapshot()).not.toBe(before);
   });
 });
