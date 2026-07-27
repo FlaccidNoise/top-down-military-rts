@@ -16,7 +16,7 @@
 //   node scripts/shot.mjs --list                             # presets + effects
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { arg, launch, gotoStaged, deriveTargets, deriveBuilding, wallStage, place, burst, stageEmplacements, stageVehicles, hourMin, fmtHour, HOUR_PRESETS, stagedHour } from './lib/stage.mjs';
+import { arg, launch, gotoStaged, deriveTargets, deriveBuilding, wallStage, place, burst, stageEmplacements, stageSmoke, stageVehicles, hourMin, fmtHour, HOUR_PRESETS, stagedHour } from './lib/stage.mjs';
 
 const has = (name) => process.argv.includes(`--${name}`);
 const PORT = Number(arg('port', '5198'));
@@ -48,6 +48,10 @@ const EFFECTS = {
   grenade: { trigger: { type: 'boom', r: 3 }, dur: 2000, buckets: 8 },
   barrage: { trigger: { type: 'boom', r: 9 }, dur: 2600, buckets: 8 },
   fire: { anchor: 'building', trigger: { type: 'boom', r: 6 }, hold: 3000, scale: 30 },
+  // Sim-owned smoke, not a boom's column: staged at five ages so the plume
+  // curve (V11) and the lean the renderer reads off it (V12) are both in one
+  // frame. `hold` is short because nothing here animates on wall-clock.
+  smoke: { trigger: { type: 'smoke' }, hold: 2500 },
 };
 
 if (has('list')) {
@@ -108,15 +112,19 @@ if (has('effect')) {
   }
   const scale = Number(arg('scale', String(e.scale ?? 40)));
   if (e.hold) {
+    // A held effect is one whose subject OUTLIVES the transient that made it —
+    // a building fire after the blast, a smoke screen the sim owns. Stage it,
+    // wait for the transient to expire, and shoot what is left standing.
+    const view = trigger.type === 'smoke' ? await stageSmoke(page, anchor) : { ...anchor, scale };
     await page.evaluate(
       ({ x, y, scale, trigger }) => {
         const g = window.__game;
         g.cam.x = x;
         g.cam.y = y;
         g.cam.scale = scale;
-        g.sim.pendingBooms.push({ x, y, r: trigger.r });
+        if (trigger.type !== 'smoke') g.sim.pendingBooms.push({ x, y, r: trigger.r });
       },
-      { x: anchor.x, y: anchor.y, scale, trigger }
+      { x: view.x, y: view.y, scale: has('scale') ? scale : (view.scale ?? scale), trigger }
     );
     await page.waitForTimeout(e.hold); // let the blast transient expire; what is left is the fire
     await page.screenshot({ path: OUT });

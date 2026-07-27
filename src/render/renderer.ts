@@ -1,4 +1,5 @@
 import type { Emplacement } from '../sim/emplacement';
+import { smokeAxisAt } from '../sim/wind';
 import { MELEE_STRIKE_RANGE, stanceOf, type BreachEvent, type MeleeEvent, type ShotEvent, type Side, type Sim, type Soldier, type Vehicle } from '../sim/sim';
 import type { Camera } from './camera';
 import { DecalLayer } from './decals';
@@ -151,7 +152,6 @@ const BIRD_MS = 1900;
 const BIRD_CAP = 24;
 const BIRD_SPEED = 11; // m/s
 
-const SMOKE_LEAN_MAX = 2; // m — a smoke screen streams, but never off the tile it is blocking
 const HAZE_MAX_SCALE = 22; // px/m — above this you can count boots and haze is just fog on the lens
 const MOTE_MIN_SCALE = 20;
 const MOTE_CAP = 24;
@@ -234,7 +234,6 @@ export class Renderer {
   private barrageMarks: { x: number; y: number; tick: number }[] = [];
   private strafeMarks: { x: number; y: number; tick: number }[] = [];
   private planes: Plane[] = [];
-  private smokeMaxTtl = new Map<number, number>(); // per-entry spawn ttl, keyed by its (stable) x,y — lets alpha envelope derive from sim time alone
   private fires = new Map<number, Fire>();
   private lit: Fire[] = []; // this frame's visible fires, shared by the cool and hot passes
   private licks: number[] = []; // flat (x, y, r, alpha) quads — flame cores queued for the fire hot pass
@@ -684,56 +683,61 @@ export class Renderer {
     return [mag * Math.sin(now * 0.09), mag * Math.sin(now * 0.13 + 1.7)];
   }
 
-  // sim.smoke (E1): entries carry only {x, y, ttl}, x/y fixed for the entry's
-  // life, ttl counting seconds left — sim-owned and sim-tick-driven, so every
-  // bit of animation here derives from ttl alone. Never read `now`: that is
-  // what keeps this frozen exactly in place while paused.
+  // WYSIWYG (V12). Every number in this function is the SIM's own: the column
+  // height `p.h` and radius `p.r` are the aged plume model, and each puff is
+  // placed by `smokeAxisAt` — the very function `sightBetween` re-projects its
+  // ray against before deciding the smoke blocks. What you see is what blocks
+  // sight, structurally, from one formula in one file, rather than by two
+  // implementations happening to agree today.
+  //
+  // In a strict plan projection a leaning column IS a smear: a puff at height z
+  // sits LEAN_K*(z - z0) metres downwind of the base, so a 10 m plume is drawn
+  // as 3.5 m of ground track from its own base outward. Height is carried by
+  // nothing else — there is no elevation view of a column.
+  //
+  // No `now`, and no private per-entry state. The envelope is p.age / (p.age +
+  // p.ttl), and that denominator is the spawn ttl exactly, because the sim
+  // increments one as it decrements the other. That identity is what deleted
+  // `smokeMaxTtl` and its key-eviction loop: the renderer was reconstructing a
+  // number the sim had been carrying both halves of all along.
   private drawSmoke(ctx: CanvasRenderingContext2D, cam: Camera, cw: number, ch: number): void {
-    const seen = new Set<number>();
     for (const p of this.sim.smoke) {
-      const key = p.x * 100000 + p.y; // stable for the entry's lifetime (x,y never change)
-      seen.add(key);
-      let maxTtl = this.smokeMaxTtl.get(key);
-      if (maxTtl === undefined || p.ttl > maxTtl) {
-        maxTtl = p.ttl;
-        this.smokeMaxTtl.set(key, maxTtl);
-      }
-      const elapsed = maxTtl - p.ttl;
-      const life = maxTtl > 0 ? elapsed / maxTtl : 1;
+      const span = p.age + p.ttl;
+      const life = span > 0 ? p.age / span : 1;
       let envelope = 1;
       if (life < 0.1) envelope = life / 0.1; // fade in
-      else if (life > 0.7) envelope = Math.max(0, (1 - life) / 0.3); // fade out
-
-      const [ox, oy] = cam.worldToScreen(p.x, p.y, cw, ch);
-      const pad = 5 * cam.scale;
+      else if (life > 0.7) envelope = (1 - life) / 0.3; // fade out
+      if (envelope <= 0) continue;
+      const [tx, ty] = smokeAxisAt(p, p.z0 + p.h);
+      const [ox, oy] = cam.worldToScreen((p.x + tx) / 2, (p.y + ty) / 2, cw, ch);
+      // the cull pad has to contain the whole lean, not just the base radius:
+      // a fire plume tracks 7 m downwind of the wreck that is making it
+      const pad = (p.r + Math.abs(tx - p.x) + Math.abs(ty - p.y) + 2) * cam.scale;
       if (ox < -pad || oy < -pad || ox > cw + pad || oy > ch + pad) continue;
-
-      // Prevailing lean: a screen streams downwind instead of billowing like a
-      // flower. Derived from `elapsed` (sim-owned ttl), never `now`, so it
-      // freezes under pause with everything else — and capped, because the
-      // cloud has to keep marking the tile the sim is blocking LOS through.
-      const leanX = WIND.dx * Math.min(elapsed * WIND.speed * 0.35, SMOKE_LEAN_MAX);
-      const leanY = WIND.dy * Math.min(elapsed * WIND.speed * 0.35, SMOKE_LEAN_MAX);
-
-      const n = 3 + Math.floor(hash(p.x, p.y, 9) * 3); // 3-5 puffs
+      // One sprite per ~1.6 m of column, so a 1.5 m puff at deploy is three
+      // overlapping blobs and a 20 m fire column is ten strung downwind.
+      const n = Math.max(3, Math.min(10, Math.round(p.h / 1.6) + 2));
+      const soot = p.kind === 1;
       for (let i = 0; i < n; i++) {
-        const angle0 = hash(p.x, p.y, 10 + i) * Math.PI * 2;
-        const dist0 = 0.2 + hash(p.x, p.y, 20 + i) * 0.35;
-        const drift = 0.015 + hash(p.x, p.y, 30 + i) * 0.025; // slow outward drift, m/s of sim time
-        const spin = (hash(p.x, p.y, 40 + i) - 0.5) * 0.15; // slow rotation, rad/s
-        const baseR = 1.0 + hash(p.x, p.y, 50 + i) * 0.6;
-        const angle = angle0 + elapsed * spin;
-        const dist = dist0 + elapsed * drift;
-        const r = Math.min(baseR * 1.8, baseR + elapsed * 0.012);
-        const wx = p.x + Math.cos(angle) * dist + leanX;
-        const wy = p.y + Math.sin(angle) * dist + leanY;
-        const [sx, sy] = cam.worldToScreen(wx, wy, cw, ch);
-        const sr = r * cam.scale;
-        const cool = hash(p.x, p.y, 60 + i);
-        blit(ctx, 'smoke', sx, sy, sr, envelope * (0.28 + cool * 0.08));
+        const u = i / (n - 1);
+        const [ax, ay] = smokeAxisAt(p, p.z0 + p.h * u);
+        // Deterministic per (puff, sample) and turning on the sim's own clock,
+        // so the column boils under play and freezes under pause.
+        const ang = hash(p.x, p.y, 10 + i) * Math.PI * 2 + p.age * (hash(p.x, p.y, 40 + i) - 0.5) * 0.25;
+        const off = (0.15 + hash(p.x, p.y, 20 + i) * 0.3) * p.r;
+        const [sx, sy] = cam.worldToScreen(ax + Math.cos(ang) * off, ay + Math.sin(ang) * off, cw, ch);
+        // narrower at the base, wider aloft — a plume opens as it rises, and in
+        // plan that is the only cue that the far end of the smear is the top
+        const r = p.r * (0.6 + u * 0.5) * (0.86 + hash(p.x, p.y, 50 + i) * 0.28);
+        // Thinner aloft, and NOT normalized by the sample count: a taller
+        // column has more samples but spreads them over more ground track, so
+        // the stack depth at any one point stays roughly flat on its own.
+        // Dividing by n as well was tried and turned a 60 m smoke screen into a
+        // pale smudge the sim was blinding two squads through.
+        const a = envelope * (0.33 + hash(p.x, p.y, 60 + i) * 0.08) * (1 - u * 0.36);
+        blit(ctx, soot && u < 0.34 ? 'soot' : 'smoke', sx, sy, r * cam.scale, a);
       }
     }
-    for (const key of this.smokeMaxTtl.keys()) if (!seen.has(key)) this.smokeMaxTtl.delete(key);
   }
 
   // Drifting haze bands. Five world-anchored smears of thin air, not a

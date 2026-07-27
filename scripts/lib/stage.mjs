@@ -254,6 +254,36 @@ export function stageVehicles(page, { x, y }) {
   );
 }
 
+// Smoke art gate (V12): one row of shell-smoke puffs at ages spanning the
+// plume curve, plus one burning-wreck column. The renderer draws sim.smoke
+// straight off `p.h`/`p.r`/`smokeAxisAt`, so the AGE is the whole variable —
+// a fresh puff is a 1.5 m ball on the tile and a developed screen is a 10 m
+// column smeared 3.5 m downwind. A single age proves none of that.
+//
+// Ages, not wall-clock: the art gate never steps the sim, so a staged puff
+// holds its age forever and the crop is stable. Mutates the sim, so opt-in.
+export function stageSmoke(page, { x, y, ages = [1, 5, 15, 30, 45] }) {
+  return page.evaluate(
+    async ({ x, y, ages }) => {
+      const sim = window.__game.sim;
+      const { smokePuff } = await import('/src/sim/sim.ts');
+      const cx = Math.max(16, Math.min(sim.map.w - 16, x));
+      const cy = Math.max(12, Math.min(sim.map.h - 12, y));
+      const z = (px, py) => sim.map.elevAt(Math.floor(px), Math.floor(py));
+      sim.smoke.length = 0;
+      ages.forEach((age, i) => {
+        const px = cx + (i - (ages.length - 1) / 2) * 11;
+        sim.smoke.push(smokePuff(px, cy, z(px, cy), 60 - age, 0, age));
+      });
+      // A knocked-out tank's plume: kind 1, twice as tall, and the one case
+      // where the lean is long enough to leave the tile it started on.
+      sim.smoke.push(smokePuff(cx, cy + 14, z(cx, cy + 14), 150, 1, 30));
+      return { x: cx + 6, y: cy + 6, scale: 20 };
+    },
+    { x, y, ages }
+  );
+}
+
 // Emplacement art gate: one of every kind on two headings, plus one still
 // packed, so the setup/teardown read is in frame too. Same heading-spread
 // rationale as stageVehicles — a mount whose highlight is baked into the
