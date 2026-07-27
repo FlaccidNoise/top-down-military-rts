@@ -679,3 +679,54 @@ describe('D5 determinism', () => {
     expect(sim.snapshot()).not.toBe(before);
   });
 });
+
+// ── D6: the snapshot field ─────────────────────────────────────────────────
+
+describe('D6 snapshot breach list', () => {
+  // A lattice of waist-high garden walls: enough breachable edge in one place
+  // to drive the log past thirty entries in a handful of rounds.
+  function lattice(): GameMap {
+    const m = new GameMap(40, 40);
+    for (let x = 6; x <= 30; x += 3) {
+      for (let y = 6; y <= 30; y++) {
+        m.setVEdge(x, y, EDGE.WALL);
+        m.vEdgeTops[y * (m.w + 1) + x] = 1;
+      }
+    }
+    return m;
+  }
+
+  function shelled(seed: number): Sim {
+    const sim = new Sim(lattice(), seed);
+    for (let i = 0; i < 10; i++) boom(sim)(6.5 + (i % 4) * 3, 8.5 + i * 2, MORTAR_81);
+    return sim;
+  }
+
+  it('carries every breach, in insertion order, in the [horiz,x,y,cls,wide] shape', () => {
+    const sim = new Sim(wallRun(1), 4);
+    boom(sim)(10.5, 10.5, TANK_HE);
+    const rows = JSON.parse(sim.snapshot()).breaches as number[][];
+    expect(rows).toEqual(sim.breachLog.map((b) => [b.horiz ? 1 : 0, b.x, b.y, b.cls, b.wide ? 1 : 0]));
+    expect(rows.length).toBeGreaterThan(0);
+  });
+
+  it('is a LIST, not a set or a checksum — the same edges in a different order differ', () => {
+    const sim = shelled(5);
+    expect(sim.breachLog.length).toBeGreaterThan(1);
+    const before = sim.snapshot();
+    sim.breachLog.reverse(); // same set of edges, different insertion order
+    expect(sim.snapshot()).not.toBe(before);
+  });
+
+  it('replays identically across a battle that opens more than thirty edges', () => {
+    const a = shelled(13);
+    const b = shelled(13);
+    expect(a.breachLog.length).toBeGreaterThanOrEqual(30);
+    expect(a.snapshot()).toBe(b.snapshot());
+  });
+
+  it('an unbreached battle leaves the field empty rather than absent', () => {
+    const sim = new Sim(new GameMap(24, 24), 1);
+    expect(JSON.parse(sim.snapshot()).breaches).toEqual([]);
+  });
+});

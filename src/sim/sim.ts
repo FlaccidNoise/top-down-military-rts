@@ -4048,6 +4048,15 @@ export class Sim {
         Object.values(k.ammo).reduce((a: number, n) => a + (n ?? 0), 0),
         k.magLeft,
       ]),
+      // The map stopped being immutable the day breaching landed, and
+      // snapshot() captured no map state at all because it never had to
+      // (design section 4.2 — the single biggest correctness hazard in the
+      // feature). INSERTION-ORDERED list, not a set and not a checksum: a
+      // checksum proves the same edges broke, the list additionally proves
+      // they broke in the same ORDER, which is what catches an iteration-order
+      // bug in the candidate scan — precisely the class of bug that makes a
+      // replay drift 400 ticks later and is undebuggable from a mismatch.
+      breaches: this.breachLog.map((b) => [b.horiz ? 1 : 0, b.x, b.y, b.cls, b.wide ? 1 : 0]),
       squadLastCasualty: this.squadLastCasualty,
       teamLastCasualty: this.teamLastCasualty,
       leaderVacantSince: [...this.leaderVacantSince.entries()].sort((a, b) => a[0] - b[0]),
