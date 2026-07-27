@@ -582,6 +582,27 @@ function yewSprite(variant: number, band: number): HTMLCanvasElement {
 const GRAVE_ALONG = 1.05; // m between stones in a row
 const GRAVE_ROW = 1.7; // m between rows
 const GRAVE_KEEP = 0.62;
+const HEADSTONE_H = 0.8; // implied height, and the only thing that says "upright"
+const TOMB_H = 0.45;
+
+// The shade a standing block throws, as the convex sweep of its own footprint
+// along the sun vector: one connected slab that LEAVES the stone. Two detached
+// rectangles — the footprint and a copy of it offset SE — read as two objects
+// lying on the grass, which is what the churchyard used to look like.
+function castSlab(g: Ctx, hw: number, hh: number, dx: number, dy: number): void {
+  const sx = dx >= 0 ? 1 : -1;
+  const sy = dy >= 0 ? 1 : -1;
+  const c: [number, number][] = [[-hw * sx, -hh * sy], [hw * sx, -hh * sy], [hw * sx, hh * sy], [-hw * sx, hh * sy]];
+  g.beginPath();
+  g.moveTo(c[0][0], c[0][1]);
+  g.lineTo(c[1][0], c[1][1]);
+  g.lineTo(c[1][0] + dx, c[1][1] + dy);
+  g.lineTo(c[2][0] + dx, c[2][1] + dy);
+  g.lineTo(c[3][0] + dx, c[3][1] + dy);
+  g.lineTo(c[3][0], c[3][1]);
+  g.closePath();
+  g.fill();
+}
 
 export function drawEnclosurePlanting(
   g: Ctx,
@@ -629,7 +650,13 @@ function churchyardInto(
   d: Detail,
 ): void {
   const wide = e.maxX - e.minX >= e.maxY - e.minY;
-  const [sdx, sdy] = shadowOffset(0.55);
+  // Strict plan projection: a headstone is a 0.3 x 0.15 m footprint from up
+  // here, not a card with its inscription facing the camera. All the height is
+  // in the cast shadow, which uses the same SUN every other shadow in the
+  // scene does — the graves used to throw theirs off a hand-rolled offset and
+  // read as a field of detached grey flakes.
+  const [hdx, hdy] = shadowOffset(HEADSTONE_H);
+  const [tdx, tdy] = shadowOffset(TOMB_H);
   // Rows run across the churchyard's short axis and every stone faces the same
   // way, because a graveyard is the one place in the town that is laid out.
   const rows = Math.floor((wide ? e.maxY - e.minY : e.maxX - e.minX) / GRAVE_ROW);
@@ -644,21 +671,42 @@ function churchyardInto(
       const gy = wide ? v : u;
       if (gx < tx0 - 1 || gx > tx1 + 1 || gy < ty0 - 1 || gy > ty1 + 1) continue;
       if (!clearAt(map, idx, id, gx, gy, 1)) continue;
+      // A chest tomb is a low box lying on the plot; everything else is an
+      // upright slab whose plan footprint is its thickness, not its face.
       const tomb = d >= 2 && hash(k, 3, 332) > 0.9;
-      const hw = tomb ? 0.42 : 0.19;
-      const hh = tomb ? 0.72 : 0.26;
+      const hw = tomb ? 0.4 : 0.15;
+      const hh = tomb ? 0.28 : 0.07;
+      const rot = (hash(k, 4, 332) - 0.5) * (tomb ? 0.1 : 0.26) + (wide ? 0 : Math.PI / 2);
+      const cos = Math.cos(rot);
+      const sin = Math.sin(rot);
+      const [wdx, wdy] = tomb ? [tdx, tdy] : [hdx, hdy];
+      const lx = wdx * cos + wdy * sin; // the one sun, rotated into stone space
+      const ly = -wdx * sin + wdy * cos;
       g.save();
       g.translate(gx, gy);
-      g.rotate((hash(k, 4, 332) - 0.5) * (tomb ? 0.1 : 0.26) + (wide ? 0 : Math.PI / 2));
+      g.rotate(rot);
+      // The plot the stone stands at the head of: turned earth going down the
+      // row, faint enough that sixty of them stay ground texture.
+      if (d >= 2 && !tomb && hash(k, 6, 332) > 0.45) {
+        g.fillStyle = 'rgba(96,100,68,0.16)';
+        g.beginPath();
+        g.ellipse(0, 0.72, 0.34, 0.6, 0, 0, TAU);
+        g.fill();
+        g.strokeStyle = 'rgba(48,54,38,0.18)';
+        g.lineWidth = 0.035;
+        g.stroke();
+      }
       g.fillStyle = 'rgba(10,14,8,0.34)';
-      g.fillRect(-hw + sdx, -hh * 0.2 + sdy, hw * 2, hh);
+      castSlab(g, hw, hh, lx, ly);
       g.fillStyle = tomb ? 'rgb(142,138,124)' : hash(k, 5, 332) > 0.6 ? 'rgb(150,146,132)' : 'rgb(132,128,116)';
-      g.fillRect(-hw, -hh, hw * 2, hh * (tomb ? 1 : 1.15));
+      g.fillRect(-hw, -hh, hw * 2, hh * 2);
+      // NW arris: the lit edge of the top surface, the same rim every other
+      // masonry top in the town carries
       g.fillStyle = 'rgba(214,210,192,0.34)';
-      g.fillRect(-hw, -hh, hw * 2, hh * 0.22);
-      if (d >= 2) {
-        g.fillStyle = 'rgba(58,60,52,0.35)';
-        g.fillRect(-hw * 0.55, -hh * 0.5, hw * 1.1, hh * 0.1);
+      g.fillRect(-hw, -hh, hw * 2, Math.min(0.04, hh * 0.5));
+      if (d >= 2 && tomb) {
+        g.fillStyle = 'rgba(58,60,52,0.28)';
+        g.fillRect(-hw * 0.72, -hh * 0.34, hw * 1.44, hh * 0.68); // ledger panel
       }
       g.restore();
     }
