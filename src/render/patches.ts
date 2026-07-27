@@ -16,10 +16,17 @@ export interface BuildingBox {
   cy: number;
 }
 
+// The paved civic surface around a crossing. Axis half-extents, not one
+// radius (T19/N5): a bourg place is a street WIDENING, 30-40 m along the
+// Grande Rue by 10-14 m across, and a disc capped at 11 m leaves its two ends
+// bare. `pavedAt` ramps off a rounded rectangle of these half-extents, whose
+// corner radius is min(rx, ry) — so a square one (rx === ry, every legacy
+// crossing) is the same disc, to the bit, that it was before.
 export interface Square {
   cx: number;
   cy: number;
-  r: number;
+  rx: number;
+  ry: number;
 }
 
 // A parcel: one 4-connected region of field or woods. Field art is keyed on
@@ -36,6 +43,23 @@ export interface Patch {
   cx: number;
   cy: number;
   seed: number;
+}
+
+// Tiles of road that must sit between a tile and the nearest non-road ground
+// before that tile counts as a place rather than a street. 3 is the first
+// value no legacy map reaches (measured: town/road/bridge/river all top out
+// at 2), which is what makes T19 additive.
+const PLACE_DEPTH = 3;
+// The deep core stops 2 tiles short of the road's edge, plus a half tile of
+// spill onto the frontage where the setts run up to the doorsteps.
+const PLACE_PAD = 2.6;
+const PLACE_SNAP = 3;
+
+interface PlaceBox {
+  minX: number;
+  minY: number;
+  maxX: number; // exclusive
+  maxY: number;
 }
 
 export interface Junction {
@@ -144,6 +168,7 @@ export class PatchIndex {
         if (h > 1 && h === reach(x, y, 0, 1)) cross[y * map.w + x] = 1;
       }
     }
+    const [placeId, places] = this.findPlaces(map, roadAt);
     // one square per connected crossing box, kept only where enough buildings
     // stand around it — the >= 4 test is what stops a lone farm lane junction
     // getting cobbled
@@ -189,8 +214,109 @@ export class PatchIndex {
         buildings: near.size,
       });
       if (near.size < 4) continue;
-      this.squares.push({ cx, cy, r: Math.min(11, Math.max(8, 8 + 0.4 * Math.min(6, near.size))) });
+      const r = Math.min(11, Math.max(8, 8 + 0.4 * Math.min(6, near.size)));
+      // A crossing standing in a place takes the place's own outline instead
+      // of its disc. Every crossing inside one widening resolves to the SAME
+      // rectangle, so the twenty-odd junctions a bourg place throws off
+      // collapse to one square rather than paving a lumpy union of discs.
+      const p = places[this.placeNear(placeId, map.w, map.h, cx, cy)] ?? null;
+      const sq: Square = p
+        ? { cx: (p.minX + p.maxX) / 2, cy: (p.minY + p.maxY) / 2, rx: (p.maxX - p.minX) / 2 + PLACE_PAD, ry: (p.maxY - p.minY) / 2 + PLACE_PAD }
+        : { cx, cy, rx: r, ry: r };
+      if (!this.squares.some((s) => s.cx === sq.cx && s.cy === sq.cy && s.rx === sq.rx && s.ry === sq.ry)) this.squares.push(sq);
     }
+  }
+
+  // Chebyshev depth into the road surface, then the 4-connected components of
+  // everything at least PLACE_DEPTH deep. Depth is what separates a market
+  // place from a crossroads: a 3-tile arterial tops out at depth 1 and a
+  // legacy crossing box at 2, measured over town/road/bridge/river, so no
+  // legacy map has a place and every legacy square keeps its disc. A bourg
+  // place, 11-17 tiles across, reaches 5-8.
+  private findPlaces(map: GameMap, roadAt: (x: number, y: number) => boolean): [Int32Array, PlaceBox[]] {
+    const w = map.w;
+    const h = map.h;
+    const id = new Int32Array(w * h).fill(-1);
+    const out: PlaceBox[] = [];
+    // BFS seeded on road tiles that touch anything else — only road tiles are
+    // ever enqueued, so this walks the road network (~3k tiles), not the map.
+    const depth = new Int16Array(w * h);
+    const queue = new Int32Array(w * h);
+    let head = 0;
+    let toe = 0;
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        if (!roadAt(x, y)) continue;
+        let rim = false;
+        for (let dy = -1; dy <= 1 && !rim; dy++) for (let dx = -1; dx <= 1; dx++) if (!roadAt(x + dx, y + dy)) { rim = true; break; }
+        if (!rim) continue;
+        depth[y * w + x] = 1;
+        queue[toe++] = y * w + x;
+      }
+    }
+    while (head < toe) {
+      const i = queue[head++];
+      const x = i % w;
+      const y = (i / w) | 0;
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          const nx = x + dx;
+          const ny = y + dy;
+          if (!roadAt(nx, ny) || depth[ny * w + nx]) continue;
+          depth[ny * w + nx] = depth[i] + 1;
+          queue[toe++] = ny * w + nx;
+        }
+      }
+    }
+    const stack: number[] = [];
+    for (let s = 0; s < depth.length; s++) {
+      if (depth[s] < PLACE_DEPTH || id[s] >= 0) continue;
+      const pid = out.length;
+      const box: PlaceBox = { minX: s % w, minY: (s / w) | 0, maxX: (s % w) + 1, maxY: ((s / w) | 0) + 1 };
+      id[s] = pid;
+      stack.push(s);
+      while (stack.length) {
+        const i = stack.pop()!;
+        const x = i % w;
+        const y = (i / w) | 0;
+        if (x < box.minX) box.minX = x;
+        if (y < box.minY) box.minY = y;
+        if (x + 1 > box.maxX) box.maxX = x + 1;
+        if (y + 1 > box.maxY) box.maxY = y + 1;
+        for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as [number, number][]) {
+          const nx = x + dx;
+          const ny = y + dy;
+          if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+          const j = ny * w + nx;
+          if (id[j] >= 0 || depth[j] < PLACE_DEPTH) continue;
+          id[j] = pid;
+          stack.push(j);
+        }
+      }
+      out.push(box);
+    }
+    return [id, out];
+  }
+
+  // Nearest place within PLACE_SNAP of a crossing centroid, or -1. The snap
+  // exists because the crossing test fires on a diagonal ridge across a
+  // widening, and the ridge runs a couple of tiles outside the deep core at
+  // its ends.
+  private placeNear(id: Int32Array, w: number, h: number, cx: number, cy: number): number {
+    const jx = Math.floor(cx);
+    const jy = Math.floor(cy);
+    for (let ring = 0; ring <= PLACE_SNAP; ring++) {
+      for (let dy = -ring; dy <= ring; dy++) {
+        for (let dx = -ring; dx <= ring; dx++) {
+          if (Math.max(Math.abs(dx), Math.abs(dy)) !== ring) continue;
+          const nx = jx + dx;
+          const ny = jy + dy;
+          if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+          if (id[ny * w + nx] >= 0) return id[ny * w + nx];
+        }
+      }
+    }
+    return -1;
   }
 
   patchAt(x: number, y: number): Patch | null {
@@ -204,10 +330,17 @@ export class PatchIndex {
   pavedAt(x: number, y: number): number {
     let a = 0;
     for (const s of this.squares) {
-      const d = Math.hypot(x + 0.5 - s.cx, y + 0.5 - s.cy);
+      // Signed distance to a rounded rectangle of half-extents (rx, ry) with
+      // corner radius min(rx, ry). On a square one both q terms are exactly
+      // |offset|, so `d` is the plain radial distance and the whole expression
+      // reduces to the disc ramp this was before T19.
+      const cr = Math.min(s.rx, s.ry);
+      const qx = Math.abs(x + 0.5 - s.cx) - (s.rx - cr);
+      const qy = Math.abs(y + 0.5 - s.cy) - (s.ry - cr);
+      const d = Math.hypot(Math.max(qx, 0), Math.max(qy, 0)) + Math.min(Math.max(qx, qy), 0) - cr;
       // capped below 1 so the dirt base always reads through the setts and the
       // square never looks like a pasted-on layer
-      a = Math.max(a, Math.min(0.88, (s.r - d) / 3.5));
+      a = Math.max(a, Math.min(0.88, -d / 3.5));
     }
     return Math.max(0, a);
   }
