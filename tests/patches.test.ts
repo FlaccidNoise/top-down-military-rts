@@ -24,7 +24,10 @@ describe('PatchIndex', () => {
         }
       }
     }
-  });
+    // 2.7 s standalone: ten 320x240 'town' generations plus a full PatchIndex
+    // and a 76,800-tile sweep each. The 5 s default leaves nothing for a
+    // parallel runner on a loaded box.
+  }, 20_000);
 
   it('parcels are 4-connected and their bounds/centroids fit their tiles', () => {
     for (const seed of SEEDS) {

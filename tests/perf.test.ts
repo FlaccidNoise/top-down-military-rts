@@ -175,10 +175,20 @@ describe('perf: mapgen validation gate', () => {
 
     const plan = generateMap(SEED, MAP_W, MAP_H, 'town');
     const padded = { ...plan, buildings: Array.from({ length: 20 }, () => plan.buildings).flat() };
+    // MIN of the reps, not the mean. The ratio is taken between two ~4 ms
+    // measurements, and a mean over five reps carries every scheduler hiccup
+    // the rest of the suite throws at it — measured 1.00 standalone and 1.57
+    // under a full parallel run of the same code, which trips a 1.5 bound on
+    // noise alone. The minimum is the least-contended sample of each side, and
+    // an O(n) regression still shows up at ~20x.
     const timeValidate = (p: typeof plan): number => {
-      const t0 = performance.now();
-      for (let i = 0; i < 5; i++) expect(validate(p)).toBe(true);
-      return (performance.now() - t0) / 5;
+      let best = Infinity;
+      for (let i = 0; i < 7; i++) {
+        const t0 = performance.now();
+        expect(validate(p)).toBe(true);
+        best = Math.min(best, performance.now() - t0);
+      }
+      return best;
     };
     timeValidate(plan); // warmup
     const bare = timeValidate(plan);

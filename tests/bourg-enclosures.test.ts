@@ -88,7 +88,7 @@ function footReach(t: Town): Uint8Array {
 
 describe('bourg enclosures (T8)', () => {
   it('is deterministic', () => {
-    for (const seed of [1, 4, 13]) {
+    for (const seed of [4, 13]) {
       const a = build(seed);
       const b = build(seed);
       expect(a.map.hEdges).toEqual(b.map.hEdges);

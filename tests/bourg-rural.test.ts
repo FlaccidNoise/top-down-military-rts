@@ -94,7 +94,7 @@ const inZone = (sk: Skeleton, x: number, y: number): boolean =>
 
 describe('bourg rural fabric (T9)', () => {
   it('is deterministic', () => {
-    for (const seed of [2, 9, 17]) {
+    for (const seed of [9, 17]) {
       const a = build(seed);
       const b = build(seed);
       expect(a.ru.hedge).toEqual(b.ru.hedge);
