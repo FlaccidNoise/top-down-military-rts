@@ -86,11 +86,44 @@ for (const seed of SEEDS) {
   await page.screenshot({ path: join(OUT, gfile) });
   shots.push({ seed, crop: 'guns', file: gfile });
 }
+
+// Dawn/night rows (N13): the two hours that catch what the canonical grid
+// cannot — 07:00 (lenMul at the 3x clamp, 36%-alpha shadows on a 65-degree
+// azimuth: the crop that exposes a bad clamp or a stale terrain fallback())
+// and 02:00 (the ambient grade, and the ABSENCE of the whole cast pass).
+// Two seeds x two crops per hour, appended as NEW rows so not one existing
+// baseline moves; deliberately not fanned across all ten seeds — the contact
+// sheet is already 10x11 and the marginal information is near zero (§8).
+// Known, accepted: dawn telegraph-pole shadows clip at the 1.4 m prop:post
+// stamp edge (POST_H*3 = 3 m throw > sprite) — flagged so nobody is surprised.
+const HOURS = [
+  { label: 'dawn', min: 7 * 60 },
+  { label: 'night', min: 2 * 60 },
+];
+// Seed 3 (bridge-forced) is the sweep's one legacy village map — every
+// unforced campaign seed carves a bourg now — and seed 10 is the forced
+// bourg, so the pair covers both building arts' casts plus units on each.
+const HOUR_SEEDS = [3, 10];
+for (const { label, min } of HOURS) {
+  for (const seed of HOUR_SEEDS) {
+    console.log(`seed ${seed} @ ${label}`);
+    const kind = await gotoStaged(page, { port: PORT, seed, camp: CAMP, forceKind: FORCE_KIND[seed], hour: min });
+    const targets = await deriveTargets(page, { seed, kind });
+    for (const name of [kind === 'bourg' ? 'place' : 'village', 'units']) {
+      const t = targets[name];
+      await place(page, t.x, t.y, t.scale);
+      const file = `s${seed}-${label}-${name}.png`;
+      await page.screenshot({ path: join(OUT, file) });
+      shots.push({ seed: `${seed}-${label}`, crop: name, file });
+    }
+  }
+}
 await browser.close();
 
-// contact sheet: rows = seeds, cols = crops
+// contact sheet: rows = seeds (then the dawn/night rows), cols = crops
 const cols = [...new Set(shots.map((s) => s.crop))];
-const rows = SEEDS.map((seed) => {
+const rowKeys = [...new Set(shots.map((s) => s.seed))];
+const rows = rowKeys.map((seed) => {
   const cells = cols.map((c) => {
     const s = shots.find((x) => x.seed === seed && x.crop === c);
     return s ? `<td><a href="${s.file}"><img src="${s.file}" loading="lazy"></a></td>` : '<td></td>';
