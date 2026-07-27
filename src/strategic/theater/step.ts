@@ -100,6 +100,10 @@ function advanceForce(front: FrontV2, f: Force, budget: number, out: TheaterEven
     return;
   }
 
+  // Mid-edge with NO path = parked (a halted defender, a retreat setback):
+  // it stands, it never drifts to the edge end. Movement requires a path.
+  if (f.path.length === 0) return;
+
   // Mid-edge: spend budget as metres.
   const e = edgeById(front.theater, f.pos.edgeId);
   const remainM = f.pos.dir === 1 ? e.lengthM - f.pos.s : f.pos.s;
