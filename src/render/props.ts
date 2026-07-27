@@ -1,5 +1,5 @@
 import { EDGE, type GameMap } from '../sim/map';
-import { AO_ALPHA, shadowOffset } from './light';
+import { AO_ALPHA, SUN, shadowOffset } from './light';
 import { hash } from './noise';
 import type { PatchIndex } from './patches';
 import { stamp } from './stamps';
@@ -35,14 +35,22 @@ const MIN_GAP = 0.8;
 const POLE_SPACING = 6;
 const POST_SPACING = 1.6;
 
+// The height a prop's cast shadow is thrown from. Under strict plan projection
+// this is the ONLY place a prop's verticality shows, so a telegraph pole's
+// reach SE is a real part of its footprint on the map.
+const POLE_H = 6.5;
+const WELL_FRAME_H = 1.8;
+const POST_H = 1;
+
 // How far a prop's ink reaches from its anchor — the chunk bucketing uses it,
-// so a telegraph wire or a haystack shadow is never clipped off at a seam.
+// so a telegraph wire or a pole's shadow is never clipped off at a seam.
 export function propExtent(p: Prop): [number, number, number, number] {
   const ax = p.axis === 0 ? 1 : 0;
   const ay = p.axis === 0 ? 0 : 1;
   const fwd = p.link ? (p.kind === 'telegraph' ? POLE_SPACING : POST_SPACING) : 0;
   const r = p.kind === 'haystack' ? 2.4 : p.kind === 'telegraph' ? 3 : p.kind === 'cart' || p.kind === 'well' || p.kind === 'gate' ? 2 : 1.4;
-  return [p.x - r, p.y - r, p.x + r + ax * fwd, p.y + r + ay * fwd];
+  const cast = p.kind === 'telegraph' ? POLE_H : p.kind === 'well' ? WELL_FRAME_H : 0;
+  return [p.x - r, p.y - r, p.x + r + ax * fwd + SUN.dx * cast, p.y + r + ay * fwd + SUN.dy * cast];
 }
 
 function doorNear(map: GameMap, x: number, y: number): boolean {
@@ -318,15 +326,33 @@ function haystackStamp(v: number, band: number): HTMLCanvasElement {
   });
 }
 
+// A round-capped finger from an upright's foot to where its top lands. One
+// connected shape, so a post keeps its shadow instead of standing beside a
+// detached copy of itself.
+function finger(g: Ctx, x: number, y: number, dx: number, dy: number, w: number, alpha: number): void {
+  g.lineCap = 'round';
+  g.strokeStyle = `rgba(16,18,12,${alpha})`;
+  g.lineWidth = w;
+  g.beginPath();
+  g.moveTo(x, y);
+  g.lineTo(x + dx, y + dy);
+  g.stroke();
+  g.lineCap = 'butt';
+}
+
+// A fence post from directly above is its 0.11 m section and a finger of
+// shade — not the 0.4 m of side elevation this used to draw standing north of
+// its own base. The stamp is 1.4 m so the throw has somewhere to land.
+const POST_SPRITE = 1.4;
+
 function postStamp(v: number, band: number): HTMLCanvasElement {
-  return stamp(`prop:post:${v}`, band, 0.8, (g) => {
-    const [sx, sy] = shadowOffset(0.5);
-    g.fillStyle = 'rgba(16,18,12,0.16)';
-    g.fillRect(0.36 + sx * 0.4, 0.4, 0.1, 0.5);
+  return stamp(`prop:post:${v}`, band, POST_SPRITE, (g) => {
+    const [sx, sy] = shadowOffset(POST_H);
+    finger(g, 0.4, 0.4, sx, sy, 0.13, 0.18);
     g.fillStyle = hash(v, 0, 274) > 0.5 ? 'rgb(72,60,42)' : 'rgb(60,50,36)';
-    g.fillRect(0.35, 0.14, 0.1, 0.4);
+    g.fillRect(0.345, 0.345, 0.11, 0.11);
     g.fillStyle = 'rgba(178,164,132,0.22)';
-    g.fillRect(0.35, 0.14, 0.035, 0.4);
+    g.fillRect(0.345, 0.345, 0.11, 0.035);
   });
 }
 
@@ -468,18 +494,38 @@ export function drawProp(g: Ctx, p: Prop, band: number, d: Detail): void {
       g.ellipse(x, y, 0.33, 0.27, 0, 0, Math.PI * 2);
       g.fill();
       if (d < 2) return;
-      const [sx, sy] = shadowOffset(1.1);
-      g.fillStyle = 'rgba(18,20,14,0.20)';
-      g.fillRect(x - 0.55 + sx, y - 0.05 + sy, 1.1, 0.1);
-      g.fillStyle = '#42351f';
-      g.fillRect(x - 0.56, y - 0.68, 0.09, 0.74);
-      g.fillRect(x + 0.47, y - 0.68, 0.09, 0.74);
-      g.fillRect(x - 0.56, y - 0.74, 1.12, 0.08);
-      g.fillStyle = 'rgba(174,160,126,0.22)';
-      g.fillRect(x - 0.56, y - 0.74, 1.12, 0.03);
-      g.fillStyle = '#5a4a34';
+      // The frame in plan: two uprights on the rim (0.09 m squares), the
+      // windlass beam spanning them at 1.8 m — which from directly above lies
+      // on the SAME line as their feet — and the beam's shadow thrown clear of
+      // the whole thing. The old version drew 0.74 m of upright standing north
+      // of the rim, which is the side of the well.
+      const [sx, sy] = shadowOffset(WELL_FRAME_H);
+      finger(g, x - 0.52, y, sx, sy, 0.11, 0.2);
+      finger(g, x + 0.52, y, sx, sy, 0.11, 0.2);
+      g.strokeStyle = 'rgba(18,20,14,0.20)';
+      g.lineWidth = 0.09;
       g.beginPath();
-      g.arc(x, y - 0.34, 0.1, 0, Math.PI * 2);
+      g.moveTo(x - 0.52 + sx, y + sy);
+      g.lineTo(x + 0.52 + sx, y + sy);
+      g.stroke();
+      g.strokeStyle = '#42351f';
+      g.lineWidth = 0.085;
+      g.beginPath();
+      g.moveTo(x - 0.52, y);
+      g.lineTo(x + 0.52, y);
+      g.stroke();
+      g.strokeStyle = 'rgba(174,160,126,0.22)';
+      g.lineWidth = 0.028;
+      g.beginPath();
+      g.moveTo(x - 0.52, y - 0.03);
+      g.lineTo(x + 0.52, y - 0.03);
+      g.stroke();
+      g.fillStyle = '#4a3c26';
+      g.fillRect(x - 0.565, y - 0.045, 0.09, 0.09);
+      g.fillRect(x + 0.475, y - 0.045, 0.09, 0.09);
+      g.fillStyle = '#5a4a34'; // the bucket, hanging over the shaft
+      g.beginPath();
+      g.arc(x + 0.12, y, 0.1, 0, Math.PI * 2);
       g.fill();
       return;
     }
@@ -527,56 +573,84 @@ export function drawProp(g: Ctx, p: Prop, band: number, d: Detail): void {
       if (p.link) {
         const ex = x + ax * POST_SPACING;
         const ey = y + ay * POST_SPACING;
-        g.strokeStyle = 'rgba(96,80,56,0.70)';
-        g.lineWidth = 0.05;
-        g.beginPath();
-        if (p.kind === 'gate') {
-          g.moveTo(x, y - 0.14);
-          g.lineTo(ex, ey - 0.5);
-          g.moveTo(x, y - 0.5);
-          g.lineTo(ex, ey - 0.14);
-        } else {
-          g.moveTo(x, y - 0.35);
-          g.lineTo(ex, ey - 0.35);
-          g.moveTo(x, y - 0.18);
-          g.lineTo(ex, ey - 0.18);
-        }
-        g.stroke();
+        // Two rails at two heights, and a gate's diagonal brace, all live in
+        // the fence's vertical plane — from directly above they project onto
+        // the SAME line. One rail band plus the run's own shadow, then; the
+        // old pair of lines offset north was an elevation of the panel.
+        const [rdx, rdy] = shadowOffset(POST_H * (p.kind === 'gate' ? 1.1 : 0.85));
+        const bar = (odx: number, ody: number, w: number, style: string): void => {
+          g.strokeStyle = style;
+          g.lineWidth = w;
+          g.beginPath();
+          g.moveTo(x + odx, y + ody);
+          g.lineTo(ex + odx, ey + ody);
+          g.stroke();
+        };
+        bar(rdx, rdy, p.kind === 'gate' ? 0.08 : 0.05, 'rgba(16,18,12,0.16)');
+        bar(0, 0, p.kind === 'gate' ? 0.1 : 0.06, p.kind === 'gate' ? 'rgba(112,88,54,0.80)' : 'rgba(96,80,56,0.70)');
+        bar(-0.02, -0.025, 0.02, 'rgba(186,172,140,0.24)');
       }
-      g.drawImage(postStamp(seed & 3, band), x - 0.4, y - 0.4, 0.8, 0.8);
+      g.drawImage(postStamp(seed & 3, band), x - 0.4, y - 0.4, POST_SPRITE, POST_SPRITE);
       return;
     }
     case 'telegraph': {
+      // Strict plan. The pole is vertical, so it is a 0.16 m disc; the arm is
+      // horizontal, so it projects true and runs ACROSS the wire line (it used
+      // to be x-aligned whichever way the road ran). A catenary sags in a
+      // vertical plane and therefore projects to a straight line, so the wires
+      // are straight — the old northward dip was a side view of the sag. All
+      // 6.5 m of pole is in the shadow, which is what makes the road read as
+      // having something tall beside it.
+      const [sx, sy] = shadowOffset(POLE_H);
+      const arm = 0.45;
+      const px2 = ay * arm; // perpendicular to the pole line
+      const py2 = ax * arm;
       if (p.link && d >= 1) {
         const ex = x + ax * POLE_SPACING;
         const ey = y + ay * POLE_SPACING;
-        g.strokeStyle = 'rgba(28,26,22,0.34)';
-        g.lineWidth = 0.045;
+        g.strokeStyle = 'rgba(28,26,22,0.30)';
+        g.lineWidth = 0.04;
         g.beginPath();
-        g.moveTo(x, y - 0.9);
-        g.quadraticCurveTo((x + ex) / 2, (y + ey) / 2 - 0.55, ex, ey - 0.9);
+        for (const s of [-1, 1]) {
+          g.moveTo(x + px2 * s * 0.82, y + py2 * s * 0.82);
+          g.lineTo(ex + px2 * s * 0.82, ey + py2 * s * 0.82);
+        }
         g.stroke();
       }
-      const [sx, sy] = shadowOffset(2.6);
+      finger(g, x, y, sx, sy, 0.17, 0.2);
+      // the arm's own shadow, laid parallel to itself out at the arm's height
+      const [adx, ady] = shadowOffset(POLE_H * 0.94);
       g.strokeStyle = 'rgba(16,18,12,0.18)';
-      g.lineWidth = 0.22;
+      g.lineWidth = 0.1;
       g.beginPath();
-      g.moveTo(x, y);
-      g.lineTo(x + sx, y + sy);
+      g.moveTo(x + adx - px2, y + ady - py2);
+      g.lineTo(x + adx + px2, y + ady + py2);
       g.stroke();
       g.fillStyle = 'rgba(14,16,10,0.3)';
       g.beginPath();
-      g.ellipse(x, y, 0.2, 0.15, 0, 0, Math.PI * 2);
+      g.ellipse(x, y, 0.2, 0.16, 0, 0, Math.PI * 2);
       g.fill();
+      g.strokeStyle = '#463c2e';
+      g.lineWidth = 0.1;
+      g.beginPath();
+      g.moveTo(x - px2, y - py2);
+      g.lineTo(x + px2, y + py2);
+      g.stroke();
       g.fillStyle = '#3f362a';
-      g.fillRect(x - 0.075, y - 0.95, 0.15, 1.05);
-      g.fillStyle = 'rgba(170,158,132,0.22)';
-      g.fillRect(x - 0.075, y - 0.95, 0.05, 1.05);
-      g.fillStyle = '#463c2e';
-      g.fillRect(x - 0.45, y - 1.0, 0.9, 0.09);
+      g.beginPath();
+      g.arc(x, y, 0.115, 0, Math.PI * 2);
+      g.fill();
+      g.fillStyle = 'rgba(180,168,140,0.30)';
+      g.beginPath();
+      g.arc(x - 0.03, y - 0.035, 0.055, 0, Math.PI * 2);
+      g.fill();
+      if (d < 2) return;
       g.fillStyle = 'rgba(198,190,166,0.50)';
-      g.fillRect(x - 0.4, y - 1.06, 0.09, 0.09);
-      g.fillRect(x + 0.31, y - 1.06, 0.09, 0.09);
+      for (const s of [-1, 1]) {
+        g.beginPath();
+        g.arc(x + px2 * s * 0.82, y + py2 * s * 0.82, 0.05, 0, Math.PI * 2);
+        g.fill();
+      }
       return;
     }
   }

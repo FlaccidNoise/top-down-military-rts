@@ -283,17 +283,44 @@ function drawWallRun(g: Ctx, y: Yard, d: Detail): void {
   strokeSegs(g, ticks, 0.035, 'rgba(74,70,62,0.30)');
 }
 
-// Picket fence: two rails carried 0.20/0.34 m "above" the post feet (the
-// top-down fake-height convention the telegraph poles reuse) so the run has
-// some elevation instead of lying flat on the grass.
+// Picket fence in STRICT plan. From directly overhead the two rails are at
+// different heights and project onto each OTHER, so a fence is one line: the
+// rail band, a row of picket tops crossing it, and the same line laid out
+// again SE as the run's own shadow. The old version carried the rails 0.20 and
+// 0.34 m "north" of the post feet to fake height — an elevation view of a
+// fence dropped into a plan-view world, and the thing the telegraph poles and
+// the churchyard copied.
+// Waist-high, matching the knee-high read drawWallRun deliberately keeps: a
+// boundary soldiers walk straight through must not advertise cover the sim
+// does not have, and that goes for the length of its shadow too.
+const FENCE_H = 0.7;
+const PIER_H = 1;
+
+// A round-capped finger from a small upright's foot to where its top lands.
+// One connected shape, so the object keeps its shadow instead of standing next
+// to a detached copy of itself.
+function shadowFinger(g: Ctx, x: number, y: number, dx: number, dy: number, w: number, alpha: number): void {
+  g.lineCap = 'round';
+  g.strokeStyle = `rgba(14,16,10,${alpha})`;
+  g.lineWidth = w;
+  g.beginPath();
+  g.moveTo(x, y);
+  g.lineTo(x + dx, y + dy);
+  g.stroke();
+  g.lineCap = 'butt';
+}
+
 function drawFenceRun(g: Ctx, y: Yard, d: Detail): void {
-  const [sdx, sdy] = shadowOffset(0.4);
-  strokeSegs(g, y.runs, 0.16, `rgba(10,12,8,${(AO_ALPHA * 0.45).toFixed(3)})`, sdx * 1.1, sdy * 1.1);
-  strokeSegs(g, y.runs, 0.065, 'rgba(62,52,36,0.80)', 0, -0.33);
-  strokeSegs(g, y.runs, 0.065, 'rgba(116,98,68,0.85)', 0, -0.35);
-  strokeSegs(g, y.runs, 0.065, 'rgba(58,48,34,0.80)', 0, -0.18);
-  strokeSegs(g, y.runs, 0.065, 'rgba(104,88,60,0.85)', 0, -0.2);
+  const [sdx, sdy] = shadowOffset(FENCE_H);
+  // half the wall's core alpha: a picket run is more air than timber, so what
+  // it throws is a broken grey band, not a second wall
+  strokeSegs(g, y.runs, 0.15, `rgba(10,12,8,${SHADOW_SOFT_ALPHA})`, sdx, sdy);
+  strokeSegs(g, y.runs, 0.08, `rgba(10,12,8,${(SHADOW_ALPHA * 0.55).toFixed(3)})`, sdx, sdy);
+  strokeSegs(g, y.runs, 0.13, `rgba(10,12,8,${(AO_ALPHA * 0.4).toFixed(3)})`);
+  strokeSegs(g, y.runs, 0.075, 'rgb(96,80,56)');
+  strokeSegs(g, y.runs, 0.025, 'rgba(186,172,140,0.30)', -sdx * 0.05, -sdy * 0.05);
   const posts: [number, number][] = [];
+  const pickets: Seg[] = [];
   for (const [ax, ay, bx, by] of y.runs) {
     const len = Math.hypot(bx - ax, by - ay);
     const n = Math.max(1, Math.round(len / 1.2));
@@ -301,30 +328,41 @@ function drawFenceRun(g: Ctx, y: Yard, d: Detail): void {
       const f = i / n;
       posts.push([ax + (bx - ax) * f, ay + (by - ay) * f]);
     }
+    if (d < 2) continue;
+    // Slat tops, ALONG the run — a picket is a 0.09 m board and what you see
+    // from up here is its end grain in a dashed band a shade wider than the
+    // rail. Ticks laid across the run made the fence read as a ladder.
+    const m = Math.max(1, Math.round(len / 0.24));
+    for (let i = 0; i < m; i++) {
+      const f0 = (i + 0.16) / m;
+      const f1 = (i + 0.62) / m;
+      pickets.push([ax + (bx - ax) * f0, ay + (by - ay) * f0, ax + (bx - ax) * f1, ay + (by - ay) * f1]);
+    }
   }
+  strokeSegs(g, pickets, 0.095, 'rgba(118,99,68,0.85)');
+  strokeSegs(g, pickets, 0.03, 'rgba(196,180,146,0.22)', -sdx * 0.05, -sdy * 0.05);
   for (const [x, py2] of posts) {
-    g.fillStyle = 'rgba(18,20,14,0.26)';
-    g.fillRect(x + sdx * 0.7 - 0.06, py2 + sdy * 0.7 - 0.28, 0.12, 0.36);
+    shadowFinger(g, x, py2, sdx, sdy, 0.14, 0.26);
     g.fillStyle = 'rgb(72,60,42)';
-    g.fillRect(x - 0.06, py2 - 0.4, 0.12, 0.46);
+    g.fillRect(x - 0.07, py2 - 0.07, 0.14, 0.14);
     if (d < 1) continue;
     g.fillStyle = 'rgba(186,172,140,0.26)';
-    g.fillRect(x - 0.06, py2 - 0.4, 0.045, 0.46);
+    g.fillRect(x - 0.07, py2 - 0.07, 0.14, 0.045);
   }
 }
 
 function drawGate(g: Ctx, y: Yard): void {
-  const [sdx, sdy] = shadowOffset(0.6);
+  const [sdx, sdy] = shadowOffset(PIER_H);
+  // A gate pier is a 0.22 m square of masonry from up here; the 0.6 m of
+  // upright the old code drew was its elevation.
   for (const [gx, gy] of y.gate) {
-    g.fillStyle = 'rgba(14,16,10,0.30)';
-    g.fillRect(gx + sdx * 0.8 - 0.1, gy + sdy * 0.8 - 0.1, 0.24, 0.24);
+    shadowFinger(g, gx, gy, sdx, sdy, 0.24, 0.3);
     g.fillStyle = y.wall ? 'rgb(120,113,102)' : 'rgb(74,62,44)';
-    g.fillRect(gx - 0.11, gy - 0.5, 0.22, 0.6);
+    g.fillRect(gx - 0.11, gy - 0.11, 0.22, 0.22);
     g.fillStyle = 'rgba(212,204,184,0.22)';
-    g.fillRect(gx - 0.11, gy - 0.5, 0.07, 0.6);
-    // dark cap so the pier reads as a post and not just more wall
-    g.fillStyle = 'rgba(44,40,32,0.55)';
-    g.fillRect(gx - 0.13, gy - 0.54, 0.26, 0.09);
+    g.fillRect(gx - 0.11, gy - 0.11, 0.22, 0.07);
+    g.fillStyle = 'rgba(44,40,32,0.45)'; // the coping joint, so the pier is not a flat chip
+    g.fillRect(gx - 0.055, gy - 0.055, 0.11, 0.11);
   }
   if (!y.leaf) return;
   const [ax, ay, bx, by] = y.leaf;
@@ -332,8 +370,8 @@ function drawGate(g: Ctx, y: Yard): void {
   g.strokeStyle = 'rgba(14,16,10,0.20)';
   g.lineWidth = 0.12;
   g.beginPath();
-  g.moveTo(ax + sdx * 0.5, ay + sdy * 0.5);
-  g.lineTo(bx + sdx * 0.5, by + sdy * 0.5);
+  g.moveTo(ax + sdx, ay + sdy);
+  g.lineTo(bx + sdx, by + sdy);
   g.stroke();
   g.strokeStyle = '#5f4426';
   g.lineWidth = 0.09;
@@ -429,18 +467,20 @@ function drawGarden(g: Ctx, map: GameMap, patches: PatchIndex, y: Yard, d: Detai
     g.fill();
   }
   if (d < 2) return;
-  // bean poles: fake height, so they lean north out of the last row
-  g.strokeStyle = 'rgba(126,108,74,0.55)';
-  g.lineWidth = 0.04;
-  g.beginPath();
+  // Bean poles. A 1.8 m cane is a dot from up here and a long thin line of
+  // shade on the ground — it used to lean north out of the last row, which is
+  // the same fake-height cheat the fence rails were doing.
+  const [pdx, pdy] = shadowOffset(1.8);
   for (let i = 0; i < 2; i++) {
     const u = uMid - span / 2 + (0.3 + i * 0.4) * span;
     const bx = px(b, side, u, t1 - 0.2);
     const by = py(b, side, u, t1 - 0.2);
-    g.moveTo(bx, by);
-    g.lineTo(bx + 0.08, by - 0.5);
+    shadowFinger(g, bx, by, pdx, pdy, 0.05, 0.22);
+    g.fillStyle = 'rgba(126,108,74,0.7)';
+    g.beginPath();
+    g.arc(bx, by, 0.05, 0, Math.PI * 2);
+    g.fill();
   }
-  g.stroke();
 }
 
 // Ivy taking one exterior corner. Blobs sit just outside the footprint so the
