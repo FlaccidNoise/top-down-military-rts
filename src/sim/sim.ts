@@ -55,7 +55,7 @@ import {
 import { astar } from './path';
 import { mulberry32, type Rng } from './rng';
 import { CANON_CLOCK_MIN, lightAt } from './solar';
-import { orderLevel, resolveMoveSpots } from './spots';
+import { CRAWL_SUPP_THRESHOLD, CRAWL_TICKS, crawlCoverSpot, orderLevel, resolveMoveSpots } from './spots';
 import { LEAN_K, WIND } from './wind';
 
 export const DT = 1 / 30; // fixed timestep, seconds
@@ -2911,6 +2911,28 @@ export class Sim {
       this.maybeThrowGrenade(s);
     }
 
+    // Under effective fire, stationary, in the open, with nothing else asked
+    // of him: crawl to the nearest real cover instead of dying where he
+    // stands (movement design §2.2). Cadence-staggered by id like flee and
+    // the rescue considerations above. Excluded: pinned men (they cannot
+    // move — the advance below refuses them), broken men (flee owns their
+    // path), melee, a served gun, and a man walking to a vehicle. `legInProgress`
+    // keeps him out from under his own team's order.
+    if (
+      (this.tick + s.id) % CRAWL_TICKS === 0 &&
+      !s.path &&
+      s.suppression > CRAWL_SUPP_THRESHOLD &&
+      s.mental !== 'pinned' &&
+      s.mental !== 'broken' &&
+      s.meleeId < 0 &&
+      s.inEmplacement < 0 &&
+      s.mountTarget < 0 &&
+      !this.legInProgress(this.teams[s.teamId].orderState) &&
+      !this.inCover(s.x, s.y)
+    ) {
+      this.crawlToCover(s);
+    }
+
     // movement (pinned men hug the ground)
     if (s.path && s.mental !== 'pinned') this.advance(s, this.moveSpeed(s));
 
@@ -3722,6 +3744,47 @@ export class Sim {
       }
     }
     return null;
+  }
+
+  // A team reads its members' paths as "this leg is still running" while it
+  // bounds (continueBounding's mid-leg test), marches (stepOrders' arrival
+  // test) or closes an assault (its settled test). Any path handed to a
+  // member during one of those — a crawl included — hangs the ORDER, not just
+  // the man. Defend/ambush and fire have no such test, so a man who has
+  // arrived on his post may still take better cover.
+  private legInProgress(st: OrderState): boolean {
+    if (st.phase === 'bounding_a' || st.phase === 'bounding_b') return true;
+    const k = st.order?.kind;
+    return st.phase === 'executing' && (k === 'move' || k === 'fast' || k === 'sneak' || k === 'assault');
+  }
+
+  // Tiles the crawl must leave alone: where his squadmates are standing, and
+  // where the moving ones are headed. Soldiers have no collision here, so
+  // without this an area-suppressed team crawls into a single hedge tile.
+  private crawlBlocked(s: Soldier): Set<number> {
+    const blocked = new Set<number>();
+    for (const sid of this.squads[s.squadId].soldierIds) {
+      const m = this.soldiers[sid];
+      if (m.id === s.id || !m.alive || m.captured) continue;
+      blocked.add(Math.floor(m.y) * this.map.w + Math.floor(m.x));
+      const dest = m.path?.[m.path.length - 1];
+      if (dest) blocked.add(Math.floor(dest.y) * this.map.w + Math.floor(dest.x));
+    }
+    return blocked;
+  }
+
+  // One relocation per trigger, and no relocation at all when nothing scores:
+  // the man stays and takes it, exactly as he did before this behavior
+  // existed. Not on the pathBudget — this is reactive, staggered movement,
+  // like flee and the rescue crawl, not the select-all order burst the budget
+  // was built to amortize.
+  private crawlToCover(s: Soldier): void {
+    const spot = crawlCoverSpot(this, s, this.crawlBlocked(s));
+    if (!spot) return;
+    const path = astar(this.map, Math.floor(s.x), Math.floor(s.y), spot.x, spot.y, 'foot', s.level, s.level);
+    if (!path || path.length < 2) return;
+    s.path = path.slice(1).map((p) => ({ x: p.x + 0.5, y: p.y + 0.5, l: p.l }));
+    s.pathI = 0;
   }
 
   private flee(s: Soldier): void {

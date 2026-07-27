@@ -447,14 +447,22 @@ describe('AI commander doctrine', () => {
   //     interiors off ............ 11,918 ticks
   //     + I9 (furnished map) ..... 21,038
   //     + I10 (nook garrison) .... 27,985
+  //     + M6 (crawl to cover) .... 54,084
   //
-  // 40k is that plus a 43 % margin. If this fails again, the question to ask
+  // 80k is that plus a 48 % margin. If this fails again, the question to ask
   // FIRST is whether the fight DEADLOCKED — red alive and static behind
   // furniture — rather than whether the number wants raising again: furniture
   // is impassable, so a sealing bug would show up here as a flat casualty
   // curve, and tests/interiors.test.ts's non-sealing sweep is what proves it
   // did not happen.
-  it('existing campaign battles still produce a winner within 40k ticks', { timeout: 150_000 }, () => {
+  //
+  // M6 checked exactly that before raising the budget. The curve still falls
+  // — red 36 alive at t=0, 27 by 5k, 14 by 15k, 10 by 30k, wiped at 54,084 —
+  // so nothing is sealed; the mop-up is simply slower now that a suppressed
+  // man in the open crawls into cover instead of being shot where he stands
+  // (movement design §2.2). It is the tail that stretched, not the fight:
+  // blue is at 129 of 138 by 5k either way.
+  it('existing campaign battles still produce a winner within 80k ticks', { timeout: 150_000 }, () => {
     const c = newCampaign(1);
     const front = newFront(c, makeDefaultSector());
     const able = front.chits.find((ch) => ch.side === 'blue')!;
@@ -486,7 +494,7 @@ describe('AI commander doctrine', () => {
     pressBlue();
 
     let steps = 0;
-    while (sim.winner === null && steps < 40000) {
+    while (sim.winner === null && steps < 80000) {
       if (steps % 1000 === 0) pressBlue(); // keep pushing toward red's current mass
       commander.update(sim);
       sim.step();

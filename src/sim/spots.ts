@@ -25,7 +25,7 @@
 
 import { EDGE } from './map';
 import type { OrderKind } from './orders';
-import { formationSlots, type Sim, type Stance } from './sim';
+import { formationSlots, type Sim, type Soldier, type Stance } from './sim';
 
 export const SNAP_R = 3; // cover-snap ring bound (tiles) — the coherence cap (§1.2)
 const FALLBACK_R = 5; // legacy findSpot reach (sim.ts findSpot, r <= 5)
@@ -40,6 +40,26 @@ const SLOT_PENALTY = 0.15; // per Chebyshev tile of drift from the formation slo
 // stance heights), so at prone it scores like a hedge lip; a crouching or
 // standing man sees straight over it and gets no directional credit.
 const BANK_PRONE_LIP = 0.5;
+
+// ── Under-fire crawl-to-cover (design §2.2) ─────────────────────────────────
+// These constants live HERE and not among sim.ts's suppression numbers
+// (SUPP_DECAY, the pin thresholds) on purpose: those belong to the balance
+// lane, and this behavior has to be retunable without reaching into them.
+export const CRAWL_SUPP_THRESHOLD = 0.35; // the engine's existing "under effective fire" line (teamUnderFire, the shaken threshold)
+export const CRAWL_R = 8; // tiles a stationary man will crawl to get out of the open
+export const CRAWL_TICKS = 45; // 1.5 s trigger cadence, staggered by soldier id (the flee/rescue pattern)
+// Distance does not gate the crawl — acceptance is sim.inCover, so ANY real
+// cover in reach beats standing in the open — it only decides WHICH cover.
+// At 0.03/tile a hedge lip (W_DIR x 0.5 = 1.0) is still worth the full 8 m,
+// while a bare woods tile (W_TILE x 0.3 = 0.15) loses to one five tiles
+// nearer. Ring order breaks exact ties toward the nearer tile.
+const CRAWL_DIST_PENALTY = 0.03;
+// A man who stops crawling is NOT prone: stanceOf puts a stationary
+// suppressed man with a target at crouch, without one at stand, and only a
+// PINNED man goes flat (and pinned men are excluded from the trigger — they
+// cannot move). Scoring him prone would credit the 1 m bank lip his actual
+// 1.1 m eye sees straight over.
+const CRAWL_STANCE: Stance = 'crouch';
 
 export interface SpotQuery {
   soldierIds: number[]; // pre-filtered by the ONE shared eligible() predicate (sim.ts)
@@ -211,13 +231,16 @@ function nook(sim: Sim, x: number, y: number): number {
   return isNook(m.hEdge(x, y)) || isNook(m.hEdge(x, y + 1)) || isNook(m.vEdge(x, y)) || isNook(m.vEdge(x + 1, y)) ? 2 : 0;
 }
 
+// What a tile is WORTH as a firing position, threat bearing included. Shared
+// by the ordered resolver and the under-fire crawl: they value a tile
+// identically and differ only in what its distance costs — formation drift
+// you must not accumulate vs. metres you must cross on your belly.
+function coverValue(sim: Sim, x: number, y: number, bearing: number, stance: Stance): number {
+  return W_DIR * directionalCover(sim, x, y, bearing, stance) + W_NOOK * nook(sim, x, y) + W_TILE * sim.map.terrainAt(x, y).cover;
+}
+
 function scoreTile(sim: Sim, x: number, y: number, distFromSlot: number, bearing: number, stance: Stance): number {
-  return (
-    W_DIR * directionalCover(sim, x, y, bearing, stance) +
-    W_NOOK * nook(sim, x, y) +
-    W_TILE * sim.map.terrainAt(x, y).cover -
-    SLOT_PENALTY * distFromSlot
-  );
+  return coverValue(sim, x, y, bearing, stance) - SLOT_PENALTY * distFromSlot;
 }
 
 // Truthful dot color: directional cover against the actual threat bearing, a
@@ -230,6 +253,53 @@ function isCovered(sim: Sim, x: number, y: number, bearing: number, stance: Stan
     sim.map.terrainAt(x, y).cover > 0.2 ||
     sim.map.terrainKeyAt(x, y) === 'floor'
   );
+}
+
+// The best real cover a suppressed man in the open can crawl to, or null if
+// there is none in reach — which is today's behavior (he stays and takes it).
+//
+// Acceptance is `sim.inCover`, deliberately the SAME predicate that gates the
+// trigger in updateSoldier: arriving therefore falsifies the trigger and the
+// man cannot oscillate between two tiles. It is also the predicate the rescue
+// crawl already uses (findSpot's cover-seek sibling in sim.ts). The scorer
+// only ranks the candidates, so a bad threat bearing can pick the wrong side
+// of a hedge but can never send a man somewhere that is not cover.
+//
+// `blocked` is the caller's (sim.ts crawlBlocked): squadmates' tiles and the
+// tiles they are already walking to. Soldiers do not collide in this sim, so
+// without it a whole suppressed team converges on the one nearest hedge tile.
+//
+// Bearing note: this asks threatBearing with a single-soldier query anchored
+// on the man himself, so rung 3 (travel direction, centroid → anchor)
+// degenerates to atan2(0, 0) = due east. That only happens when his side
+// knows of no contact within INTEL_RANGE — rare for a man under effective
+// fire — and, per the acceptance rule above, costs at worst a preference for
+// the east face of cover he was going to take anyway.
+export function crawlCoverSpot(sim: Sim, s: Soldier, blocked: Set<number>): { x: number; y: number } | null {
+  const bearing = threatBearing(sim, { soldierIds: [s.id], x: s.x, y: s.y, kind: 'move' });
+  const map = sim.map;
+  const sx = Math.floor(s.x);
+  const sy = Math.floor(s.y);
+  let best: { x: number; y: number } | null = null;
+  let bestScore = -Infinity;
+  for (let r = 1; r <= CRAWL_R; r++) {
+    for (let dy = -r; dy <= r; dy++) {
+      for (let dx = -r; dx <= r; dx++) {
+        if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+        const nx = sx + dx;
+        const ny = sy + dy;
+        if (!map.inBounds(nx, ny) || !map.terrainAt(nx, ny).passable) continue;
+        if (blocked.has(ny * map.w + nx)) continue;
+        if (!sim.inCover(nx + 0.5, ny + 0.5)) continue;
+        const sc = coverValue(sim, nx, ny, bearing, CRAWL_STANCE) - CRAWL_DIST_PENALTY * r;
+        if (sc > bestScore) {
+          bestScore = sc;
+          best = { x: nx, y: ny };
+        }
+      }
+    }
+  }
+  return best;
 }
 
 // For each soldier: anchor = formation slot; scored cover-snap within
