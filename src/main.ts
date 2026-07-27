@@ -25,6 +25,7 @@ import { actionForEvent, loadKeymap, type Keymap } from './ui/keymap';
 import { PauseMenu } from './ui/menu';
 import { coach } from './ui/coach';
 import { showFloorMenu } from './ui/floormenu';
+import { MainMenu, type SaveProbe } from './ui/mainmenu';
 import { bindTouch, classify as classifyGesture, drawHoldRing, type TouchHandlers } from './ui/touch';
 import './ui/ui.css';
 
@@ -98,20 +99,21 @@ const urlCamp = new URLSearchParams(location.search).get('camp');
 const campPinned = urlCamp !== null && Number.isFinite(Number(urlCamp));
 const campSeed = (): number => (campPinned ? Number(urlCamp) : Date.now() % 100000);
 
-let campaign: Campaign;
-let front: Front;
-const save = () => {
-  if (!campPinned) saveGame(campaign, front);
-};
-const loaded = campPinned ? null : loadGame();
-if (loaded) {
-  campaign = loaded.campaign;
-  front = loaded.front;
-} else {
-  campaign = newCampaign(campSeed());
-  front = newFront(campaign, makeDefaultSector());
-  save();
+// §9.1: the module-level campaign/front lets collapse into Session behind S().
+// Pre-session access is a NAMED error, never an unassigned-binding TypeError.
+interface Session {
+  campaign: Campaign;
+  front: Front;
+  stratView: StrategicView;
 }
+let session: Session | null = null;
+function S(): Session {
+  if (!session) throw new Error('S(): no active session — the menu is up and startCampaign() has not run');
+  return session;
+}
+const save = () => {
+  if (!campPinned) saveGame(S().campaign, S().front);
+};
 
 const aiParam = new URLSearchParams(location.search).get('ai'); // ?ai=red|blue|both
 const aiSides = new Set<Side>();
@@ -129,14 +131,13 @@ buildCommanders();
 
 const ORDER_KINDS: OrderKind[] = ['move', 'fast', 'sneak', 'fire', 'smoke', 'defend', 'ambush', 'assault'];
 
-let mode: 'strategic' | 'battle' = 'strategic';
-let stratView = new StrategicView(front.sector);
+let mode: 'menu' | 'strategic' | 'battle' = 'menu';
 let selectedChit = -1;
 const SPEEDS = [1, 10, 60]; // strategic minutes per real second
 let speedIdx = 1;
 let stratPaused = true;
 let stratAcc = 0;
-let prevDay = front.day;
+let prevDay = 0;
 let pendingEngagement: Engagement | null = null;
 let opEnded = false;
 
@@ -245,11 +246,13 @@ const hazeOff = new URLSearchParams(location.search).get('haze') === '0'; // deb
 // staged at any sun. Same contract as ?fow: a boot-time staging switch, never
 // read by step() — the clock it sets flows through the normal startMin path.
 const urlHour = new URLSearchParams(location.search).get('hour');
-if (urlHour !== null) {
+const urlHourMin = ((): number | null => {
+  if (urlHour === null) return null;
   const m = /^(\d{1,2}):?(\d{2})$/.exec(urlHour);
-  if (m && Number(m[1]) < 24 && Number(m[2]) < 60) front.clockMin = Number(m[1]) * 60 + Number(m[2]);
-  else console.warn(`?hour=${urlHour} is not HHMM; ignoring`);
-}
+  if (m && Number(m[1]) < 24 && Number(m[2]) < 60) return Number(m[1]) * 60 + Number(m[2]);
+  console.warn(`?hour=${urlHour} is not HHMM; ignoring`);
+  return null;
+})();
 const hud = new Hud({
   selectSquad,
   selectVehicle,
@@ -349,18 +352,37 @@ const menu = new PauseMenu({
 });
 menu.setKeymap(loadKeymap(localStorage));
 
+function probeSave(): SaveProbe {
+  const g = campPinned ? null : loadGame();
+  if (!g) return { status: 'none' };
+  const fit = Object.values(g.campaign.soldiers).filter((s) => s.status === 'fit').length;
+  return { status: 'ok', day: g.front.day, clock: g.front.hhmm, theaterName: g.front.sector.name, menFit: fit };
+}
+const mainMenu = new MainMenu({
+  onNewOperation: () => startCampaign(null),
+  onContinue: () => {
+    const g = loadGame();
+    if (!g) throw new Error('Continue: the probe reported a save but loadGame() returned null');
+    startCampaign(g);
+  },
+  // Only the legacy/stale-generator/corrupt probe states render these buttons,
+  // and this probe never returns them before the real save probe lands (S37).
+  onContinueLegacy: () => { throw new Error('onContinueLegacy: unreachable before S37'); },
+  onDiscardSave: () => { throw new Error('onDiscardSave: unreachable before S37'); },
+});
+
 function showContactModal(e: Engagement): void {
-  const attacker = front.chits.find((c) => c.id === e.attackerId)!;
-  const defender = front.chits.find((c) => c.id === e.defenderId)!;
-  const cell = front.sector.cells[e.cell];
+  const attacker = S().front.chits.find((c) => c.id === e.attackerId)!;
+  const defender = S().front.chits.find((c) => c.id === e.defenderId)!;
+  const cell = S().front.sector.cells[e.cell];
   const terrain = TERRAIN_LABELS[cell.terrain].toLowerCase();
   const forceCol = (c: Chit): string => {
     const cls = c.side === 'blue' ? 'us' : 'ge';
     let str = `~${c.strength} men`;
     let comp = 'enemy — composition unknown';
     if (c.companyIndex >= 0) {
-      const squads = campaign.companies[c.companyIndex].squads.map((si) => campaign.squads[si]);
-      const fit = squads.flatMap(squadMembers).map((pid) => campaign.soldiers[pid]).filter((s) => s.status !== 'kia');
+      const squads = S().campaign.companies[c.companyIndex].squads.map((si) => S().campaign.squads[si]);
+      const fit = squads.flatMap(squadMembers).map((pid) => S().campaign.soldiers[pid]).filter((s) => s.status !== 'kia');
       const tally = new Map<string, number>();
       for (const s of fit) tally.set(s.weapon, (tally.get(s.weapon) ?? 0) + 1);
       const weapons = [...tally].map(([w, n]) => `${n} ${WEAPONS[w as keyof typeof WEAPONS].name}`).join(' · ');
@@ -369,7 +391,7 @@ function showContactModal(e: Engagement): void {
     }
     return `<div class="fc-col ${cls}"><h4>${c.name}</h4><p class="fc-str">${str}</p><p class="fc-comp">${comp}</p></div>`;
   };
-  const objectives = front.sector.cells.filter((c) => c.objective);
+  const objectives = S().front.sector.cells.filter((c) => c.objective);
   const held = objectives.filter((c) => c.owner === 'blue').length;
   const stakes = cell.objective
     ? `Objective — ${held}/${objectives.length} held toward victory`
@@ -401,8 +423,8 @@ function showContactModal(e: Engagement): void {
   document.getElementById('fight')!.onclick = () => startEngagementBattle(e);
   if (forced) {
     document.getElementById('autoresolve')!.onclick = () => {
-      const result = resolveCoarse(campaign, front, e, forced);
-      stratView.flash(`${attacker.name} vs ${defender.name}: ${result.attackerWon ? 'attacker wins' : 'defender holds'}`);
+      const result = resolveCoarse(S().campaign, S().front, e, forced);
+      S().stratView.flash(`${attacker.name} vs ${defender.name}: ${result.attackerWon ? 'attacker wins' : 'defender holds'}`);
       debriefEl.style.display = 'none';
       pendingEngagement = null;
       stratPaused = !(aiSides.has('red') && aiSides.has('blue'));
@@ -470,8 +492,8 @@ function bootCamera(s: Sim, cw: number, ch: number): { x: number; y: number; sca
 
 function startEngagementBattle(e: Engagement): void {
   pendingEngagement = e;
-  const seed = urlSeed !== null && Number.isFinite(Number(urlSeed)) ? Number(urlSeed) : front.clockMin * 7919 + e.cell;
-  const battle = makeStrategicBattle(campaign, front, e, seed);
+  const seed = urlSeed !== null && Number.isFinite(Number(urlSeed)) ? Number(urlSeed) : S().front.clockMin * 7919 + e.cell;
+  const battle = makeStrategicBattle(S().campaign, S().front, e, seed);
   sim = battle.sim;
   sim.fowDisabled = fowOff;
   commander = battle.commander;
@@ -480,7 +502,7 @@ function startEngagementBattle(e: Engagement): void {
   battleCompany = battle.companyIndex;
   renderer = new Renderer(sim);
   renderer.hazeOn = !hazeOff;
-  battleTitle = `Day ${front.day} ${front.hhmm} — ${battle.name}`;
+  battleTitle = `Day ${S().front.day} ${S().front.hhmm} — ${battle.name}`;
   if (MOBILE) {
     // Pinching out to the whole 320m map needs ~1.2 px/m, which the desktop
     // floor of 2 forbids; clampCenter (touch pan/pinch only) keeps the map
@@ -514,17 +536,17 @@ function showDebrief(): void {
   debriefShown = true;
   const e = pendingEngagement;
   if (!e) throw new Error('showDebrief: pendingEngagement is null — startEngagementBattle must set it');
-  const blueAttacked = front.chits.find((ch) => ch.id === e.attackerId)!.side === 'blue';
-  const out = applyEngagementOutcome(campaign, front, e, sim);
+  const blueAttacked = S().front.chits.find((ch) => ch.id === e.attackerId)!.side === 'blue';
+  const out = applyEngagementOutcome(S().campaign, S().front, e, sim);
   pendingEngagement = null;
   save();
 
   const deployedPids = new Set(sim.soldiers.filter((s) => s.side === 'blue').map((s) => s.pid));
-  const rows = campaign.companies[battleCompany].squads
-    .map((si) => campaign.squads[si])
+  const rows = S().campaign.companies[battleCompany].squads
+    .map((si) => S().campaign.squads[si])
     .map((sq) => {
       const men = squadMembers(sq)
-        .map((pid) => campaign.soldiers[pid])
+        .map((pid) => S().campaign.soldiers[pid])
         .map((cs) => {
           const scars = cs.bodyDamage.some((d) => d > 0) && cs.status === 'fit' ? ' <span class="scar">permanent injury</span>' : '';
           const deployed = deployedPids.has(cs.pid);
@@ -564,35 +586,45 @@ function showDebrief(): void {
 // chits; desktop keeps the fit-only defaults.
 function frameStrategic(): void {
   if (!MOBILE) return;
-  stratView.frameFor(view.w, view.h, front.chits.filter((c) => c.side === 'blue' && c.strength > 0).map((c) => c.cell));
+  S().stratView.frameFor(view.w, view.h, S().front.chits.filter((c) => c.side === 'blue' && c.strength > 0).map((c) => c.cell));
 }
 
-function freshCampaign(): void {
-  campaign = newCampaign(campSeed());
-  front = newFront(campaign, makeDefaultSector());
-  stratView = new StrategicView(front.sector);
+function startCampaign(load: { campaign: Campaign; front: Front } | null, seedOverride?: number): void {
+  const cg = load ? load.campaign : newCampaign(seedOverride ?? campSeed());
+  const fr = load ? load.front : newFront(cg, makeDefaultSector());
+  if (urlHourMin !== null) fr.clockMin = urlHourMin;
+  session = { campaign: cg, front: fr, stratView: new StrategicView(fr.sector) };
+  mode = 'strategic';
+  mainMenu.close();
   frameStrategic();
   selectedChit = -1;
   pendingEngagement = null;
   opEnded = false;
-  prevDay = front.day;
+  prevDay = fr.day;
   stratPaused = true;
-  save();
+  stratAcc = 0;
+  if (!load) save();
   buildCommanders();
 }
 
 function showOperationEnd(status: 'won' | 'lost'): void {
   opEnded = true;
-  const kia = Object.values(campaign.soldiers).filter((s) => s.status === 'kia').length;
+  const kia = Object.values(S().campaign.soldiers).filter((s) => s.status === 'kia').length;
   debriefEl.innerHTML = `<div class="db-scroll"><div class="db">
     <h1 class="${status === 'won' ? 'win' : 'loss'}">OPERATION ${status === 'won' ? 'ACCOMPLISHED' : 'FAILED'}</h1>
-    <p class="sub">${campaign.log.length} battles fought over ${front.day} days · ${kia} men killed.</p>
+    <p class="sub">${S().campaign.log.length} battles fought over ${S().front.day} days · ${kia} men killed.</p>
     </div></div>
-    <div class="db-actions"><button id="next" class="primary">New operation</button></div>`;
+    <div class="db-actions"><button id="next" class="primary">New operation</button><button id="same">Same theater again</button></div>`;
   debriefEl.style.display = 'flex';
   document.getElementById('next')!.onclick = () => {
     debriefEl.style.display = 'none';
-    freshCampaign();
+    mode = 'menu';
+    mainMenu.setSaveProbe(probeSave());
+    mainMenu.open();
+  };
+  document.getElementById('same')!.onclick = () => {
+    debriefEl.style.display = 'none';
+    startCampaign(null, S().campaign.seed);
   };
 }
 
@@ -824,8 +856,8 @@ function commitOrder(sx: number, sy: number, opts: { squadForce: boolean; floors
 }
 
 function stratTapSelect(sx: number, sy: number): void {
-  const cell = stratView.cellAtScreen(sx, sy, view.w, view.h);
-  const chit = cell >= 0 ? front.chitAt(cell, 'blue') : undefined;
+  const cell = S().stratView.cellAtScreen(sx, sy, view.w, view.h);
+  const chit = cell >= 0 ? S().front.chitAt(cell, 'blue') : undefined;
   selectedChit = chit ? chit.id : -1;
   if (chit) {
     const t = document.getElementById('strat-hud');
@@ -835,9 +867,9 @@ function stratTapSelect(sx: number, sy: number): void {
 
 function stratOrderMove(sx: number, sy: number): void {
   if (selectedChit < 0) return;
-  const cell = stratView.cellAtScreen(sx, sy, view.w, view.h);
-  if (cell >= 0 && !front.orderMove(selectedChit, cell) && front.sector.cells[cell].terrain === 'river')
-    stratView.flash("Can't hold open water — ford across to the far bank");
+  const cell = S().stratView.cellAtScreen(sx, sy, view.w, view.h);
+  if (cell >= 0 && !S().front.orderMove(selectedChit, cell) && S().front.sector.cells[cell].terrain === 'river')
+    S().stratView.flash("Can't hold open water — ford across to the far bank");
 }
 
 /** Esc's cancel ladder: targetMode → inspect → armedOrder → team → selection. */
@@ -858,6 +890,7 @@ function escapeLadder(): boolean {
 }
 
 canvas.addEventListener('mousedown', (e) => {
+  if (mode === 'menu') return;
   if (e.button === 0) beginBox(e.clientX, e.clientY);
   if (e.button === 2) beginOrderAnchor(e.clientX, e.clientY);
 });
@@ -875,7 +908,7 @@ canvas.addEventListener('mouseleave', () => {
   mouse.onCanvas = false;
 });
 canvas.addEventListener('mouseup', (e) => {
-  if (e.button !== 0) return;
+  if (e.button !== 0 || mode === 'menu') return;
 
   if (mode === 'strategic') {
     stratTapSelect(e.clientX, e.clientY);
@@ -895,6 +928,7 @@ canvas.addEventListener('mouseup', (e) => {
 });
 canvas.addEventListener('contextmenu', (e) => {
   e.preventDefault();
+  if (mode === 'menu') return;
   if (mode === 'strategic') {
     stratOrderMove(e.clientX, e.clientY);
     return;
@@ -991,28 +1025,27 @@ const stratTouch: TouchHandlers = {
   release: () => { touchHold = null; },
   tap: (x, y) => stratTapSelect(x, y),
   pan: (dx, dy) => {
-    stratView.panX += dx;
-    stratView.panY += dy;
-    stratView.clampPan(view.w, view.h);
+    S().stratView.panX += dx;
+    S().stratView.panY += dy;
+    S().stratView.clampPan(view.w, view.h);
   },
   holdStart: () => {},
   holdMove: () => {},
   holdEnd: (x, y) => stratOrderMove(x, y),
   holdCancel: () => {},
   pinch: (factor, mx, my, dmx, dmy) => {
-    const before = stratView.zoomMul;
-    stratView.zoomMul = Math.max(STRAT_ZOOM[0], Math.min(STRAT_ZOOM[1], before * factor));
+    const before = S().stratView.zoomMul;
+    S().stratView.zoomMul = Math.max(STRAT_ZOOM[0], Math.min(STRAT_ZOOM[1], before * factor));
     // keep the grid point under the pinch midpoint fixed
-    const k = stratView.zoomMul / before;
-    stratView.panX = mx - k * (mx - stratView.panX) + dmx;
-    stratView.panY = my - k * (my - stratView.panY) + dmy;
-    stratView.clampPan(view.w, view.h);
+    const k = S().stratView.zoomMul / before;
+    S().stratView.panX = mx - k * (mx - S().stratView.panX) + dmx;
+    S().stratView.panY = my - k * (my - S().stratView.panY) + dmy;
+    S().stratView.clampPan(view.w, view.h);
   },
   twoTap: () => { selectedChit = -1; },
 };
 
 bindTouch(canvas, () => (mode === 'battle' ? battleTouch : stratTouch));
-frameStrategic();
 canvas.addEventListener('wheel', (e) => {
   e.preventDefault();
   if (mode !== 'battle') return;
@@ -1036,7 +1069,8 @@ window.addEventListener('keydown', (e) => {
     if (action === 'menu' || action === 'cancel') { e.preventDefault(); menu.close(); }
     return;
   }
-  
+  if (mode === 'menu') return;
+
   const km = loadKeymap(localStorage);
   const action = actionForEvent(e, km);
   if (!action) return;
@@ -1108,7 +1142,7 @@ window.addEventListener('keydown', (e) => {
     return sim;
   },
   get front() {
-    return front;
+    return S().front;
   },
   get renderer() {
     return renderer;
@@ -1121,7 +1155,7 @@ window.addEventListener('keydown', (e) => {
   // The gesture classifier is pure; exposing it lets scripts/mobile.mjs assert
   // classification without synthesising timing-sensitive touch sequences.
   classify: classifyGesture,
-  stratView: () => stratView,
+  stratView: () => S().stratView,
   getSelection: () => ({ mode, squads: [...selectedSquads], team: selectedTeam, vehicle: selectedVehicle, chit: selectedChit, targetMode, armedOrder }),
   setPaused: (p: boolean) => {
     stratPaused = p;
@@ -1129,7 +1163,7 @@ window.addEventListener('keydown', (e) => {
   },
   selectSquad: (i: number) => selectSquad(i),
   selectVehicle: (i: number) => selectVehicle(i),
-  getCampaign: () => campaign,
+  getCampaign: () => S().campaign,
   startEngagementBattle,
   showDebrief,
   setFow: (on: boolean) => {
@@ -1157,33 +1191,37 @@ function frame(now: number): void {
   }
   hud.root.style.display = mode === 'battle' ? '' : 'none';
   stratHud.root.style.display = mode === 'strategic' ? '' : 'none';
+  if (mode === 'menu') {
+    requestAnimationFrame(frame);
+    return;
+  }
   if (mode === 'strategic') {
     hud.updateIdle('strategic', selectedChit >= 0 || stratPaused);
     if (!stratPaused && !pendingEngagement && !opEnded) {
       stratAcc += (dtReal / 1000) * SPEEDS[speedIdx];
       while (stratAcc >= 1 && !pendingEngagement) {
         stratAcc -= 1;
-        for (const cmd of commanders) cmd.evaluate(front);
-        const e = front.step();
-        if (front.day > prevDay) {
-          advanceDays(campaign, front.day - prevDay);
-          if (front.day % REINFORCE_CYCLE_DAYS === 0) {
-            const arrived = fillReplacements(campaign, front.day * 31 + 7, REINFORCE_PER_COMPANY);
-            if (arrived > 0) stratView.flash(`+${arrived} replacements arrived`);
+        for (const cmd of commanders) cmd.evaluate(S().front);
+        const e = S().front.step();
+        if (S().front.day > prevDay) {
+          advanceDays(S().campaign, S().front.day - prevDay);
+          if (S().front.day % REINFORCE_CYCLE_DAYS === 0) {
+            const arrived = fillReplacements(S().campaign, S().front.day * 31 + 7, REINFORCE_PER_COMPANY);
+            if (arrived > 0) S().stratView.flash(`+${arrived} replacements arrived`);
           }
-          syncStrengths(campaign, front);
-          prevDay = front.day;
+          syncStrengths(S().campaign, S().front);
+          prevDay = S().front.day;
           save();
         }
         if (e) {
-          const attacker = front.chits.find((c) => c.id === e.attackerId)!;
-          const defender = front.chits.find((c) => c.id === e.defenderId)!;
+          const attacker = S().front.chits.find((c) => c.id === e.attackerId)!;
+          const defender = S().front.chits.find((c) => c.id === e.defenderId)!;
           const attackerIsAI = aiSides.has(attacker.side);
           const defenderIsAI = aiSides.has(defender.side);
           
           if (attackerIsAI && defenderIsAI) {
-            const result = resolveCoarse(campaign, front, e);
-            stratView.flash(`${attacker.name} vs ${defender.name}: ${result.attackerWon ? 'attacker wins' : 'defender holds'}`);
+            const result = resolveCoarse(S().campaign, S().front, e);
+            S().stratView.flash(`${attacker.name} vs ${defender.name}: ${result.attackerWon ? 'attacker wins' : 'defender holds'}`);
             save();
           } else if (attackerIsAI && !defenderIsAI) {
             pendingEngagement = e;
@@ -1197,13 +1235,13 @@ function frame(now: number): void {
           }
         }
       }
-      const status = operationStatus(front);
+      const status = operationStatus(S().front);
       if (status !== 'ongoing') showOperationEnd(status);
     }
-    stratHud.update(front, campaign, selectedChit, stratPaused, speedIdx);
-    stratView.clampPan(view.w, view.h); // absorbs orientation changes; a no-op at zoomMul 1
-    stratView.stagedCell = pendingEngagement ? pendingEngagement.cell : -1;
-    stratView.draw(ctx, front, selectedChit, stratPaused, SPEEDS[speedIdx], view.w, view.h);
+    stratHud.update(S().front, S().campaign, selectedChit, stratPaused, speedIdx);
+    S().stratView.clampPan(view.w, view.h); // absorbs orientation changes; a no-op at zoomMul 1
+    S().stratView.stagedCell = pendingEngagement ? pendingEngagement.cell : -1;
+    S().stratView.draw(ctx, S().front, selectedChit, stratPaused, SPEEDS[speedIdx], view.w, view.h);
     if (touchHold) drawHoldRing(ctx, touchHold, now);
   } else {
     acc += dtReal;
@@ -1289,11 +1327,11 @@ function frame(now: number): void {
     const km = loadKeymap(localStorage);
     let objective: HudState['objective'] = null;
     if (pendingEngagement) {
-      const attacker = front.chits.find((c) => c.id === pendingEngagement!.attackerId);
-      const defender = front.chits.find((c) => c.id === pendingEngagement!.defenderId);
+      const attacker = S().front.chits.find((c) => c.id === pendingEngagement!.attackerId);
+      const defender = S().front.chits.find((c) => c.id === pendingEngagement!.defenderId);
       if (attacker && defender) {
-        const cell = front.sector.cells[pendingEngagement!.cell];
-        const xy = cellXY(front.sector, pendingEngagement!.cell);
+        const cell = S().front.sector.cells[pendingEngagement!.cell];
+        const xy = cellXY(S().front.sector, pendingEngagement!.cell);
         const cellLabel = `${String.fromCharCode(65 + (xy.x % 26))}${xy.y + 1}`;
         objective = {
           kind: attacker.side === 'blue' ? 'attack' : 'defend',
@@ -1334,5 +1372,16 @@ function frame(now: number): void {
     if (winnerAt >= 0 && !debriefShown && now - winnerAt > 4000) showDebrief();
   }
   requestAnimationFrame(frame);
+}
+// Boot: a campaign-defining URL param (?camp=N) bypasses the menu
+// synchronously, so the harness scripts see a live session at module-eval end;
+// ?menu=1 forces the menu even then. Bare boot lands on the menu — the save,
+// if any, sits behind Continue instead of auto-loading.
+const menuForced = new URLSearchParams(location.search).get('menu') === '1';
+if (campPinned && !menuForced) {
+  startCampaign(null);
+} else {
+  mainMenu.setSaveProbe(probeSave());
+  mainMenu.open();
 }
 requestAnimationFrame(frame);
