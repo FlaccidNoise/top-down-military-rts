@@ -81,18 +81,40 @@ export class EnclosureIndex {
   readonly gates: GateRun[] = [];
   readonly enclosures: Enclosure[] = [];
   readonly enclosureAt: Int32Array; // per tile, -1 outside every pocket
-  readonly any: boolean;
+  private readonly map: GameMap;
   private readonly w: number;
   private readonly h: number;
+
+  get any(): boolean {
+    return this.runs.length > 0;
+  }
 
   constructor(map: GameMap, churchTiles: Uint8Array) {
     const w = map.w;
     const h = map.h;
+    this.map = map;
     this.w = w;
     this.h = h;
     this.hFree = new Uint8Array((h + 1) * w);
     this.vFree = new Uint8Array(h * (w + 1));
     this.enclosureAt = new Int32Array(w * h).fill(-1);
+    this.derive();
+    if (this.any) this.pockets(map, churchTiles);
+  }
+
+  // Masks and runs, from the map's edge bytes alone. Re-runnable, because the
+  // sim mutates those bytes mid-battle (D1/D2 breaching) — see `refresh()`.
+  // `pockets()` is deliberately NOT part of it: a garden with a hole in its
+  // wall is still a garden, and re-flooding would move the ground dressing
+  // under the player's feet.
+  private derive(): void {
+    const map = this.map;
+    const w = this.w;
+    const h = this.h;
+    this.hFree.fill(0);
+    this.vFree.fill(0);
+    this.runs.length = 0;
+    this.gates.length = 0;
     const built = (x: number, y: number) => map.buildingIdAt(x, y) >= 0;
 
     for (let y = 0; y <= h; y++) {
@@ -146,8 +168,44 @@ export class EnclosureIndex {
 
     this.collect(this.hFree, true);
     this.collect(this.vFree, false);
-    this.any = this.runs.length > 0;
-    if (this.any) this.pockets(map, churchTiles);
+  }
+
+  /**
+   * Re-derive after the sim breached something, and report the tile box the
+   * art moved in — or null if nothing changed.
+   *
+   * Re-derives WHOLE, not per-row, and that is the point: a fresh index of the
+   * mutated map is the definition of correct here, so producing it by the same
+   * code path is the only version that cannot drift. It is ~0.5 ms on a 320x240
+   * bourg and it runs once per breach BATCH, not once per edge.
+   *
+   * The box is the union of every run that appeared or vanished, because the
+   * rubble coursing is phased ALONG a run: splitting a 20 m wall at its middle
+   * re-phases the stones over its whole length, and invalidating only the metre
+   * with the hole in it leaves a visible course jump at the next chunk seam.
+   */
+  refresh(): [number, number, number, number] | null {
+    const key = (r: WallRun | GateRun): string => `${r.ax},${r.ay},${r.bx},${r.by},${r.top}`;
+    const before = [...this.runs, ...this.gates];
+    const beforeKeys = new Set(before.map(key));
+    this.derive();
+    const after = [...this.runs, ...this.gates];
+    const afterKeys = new Set(after.map(key));
+    let x0 = Infinity;
+    let y0 = Infinity;
+    let x1 = -Infinity;
+    let y1 = -Infinity;
+    const grow = (r: WallRun | GateRun): void => {
+      x0 = Math.min(x0, r.ax, r.bx);
+      y0 = Math.min(y0, r.ay, r.by);
+      x1 = Math.max(x1, r.ax, r.bx);
+      y1 = Math.max(y1, r.ay, r.by);
+    };
+    for (const r of before) if (!afterKeys.has(key(r))) grow(r);
+    for (const r of after) if (!beforeKeys.has(key(r))) grow(r);
+    // one tile of slack: a wall STRADDLES its edge, so a run along y = 12 paints
+    // into the tiles above and below it
+    return x0 === Infinity ? null : [x0 - 1, y0 - 1, x1 + 1, y1 + 1];
   }
 
   // Maximal collinear runs of the same code, so a 30 m churchyard wall is one

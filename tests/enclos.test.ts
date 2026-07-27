@@ -108,6 +108,107 @@ describe('EnclosureIndex', () => {
     expect(a.gates).toEqual(b.gates);
     expect(a.enclosures).toEqual(b.enclosures);
   });
+
+  // D9. The renderer must never keep a second opinion about where the wall is:
+  // after the sim breaches an edge, an index that has been refreshed in place
+  // has to agree with one built fresh from the mutated map, or the old wall
+  // keeps drawing over the hole the player just made.
+  describe('refresh after a breach', () => {
+    const staged = () => {
+      const { map } = generateMap(10, 320, 240, 'bourg');
+      const idx = new EnclosureIndex(map, empty);
+      return { map, idx };
+    };
+
+    // Middles of the longest free-standing runs — a breach at a run END only
+    // shortens it, which is the easy case; a breach in the MIDDLE splits it.
+    const midpoints = (idx: EnclosureIndex, n: number): { horiz: boolean; x: number; y: number }[] => {
+      const out: { horiz: boolean; x: number; y: number }[] = [];
+      const byLen = [...idx.runs].sort((a, b) => Math.abs(b.bx - b.ax) + Math.abs(b.by - b.ay) - (Math.abs(a.bx - a.ax) + Math.abs(a.by - a.ay)));
+      for (const r of byLen) {
+        const horiz = r.ay === r.by;
+        const len = horiz ? r.bx - r.ax : r.by - r.ay;
+        if (len < 4) continue;
+        out.push(horiz ? { horiz, x: r.ax + (len >> 1), y: r.ay } : { horiz, x: r.ax, y: r.ay + (len >> 1) });
+        if (out.length === n) break;
+      }
+      return out;
+    };
+
+    it('matches a full rebuild of the mutated map, run for run', () => {
+      const { map, idx } = staged();
+      const cuts = midpoints(idx, 6);
+      expect(cuts.length).toBe(6);
+      for (const c of cuts) {
+        if (c.horiz) map.hEdges[c.y * map.w + c.x] = EDGE.BREACH;
+        else map.vEdges[c.y * (map.w + 1) + c.x] = EDGE.BREACH;
+      }
+      idx.refresh();
+      const fresh = new EnclosureIndex(map, empty);
+      expect(idx.hFree).toEqual(fresh.hFree);
+      expect(idx.vFree).toEqual(fresh.vFree);
+      expect(idx.runs).toEqual(fresh.runs);
+      expect(idx.gates).toEqual(fresh.gates);
+    });
+
+    it('splits the breached run in two and stops owning the gap', () => {
+      const { map, idx } = staged();
+      const [c] = midpoints(idx, 1);
+      const before = idx.runs.length;
+      if (c.horiz) map.hEdges[c.y * map.w + c.x] = EDGE.BREACH;
+      else map.vEdges[c.y * (map.w + 1) + c.x] = EDGE.BREACH;
+      idx.refresh();
+      expect(idx.runs.length).toBe(before + 1);
+      expect(c.horiz ? idx.ownsH(c.x, c.y) : idx.ownsV(c.x, c.y)).toBe(false);
+    });
+
+    it('reports a box that contains the whole re-phased run, not just the hole', () => {
+      const { map, idx } = staged();
+      const [c] = midpoints(idx, 1);
+      const run = idx.runs.find((r) =>
+        c.horiz ? r.ay === c.y && r.ax <= c.x && r.bx > c.x : r.ax === c.x && r.ay <= c.y && r.by > c.y,
+      )!;
+      if (c.horiz) map.hEdges[c.y * map.w + c.x] = EDGE.BREACH;
+      else map.vEdges[c.y * (map.w + 1) + c.x] = EDGE.BREACH;
+      const box = idx.refresh()!;
+      expect(box).not.toBeNull();
+      expect(box[0]).toBeLessThanOrEqual(Math.min(run.ax, run.bx));
+      expect(box[1]).toBeLessThanOrEqual(Math.min(run.ay, run.by));
+      expect(box[2]).toBeGreaterThanOrEqual(Math.max(run.ax, run.bx));
+      expect(box[3]).toBeGreaterThanOrEqual(Math.max(run.ay, run.by));
+    });
+
+    it('reports nothing when the breached edge was never ours', () => {
+      const { map, idx } = staged();
+      // a house wall: masonry with a building on it, which the index does not own
+      let hit = false;
+      for (let y = 1; y < map.h && !hit; y++) {
+        for (let x = 1; x < map.w; x++) {
+          if (map.hEdge(x, y) !== EDGE.WALL || map.buildingIdAt(x, y) < 0) continue;
+          map.hEdges[y * map.w + x] = EDGE.BREACH;
+          hit = true;
+          break;
+        }
+      }
+      expect(hit).toBe(true);
+      expect(idx.refresh()).toBeNull();
+    });
+
+    // Pockets are NOT re-flooded: the ground dressing must not change under the
+    // player because somebody put a hole in the garden wall.
+    it('leaves the pocket dressing exactly where it was', () => {
+      const { map, idx } = staged();
+      const before = Int32Array.from(idx.enclosureAt);
+      const kinds = idx.enclosures.map((e) => e.kind).join(',');
+      for (const c of midpoints(idx, 4)) {
+        if (c.horiz) map.hEdges[c.y * map.w + c.x] = EDGE.BREACH;
+        else map.vEdges[c.y * (map.w + 1) + c.x] = EDGE.BREACH;
+      }
+      idx.refresh();
+      expect(idx.enclosureAt).toEqual(before);
+      expect(idx.enclosures.map((e) => e.kind).join(',')).toBe(kinds);
+    });
+  });
 });
 
 describe('shopfrontsFor', () => {

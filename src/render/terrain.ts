@@ -47,6 +47,26 @@ const BAKES_PER_FRAME = 3;
 // screenshots frame 1, so a desktop budget would reshoot every baseline.
 const MOBILE_BAKES_PER_FRAME = 12;
 
+// Tiles of overscan a chunk bakes beyond its own 16x16 (a tree planted in the
+// next chunk overhangs into this one). It is also what makes invalidation
+// non-local: an edge at tile x is DRAWN by every chunk whose padded range
+// reaches it, so a breach at a chunk boundary dirties two chunks per axis.
+const CHUNK_PAD = 2;
+
+// Chunk indices along one axis whose padded bake range covers tiles [t0, t1].
+// Chunk c bakes [c*CHUNK - PAD, c*CHUNK + CHUNK + PAD] INCLUSIVE — the edge
+// loops in `chunk()` run to the inclusive bound on one axis each, so taking the
+// inclusive bound on both is correct on one and one chunk conservative on the
+// other, which costs a spare rebake and never a stale wall stub.
+// Pure and exported so the neighbourhood arithmetic can be pinned without a
+// canvas: getting it wrong leaves the old wall alive in a neighbour's gutter.
+export function chunkSpan(t0: number, t1: number, n: number): [number, number] {
+  return [
+    Math.max(0, Math.ceil((t0 - CHUNK - CHUNK_PAD) / CHUNK)),
+    Math.min(n - 1, Math.floor((t1 + CHUNK_PAD) / CHUNK)),
+  ];
+}
+
 import { hash, vec } from './noise';
 import { stamp, stampRect } from './stamps';
 import { canopySprite, drawLog } from './canopy';
@@ -56,6 +76,7 @@ import { drawProp, propExtent, propsFor, type Prop } from './props';
 import { EnclosureIndex, drawEnclosureGround, drawEnclosurePlanting, drawEnclosureWalls } from './enclos';
 import { drawShopfronts, shopfrontsFor, type Shopfront } from './shops';
 import { ROLE, buildingIndex, drawFurniture, drawHearthGlow, drawRugs, hearthTiles } from './furniture';
+import { Versions } from './versions';
 
 // Bilinear value noise on an 8m lattice — smooth patches, no hard square edges.
 function coarse(x: number, y: number): number {
@@ -1680,9 +1701,18 @@ function drawEdge(g: Ctx, e: number, x0: number, y0: number, x1: number, y1: num
   }
 }
 
+// A baked chunk plus the staleness stamp it was baked at. Stale chunks keep
+// serving until the rebake lands — see versions.ts.
+interface Chunk {
+  c: HTMLCanvasElement;
+  ver: number;
+}
+
 export class TerrainLayer {
-  private cache = new Map<string, HTMLCanvasElement>();
+  private cache = new Map<string, Chunk>();
   private pixels = 0;
+  private vers = new Versions();
+  private chunksW: number;
   private hasElev: boolean;
   private hasStairs: boolean;
   private bakeBudget = 0;
@@ -1720,6 +1750,7 @@ export class TerrainLayer {
     // chunks stay byte-identical to the pre-height renderer.
     this.hasElev = map.elev.some((e) => e !== 0);
     this.hasStairs = map.stairs.some((s) => s !== 0);
+    this.chunksW = Math.ceil(map.w / CHUNK);
     this.patches = new PatchIndex(map);
     this.rail = railIndex(map);
     const churchTiles = new Uint8Array(map.w * map.h);
@@ -1798,11 +1829,20 @@ export class TerrainLayer {
 
   private chunk(cx: number, cy: number, band: number): HTMLCanvasElement {
     const key = `${cx},${cy},${band}`;
+    const ver = this.vers.at(cy * this.chunksW + cx);
     const hit = this.cache.get(key);
-    if (hit) {
+    // A stale chunk is not a missing one: it holds the right ground with the
+    // wrong wall in it, so it keeps drawing until there is budget to redo it.
+    // Rebaking every dirtied chunk the frame it is dirtied is the stall the
+    // whole amortization exists to prevent, and a sun step dirties all of them.
+    if (hit && (hit.ver === ver || this.bakeBudget <= 0)) {
       this.cache.delete(key); // refresh LRU position
       this.cache.set(key, hit);
-      return hit;
+      return hit.c;
+    }
+    if (hit) {
+      this.cache.delete(key);
+      this.pixels -= hit.c.width * hit.c.height;
     }
     this.bakeBudget--;
     const d = detailFor(band);
@@ -1890,14 +1930,48 @@ export class TerrainLayer {
         for (let x = tx0; x < tx1; x++) drawHillshade(g, this.map, x, y);
       }
     }
-    this.cache.set(key, c);
+    this.cache.set(key, { c, ver });
     this.pixels += c.width * c.height;
     for (const [k, v] of this.cache) {
       if (this.pixels <= PIXEL_BUDGET) break;
       this.cache.delete(k);
-      this.pixels -= v.width * v.height;
+      this.pixels -= v.c.width * v.c.height;
     }
     return c;
+  }
+
+  // --- invalidation (D9) -----------------------------------------------------
+  //
+  // The sim mutates edge bytes mid-battle (a breach) and the sun will start
+  // moving (N4/N5). Both are the same question — "which baked chunks no longer
+  // match their inputs" — and both are answered by bumping a version rather
+  // than by deleting a canvas: see versions.ts for why deletion is the wrong
+  // tool. Callers are the renderer's breach drain and, later, its sun step.
+
+  /** Chunks that draw tiles [x0,x1]x[y0,y1] are stale. */
+  invalidateTiles(x0: number, y0: number, x1: number, y1: number): void {
+    const [cx0, cx1] = chunkSpan(x0, x1, this.chunksW);
+    const [cy0, cy1] = chunkSpan(y0, y1, Math.ceil(this.map.h / CHUNK));
+    for (let cy = cy0; cy <= cy1; cy++) for (let cx = cx0; cx <= cx1; cx++) this.vers.bump(cy * this.chunksW + cx);
+  }
+
+  /**
+   * A single edge byte changed. One tile of slack around it, because the
+   * rubble tumble and the spall a breach draws overhang the edge itself.
+   */
+  invalidateEdge(x: number, y: number): void {
+    this.invalidateTiles(x - 1, y - 1, x + 1, y + 1);
+  }
+
+  /**
+   * Re-derive the free-standing masonry index against the mutated map and
+   * invalidate whatever its runs moved under. A breach splits one wall run into
+   * two, and the rubble coursing is phased along a run, so the whole run
+   * repaints — not just the metre with the hole in it.
+   */
+  breachEnclosures(): void {
+    const box = this.enclos.refresh();
+    if (box) this.invalidateTiles(box[0], box[1], box[2], box[3]);
   }
 
   // Same chunk baked at some other band — same content, wrong sharpness. Walk
@@ -1908,7 +1982,7 @@ export class TerrainLayer {
       const b = BANDS[i];
       if (b === band) continue;
       const c = this.cache.get(`${cx},${cy},${b}`);
-      if (c) return [c, b];
+      if (c) return [c.c, b];
     }
     return null;
   }
