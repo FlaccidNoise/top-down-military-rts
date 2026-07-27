@@ -15,6 +15,7 @@ export interface HudCallbacks {
   selectSquad(id: number): void;
   selectVehicle(id: number): void;
   panToSoldier(id: number): void;
+  inspectSoldier(id: number): void;
   callBarrage(): void;
   callAirstrike(): void;
   togglePause(): void;
@@ -149,7 +150,10 @@ export class Hud {
     this.q('#squads').addEventListener('click', (e) => {
       const t = e.target as HTMLElement;
       const row = t.closest<HTMLElement>('[data-soldier]');
-      if (row) return cb.panToSoldier(Number(row.dataset.soldier));
+      if (row) {
+        cb.panToSoldier(Number(row.dataset.soldier));
+        return cb.inspectSoldier(Number(row.dataset.soldier));
+      }
       const ord = t.closest<HTMLElement>('[data-order]');
       if (ord) return cb.armOrder(ord.dataset.order as OrderKind);
       const ctx = t.closest<HTMLButtonElement>('[data-ctx]');
@@ -580,7 +584,7 @@ function soldierRow(m: Soldier): string {
   const ammo = `<span class="am" title="mag/belt left + reserve units">${m.magLeft}+${reserve}</span>`;
   const cross = m.wounds.length ? `<span class="flag${m.stabilized || m.bleedRate <= 0 ? ' stab' : ''}">✚</span>` : '';
   if (m.downed) {
-    return `<div class="srow urgent" data-soldier="${m.id}" tabindex="0" role="button" title="click to pan to ${m.name}"><span class="chip" style="background:#d05c50" title="DOWN"></span><span class="nm">${m.name}</span>${wpn}${cross}<span class="down">DOWN</span></div>`;
+    return `<div class="srow urgent" data-soldier="${m.id}" tabindex="0" role="button" title="click to inspect ${m.name}"><span class="chip" style="background:#d05c50" title="DOWN"></span><span class="nm">${m.name}</span>${wpn}${cross}<span class="down">DOWN</span></div>`;
   }
   const supPct = Math.round(m.suppression * 100);
   const morPct = Math.round(m.morale * 100);

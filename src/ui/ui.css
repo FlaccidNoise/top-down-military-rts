@@ -250,6 +250,41 @@ button.hbtn.active { background: var(--chip-active-bg); border-color: var(--ambe
 .tt-kia { color: var(--red); font-weight: var(--fw-head); letter-spacing: 2px; margin: 2px 0; }
 .wound { color: #c9906a; margin: 2px 0; }
 
+/* ---- health panel ----
+   Transient inspect chrome, not layout: deliberately absent from
+   viewportInset() in main.ts, so opening it never re-frames the camera. */
+#healthpanel {
+  position: absolute;
+  right: var(--sp-2);
+  top: 48px;
+  width: 300px;
+  padding: 7px 10px var(--sp-2);
+  display: none;
+  z-index: 6;
+  max-height: calc(100% - 110px);
+  overflow-y: auto;
+  pointer-events: auto;
+}
+.hp-head { display: flex; align-items: center; gap: var(--sp-2); }
+.hp-head b { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; letter-spacing: 0.5px; color: var(--blue); }
+.hp-x {
+  font: inherit;
+  flex: none;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0 6px;
+  cursor: pointer;
+}
+.hp-x:hover { border-color: var(--amber); color: var(--amber-bright); }
+.hp-body { display: flex; gap: var(--sp-2); align-items: flex-start; margin-top: var(--sp-1); }
+.hp-fig { width: 66px; flex: none; }
+.hp-parts { flex: 1; min-width: 0; }
+.hp-row { display: flex; gap: var(--sp-1); align-items: baseline; }
+.hp-nm { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hp-hp { flex: none; font-size: var(--fs-sm); opacity: 0.7; }
+
 /* ---- banners & hint ---- */
 #banner {
   position: absolute;
@@ -1242,7 +1277,24 @@ html.mobile #tip {
   max-height: 34vh;
   max-height: 34dvh;
   overflow-y: auto;
+  /* Both bottom sheets dock here. The probe card lasts as long as the finger
+     does, so it reads over the health panel rather than under it. */
+  z-index: 7;
 }
+
+/* ---- health panel: bottom sheet, same dock as the probe card ---- */
+html.mobile #healthpanel {
+  position: fixed;
+  left: var(--sp-2);
+  right: var(--sp-2);
+  top: auto;
+  bottom: calc(var(--touchbar-h, 0px) + 8px);
+  width: auto;
+  max-height: 40vh;
+  max-height: 40dvh;
+  overflow-y: auto;
+}
+html.mobile .hp-x { min-width: 44px; min-height: 44px; }
 
 /* ---- portrait guidance ----
    Shown by CSS alone, so there is no resize plumbing to get wrong. The copy

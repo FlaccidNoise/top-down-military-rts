@@ -55,7 +55,7 @@ export interface ShotSolution {
   reason?: 'no-los' | 'concealed' | 'out-of-range' | 'mixed' | 'floor-blocked'; // set when !ok — overlays branch on this, never on prose
 }
 
-const pct = (v: number) => `${Math.round(v * 100)}%`;
+export const pct = (v: number) => `${Math.round(v * 100)}%`;
 
 // The firing solution the current selection has against what's hovered —
 // straight from the sim's own preview math, never re-derived.
@@ -216,7 +216,7 @@ export class Tooltip {
   }
 }
 
-function barRow(label: string, v: number, color: string): string {
+export function barRow(label: string, v: number, color: string): string {
   return `<span class="lb">${label}</span><span class="bar"><i style="width:${Math.round(Math.min(1, v) * 100)}%;background:${color}"></i></span><span class="pc">${pct(Math.min(1, v))}</span>`;
 }
 

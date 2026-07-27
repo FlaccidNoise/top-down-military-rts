@@ -20,6 +20,7 @@ import { emplacementOf, Hud, infantrySquads, type HudState } from './ui/hud';
 import { StratHud } from './ui/strat-hud';
 import { drawOverlays, EventPings } from './ui/overlays';
 import { computeShot, pickAt, Tooltip } from './ui/tooltip';
+import { HealthPanel } from './ui/health-panel';
 import { actionForEvent, loadKeymap, type Keymap } from './ui/keymap';
 import { PauseMenu } from './ui/menu';
 import { coach } from './ui/coach';
@@ -158,6 +159,7 @@ let selectedSquads: number[] = [];
 // Primary = last element of selectedSquads. Kept for existing call sites.
 function getPrimary(): number { return selectedSquads.length > 0 ? selectedSquads[selectedSquads.length - 1] : -1; }
 let selectedTeam = -1; // -1 = whole squad; narrowed to one team within selectedSquad
+let inspectedSoldier = -1; // health panel target; independent of selection, never affects orders
 let selectedVehicle = -1;
 let lastTeamId = -1; // most recently selected team, survives a later vehicle selection (Mount reads this)
 let armedOrder: OrderKind | null = null; // order kind armed via ⇧1-7 / order bar, issued by right-click
@@ -256,6 +258,9 @@ const hud = new Hud({
     cam.x = s.x;
     cam.y = s.y;
   },
+  inspectSoldier: (id) => {
+    inspectedSoldier = id;
+  },
   callBarrage: () => {
     if (!aiControl && sim.barragesLeft.blue > 0) setTargetMode(targetMode === 'barrage' ? '' : 'barrage');
   },
@@ -331,6 +336,7 @@ const stratHud = new StratHud({
   setSpeed: (i) => { speedIdx = i; },
 });
 const tooltip = new Tooltip(hud.root);
+const healthPanel = new HealthPanel(hud.root, () => { inspectedSoldier = -1; });
 let pauseBeforeMenu: boolean | null = null;
 const menu = new PauseMenu({
   onResume: () => {
@@ -492,6 +498,7 @@ function startEngagementBattle(e: Engagement): void {
   floorFocus = -1;
   selectedSquads = [];
   selectedVehicle = -1;
+  inspectedSoldier = -1;
   setTargetMode('');
   winnerAt = -1;
   debriefShown = false;
@@ -547,6 +554,7 @@ function showDebrief(): void {
     debriefEl.style.display = 'none';
     mode = 'strategic';
     stratPaused = !(aiSides.has('red') && aiSides.has('blue'));
+    inspectedSoldier = -1;
     tooltip.clear();
   };
 }
@@ -697,8 +705,14 @@ function tapSelect(sx: number, sy: number, additive: boolean): void {
           }
         }
         if (best && best.squadId === getPrimary() && selectedSquads.length === 1) {
-          selectedTeam = best.teamId;
-          lastTeamId = best.teamId;
+          // Third rung: his team is already the narrowed one, so the click can
+          // only mean "show me this man".
+          if (selectedTeam === best.teamId) {
+            inspectedSoldier = best.id;
+          } else {
+            selectedTeam = best.teamId;
+            lastTeamId = best.teamId;
+          }
         } else if (best) {
           if (additive) toggleSquadSelection(best.squadId);
           else selectSquad(best.squadId);
@@ -826,12 +840,13 @@ function stratOrderMove(sx: number, sy: number): void {
     stratView.flash("Can't hold open water — ford across to the far bank");
 }
 
-/** Esc's cancel ladder: targetMode → armedOrder → team → selection. */
+/** Esc's cancel ladder: inspect → targetMode → armedOrder → team → selection. */
 function escapeLadder(): boolean {
   if (mode === 'strategic') {
     if (selectedChit >= 0) { selectedChit = -1; return true; }
     return false;
   }
+  if (inspectedSoldier >= 0) { inspectedSoldier = -1; return true; }
   if (targetMode) { setTargetMode(''); return true; }
   if (armedOrder) { armedOrder = null; return true; }
   if (boxMode || addMode) { boxMode = false; addMode = false; boxRect = null; return true; }
@@ -1291,6 +1306,9 @@ function frame(now: number): void {
     }
     hud.update(sim, { selectedSquad: primary, selectedSquads, selectedTeam, selectedVehicle, paused, aiControl, targetMode, armedOrder, title: battleTitle, keymap: km, objective, floorFocus, boxMode, addMode });
     hud.updateIdle('battle', targetMode !== '' || selectedSquads.length > 0 || selectedVehicle >= 0 || selectedTeam >= 0 || paused);
+    // A new battle re-indexes sim.soldiers, so an id held across one closes the panel.
+    if (inspectedSoldier >= 0 && !sim.soldiers[inspectedSoldier]) inspectedSoldier = -1;
+    healthPanel.update(sim, inspectedSoldier);
 
     // The boot framing has to measure the battle HUD, which does not exist
     // until the update above has run once. Re-frame on that first frame —
