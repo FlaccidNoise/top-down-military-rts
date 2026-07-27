@@ -189,6 +189,9 @@ describe('bourg stampStructure — storeys and stairs', () => {
     expect(storiesOf({ x: 0, y: 0, w: 8, h: 7 })).toBe(2); // 56 — the pinned threshold
     expect(storiesOf({ x: 0, y: 0, w: 5, h: 5, role: 'church_tower' })).toBe(4);
     expect(storiesOf({ x: 0, y: 0, w: 12, h: 8, role: 'halle' })).toBe(1);
+    // a role that is two storeys by definition, under the area threshold
+    expect(storiesOf({ x: 0, y: 0, w: 7, h: 6, role: 'church' })).toBe(2);
+    expect(storiesOf({ x: 0, y: 0, w: 8, h: 4, role: 'civic' })).toBe(2);
     // parts count toward the area, so an L of two small wings can clear 56
     expect(
       storiesOf({ x: 0, y: 0, w: 6, h: 5, parts: [{ x: 0, y: 0, w: 6, h: 5 }, { x: 0, y: 5, w: 6, h: 5 }] }),

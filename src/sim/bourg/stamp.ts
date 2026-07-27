@@ -32,6 +32,10 @@ export const partsOf = (b: Building): Rect[] => b.parts ?? [{ x: b.x, y: b.y, w:
 export function storiesOf(b: Building): number {
   if (b.role === 'church_tower') return 4;
   if (b.role === 'halle') return 1;
+  // A nave and a mairie are two storeys because of what they ARE, not because
+  // of their area: a 12x6 chapel on a tight churchyard is 72 tiles and would
+  // clear the rule anyway, but a 7x6 one is 42 and would come out as a shed.
+  if (b.role === 'church' || b.role === 'civic') return 2;
   let area = 0;
   for (const p of partsOf(b)) area += p.w * p.h;
   return area >= 56 ? 2 : 1;
