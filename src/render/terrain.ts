@@ -1,5 +1,6 @@
 import { TERRAIN, type TerrainKey } from '../sim/data';
 import { EDGE, type GameMap } from '../sim/map';
+import type { Building } from '../sim/mapgen';
 import type { Camera } from './camera';
 import { AO_ALPHA, SHADOW_ALPHA, SHADOW_SOFT_ALPHA, SUN, shadowOffset } from './light';
 import { MOBILE } from './view';
@@ -52,6 +53,7 @@ import { canopySprite, drawLog } from './canopy';
 import { PatchIndex, type BuildingBox, type Patch } from './patches';
 import { buildYards, drawYardGround, drawYardStructures, type Yard } from './yards';
 import { drawProp, propExtent, propsFor, type Prop } from './props';
+import { EnclosureIndex, drawEnclosureGround, drawEnclosurePlanting, drawEnclosureWalls } from './enclos';
 
 // Bilinear value noise on an 8m lattice — smooth patches, no hard square edges.
 function coarse(x: number, y: number): number {
@@ -1252,17 +1254,30 @@ export class TerrainLayer {
   // 6 m past its pole), so a chunk bake pays only for the clutter it shows and
   // nothing is ever clipped off at a seam
   private props = new Map<string, Prop[]>();
+  // Free-standing masonry and the pockets it encloses (T18/T20). Empty on
+  // every legacy kind — no legacy map writes a non-zero edge top — so those
+  // chunks stay byte-identical.
+  private enclos: EnclosureIndex;
   /** Chunks painted flat this frame because the bake budget ran out (mobile). */
   readonly pending = new Set<string>();
   private flat = new Map<string, string>();
 
-  constructor(private map: GameMap) {
+  constructor(private map: GameMap, buildings: readonly Building[] = []) {
     // Flat maps (all elev 0, no stairs) early-out everywhere below, so their
     // chunks stay byte-identical to the pre-height renderer.
     this.hasElev = map.elev.some((e) => e !== 0);
     this.hasStairs = map.stairs.some((s) => s !== 0);
     this.patches = new PatchIndex(map);
-    this.yards = buildYards(map, this.patches);
+    const churchTiles = new Uint8Array(map.w * map.h);
+    for (const b of buildings) {
+      if (b.role !== 'church' && b.role !== 'church_tower' && b.role !== 'church_apse') continue;
+      for (const p of b.parts ?? [b]) {
+        for (let y = Math.max(0, p.y); y < Math.min(map.h, p.y + p.h); y++)
+          for (let x = Math.max(0, p.x); x < Math.min(map.w, p.x + p.w); x++) churchTiles[y * map.w + x] = 1;
+      }
+    }
+    this.enclos = new EnclosureIndex(map, churchTiles);
+    this.yards = buildYards(map, this.patches, (wx, wy) => this.enclos.enclosureIdAt(Math.floor(wx), Math.floor(wy)) >= 0);
     for (const p of propsFor(map, this.patches)) {
       const [ex0, ey0, ex1, ey1] = propExtent(p);
       for (let cy = Math.floor(ey0 / CHUNK); cy <= Math.floor(ey1 / CHUNK); cy++) {
@@ -1315,6 +1330,7 @@ export class TerrainLayer {
     drawRoadWear(g, this.map, tx0, ty0, tx1, ty1, d, (x, y) => this.patches.pavedAt(x, y));
     drawWaterBanks(g, this.map, tx0, ty0, tx1, ty1);
     drawYardGround(g, this.map, this.patches, this.yards, tx0, ty0, tx1, ty1, d);
+    drawEnclosureGround(g, this.map, this.enclos, tx0, ty0, tx1, ty1, d);
     drawDoorTrails(g, this.map, tx0, ty0, tx1, ty1);
     drawYardStructures(g, this.map, this.patches, this.yards, tx0, ty0, tx1, ty1, d);
     drawHedgeRun(g, this.map, tx0, ty0, tx1, ty1, d);
@@ -1337,12 +1353,17 @@ export class TerrainLayer {
       }
     }
     for (const p of this.props.get(`${cx},${cy}`) ?? []) drawProp(g, p, band, d);
+    drawEnclosurePlanting(g, this.map, this.enclos, tx0, ty0, tx1, ty1, band, d);
+    // Free-standing masonry owns its own edges — drawEdge's generic hairline
+    // would sit under the rubble as a dark seam and, on a gate, draw a second
+    // door leaf across the plank one.
     for (let y = ty0; y <= ty1; y++) {
-      for (let x = tx0; x < tx1; x++) drawEdge(g, this.map.hEdge(x, y), x, y, x + 1, y);
+      for (let x = tx0; x < tx1; x++) if (!this.enclos.ownsH(x, y)) drawEdge(g, this.map.hEdge(x, y), x, y, x + 1, y);
     }
     for (let y = ty0; y < ty1; y++) {
-      for (let x = tx0; x <= tx1; x++) drawEdge(g, this.map.vEdge(x, y), x, y, x, y + 1);
+      for (let x = tx0; x <= tx1; x++) if (!this.enclos.ownsV(x, y)) drawEdge(g, this.map.vEdge(x, y), x, y, x, y + 1);
     }
+    drawEnclosureWalls(g, this.enclos, tx0, ty0, tx1, ty1, d);
     if (this.hasElev) {
       for (let y = ty0; y < ty1; y++) {
         for (let x = tx0; x < tx1; x++) drawHillshade(g, this.map, x, y);
