@@ -6,24 +6,53 @@ export interface TerrainDef {
   coverBehind?: number; // directional: cover granted when a shot crosses this tile within 2m of the target (hedgerow lip)
   passable: boolean;
   featureHeight?: number; // physical height (m) of the terrain feature for LOS profile check
+  // Foot-passable to infantry, closed to vehicles. THE authority for the
+  // vehicle rule — map.ts canStep, mapgen.ts reachField (canStep inlined) and
+  // sim.ts findVehicleSpot all read this flag instead of each keeping its own
+  // key blacklist. Three hand-maintained copies had already drifted (V1 added
+  // 'bank' to canStep only), and every new key had to be remembered in all
+  // three. Set on impassable keys too where the intent is "no vehicle here"
+  // even though `passable: false` already blocks — it documents the key and
+  // costs nothing (interiors design D12).
+  noVehicle?: boolean;
 }
 
 export const TERRAIN = {
   grass: { color: '#4e6b3f', moveCost: 1, cover: 0, opacity: 0, passable: true },
   road: { color: '#8a8172', moveCost: 0.85, cover: 0, opacity: 0, passable: true },
-  woods: { color: '#31482b', moveCost: 1.6, cover: 0.3, opacity: 0.35, passable: true, featureHeight: 8 },
-  floor: { color: '#a0917a', moveCost: 1, cover: 0, opacity: 0, passable: true },
-  hedge: { color: '#2f4a28', moveCost: 1.8, cover: 0.35, opacity: 0.5, coverBehind: 0.5, passable: true, featureHeight: 2 },
+  woods: { color: '#31482b', moveCost: 1.6, cover: 0.3, opacity: 0.35, passable: true, featureHeight: 8, noVehicle: true },
+  floor: { color: '#a0917a', moveCost: 1, cover: 0, opacity: 0, passable: true, noVehicle: true },
+  hedge: { color: '#2f4a28', moveCost: 1.8, cover: 0.35, opacity: 0.5, coverBehind: 0.5, passable: true, featureHeight: 2, noVehicle: true },
   field: { color: '#6a7245', moveCost: 1.1, cover: 0.05, opacity: 0, passable: true },
   water: { color: '#465a63', moveCost: 1, cover: 0, opacity: 0, passable: false },
   // GameMap.tiles stores TERRAIN_KEYS.indexOf(key) and TERRAIN_KEYS is
-  // Object.keys(TERRAIN), so tile indices are positional: new keys APPEND after
-  // water (grass=0 .. water=6 must never move) or every existing map fingerprint
-  // shifts. bank = the batter of an embankment/sunken-lane shoulder: infantry
-  // scramble it, vehicles cannot (map.ts canStep blacklist). rail = ballasted
-  // crest of a railway embankment: drivable but slow.
-  bank: { color: '#5f6b46', moveCost: 1.5, cover: 0.1, opacity: 0, passable: true },
+  // Object.keys(TERRAIN), so tile indices are positional: new keys APPEND at the
+  // END (grass=0 .. water=6, bank=7, rail=8 must never move) or every existing
+  // map fingerprint shifts. bank = the batter of an embankment/sunken-lane
+  // shoulder: infantry scramble it, vehicles cannot (noVehicle). rail =
+  // ballasted crest of a railway embankment: drivable but slow.
+  bank: { color: '#5f6b46', moveCost: 1.5, cover: 0.1, opacity: 0, passable: true, noVehicle: true },
   rail: { color: '#6b6459', moveCost: 1.15, cover: 0.15, opacity: 0, passable: true },
+  // ── interior furniture (docs/plans/2026-07-26-interiors-design.md §2.1) ────
+  // Written only by the interiors pass, only over 'floor' tiles, only when
+  // GameMap.hasFurniture. Rationale for each number is in that document (D4-D6)
+  // and the code table is frozen in src/sim/interiors/types.ts:
+  //  - impassable heavy pieces are what make an aisle an aisle (astar routes
+  //    round them), and coverBehind — never `cover` — is right because nobody
+  //    stands on a table: it is "fire over the counter", directional, defeated
+  //    by flanking past the end of the run.
+  //  - furn_light is the soft version: passable at moveCost 2.2 (worse than
+  //    hedge's 1.8) with on-tile `cover`, because a man among crates really is
+  //    partly covered and can really push through.
+  //  - no featureHeight on any of them: los() skips a feature once the eye-line
+  //    clears elev + featureHeight, and at furniture height (0.8-1.1 m, under
+  //    EYE_H 1.6) that branch would fire on every ground-level shot and delete
+  //    the cover outright. Consequence (D6): the substrate cannot express "the
+  //    tower shoots over the pews".
+  furn_heavy: { color: '#6a533a', moveCost: 1, cover: 0, opacity: 0, coverBehind: 0.4, passable: false, noVehicle: true },
+  furn_light: { color: '#7d6647', moveCost: 2.2, cover: 0.25, opacity: 0, passable: true, noVehicle: true },
+  hearth: { color: '#514740', moveCost: 1, cover: 0, opacity: 0, coverBehind: 0.5, passable: false, noVehicle: true },
+  altar: { color: '#8d8577', moveCost: 1, cover: 0, opacity: 0, coverBehind: 0.5, passable: false, noVehicle: true },
 } satisfies Record<string, TerrainDef>;
 
 export type TerrainKey = keyof typeof TERRAIN;

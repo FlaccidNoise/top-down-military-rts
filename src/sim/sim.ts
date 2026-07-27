@@ -1043,6 +1043,12 @@ export class Sim {
     }
   }
 
+  // Nearest tile a vehicle may actually occupy. The test MUST be canStep's
+  // (TerrainDef.noVehicle), not a local key list: returning a tile astar can
+  // never enter makes orderVehicleMove find no route and drop the order in
+  // silence. That is the bug the old 'floor'/'woods'/'hedge' list already had
+  // for 'bank' — an embankment batter was a legal destination and an illegal
+  // step — and it is why furniture must be excluded here as well as in canStep.
   private findVehicleSpot(x: number, y: number): { x: number; y: number } | null {
     for (let r = 0; r <= 6; r++) {
       for (let dy = -r; dy <= r; dy++) {
@@ -1051,8 +1057,8 @@ export class Sim {
           const nx = x + dx;
           const ny = y + dy;
           if (!this.map.inBounds(nx, ny)) continue;
-          const k = this.map.terrainKeyAt(nx, ny);
-          if (this.map.terrainAt(nx, ny).passable && k !== 'floor' && k !== 'woods' && k !== 'hedge') return { x: nx, y: ny };
+          const t = this.map.terrainAt(nx, ny);
+          if (t.passable && !t.noVehicle) return { x: nx, y: ny };
         }
       }
     }

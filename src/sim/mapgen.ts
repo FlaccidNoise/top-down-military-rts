@@ -709,9 +709,13 @@ function addBuilding(map: GameMap, b: Building, door: 'n' | 's' | 'e' | 'w', id:
 // canStep is INLINED here rather than called: at ~12 step tests per tile over
 // 76,800 tiles the two property chains inside terrainAt (TERRAIN[KEYS[byte]])
 // dominate, and hoisting them into a per-tile `open` bitmap plus raw edge-array
-// reads is the difference between ~8 ms and ~2 ms per pass. map.ts:112-125 is
+// reads is the difference between ~8 ms and ~2 ms per pass. map.ts canStep is
 // the authority for the rule; `tests/mapgen.test.ts` asserts reachField against
-// astar directly so the copy cannot drift silently.
+// astar directly so the copy cannot drift silently. It HAD drifted: this copy
+// carried its own 'floor'/'woods'/'hedge' vehicle blacklist and V1's 'bank'
+// never reached it, so validate believed vehicles could climb an embankment
+// batter that canStep forbids. Both now read TerrainDef.noVehicle, which is
+// what makes the drift structurally impossible rather than merely tested for.
 //
 // The four orthogonal steps out of the popped tile are evaluated once and
 // reused as the first leg of each diagonal's corner test.
@@ -730,8 +734,8 @@ export function reachField(map: GameMap, sx: number, sy: number, mode: 'foot' | 
     if (e < 0) {
       const x = i % w;
       const y = (i / w) | 0;
-      const k = map.terrainKeyAt(x, y);
-      e = map.terrainAt(x, y).passable && (!veh || (k !== 'floor' && k !== 'woods' && k !== 'hedge')) ? 1 : 0;
+      const d = map.terrainAt(x, y);
+      e = d.passable && (!veh || !d.noVehicle) ? 1 : 0;
       byTile[t] = e;
     }
     open[i] = e;

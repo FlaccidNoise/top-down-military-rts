@@ -312,13 +312,18 @@ function vehicleCard(sim: Sim, v: Vehicle, shot: ShotSolution | null): string {
   return html;
 }
 
-const TERRAIN_NAME: Record<TerrainKey, string> = { grass: 'Open ground', road: 'Road', woods: 'Woods', floor: 'Building interior', hedge: 'Hedgerow', field: 'Plowed field', water: 'River', bank: 'Embankment', rail: 'Railway' };
+// Exhaustive over TerrainKey, so tsc --noEmit forces the copy for every key
+// appended to TERRAIN — a free compile-time catch, and the reason a new key can
+// never ship nameless.
+const TERRAIN_NAME: Record<TerrainKey, string> = { grass: 'Open ground', road: 'Road', woods: 'Woods', floor: 'Building interior', hedge: 'Hedgerow', field: 'Plowed field', water: 'River', bank: 'Embankment', rail: 'Railway', furn_heavy: 'Heavy furniture', furn_light: 'Clutter', hearth: 'Hearth', altar: 'Altar' };
 
 function terrainCard(sim: Sim, wx: number, wy: number, moveHint: boolean): string {
   const k = sim.map.terrainKeyAt(Math.floor(wx), Math.floor(wy));
   const t: TerrainDef = TERRAIN[k];
   const lines = k === 'floor' ? formatCoverBreakdownForFloor() : formatCoverBreakdown(t);
-  const speed = `move speed ×${(1 / t.moveCost).toFixed(2)}`;
+  // An impassable tile has a moveCost, but quoting it reads as an invitation to
+  // walk onto a river or a pew block.
+  const speed = t.passable ? `move speed ×${(1 / t.moveCost).toFixed(2)}` : 'impassable';
   let html = `<div class="tt-head"><b>${TERRAIN_NAME[k]}</b></div><div class="tt-rows">`;
   for (const l of lines) html += `<div><span>${l}</span></div>`;
   html += `<div><span>${speed}</span></div></div>`;
