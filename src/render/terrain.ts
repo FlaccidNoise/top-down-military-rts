@@ -55,6 +55,7 @@ import { buildYards, drawYardGround, drawYardStructures, type Yard } from './yar
 import { drawProp, propExtent, propsFor, type Prop } from './props';
 import { EnclosureIndex, drawEnclosureGround, drawEnclosurePlanting, drawEnclosureWalls } from './enclos';
 import { drawShopfronts, shopfrontsFor, type Shopfront } from './shops';
+import { ROLE, buildingIndex, drawFurniture } from './furniture';
 
 // Bilinear value noise on an 8m lattice — smooth patches, no hard square edges.
 function coarse(x: number, y: number): number {
@@ -1194,7 +1195,10 @@ function drawTileBase(g: Ctx, map: GameMap, patches: PatchIndex, x: number, y: n
     g.fillStyle = shade(t === 'rail' ? RAIL_BALLAST : BANK_EARTH, v);
     g.fillRect(x, y, 1, 1);
   } else {
-    // floor: plank rows every 0.33m, two wood tones, staggered butt joints.
+    // floor, and every furniture key — a table stands ON a floor, so the four
+    // interior keys share this branch and the piece itself goes down later, in
+    // drawFurniture's post-pass.
+    // plank rows every 0.33m, two wood tones, staggered butt joints.
     // rowIdx is world-space (y*3+r) so joints don't repeat identically tile to tile.
     for (let r = 0; r < 3; r++) {
       const ry = y + r / 3;
@@ -1274,6 +1278,11 @@ export class TerrainLayer {
   private enclos: EnclosureIndex;
   // Storefront dressing (T21) — likewise empty without building roles.
   private shops: Shopfront[];
+  // Building role per buildingId (interiors R1/R2). Legacy maps carry no roles,
+  // so every lookup returns ROLE.OTHER and every branch keyed on it takes the
+  // plank/house default the renderer already had.
+  private roles: Uint8Array;
+  private across: Uint8Array;
   /** Chunks painted flat this frame because the bake budget ran out (mobile). */
   readonly pending = new Set<string>();
   private flat = new Map<string, string>();
@@ -1294,6 +1303,9 @@ export class TerrainLayer {
     }
     this.enclos = new EnclosureIndex(map, churchTiles);
     this.shops = shopfrontsFor(map, buildings);
+    const bidx = buildingIndex(map, buildings);
+    this.roles = bidx.role;
+    this.across = bidx.across;
     this.yards = buildYards(map, this.patches, (wx, wy) => this.enclos.enclosureIdAt(Math.floor(wx), Math.floor(wy)) >= 0);
     for (const p of propsFor(map, this.patches)) {
       const [ex0, ey0, ex1, ey1] = propExtent(p);
@@ -1314,6 +1326,16 @@ export class TerrainLayer {
   get index(): PatchIndex {
     return this.patches;
   }
+
+  private roleAt = (x: number, y: number): number => {
+    const id = this.map.buildingIdAt(x, y);
+    return id < 0 ? ROLE.OTHER : (this.roles[id] ?? ROLE.OTHER);
+  };
+
+  private acrossAt = (x: number, y: number): number => {
+    const id = this.map.buildingIdAt(x, y);
+    return id < 0 ? 0 : (this.across[id] ?? 0);
+  };
 
   private chunk(cx: number, cy: number, band: number): HTMLCanvasElement {
     const key = `${cx},${cy},${band}`;
@@ -1349,6 +1371,10 @@ export class TerrainLayer {
     drawYardGround(g, this.map, this.patches, this.yards, tx0, ty0, tx1, ty1, d);
     drawEnclosureGround(g, this.map, this.enclos, tx0, ty0, tx1, ty1, d);
     drawDoorTrails(g, this.map, tx0, ty0, tx1, ty1);
+    // Interiors, under the roof: a post-pass because a piece's contact shadow
+    // spills into the tile SE of it and the base loop would paint the next
+    // floor straight over it.
+    drawFurniture(g, this.map, this.roleAt, this.acrossAt, tx0, ty0, tx1, ty1, band);
     drawYardStructures(g, this.map, this.patches, this.yards, tx0, ty0, tx1, ty1, d);
     drawHedgeRun(g, this.map, tx0, ty0, tx1, ty1, d);
     if (d >= 1) {
