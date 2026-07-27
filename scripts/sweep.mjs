@@ -22,9 +22,8 @@ const SEEDS = arg('seeds', '1,2,3,4,5,6,7,8,9,10').split(',').map(Number);
 const CAMP = 42; // pinned campaign — fixed chit layout across runs
 // Water art never shows up unless a red chit happens to sit on a river cell,
 // so two sweep slots force the defender's cell terrain before carving. 'bourg'
-// is forced for a different reason: CHAR_TERRAIN does not point at it yet
-// (T16, deliberately last), so it is unreachable from any campaign and would
-// otherwise never appear in the art gate at all.
+// is forced so the art gate covers a KNOWN bourg seed regardless of where the
+// pinned campaign's chits sit (T16 landed: campaign town cells stage bourg).
 const FORCE_KIND = { 3: 'bridge', 8: 'river', 10: 'bourg' };
 // `soldiers48` is the close-inspection unit crop: kit, webbing and helmet
 // detail only exist at band 48, so the 32 px/m `units` crop cannot regress it.
