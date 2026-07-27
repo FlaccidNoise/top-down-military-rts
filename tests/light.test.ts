@@ -9,6 +9,7 @@ import {
   sunAt,
   sunStepAt,
 } from '../src/sim/solar';
+import { SHADOW_ALPHA, SHADOW_SOFT_ALPHA, SUN, setSun, shadowAlpha, shadowOffset, shadowSoftAlpha } from '../src/render/light';
 
 // This suite is the guard on the whole day/night design. Map-north is DEFINED
 // as the direction today's shadows fall, which makes solar noon the fixed point
@@ -188,5 +189,35 @@ describe('the ambient ramp', () => {
 
   it('reaches the floor at solar midnight — the darkest bucket is actually dark', () => {
     expect(sunAt(2 * 60).ambient[3]).toBeCloseTo(0.62, 9);
+  });
+});
+
+describe('render/light.ts adapter', () => {
+  it('re-exports the canonical sun with the exact values it used to hard-code', () => {
+    const len = Math.hypot(0.45, 0.55);
+    expect(SUN.dx).toBe(0.45 / len);
+    expect(SUN.dy).toBe(0.55 / len);
+    expect(shadowOffset(1)).toEqual([SUN.dx, SUN.dy]);
+    expect(shadowOffset(2.5)).toEqual([SUN.dx * 2.5, SUN.dy * 2.5]);
+  });
+
+  it('starts at the canonical hour so an unwired build is the shipped build', () => {
+    expect(shadowAlpha()).toBe(SHADOW_ALPHA);
+    expect(shadowSoftAlpha()).toBe(SHADOW_SOFT_ALPHA);
+  });
+
+  it('setSun reports only real step changes, and reverts exactly', () => {
+    expect(setSun(CANON_CLOCK_MIN)).toBe(false); // already there
+    expect(setSun(CANON_CLOCK_MIN + 10)).toBe(false); // same bucket
+    expect(setSun(7 * 60)).toBe(true);
+    expect(SUN.dx).not.toBe(0.45 / Math.hypot(0.45, 0.55));
+    expect(shadowOffset(1)[0]).toBeCloseTo(SUN.dx * 3, 12); // lenMul 3 at dawn
+    expect(shadowAlpha()).toBeLessThan(SHADOW_ALPHA);
+
+    expect(setSun(CANON_CLOCK_MIN)).toBe(true);
+    expect(SUN.dx).toBe(0.45 / Math.hypot(0.45, 0.55));
+    expect(SUN.dy).toBe(0.55 / Math.hypot(0.45, 0.55));
+    expect(shadowOffset(0.71)).toEqual([SUN.dx * 0.71, SUN.dy * 0.71]);
+    expect(shadowAlpha()).toBe(SHADOW_ALPHA);
   });
 });
