@@ -31,6 +31,7 @@ export interface CoarseBattle {
   startMin: number;
   endMin: number;
   forced: 'attacker' | 'defender' | null;
+  approachEdgeId: number | null; // the attacker's approach — crossing-assault classification + setback axis
 }
 
 export interface TheaterEvent {

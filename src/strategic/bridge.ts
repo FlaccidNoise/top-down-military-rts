@@ -614,6 +614,40 @@ export function trivialMismatchWinner(attacker: Chit, defender: Chit): 'attacker
   return null;
 }
 
+// The tuned Lanchester core — THE asset (2026-07 calibration, 16 seeds,
+// wars 1-15 days, both outcomes). One implementation, two callers: the grid
+// resolveCoarse below and the V2 theater battle layer. Draw order is frozen:
+// winner roll, winner losses, loser losses.
+export function coarseOutcome(
+  atkStrength: number,
+  defStrength: number,
+  terrainMult: number,
+  rng: Rng,
+  forcedWinner?: 'attacker' | 'defender' | null,
+): { attackerWins: boolean; atkLosses: number; defLosses: number } {
+  const score = atkStrength / (atkStrength + defStrength * terrainMult);
+  const clampedScore = Math.max(0.05, Math.min(0.95, score));
+  // clampedScore still allows a 5% upset either way — a forced outcome (the
+  // player accepted an offered "foregone conclusion") must never roll for it.
+  // The roll is DRAWN either way: a skipped draw would shift every later draw
+  // one place, and accepting the walkover vs fighting out the same result
+  // would fork the war from the first loss number onward.
+  const winnerRoll = rng.next();
+  const attackerWins = forcedWinner ? forcedWinner === 'attacker' : winnerRoll < clampedScore;
+  const winnerStrength = attackerWins ? atkStrength : defStrength;
+  const loserStrength = attackerWins ? defStrength : atkStrength;
+  // Each side bleeds in proportion to its OWN strength: a small garrison
+  // that repels a big assault isn't mauled by the effort of winning (2-6%),
+  // but losing a battle is a rout (50-80%).
+  const winnerLosses = Math.max(0, Math.floor(winnerStrength * (0.02 + rng.next() * 0.04)));
+  const loserLosses = Math.max(1, Math.floor(loserStrength * (0.5 + rng.next() * 0.3)));
+  return {
+    attackerWins,
+    atkLosses: attackerWins ? winnerLosses : loserLosses,
+    defLosses: attackerWins ? loserLosses : winnerLosses,
+  };
+}
+
 // Resolve an engagement without running a Sim — coarse Lanchester-style
 // resolution for AI-vs-AI battles, and for the player's offered trivial-
 // mismatch auto-resolve (forcedWinner).
@@ -646,26 +680,7 @@ export function resolveCoarse(
   if (atkCell.terrain === 'river' || atkCell.terrain === 'bridge') terrainMult *= 2.0; // assault across a defended crossing
   if (lightAt(front.clockMin) < 0.25) terrainMult *= nightMult;
 
-  const score = attacker.strength / (attacker.strength + defender.strength * terrainMult);
-  const clampedScore = Math.max(0.05, Math.min(0.95, score));
-  // clampedScore still allows a 5% upset either way — a forced outcome (the
-  // player accepted an offered "foregone conclusion") must never roll for it.
-  // The roll is DRAWN either way: a skipped draw would shift every later draw
-  // one place, and accepting the walkover vs fighting out the same result
-  // would fork the war from the first loss number onward.
-  const winnerRoll = rng.next();
-  const attackerWins = forcedWinner ? forcedWinner === 'attacker' : winnerRoll < clampedScore;
-
-  const winnerStrength = attackerWins ? attacker.strength : defender.strength;
-  const loserStrength = attackerWins ? defender.strength : attacker.strength;
-  // Each side bleeds in proportion to its OWN strength: a small garrison
-  // that repels a big assault isn't mauled by the effort of winning (2-6%),
-  // but losing a battle is a rout (50-80%).
-  const winnerLosses = Math.max(0, Math.floor(winnerStrength * (0.02 + rng.next() * 0.04)));
-  const loserLosses = Math.max(1, Math.floor(loserStrength * (0.5 + rng.next() * 0.3)));
-
-  const atkLosses = attackerWins ? winnerLosses : loserLosses;
-  const defLosses = attackerWins ? loserLosses : winnerLosses;
+  const { attackerWins, atkLosses, defLosses } = coarseOutcome(attacker.strength, defender.strength, terrainMult, rng, forcedWinner);
   attacker.strength = Math.max(0, attacker.strength - atkLosses);
   defender.strength = Math.max(0, defender.strength - defLosses);
 
@@ -690,8 +705,9 @@ export function resolveCoarse(
   return { record, attackerWon: attackerWins };
 }
 
-function applyCoarseBlueLosses(c: Campaign, chit: Chit, lossCount: number, rng: Rng, record: BattleRecord): void {
-  if (chit.side !== 'blue' || lossCount <= 0) return;
+export function applyCoarseBlueLosses(c: Campaign, chit: { companyIndex: number }, lossCount: number, rng: Rng, record: BattleRecord): void {
+  // companyIndex < 0 = a red attrition counter — no roster to bleed.
+  if (chit.companyIndex < 0 || lossCount <= 0) return;
   const company = c.companies[chit.companyIndex];
   const fitPids: number[] = [];
   for (const si of company.squads) {
