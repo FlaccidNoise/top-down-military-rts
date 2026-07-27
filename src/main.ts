@@ -28,8 +28,9 @@ import { showFloorMenu } from './ui/floormenu';
 import { MainMenu, type SaveProbe } from './ui/mainmenu';
 import { TheaterView } from './render/theater-view';
 import { TheaterHud } from './ui/theater-hud';
+import { CustomizeScreen } from './ui/customize';
 import { DEFAULT_PRESET, presetSpec } from './campaign/presets';
-import { SPEC_TAG, specStream } from './campaign/spec';
+import { SPEC_TAG, specStream, type CampaignConfig, type TheaterConfig } from './campaign/spec';
 import { makeTheater, TheaterGenError } from './strategic/theatergen';
 import { DispositionError, makeDisposition } from './strategic/theatergen/disposition';
 import { makeWarGoals, warStatus, type WarGoals } from './strategic/goals';
@@ -119,6 +120,8 @@ const campSeed = (): number => (campPinned ? Number(urlCamp) : Date.now() % 1000
 // Pre-session access is a NAMED error, never an unassigned-binding TypeError.
 interface SessionV2 {
   seed: number;
+  theaterCfg: TheaterConfig;
+  campaignCfg: CampaignConfig;
   front: FrontV2;
   goals: WarGoals;
   red: Commander2;
@@ -153,7 +156,7 @@ const save = () => {
   if (campPinned) return;
   const s = S();
   if (s.v2) {
-    if (!saveGameV2(s.v2.seed, DEFAULT_PRESET.theater, s.campaign, s.v2.front)) {
+    if (!saveGameV2(s.v2.seed, s.v2.theaterCfg, s.v2.campaignCfg, s.campaign, s.v2.front)) {
       mainMenu.setStorageWritable(false);
     }
   } else {
@@ -414,12 +417,26 @@ function probeSave(): SaveProbe {
   const mm = (g.front.clockMin % 60).toString().padStart(2, '0');
   return { status: 'ok', day: g.front.day, clock: `${hh.toString().padStart(2, '0')}${mm}`, theaterName: g.front.theater.name, menFit: fit };
 }
+const customize = new CustomizeScreen({
+  onGenerate: (seed, theaterCfg, campaignCfg) => {
+    customize.close();
+    startCampaignV2({ kind: 'fresh', seed, theaterCfg, campaignCfg });
+  },
+  onBack: () => {
+    customize.close();
+    mainMenu.setSaveProbe(probeSave());
+    mainMenu.open();
+  },
+});
 const mainMenu = new MainMenu({
-  onNewOperation: () => startCampaignV2({ kind: 'fresh', seed: campSeed() }),
+  onNewOperation: () => {
+    mainMenu.close();
+    customize.open();
+  },
   onContinue: () => {
     const g = loadGameV2();
     if (g.status !== 'ok') throw new Error(`Continue: probe said ok but load returned '${g.status}'`);
-    startCampaignV2({ kind: 'loaded', seed: g.seed, campaign: g.campaign, front: g.front });
+    startCampaignV2({ kind: 'loaded', seed: g.seed, theaterCfg: g.cfg, campaignCfg: g.campaignCfg ?? DEFAULT_PRESET.campaign, campaign: g.campaign, front: g.front });
   },
   // OQ1 roster carry-over: the v3 grid save cannot migrate, the named men can.
   onContinueLegacy: () => {
@@ -784,9 +801,12 @@ function bootError(message: string): void {
 
 // The V2 campaign: procedural theater, disposition, goal-driven red.
 function startCampaignV2(
-  source: { kind: 'fresh'; seed: number; roster?: Campaign } | { kind: 'loaded'; seed: number; campaign: Campaign; front: FrontV2 },
+  source:
+    | { kind: 'fresh'; seed: number; theaterCfg?: TheaterConfig; campaignCfg?: CampaignConfig; roster?: Campaign }
+    | { kind: 'loaded'; seed: number; theaterCfg: TheaterConfig; campaignCfg: CampaignConfig; campaign: Campaign; front: FrontV2 },
 ): void {
-  const camp = DEFAULT_PRESET.campaign;
+  const theaterCfg = source.kind === 'fresh' ? source.theaterCfg ?? DEFAULT_PRESET.theater : source.theaterCfg;
+  const camp = source.kind === 'fresh' ? source.campaignCfg ?? DEFAULT_PRESET.campaign : source.campaignCfg;
   try {
     let campaign: Campaign;
     let front: FrontV2;
@@ -795,9 +815,11 @@ function startCampaignV2(
       ({ seed, campaign, front } = source);
     } else {
       seed = source.seed;
-      const { theater, initialControlByNode } = makeTheater(seed, DEFAULT_PRESET.theater);
+      const { theater, initialControlByNode } = makeTheater(seed, theaterCfg);
       campaign = source.roster ?? newCampaign(seed, camp.blueCompanies);
       const spec = presetSpec(DEFAULT_PRESET, seed);
+      spec.theater = { ...theaterCfg };
+      spec.campaign = { ...camp };
       const d = makeDisposition(theater, camp, campaign, initialControlByNode, specStream(spec, SPEC_TAG.DISPOSITION));
       front = {
         theater,
@@ -820,6 +842,8 @@ function startCampaignV2(
       stratView: v1Trap<StrategicView>('stratView'),
       v2: {
         seed,
+        theaterCfg,
+        campaignCfg: camp,
         front,
         goals,
         red: new Commander2('red', RED_V2, goals, camp.warDays),

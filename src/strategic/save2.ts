@@ -6,7 +6,7 @@
 // legacy path carries the named men into a fresh war (the boot modal's
 // 'Continue with these men'), never a silent reset.
 import type { Campaign } from '../campaign/campaign';
-import { GEN_VERSION, type TheaterConfig } from '../campaign/spec';
+import { GEN_VERSION, type CampaignConfig, type TheaterConfig } from '../campaign/spec';
 import { makeTheater } from './theatergen';
 import type { CoarseBattle, Force, FrontV2, TheaterEvent } from './theater/force';
 
@@ -18,6 +18,7 @@ export interface SaveV4 {
   genVersion: number;
   seed: number;
   theaterCfg: TheaterConfig;
+  campaignCfg: CampaignConfig;
   campaign: Campaign;
   front: {
     clockMin: number;
@@ -32,12 +33,13 @@ export interface SaveV4 {
   };
 }
 
-export function saveGameV2(seed: number, cfg: TheaterConfig, campaign: Campaign, front: FrontV2): boolean {
+export function saveGameV2(seed: number, cfg: TheaterConfig, campaignCfg: CampaignConfig, campaign: Campaign, front: FrontV2): boolean {
   const payload: SaveV4 = {
     schema: 4,
     genVersion: GEN_VERSION,
     seed,
     theaterCfg: cfg,
+    campaignCfg,
     campaign,
     front: {
       clockMin: front.clockMin,
@@ -60,7 +62,7 @@ export function saveGameV2(seed: number, cfg: TheaterConfig, campaign: Campaign,
 }
 
 export type LoadV2 =
-  | { status: 'ok'; seed: number; cfg: TheaterConfig; campaign: Campaign; front: FrontV2 }
+  | { status: 'ok'; seed: number; cfg: TheaterConfig; campaignCfg: CampaignConfig; campaign: Campaign; front: FrontV2 }
   | { status: 'none' }
   | { status: 'stale-generator' }
   | { status: 'corrupt'; detail: string }
@@ -98,7 +100,7 @@ export function loadGameV2(): LoadV2 {
     return { status: 'corrupt', detail: `theater regeneration failed: ${e instanceof Error ? e.message : e}` };
   }
   const front: FrontV2 = { theater, ...p.front };
-  return { status: 'ok', seed: p.seed, cfg: p.theaterCfg, campaign: p.campaign, front };
+  return { status: 'ok', seed: p.seed, cfg: p.theaterCfg, campaignCfg: p.campaignCfg, campaign: p.campaign, front };
 }
 
 // The OQ1 roster carry-over: the v3 campaign object is schema-compatible —
