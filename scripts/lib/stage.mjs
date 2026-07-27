@@ -84,20 +84,25 @@ export function deriveTargets(page, { seed, kind }) {
         .map(bCenter)
         .sort((a, b) => Math.min(d2(b, vil), d2(b, hamlet)) - Math.min(d2(a, vil), d2(a, hamlet)))[0];
 
-      let bocage = { x: (vil.x + woods.x) / 2, y: (vil.y + woods.y) / 2 };
-      let bestHedges = 0;
-      for (let by = 0; by < 240; by += 16)
-        for (let bx = 0; bx < 320; bx += 16) {
-          const c = { x: bx + 8, y: by + 8 };
-          if (d2(c, vil) < 40 * 40 || d2(c, hamlet) < 30 * 30) continue;
-          let n = 0;
-          for (let y = by; y < by + 16; y++)
-            for (let x = bx; x < bx + 16; x++) if (plan.map.terrainKeyAt(x, y) === 'hedge') n++;
-          if (n > bestHedges) {
-            bestHedges = n;
-            bocage = c;
+      // Densest 16x16 block of hedge, away from the two settlement anchors.
+      const bestHedgeBlock = (avoid) => {
+        let best = null;
+        let bestN = 0;
+        for (let by = 0; by < 240; by += 16)
+          for (let bx = 0; bx < 320; bx += 16) {
+            const c = { x: bx + 8, y: by + 8 };
+            if (avoid.some(([p, r]) => p && d2(c, p) < r * r)) continue;
+            let n = 0;
+            for (let y = by; y < by + 16; y++)
+              for (let x = bx; x < bx + 16; x++) if (plan.map.terrainKeyAt(x, y) === 'hedge') n++;
+            if (n > bestN) {
+              bestN = n;
+              best = c;
+            }
           }
-        }
+        return best;
+      };
+      const bocage = bestHedgeBlock([[vil, 40], [hamlet, 30]]) ?? { x: (vil.x + woods.x) / 2, y: (vil.y + woods.y) / 2 };
 
       const squadCentroid = (side) => {
         const list = g.sim.soldiers.filter((s) => s.side === side && s.alive);
@@ -111,6 +116,50 @@ export function deriveTargets(page, { seed, kind }) {
         if (!biggest.length) throw new Error(`no living ${side} soldiers to centre on (empty scene)`);
         return { x: biggest.reduce((a, s) => a + s.x, 0) / biggest.length, y: biggest.reduce((a, s) => a + s.y, 0) / biggest.length };
       };
+
+      // §5.6: the bourg's crops come off objectiveKinds, never off objective
+      // INDICES. The bourg's list is 6-9 long and its tail is a greedy garrison
+      // fill, so index 2 is a different thing on every seed — the legacy
+      // village/hamlet/farm triple below is only positional because the legacy
+      // objective list is fixed-shape. Legacy kinds take no new code path here.
+      if (kind === 'bourg') {
+        const kinds = plan.objectiveKinds ?? [];
+        const objOf = (k) => {
+          const i = kinds.indexOf(k);
+          return i < 0 ? null : plan.objectives[i];
+        };
+        const place = objOf('place') ?? vil;
+        // A farm cour: the outbuilding-bearing structure farthest from the
+        // place, i.e. one of T9's outlying compounds rather than a town yard.
+        const rural = plan.buildings.filter((b) => b.role === 'farmhouse' || b.role === 'barn');
+        const cour = (rural.length ? rural : plan.buildings).map(bCenter).sort((a, b) => d2(b, place) - d2(a, place))[0];
+        // The longest party-wall run — the whole point of the generator, and
+        // the crop that catches a thatched high street (N2 / smallOfPair).
+        const runs = new Map();
+        for (const b of plan.buildings) {
+          if (b.terraceRun === undefined || b.terraceRun < 0) continue;
+          const arr = runs.get(b.terraceRun) ?? [];
+          arr.push(bCenter(b));
+          runs.set(b.terraceRun, arr);
+        }
+        const longest = [...runs.values()].sort((a, b) => b.length - a.length)[0] ?? [place];
+        const terrace = {
+          x: longest.reduce((a, p) => a + p.x, 0) / longest.length,
+          y: longest.reduce((a, p) => a + p.y, 0) / longest.length,
+        };
+        return {
+          farlod: { x: 160, y: 120, scale: Math.min(1280 / 320, 800 / 240) },
+          place: { ...place, scale: 24 },
+          church: { ...(objOf('church') ?? place), scale: 24 },
+          street: { ...(objOf('street') ?? objOf('faubourg') ?? place), scale: 24 },
+          terrace: { ...terrace, scale: 24 },
+          cour: { ...cour, scale: 24 },
+          bocage: { ...(bestHedgeBlock([[place, 60]]) ?? bocage), scale: 24 },
+          units: { ...squadCentroid('blue'), scale: 32 },
+          enemy: { ...squadCentroid('red'), scale: 32 },
+          soldiers48: { ...squadCentroid('blue'), scale: 48 },
+        };
+      }
 
       const t = {
         farlod: { x: 160, y: 120, scale: Math.min(1280 / 320, 800 / 240) },

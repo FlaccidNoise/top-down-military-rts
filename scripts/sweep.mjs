@@ -21,9 +21,17 @@ const PORT = Number(arg('port', '5198'));
 const SEEDS = arg('seeds', '1,2,3,4,5,6,7,8,9,10').split(',').map(Number);
 const CAMP = 42; // pinned campaign — fixed chit layout across runs
 // Water art never shows up unless a red chit happens to sit on a river cell,
-// so two sweep slots force the defender's cell terrain before carving.
-const FORCE_KIND = { 3: 'bridge', 8: 'river' };
+// so two sweep slots force the defender's cell terrain before carving. 'bourg'
+// is forced for a different reason: CHAR_TERRAIN does not point at it yet
+// (T16, deliberately last), so it is unreachable from any campaign and would
+// otherwise never appear in the art gate at all.
+const FORCE_KIND = { 3: 'bridge', 8: 'river', 10: 'bourg' };
 const ORDER = ['farlod', 'village', 'woods', 'hamlet', 'farm', 'bocage', 'units', 'enemy'];
+// §5.6's crop set, derived from objectiveKinds rather than objective indices —
+// see deriveTargets. `terrace` is not in the doc's list and is the most
+// valuable crop of the six: a party-wall high street coming out thatched
+// (roofs.ts smallOfPair) is invisible in every other frame.
+const BOURG_ORDER = ['farlod', 'place', 'church', 'terrace', 'street', 'cour', 'bocage', 'units', 'enemy'];
 const OUT = '.screenshots/sweep';
 
 mkdirSync(OUT, { recursive: true });
@@ -46,7 +54,7 @@ for (const seed of SEEDS) {
   console.log(`seed ${seed}${FORCE_KIND[seed] ? ` (${FORCE_KIND[seed]})` : ''}`);
   const kind = await gotoStaged(page, { port: PORT, seed, camp: CAMP, forceKind: FORCE_KIND[seed] });
   const targets = await deriveTargets(page, { seed, kind });
-  const order = targets.bridge ? [...ORDER, 'bridge'] : ORDER;
+  const order = kind === 'bourg' ? BOURG_ORDER : targets.bridge ? [...ORDER, 'bridge'] : ORDER;
   for (const name of order) {
     const t = targets[name];
     await place(page, t.x, t.y, t.scale);

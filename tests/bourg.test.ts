@@ -371,6 +371,15 @@ describe('bourg determinism (§5.4)', () => {
     }
   });
 
+  // T14's freeze. The bourg's counterpart to mapgen.test.ts:36-39 — the drift
+  // tripwire. These churned freely through T4-T13 and are frozen here; from
+  // now on, changing them is legitimate only when the bourg layout was MEANT
+  // to change, and a diff that moves them without saying so is a bug.
+  it('pins the bourg fingerprints', () => {
+    expect(fingerprint(town(1))).toMatchInlineSnapshot(`"cd8c2d19"`);
+    expect(fingerprint(town(2))).toMatchInlineSnapshot(`"98495a59"`);
+  });
+
   // §5.1's one-draw guard. The MECHANISM is D1 (the guard sits before
   // tryGenerate's first draw) plus D2 (one shared-stream draw, inside it), but
   // the mechanism is not the test. tests/mapgen.test.ts:36-39 pins 'open';
