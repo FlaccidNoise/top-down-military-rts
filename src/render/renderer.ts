@@ -6,7 +6,7 @@ import { DecalLayer } from './decals';
 import { bandFor, CRAWL_FRAMES, DUDE_SCALE, getShadowSprite, getSprite, glintSprite, headOffset, kitVariant, SPRITE_MIN_SCALE, SPRITE_SPAN, tier, WALK_FRAMES, weaponClass, type Pose } from './dudes';
 import { emplacementBandFor, emplacementFootprintRadius, emplacementSpan, getEmplacementShadow, getEmplacementSprite } from './emplacements';
 import { ballistic, blit, FLASH, flashClass, fxDetail, hazeBand, hotPass, SPIKE_SIDES, traceOvershoot, WIND, type FlashSpec, type FxKind, type Overshoot } from './fx';
-import { SHADOW_SOFT_ALPHA, SUN } from './light';
+import { SUN, shadowSoftAlpha, sun } from './light';
 import { MarkLayer } from './marks';
 import { craterSpots } from './props';
 import { RoofLayer } from './roofs';
@@ -171,11 +171,12 @@ const CHUNKS: FxKind[] = ['chunk0', 'chunk1', 'chunk2', 'chunk3'];
 
 const TEAM = { blue: '#5b9bd5', red: '#d05c50' } as const;
 
-// Sun azimuth in screen space, and how far each body's shadow steps down-sun.
-// The house convention (roofs.ts: 0.71 m of offset per 3 m story) is a heavily
-// foreshortened cast, so a 1.75 m man throws 0.42 m and a 2.4 m hull 0.58 m —
-// not the geometric length a 40-degree sun would imply.
-const SUN_A = Math.atan2(SUN.dy, SUN.dx);
+// How far each body's shadow steps down-sun. The house convention (roofs.ts:
+// 0.71 m of offset per 3 m story) is a heavily foreshortened cast, so a
+// 1.75 m man throws 0.42 m and a 2.4 m hull 0.58 m — not the geometric length
+// a 40-degree sun would imply. The azimuth itself is computed per frame in
+// drawUnitShadows (N6): the sun moves, and a module constant is the stale
+// snapshot light.ts's header forbids.
 // Poses drawn without a helmet on the head — nothing for the glint to sit on.
 const BAREHEAD = new Set<Pose>(['dead', 'surrender2']);
 const HULL_SHADOW_OFF = 0.58;
@@ -553,6 +554,19 @@ export class Renderer {
   // roofs.ts — heavily foreshortened, ~0.24x height, not the geometric cast.
   private drawUnitShadows(ctx: CanvasRenderingContext2D, cam: Camera, cw: number, ch: number, floorFocus: number): void {
     if (cam.scale < 10) return; // sub-pixel: the AO under each sprite is enough
+    // Per-frame sun read (N6): the silhouette sprites are direction-free, so
+    // the whole pass reorients through the draw matrix and the SpriteCache
+    // never learns the sun exists. Below civil twilight the cast pass switches
+    // off entirely — a per-soldier save/rotate/draw/restore loop disappearing
+    // is a frame WIN at night, not a cost.
+    const s0 = sun();
+    if (s0.alphaMul < 0.02) return;
+    const sunA = Math.atan2(SUN.dy, SUN.dx);
+    const lm = s0.lenMul;
+    // Elongation along the sun axis only. `base + (base-1)*(lm-1)` is exactly
+    // the shipped constant at the canonical hour (lm-1 is exactly 0 there) and
+    // rakes out toward the 3x clamp at a low sun.
+    const stretch = (base: number): number => base + (base - 1) * (lm - 1);
     const band = bandFor(cam.scale);
     const pad = SPRITE_SPAN * cam.scale;
     for (const s of this.sim.soldiers) {
@@ -564,12 +578,12 @@ export class Renderer {
       if (x < -pad || y < -pad || x > cw + pad || y > ch + pad) continue;
       const off = SHADOW_OFF[st.pose];
       ctx.save();
-      ctx.globalAlpha = floorFocus >= 0 && s.level !== floorFocus ? SHADOW_SOFT_ALPHA * 0.4 : SHADOW_SOFT_ALPHA;
+      ctx.globalAlpha = floorFocus >= 0 && s.level !== floorFocus ? shadowSoftAlpha() * 0.4 : shadowSoftAlpha();
       ctx.translate(x, y);
-      ctx.rotate(SUN_A);
-      ctx.translate(off * cam.scale, 0);
-      ctx.scale(off > 0.2 ? 1.18 : 1.05, 1); // elongation along the sun axis only
-      ctx.rotate(-SUN_A);
+      ctx.rotate(sunA);
+      ctx.translate(off * lm * cam.scale, 0);
+      ctx.scale(stretch(off > 0.2 ? 1.18 : 1.05), 1);
+      ctx.rotate(-sunA);
       ctx.rotate(st.dfacing);
       ctx.drawImage(getShadowSprite(st.pose, st.frame, weaponClass(s.weapon), band), -pad / 2, -pad / 2, pad, pad);
       ctx.restore();
@@ -581,12 +595,12 @@ export class Renderer {
       const [x, y] = cam.worldToScreen(v.x, v.y, cw, ch);
       if (x < -vpad || y < -vpad || x > cw + vpad || y > ch + vpad) continue;
       ctx.save();
-      ctx.globalAlpha = HULL_SHADOW_ALPHA;
+      ctx.globalAlpha = HULL_SHADOW_ALPHA * s0.alphaMul;
       ctx.translate(x, y);
-      ctx.rotate(SUN_A);
-      ctx.translate(HULL_SHADOW_OFF * cam.scale, 0);
-      ctx.scale(1.3, 1);
-      ctx.rotate(-SUN_A);
+      ctx.rotate(sunA);
+      ctx.translate(HULL_SHADOW_OFF * lm * cam.scale, 0);
+      ctx.scale(stretch(1.3), 1);
+      ctx.rotate(-sunA);
       ctx.rotate(v.facing);
       ctx.drawImage(getVehicleShadow(v.kind, v.alive ? 'ok' : 'dead', vband), -vpad / 2, -vpad / 2, vpad, vpad);
       ctx.restore();
@@ -598,9 +612,9 @@ export class Renderer {
       const [tcx, tcy, tr] = t;
       const cs = Math.cos(v.facing);
       const sn = Math.sin(v.facing);
-      const [bx, by] = cam.worldToScreen(v.x + tcx * cs - tcy * sn + SUN.dx * 0.7, v.y + tcx * sn + tcy * cs + SUN.dy * 0.7, cw, ch);
+      const [bx, by] = cam.worldToScreen(v.x + tcx * cs - tcy * sn + SUN.dx * 0.7 * lm, v.y + tcx * sn + tcy * cs + SUN.dy * 0.7 * lm, cw, ch);
       const br = tr * 1.05 * cam.scale;
-      ctx.globalAlpha = 0.24;
+      ctx.globalAlpha = 0.24 * s0.alphaMul;
       ctx.drawImage(turretBlob(), bx - br, by - br, br * 2, br * 2);
       ctx.globalAlpha = 1;
     }
@@ -611,12 +625,12 @@ export class Renderer {
       const epad = emplacementSpan(e.kind) * cam.scale;
       if (x < -epad || y < -epad || x > cw + epad || y > ch + epad) continue;
       ctx.save();
-      ctx.globalAlpha = SHADOW_SOFT_ALPHA;
+      ctx.globalAlpha = shadowSoftAlpha();
       ctx.translate(x, y);
-      ctx.rotate(SUN_A);
-      ctx.translate(EMPL_SHADOW_OFF * cam.scale, 0);
-      ctx.scale(1.1, 1);
-      ctx.rotate(-SUN_A);
+      ctx.rotate(sunA);
+      ctx.translate(EMPL_SHADOW_OFF * lm * cam.scale, 0);
+      ctx.scale(stretch(1.1), 1);
+      ctx.rotate(-sunA);
       ctx.rotate(e.facing);
       ctx.drawImage(getEmplacementShadow(e.kind, e.state === 'deployed' ? 'deployed' : 'packed', eband), -epad / 2, -epad / 2, epad, epad);
       ctx.restore();

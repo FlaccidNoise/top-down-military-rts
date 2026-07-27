@@ -2237,16 +2237,25 @@ export class TerrainLayer {
     ctx.translate(ox, oy);
     ctx.scale(cam.scale, cam.scale);
     ctx.lineCap = 'round';
+    // The lit lip on each tread sits on the tread's up-sun edge and fades with
+    // the cast ramp — a bright lip on the wrong side of every step at 07:00 is
+    // exactly the kind of thing plan view has no other cue to hide, and at
+    // night there is no sun to catch. This is a per-frame pass, so it reads
+    // the live sun; at the canonical hour it is the shipped hard-coded lip.
+    const s = sun();
+    const lip = s.alphaMul >= 0.02 ? `rgba(255,250,235,${0.35 * s.alphaMul})` : null;
+    const lipN = SUN.dy >= 0; // shadows travel +y => the north edge catches the light
     for (let y = y0; y <= y1; y++) {
       for (let x = x0; x <= x1; x++) {
         if (!this.map.isStair(x, y) || !visible(x, y)) continue;
-        // steps: three ascending treads, dark with a lit NW lip (same sun)
+        // steps: three ascending treads, dark with a lit up-sun lip (same sun)
         for (let i = 0; i < 3; i++) {
           const t = y + 0.2 + i * 0.2;
           ctx.fillStyle = 'rgba(20,16,12,0.55)';
           ctx.fillRect(x + 0.18 + i * 0.06, t, 0.64 - i * 0.12, 0.12);
-          ctx.fillStyle = 'rgba(255,250,235,0.35)';
-          ctx.fillRect(x + 0.18 + i * 0.06, t, 0.64 - i * 0.12, 0.03);
+          if (!lip) continue;
+          ctx.fillStyle = lip;
+          ctx.fillRect(x + 0.18 + i * 0.06, lipN ? t : t + 0.09, 0.64 - i * 0.12, 0.03);
         }
       }
     }
