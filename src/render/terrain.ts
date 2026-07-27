@@ -1356,7 +1356,25 @@ function drawTree(g: Ctx, map: GameMap, x: number, y: number, band: number, d: D
   g.drawImage(canopySprite(fam, (hash(x, y, 46) * 12) | 0, band, d), cx - 1.5 * k, cy - 1.5 * k, 3 * k, 3 * k);
 }
 
-function drawEdge(g: Ctx, e: number, x0: number, y0: number, x1: number, y1: number): void {
+// Interior partitions are not masonry (interiors R4). An exterior wall is
+// 0.5-0.7 m of Norman rubble stone and a partition is 100 mm of lath and
+// plaster, and drawing them with the same hairline pair was the reason a
+// revealed interior read as a grid of cells rather than as rooms. Thinner,
+// lighter, warmer — and legible as "you can hear through this".
+//
+// `pier` is the arcade case: a WALL stub with EDGE.NONE on both collinear
+// sides is not a partition at all, it is one of the piers a nave arcade is
+// made of (interiors §3.6 draws arcades as pier-and-gap runs so a squad can
+// move through them). It is drawn as a blob of masonry on the edge midpoint
+// with its own cast shadow. Restricted to churches by the caller, because the
+// same geometry test also matches a barn's stall stubs and a one-tile partition
+// in a small house, and turning either of those into a free-standing column
+// would be a lie about the building.
+//
+// A church is also the one role that keeps MASONRY on its interior edges: a
+// chancel wall is 0.6 m of the same stone as the nave's outside, and drawing it
+// as a stud partition made the arch read like a bedroom door.
+function drawEdge(g: Ctx, e: number, x0: number, y0: number, x1: number, y1: number, interior = false, pier = false): void {
   if (e === EDGE.NONE) return;
   const line = (w: number, color: string, t0 = 0, t1 = 1) => {
     g.strokeStyle = color;
@@ -1366,6 +1384,30 @@ function drawEdge(g: Ctx, e: number, x0: number, y0: number, x1: number, y1: num
     g.lineTo(x0 + (x1 - x0) * t1, y0 + (y1 - y0) * t1);
     g.stroke();
   };
+  if (e === EDGE.WALL && pier) {
+    const cx = (x0 + x1) / 2;
+    const cy = (y0 + y1) / 2;
+    const [sdx, sdy] = shadowOffset(0.3);
+    const r = 0.22;
+    g.fillStyle = `rgba(14,12,9,${SHADOW_SOFT_ALPHA})`;
+    g.fillRect(cx - r + sdx * 1.7, cy - r + sdy * 1.7, r * 2, r * 2);
+    g.fillStyle = `rgba(14,12,9,${SHADOW_ALPHA})`;
+    g.fillRect(cx - r + sdx, cy - r + sdy, r * 2, r * 2);
+    g.fillStyle = '#8a8073'; // dressed ashlar, warmer and lighter than the nave flags
+    g.fillRect(cx - r, cy - r, r * 2, r * 2);
+    g.fillStyle = 'rgba(234,228,208,0.24)';
+    g.fillRect(cx - r, cy - r, r * 2, 0.06);
+    g.fillRect(cx - r, cy - r, 0.06, r * 2);
+    g.fillStyle = 'rgba(18,14,10,0.45)';
+    g.fillRect(cx - r, cy + r - 0.06, r * 2, 0.06);
+    g.fillRect(cx + r - 0.06, cy - r, 0.06, r * 2);
+    return;
+  }
+  if (e === EDGE.WALL && interior) {
+    line(0.18, 'rgba(46,38,28,0.85)');
+    line(0.085, '#8d8271'); // plaster face
+    return;
+  }
   if (e === EDGE.WALL) {
     line(0.3, '#2c241a');
     line(0.14, '#4a4034');
@@ -1476,6 +1518,16 @@ export class TerrainLayer {
     return id < 0 ? ROLE.OTHER : (this.roles[id] ?? ROLE.OTHER);
   };
 
+  // An edge is INTERIOR when both flanking tiles belong to the same building —
+  // the same test drawDoorTrails uses to tell an internal door from an external
+  // one, and the rule interiors D10 gives the generator for which edges the
+  // furnishing pass owns. A party wall between two terraced units has two
+  // different ids on its flanks and stays masonry, which is right: it is.
+  private sameBuilding(ax: number, ay: number, bx: number, by: number): boolean {
+    const a = this.map.buildingIdAt(ax, ay);
+    return a >= 0 && a === this.map.buildingIdAt(bx, by);
+  }
+
   private acrossAt = (x: number, y: number): number => {
     const id = this.map.buildingIdAt(x, y);
     return id < 0 ? 0 : (this.across[id] ?? 0);
@@ -1547,10 +1599,22 @@ export class TerrainLayer {
     // would sit under the rubble as a dark seam and, on a gate, draw a second
     // door leaf across the plank one.
     for (let y = ty0; y <= ty1; y++) {
-      for (let x = tx0; x < tx1; x++) if (!this.enclos.ownsH(x, y)) drawEdge(g, this.map.hEdge(x, y), x, y, x + 1, y);
+      for (let x = tx0; x < tx1; x++) {
+        if (this.enclos.ownsH(x, y)) continue;
+        const church = this.roleAt(x, y) === ROLE.CHURCH;
+        const inside = this.sameBuilding(x, y - 1, x, y);
+        const pier = inside && church && this.map.hEdge(x - 1, y) === EDGE.NONE && this.map.hEdge(x + 1, y) === EDGE.NONE;
+        drawEdge(g, this.map.hEdge(x, y), x, y, x + 1, y, inside && !church, pier);
+      }
     }
     for (let y = ty0; y < ty1; y++) {
-      for (let x = tx0; x <= tx1; x++) if (!this.enclos.ownsV(x, y)) drawEdge(g, this.map.vEdge(x, y), x, y, x, y + 1);
+      for (let x = tx0; x <= tx1; x++) {
+        if (this.enclos.ownsV(x, y)) continue;
+        const church = this.roleAt(x, y) === ROLE.CHURCH;
+        const inside = this.sameBuilding(x - 1, y, x, y);
+        const pier = inside && church && this.map.vEdge(x, y - 1) === EDGE.NONE && this.map.vEdge(x, y + 1) === EDGE.NONE;
+        drawEdge(g, this.map.vEdge(x, y), x, y, x, y + 1, inside && !church, pier);
+      }
     }
     drawEnclosureWalls(g, this.enclos, tx0, ty0, tx1, ty1, d);
     if (this.hasElev) {
