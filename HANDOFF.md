@@ -1,5 +1,8 @@
 # HANDOFF — 2026-07-27 evening (mid balance takeover, designs in flight)
 
+## SUPERSEDED 2026-07-27 later: balance pass COMPLETE and DEPLOYED
+Everything in "In flight: balance" below is DONE and live (index-B-GLaMvN.js verified at joshtaylor.world/demos/close-combat-like/). Main (2eb12a6) has: the range/mass tune (91c0dd9), honest AI attacker + objective progression (06580e5), culmination rule (16f0d7f), trivial-mismatch auto-resolve (7f580a6+50e5b2e), balance.mjs fail-fast (721fe43), tuned 54-run record (scripts/.balance-tuned.json). Results: blob ≤35% wins everywhere (0/12 open+woods, 2/6 bourg at 41.7% KIA-on-win — owner accepted the sub-45 miss); doctrine 0-for-18 → 3W bourg / 0 losses woods / 2 losses open. Balance shard traps recorded in project memory (balance-harness-traps). mapgen-v3 design committed (15593fb+899651f), review pending. lane-b/lane-fix-attacker/lane-trivial/wf_6ff3010c worktrees removed (branches kept). NEXT: movement chain M2-M6 + M4b (gate 3 below), then mapgen-v3. TUNE follow-ups: pre-battle appraisal so open-ground frontals get declined instead of culminated; hearth-glow flicker + pock sun-keying still open.
+
 Fresh session: read this, then docs/decisions/INDEX.md, then the project memory index. Act as the orchestrator of multi-agent workflows on this repo (Workflow tool, worktree lanes, sequential chains with structured handoffs).
 
 ## OWNER DECISIONS (recorded this session — do not re-ask)
