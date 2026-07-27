@@ -55,7 +55,7 @@ import { buildYards, drawYardGround, drawYardStructures, type Yard } from './yar
 import { drawProp, propExtent, propsFor, type Prop } from './props';
 import { EnclosureIndex, drawEnclosureGround, drawEnclosurePlanting, drawEnclosureWalls } from './enclos';
 import { drawShopfronts, shopfrontsFor, type Shopfront } from './shops';
-import { ROLE, buildingIndex, drawFurniture } from './furniture';
+import { ROLE, buildingIndex, drawFurniture, hearthTiles } from './furniture';
 
 // Bilinear value noise on an 8m lattice — smooth patches, no hard square edges.
 function coarse(x: number, y: number): number {
@@ -1065,7 +1065,137 @@ function drawGrassBase(g: Ctx, x: number, y: number): void {
   }
 }
 
-function drawTileBase(g: Ctx, map: GameMap, patches: PatchIndex, x: number, y: number, band: number, d: Detail): void {
+// ── Interior floor materials (interiors design R1) ─────────────────────────
+// The material is the BUILDING's, from Building.role, not the room's: rooms are
+// not persisted (D8) and a role plus one hearth-proximity test already
+// separates every surface the eye needs — cold flags in a church, quarry tile
+// in a shop, beaten earth in a barn, boards in a dwelling, and a flagstone
+// apron round the fire that makes the kitchen read differently from the parlor
+// off the terrain grid alone.
+const FLAG_STONE: [number, number, number] = [106, 106, 102]; // church: cool, blue-grey
+const FLAG_WARM: [number, number, number] = [132, 122, 106]; // hearth apron: warmer, so the two never read as the same floor
+const QUARRY: [number, number, number] = [134, 104, 82];
+const QUARRY_DARK: [number, number, number] = [113, 88, 72];
+const EARTH_FLOOR: [number, number, number] = [116, 100, 76];
+
+// Irregular slabs on a 2x2 sub-grid: joints land on the 0.5 m lattice (flags
+// ARE laid regularly) but every corner is jittered and every slab has its own
+// value, so a nave floor never reads as graph paper.
+function flagStamp(v: number, warm: boolean, band: number): HTMLCanvasElement {
+  const base = warm ? FLAG_WARM : FLAG_STONE;
+  return stamp(`floor:flag:${warm ? 'w' : 'c'}:${v}`, band, 1, (g) => {
+    // A heavy joint turns a nave into graph paper at every zoom: the mortar is
+    // a low-alpha wash under slabs whose value spread is narrow on purpose.
+    g.fillStyle = shade(base, 0.72);
+    g.fillRect(0, 0, 1, 1);
+    const j = (k: number, f: number) => (hash(k, f, 440) - 0.5) * 0.045;
+    for (let r = 0; r < 2; r++) {
+      for (let c = 0; c < 2; c++) {
+        const k = v * 11 + r * 2 + c;
+        const x0 = c * 0.5 + 0.022 + j(k, 0);
+        const y0 = r * 0.5 + 0.022 + j(k, 1);
+        const x1 = c * 0.5 + 0.478 + j(k, 2);
+        const y1 = r * 0.5 + 0.478 + j(k, 3);
+        g.fillStyle = shade(base, 0.94 + hash(k, 4, 440) * 0.14);
+        g.fillRect(x0, y0, x1 - x0, y1 - y0);
+        g.fillStyle = 'rgba(226,224,214,0.09)';
+        g.fillRect(x0, y0, x1 - x0, 0.03);
+        g.fillRect(x0, y0, 0.03, y1 - y0);
+      }
+    }
+  });
+}
+
+// Shop floor: small square quarry tiles on a 3x3 grid, alternating two warm
+// tones with pale lime joints. Regular on purpose — it is a laid floor, and its
+// regularity is exactly what separates a shop from a boarded parlor at a glance.
+function quarryStamp(v: number, band: number): HTMLCanvasElement {
+  return stamp(`floor:quarry:${v}`, band, 1, (g) => {
+    g.fillStyle = 'rgba(178,168,150,0.30)'; // lime grout
+    g.fillRect(0, 0, 1, 1);
+    for (let r = 0; r < 3; r++) {
+      for (let c = 0; c < 3; c++) {
+        const k = v * 17 + r * 3 + c;
+        g.fillStyle = shade((r + c) % 2 ? QUARRY_DARK : QUARRY, 0.92 + hash(k, 0, 441) * 0.18);
+        g.fillRect(c / 3 + 0.022, r / 3 + 0.022, 1 / 3 - 0.044, 1 / 3 - 0.044);
+      }
+    }
+  });
+}
+
+// Barn / farmhouse: beaten earth, scuffed, with loose straw. No boards — a
+// Normandy farm ground floor is packed dirt, and the value drop is what makes
+// the barn read as an outbuilding from across the yard.
+function earthFloorStamp(v: number, band: number, d: Detail): HTMLCanvasElement {
+  return stamp(`floor:earth:${v}:${d}`, band, 1, (g) => {
+    for (let sub = 0; sub < 4; sub++) {
+      g.fillStyle = shade(EARTH_FLOOR, 0.9 + hash(v * 5 + sub, 0, 442) * 0.2);
+      g.fillRect((sub & 1) * 0.5, (sub >> 1) * 0.5, 0.5, 0.5);
+    }
+    if (d < 1) return;
+    for (let i = 0; i < 3; i++) {
+      const k = v * 7 + i;
+      g.fillStyle = `rgba(72,60,42,${(0.1 + hash(k, 0, 443) * 0.1).toFixed(3)})`;
+      g.beginPath();
+      g.ellipse(0.15 + hash(k, 1, 443) * 0.7, 0.15 + hash(k, 2, 443) * 0.7, 0.16, 0.11, hash(k, 3, 443) * Math.PI, 0, Math.PI * 2);
+      g.fill();
+    }
+    g.lineWidth = 0.03;
+    for (let i = 0; i < 7; i++) {
+      const k = v * 13 + i;
+      const a = hash(k, 0, 444) * Math.PI;
+      const px = 0.1 + hash(k, 1, 444) * 0.8;
+      const py = 0.1 + hash(k, 2, 444) * 0.8;
+      const l = 0.06 + hash(k, 3, 444) * 0.12;
+      g.strokeStyle = hash(k, 4, 444) > 0.5 ? 'rgba(178,160,110,0.42)' : 'rgba(132,116,74,0.36)';
+      g.beginPath();
+      g.moveTo(px - Math.cos(a) * l, py - Math.sin(a) * l);
+      g.lineTo(px + Math.cos(a) * l, py + Math.sin(a) * l);
+      g.stroke();
+    }
+  });
+}
+
+function drawPlankFloor(g: Ctx, x: number, y: number): void {
+  // plank rows every 0.33m, two wood tones, staggered butt joints.
+  // rowIdx is world-space (y*3+r) so joints don't repeat identically tile to tile.
+  for (let r = 0; r < 3; r++) {
+    const ry = y + r / 3;
+    const rowIdx = y * 3 + r;
+    const tone = rowIdx % 2 === 0 ? FLOOR : FLOOR_DARK;
+    g.fillStyle = shade(tone, 0.92 + hash(x, rowIdx, 7) * 0.14);
+    g.fillRect(x, ry, 1, 1 / 3);
+    g.fillStyle = 'rgba(0,0,0,0.12)';
+    g.fillRect(x, ry, 1, 0.03);
+    if (hash(x, rowIdx, 8) < 0.3) g.fillRect(x + hash(x, rowIdx, 9), ry, 0.03, 1 / 3);
+  }
+}
+
+function drawFloorTile(g: Ctx, x: number, y: number, role: number, apron: number, band: number, d: Detail): void {
+  if (role === ROLE.CHURCH) g.drawImage(flagStamp((hash(x, y, 445) * 8) | 0, false, band), x, y, 1, 1);
+  else if (role === ROLE.SHOP || role === ROLE.HALLE) g.drawImage(quarryStamp((hash(x, y, 446) * 6) | 0, band), x, y, 1, 1);
+  else if (role === ROLE.BARN || role === ROLE.FARMHOUSE) g.drawImage(earthFloorStamp((hash(x, y, 447) * 8) | 0, band, d), x, y, 1, 1);
+  else drawPlankFloor(g, x, y);
+  if (apron === 0) return;
+  // hearthstone: warm flags laid round the fire, thinning at the second ring.
+  // Drawn OVER the building's own floor so the two materials meet in a ragged
+  // alpha edge rather than a ruled one.
+  g.globalAlpha = apron === 2 ? 0.80 : 0.25;
+  g.drawImage(flagStamp((hash(x, y, 448) * 8) | 0, true, band), x, y, 1, 1);
+  g.globalAlpha = 1;
+}
+
+function drawTileBase(
+  g: Ctx,
+  map: GameMap,
+  patches: PatchIndex,
+  x: number,
+  y: number,
+  band: number,
+  d: Detail,
+  roleAt: (x: number, y: number) => number,
+  apron: Uint8Array | null,
+): void {
   const t = map.terrainKeyAt(x, y);
   const v = 0.93 + coarse(x, y) * 0.1 + hash(x, y) * 0.04;
   if (t === 'grass') {
@@ -1198,18 +1328,7 @@ function drawTileBase(g: Ctx, map: GameMap, patches: PatchIndex, x: number, y: n
     // floor, and every furniture key — a table stands ON a floor, so the four
     // interior keys share this branch and the piece itself goes down later, in
     // drawFurniture's post-pass.
-    // plank rows every 0.33m, two wood tones, staggered butt joints.
-    // rowIdx is world-space (y*3+r) so joints don't repeat identically tile to tile.
-    for (let r = 0; r < 3; r++) {
-      const ry = y + r / 3;
-      const rowIdx = y * 3 + r;
-      const tone = rowIdx % 2 === 0 ? FLOOR : FLOOR_DARK;
-      g.fillStyle = shade(tone, 0.92 + hash(x, rowIdx, 7) * 0.14);
-      g.fillRect(x, ry, 1, 1 / 3);
-      g.fillStyle = 'rgba(0,0,0,0.12)';
-      g.fillRect(x, ry, 1, 0.03);
-      if (hash(x, rowIdx, 8) < 0.3) g.fillRect(x + hash(x, rowIdx, 9), ry, 0.03, 1 / 3);
-    }
+    drawFloorTile(g, x, y, roleAt(x, y), apron ? apron[y * map.w + x] : 0, band, d);
   }
 }
 
@@ -1283,6 +1402,11 @@ export class TerrainLayer {
   // plank/house default the renderer already had.
   private roles: Uint8Array;
   private across: Uint8Array;
+  private hearths: number[];
+  // Chebyshev ring round every hearth: 2 = touching, 1 = one out, 0 = no apron.
+  // Null on any map without a hearth, which is every legacy map — the floor
+  // branch then takes exactly the pre-interiors path.
+  private apron: Uint8Array | null;
   /** Chunks painted flat this frame because the bake budget ran out (mobile). */
   readonly pending = new Set<string>();
   private flat = new Map<string, string>();
@@ -1306,6 +1430,26 @@ export class TerrainLayer {
     const bidx = buildingIndex(map, buildings);
     this.roles = bidx.role;
     this.across = bidx.across;
+    this.hearths = hearthTiles(map);
+    this.apron = null;
+    if (this.hearths.length > 0) {
+      const a = new Uint8Array(map.w * map.h);
+      for (const i of this.hearths) {
+        const hx = i % map.w;
+        const hy = (i / map.w) | 0;
+        for (let dy = -2; dy <= 2; dy++) {
+          for (let dx = -2; dx <= 2; dx++) {
+            const x = hx + dx;
+            const y = hy + dy;
+            if (!map.inBounds(x, y) || map.buildingIdAt(x, y) !== map.buildingIdAt(hx, hy)) continue;
+            const ring = Math.max(Math.abs(dx), Math.abs(dy)) <= 1 ? 2 : 1;
+            const k = y * map.w + x;
+            if (a[k] < ring) a[k] = ring;
+          }
+        }
+      }
+      this.apron = a;
+    }
     this.yards = buildYards(map, this.patches, (wx, wy) => this.enclos.enclosureIdAt(Math.floor(wx), Math.floor(wy)) >= 0);
     for (const p of propsFor(map, this.patches)) {
       const [ex0, ey0, ex1, ey1] = propExtent(p);
@@ -1362,7 +1506,7 @@ export class TerrainLayer {
     const tx1 = Math.min(this.map.w, x0 + CHUNK + pad);
     const ty1 = Math.min(this.map.h, y0 + CHUNK + pad);
     for (let y = ty0; y < ty1; y++) {
-      for (let x = tx0; x < tx1; x++) drawTileBase(g, this.map, this.patches, x, y, band, d);
+      for (let x = tx0; x < tx1; x++) drawTileBase(g, this.map, this.patches, x, y, band, d, this.roleAt, this.apron);
     }
     drawCropRows(g, this.map, this.patches, tx0, ty0, tx1, ty1, d);
     drawPaving(g, this.map, this.patches, tx0, ty0, tx1, ty1, band, d);

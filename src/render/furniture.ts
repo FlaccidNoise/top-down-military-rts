@@ -698,3 +698,13 @@ export function drawFurniture(
     }
   }
 }
+
+/** Tile indices of every hearth on the map — scanned once, iterated per frame. */
+export function hearthTiles(map: GameMap): number[] {
+  if (!map.hasFurniture) return [];
+  const out: number[] = [];
+  for (let y = 0; y < map.h; y++) {
+    for (let x = 0; x < map.w; x++) if (map.terrainKeyAt(x, y) === 'hearth') out.push(y * map.w + x);
+  }
+  return out;
+}
