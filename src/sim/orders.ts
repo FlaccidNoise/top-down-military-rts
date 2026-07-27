@@ -126,6 +126,15 @@ export function dangerSamples(sim: Sim, team: Team, dest: { x: number; y: number
 // a flat recent-casualty term. Deterministic, no RNG — the same evaluation
 // backs soldier refusal, firing-position choice, and the AI commander's own
 // risk assessment (spec's coherence rule).
+// Fire the team is taking RIGHT NOW counts as danger (balance 2026-07):
+// dangerSamples sees only enemies somebody has LOS to, so indirect and
+// unspotted suppressive fire — the mortar stonk walking across the approach,
+// the MG on the team from dead ground — never registered, and a company could
+// march a beaten zone unshaken. Suppression is the team's own felt read of
+// incoming fire; weigh it into the same ladder. Pre-contact this term is ~0,
+// so unopposed long moves still comply.
+const SUPP_DANGER = 0.6;
+
 export function dangerScore(sim: Sim, team: Team, dest: { x: number; y: number }): number {
   const samples = dangerSamples(sim, team, dest);
   if (samples.length === 0) return 0;
@@ -134,6 +143,10 @@ export function dangerScore(sim: Sim, team: Team, dest: { x: number; y: number }
   // danger too); the ambush trigger's own casualty check stays team-scoped.
   const lastCasualty = sim.squadLastCasualty[team.squadId] ?? -Infinity;
   if (sim.tick - lastCasualty < RECENT_CASUALTY_TICKS) total += 0.2;
+  const members = team.soldierIds.map((id) => sim.soldiers[id]).filter((s) => s.alive && !s.downed && s.mental !== 'broken');
+  if (members.length > 0) {
+    total += (members.reduce((a, s) => a + s.suppression, 0) / members.length) * SUPP_DANGER;
+  }
   return total;
 }
 

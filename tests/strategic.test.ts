@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { advanceDays, newCampaign, squadMembers } from '../src/campaign/campaign';
 import { Front, findPath, formatClock, chitEtaMinutes, operationStatus, OP_START_MIN, OP_DEADLINE_DAYS } from '../src/strategic/front';
 import { cellIndex, makeDefaultSector, parseSector } from '../src/strategic/sector';
-import { applyEngagementOutcome, makeStrategicBattle, newFront, syncStrengths } from '../src/strategic/bridge';
+import { applyEngagementOutcome, makeStrategicBattle, newFront, resolveCoarse, syncStrengths, trivialMismatchWinner } from '../src/strategic/bridge';
 import { loadGame, saveGame } from '../src/strategic/save';
 import { StrategicView } from '../src/render/strategic';
 
@@ -301,6 +301,38 @@ describe('bridge', () => {
     advanceDays(c, 1);
     syncStrengths(c, front);
     expect(able.strength).toBe(138);
+  });
+
+  it('trivialMismatchWinner guards zero strength and fires only past the 5x ratio', () => {
+    const { front } = setup();
+    const able = front.chits.find((ch) => ch.side === 'blue')!; // 138
+    const wache = front.chits.find((ch) => ch.name === 'Brückenwache Süd')!; // 36, ~3.8x — below threshold
+    expect(trivialMismatchWinner(able, wache)).toBeNull();
+    wache.strength = 0;
+    expect(trivialMismatchWinner(able, wache)).toBeNull(); // never divide by zero
+    wache.strength = 20; // 138 / 20 = 6.9x
+    expect(trivialMismatchWinner(able, wache)).toBe('attacker');
+    expect(trivialMismatchWinner(wache, able)).toBe('defender');
+  });
+
+  it('resolveCoarse forcedWinner skips the roll deterministically, losses within the loss-model bands', () => {
+    const run = () => {
+      const c = newCampaign(10);
+      const front = newFront(c, makeDefaultSector());
+      const able = front.chits.find((ch) => ch.side === 'blue')!;
+      const wache = front.chits.find((ch) => ch.name === 'Brückenwache Süd')!;
+      wache.strength = 500; // would win the roll unforced; force the attacker anyway
+      const e = { attackerId: able.id, defenderId: wache.id, cell: wache.cell };
+      const result = resolveCoarse(c, front, e, 'attacker');
+      return { attackerWon: result.attackerWon, ableStrength: able.strength, wacheStrength: wache.strength };
+    };
+    const a = run();
+    expect(a).toEqual(run()); // same seed, same forced outcome, same losses
+    expect(a.attackerWon).toBe(true);
+    expect(a.ableStrength).toBeGreaterThanOrEqual(138 - Math.ceil(138 * 0.06)); // winner bleeds 2-6% of its own strength
+    expect(a.ableStrength).toBeLessThanOrEqual(138 - Math.floor(138 * 0.02));
+    expect(a.wacheStrength).toBeGreaterThanOrEqual(500 - Math.ceil(500 * 0.8)); // loser bleeds 50-80%
+    expect(a.wacheStrength).toBeLessThanOrEqual(500 - Math.floor(500 * 0.5));
   });
 });
 
