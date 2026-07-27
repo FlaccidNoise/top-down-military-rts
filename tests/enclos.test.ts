@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { EDGE } from '../src/sim/map';
 import { generateMap } from '../src/sim/mapgen';
 import { EnclosureIndex } from '../src/render/enclos';
+import { shopfrontsFor } from '../src/render/shops';
 
 // T18/T20/T21 are additive dressing keyed on data only the bourg emits: edge
 // tops and building roles. The load-bearing property is therefore not what
@@ -17,12 +18,13 @@ describe('EnclosureIndex', () => {
   it('is empty on every legacy kind', () => {
     for (const kind of LEGACY) {
       for (const seed of [1, 3, 7, 11]) {
-        const { map } = generateMap(seed, 320, 240, kind);
+        const { map, buildings } = generateMap(seed, 320, 240, kind);
         const idx = new EnclosureIndex(map, new Uint8Array(map.w * map.h));
         expect(idx.runs.length).toBe(0);
         expect(idx.gates.length).toBe(0);
         expect(idx.enclosures.length).toBe(0);
         expect(idx.any).toBe(false);
+        expect(shopfrontsFor(map, buildings).length).toBe(0);
       }
     }
   }, 20_000);
@@ -106,4 +108,26 @@ describe('EnclosureIndex', () => {
     expect(a.gates).toEqual(b.gates);
     expect(a.enclosures).toEqual(b.enclosures);
   });
+});
+
+describe('shopfrontsFor', () => {
+  it('puts every frontage line outside its shop, on the frontage side', () => {
+    for (const seed of BOURG_SEEDS) {
+      const { map, buildings } = generateMap(seed, 320, 240, 'bourg');
+      const fronts = shopfrontsFor(map, buildings);
+      const shops = buildings.filter((b) => b.role === 'shop' && b.frontage);
+      expect(fronts.length).toBeGreaterThan(0);
+      expect(fronts.length).toBeLessThanOrEqual(shops.length);
+      for (const f of fronts) {
+        // the outward normal is a unit axis vector and the line is flat
+        expect(Math.abs(f.nx) + Math.abs(f.ny)).toBe(1);
+        expect(f.ax === f.bx || f.ay === f.by).toBe(true);
+        // the line sits outside every footprint, so an awning never lands on a
+        // neighbour's roof
+        const mx = (f.ax + f.bx) / 2;
+        const my = (f.ay + f.by) / 2;
+        expect(map.buildingIdAt(Math.floor(mx + f.nx * 0.2), Math.floor(my + f.ny * 0.2))).toBe(-1);
+      }
+    }
+  }, 20_000);
 });

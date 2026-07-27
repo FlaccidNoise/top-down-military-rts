@@ -54,6 +54,7 @@ import { PatchIndex, type BuildingBox, type Patch } from './patches';
 import { buildYards, drawYardGround, drawYardStructures, type Yard } from './yards';
 import { drawProp, propExtent, propsFor, type Prop } from './props';
 import { EnclosureIndex, drawEnclosureGround, drawEnclosurePlanting, drawEnclosureWalls } from './enclos';
+import { drawShopfronts, shopfrontsFor, type Shopfront } from './shops';
 
 // Bilinear value noise on an 8m lattice — smooth patches, no hard square edges.
 function coarse(x: number, y: number): number {
@@ -1258,6 +1259,8 @@ export class TerrainLayer {
   // every legacy kind — no legacy map writes a non-zero edge top — so those
   // chunks stay byte-identical.
   private enclos: EnclosureIndex;
+  // Storefront dressing (T21) — likewise empty without building roles.
+  private shops: Shopfront[];
   /** Chunks painted flat this frame because the bake budget ran out (mobile). */
   readonly pending = new Set<string>();
   private flat = new Map<string, string>();
@@ -1277,6 +1280,7 @@ export class TerrainLayer {
       }
     }
     this.enclos = new EnclosureIndex(map, churchTiles);
+    this.shops = shopfrontsFor(map, buildings);
     this.yards = buildYards(map, this.patches, (wx, wy) => this.enclos.enclosureIdAt(Math.floor(wx), Math.floor(wy)) >= 0);
     for (const p of propsFor(map, this.patches)) {
       const [ex0, ey0, ex1, ey1] = propExtent(p);
@@ -1354,6 +1358,7 @@ export class TerrainLayer {
     }
     for (const p of this.props.get(`${cx},${cy}`) ?? []) drawProp(g, p, band, d);
     drawEnclosurePlanting(g, this.map, this.enclos, tx0, ty0, tx1, ty1, band, d);
+    drawShopfronts(g, this.shops, tx0, ty0, tx1, ty1, d);
     // Free-standing masonry owns its own edges — drawEdge's generic hairline
     // would sit under the rubble as a dark seam and, on a gate, draw a second
     // door leaf across the plank one.
