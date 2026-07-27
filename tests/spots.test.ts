@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { EDGE, GameMap } from '../src/sim/map';
 import { resolveMoveSpots, SNAP_R, threatBearing, type SpotQuery } from '../src/sim/spots';
+import { RedCommander } from '../src/sim/ai';
 import { eligible, Sim, type Side } from '../src/sim/sim';
 
 // M1 (movement design §4.1, §4.3): the resolver as a pure function. Staged
@@ -177,8 +178,114 @@ describe('cover-snap scorer fixtures (design §4.3)', () => {
   });
 });
 
+// M3 garrison audit. Two rules the resolver had to learn back from findSpot:
+// a slot inside a building resolves inside one, and a firing position keeps
+// findSpot's full r <= 5 garrison reach even though terrain cover does not.
+// A walled room with buildingId `id` on its floor tiles.
+function room(sim: Sim, x0: number, y0: number, x1: number, y1: number, id = 0): void {
+  const m = sim.map;
+  for (let y = y0; y <= y1; y++) {
+    for (let x = x0; x <= x1; x++) {
+      m.setTerrain(x, y, 'floor');
+      m.buildingId[y * m.w + x] = id;
+    }
+  }
+  for (let x = x0; x <= x1; x++) {
+    m.setHEdge(x, y0, EDGE.WALL);
+    m.setHEdge(x, y1 + 1, EDGE.WALL);
+  }
+  for (let y = y0; y <= y1; y++) {
+    m.setVEdge(x0, y, EDGE.WALL);
+    m.setVEdge(x1 + 1, y, EDGE.WALL);
+  }
+}
+
+describe('garrison containment and reach (M3)', () => {
+  const EAST: [number, number] = [-0.5, 0.5];
+
+  it('a slot inside a building never resolves onto the ground outside it', () => {
+    const sim = new Sim(new GameMap(40, 30), 3);
+    room(sim, 10, 10, 16, 16); // windowless: nothing indoors scores
+    for (let y = 8; y < 22; y++) sim.map.setTerrain(19, y, 'hedge'); // hedge 2 tiles east of the east wall
+    const ids = [addOne(sim, 'blue', 12.5, 13.5)];
+    // (18,13) is the hedge's west flank against an eastern threat and sits
+    // exactly SNAP_R from the slot: it scores 0.55 and would win outright.
+    const [spot] = resolveMoveSpots(sim, { soldierIds: ids, x: 15.5, y: 13.5, kind: 'defend', arc: EAST }, new Set());
+    expect([spot.x, spot.y]).toEqual([15, 13]); // holds the house he was told to hold
+    expect(sim.map.buildingIdAt(spot.x, spot.y)).toBe(0);
+    expect(spot.snapped).toBe(false);
+  });
+
+  it('a slot OUTSIDE a building still snaps into one — the pull to windows is one-way', () => {
+    const sim = new Sim(new GameMap(40, 30), 3);
+    room(sim, 10, 10, 16, 16);
+    sim.map.setVEdge(17, 13, EDGE.WINDOW); // east-wall loophole
+    const ids = [addOne(sim, 'blue', 25.5, 13.5)];
+    const [spot] = resolveMoveSpots(sim, { soldierIds: ids, x: 18.5, y: 13.5, kind: 'defend', arc: EAST }, new Set());
+    expect([spot.x, spot.y]).toEqual([16, 13]); // the nook tile, inside the wall
+    expect(spot.snapped).toBe(true);
+  });
+
+  it('a window nook past SNAP_R still pulls a defender — findSpot scored the whole r <= 5 ring', () => {
+    const sim = new Sim(new GameMap(40, 30), 3);
+    room(sim, 10, 10, 16, 16);
+    sim.map.setVEdge(10, 13, EDGE.WINDOW); // west-wall loophole, 5 tiles off the slot
+    const ids = [addOne(sim, 'blue', 12.5, 13.5)];
+    const west: [number, number] = [Math.PI - 0.5, Math.PI + 0.5];
+    const [spot] = resolveMoveSpots(sim, { soldierIds: ids, x: 15.5, y: 13.5, kind: 'defend', arc: west }, new Set());
+    expect([spot.x, spot.y]).toEqual([10, 13]);
+    expect(cheby(spot.x, spot.y, 15, 13)).toBe(5); // past the coherence cap, on purpose
+  });
+
+  it('a full building still places the man outside rather than dropping him', () => {
+    const sim = new Sim(new GameMap(40, 30), 3);
+    room(sim, 10, 10, 10, 10); // one interior tile…
+    const ids = [addOne(sim, 'blue', 12.5, 13.5)];
+    const used = new Set<number>([10 * sim.map.w + 10]); // …and it is already taken
+    const [spot] = resolveMoveSpots(sim, { soldierIds: ids, x: 10.5, y: 10.5, kind: 'defend', arc: EAST }, used);
+    expect(spot).toBeDefined();
+    expect(sim.map.buildingIdAt(spot.x, spot.y)).toBe(-1);
+    expect(cheby(spot.x, spot.y, 10, 10)).toBe(1); // nearest ring, findSpot's order
+  });
+});
+
+describe('red runDefend garrisons through the resolver (M3)', () => {
+  it('a defend-stance squad ordered onto a building post ends up inside it, at its windows', () => {
+    const sim = new Sim(new GameMap(60, 40), 11);
+    room(sim, 20, 16, 27, 23);
+    sim.map.setVEdge(20, 19, EDGE.DOOR); // the way in
+    for (const y of [17, 21]) sim.map.setVEdge(28, y, EDGE.WINDOW); // east-wall loopholes
+    for (const x of [22, 25]) sim.map.setHEdge(x, 24, EDGE.WINDOW); // south-wall loopholes
+    const post = { x: 24.5, y: 19.5 };
+    // inside runDefend's 8 m post radius but outside the wall, so the walk in
+    // is the resolver's doing, not the spawn's
+    const sq = sim.addSquad(
+      'red',
+      'Garrison',
+      Array.from({ length: 6 }, (_, i) => ({ name: `R${i}`, weapon: 'kar98k' as const, x: 17.5, y: 17.5 + i })),
+    );
+    const commander = new RedCommander({ side: 'red', stance: 'defend', posts: { [sq.id]: post } });
+    for (let i = 0; i < 2400; i++) {
+      commander.update(sim);
+      sim.step();
+    }
+    const kind = sim.teams[sq.teamIds[0]].orderState.order?.kind;
+    expect(['defend', 'ambush']).toContain(kind);
+    const men = sq.soldierIds.map((id) => sim.soldiers[id]);
+    const inside = men.filter((s) => sim.map.buildingIdAt(Math.floor(s.x), Math.floor(s.y)) === 0);
+    expect(inside.length).toBe(men.length);
+    const atNook = inside.filter((s) => {
+      const x = Math.floor(s.x);
+      const y = Math.floor(s.y);
+      const w = (e: number) => e === EDGE.WINDOW;
+      return w(sim.map.hEdge(x, y)) || w(sim.map.hEdge(x, y + 1)) || w(sim.map.vEdge(x, y)) || w(sim.map.vEdge(x + 1, y));
+    });
+    expect(atNook.length).toBeGreaterThanOrEqual(4); // every loophole manned
+  });
+});
+
 describe('ring bound and coherence cap (design §1.2)', () => {
-  it('never drifts more than SNAP_R from the slot, and cover beyond SNAP_R does not attract', () => {
+  it('terrain cover never drifts more than SNAP_R from the slot — only a nook reaches further', () => {
     const { sim, ids } = hedgeSim();
     const red = addOne(sim, 'red', 40.5, 8.5);
     sim.spotted.blue.set(red, { x: 40.5, y: 8.5 });

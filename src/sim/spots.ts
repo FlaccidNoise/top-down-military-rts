@@ -198,9 +198,11 @@ function isCovered(sim: Sim, x: number, y: number, bearing: number, stance: Stan
 }
 
 // For each soldier: anchor = formation slot; scored cover-snap within
-// r <= SNAP_R (accepted only when the best score is > 0); else the legacy
-// plain ring walk to r <= FALLBACK_R; else the man is skipped (findSpot-null
-// parity — the caller/UI surfaces it, design §3.4).
+// r <= SNAP_R, and a firing position alone out to r <= FALLBACK_R (findSpot's
+// garrison reach); accepted only when the best score is > 0, else the legacy
+// plain ring walk; else the man is skipped (findSpot-null parity — the
+// caller/UI surfaces it, design §3.4). A slot inside a building resolves
+// inside one (M3).
 export function resolveMoveSpots(sim: Sim, q: SpotQuery, used: Set<number>): ResolvedSpot[] {
   const out: ResolvedSpot[] = [];
   const n = q.soldierIds.length;
@@ -213,11 +215,19 @@ export function resolveMoveSpots(sim: Sim, q: SpotQuery, used: Set<number>): Res
     const [ox, oy] = slots[i];
     const sx = Math.floor(q.x + ox);
     const sy = Math.floor(q.y + oy);
+    // A slot inside a building resolves inside one. The ring walk does not see
+    // walls, so an unscored room centre otherwise loses to a hedge three tiles
+    // away THROUGH the wall and the man told to hold the house ends up on the
+    // grass outside it. findSpot could not do that — garrisonScore is 0
+    // outside, so its max stayed on the slot. Only the last-resort plain tile
+    // may leave, so a full house still places every man rather than dropping
+    // one.
+    const inside = map.buildingIdAt(sx, sy) >= 0;
     let best: { x: number; y: number } | null = null;
     let bestScore = 0; // snap only on a strictly positive score (§1.2)
     let plain: { x: number; y: number } | null = null;
+    let plainOut: { x: number; y: number } | null = null;
     for (let r = 0; r <= FALLBACK_R; r++) {
-      if (r > SNAP_R && plain) break; // nothing scores past SNAP_R; the fallback is already in hand
       for (let dy = -r; dy <= r; dy++) {
         for (let dx = -r; dx <= r; dx++) {
           if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
@@ -225,9 +235,16 @@ export function resolveMoveSpots(sim: Sim, q: SpotQuery, used: Set<number>): Res
           const ny = sy + dy;
           if (!map.inBounds(nx, ny) || !map.terrainAt(nx, ny).passable) continue;
           if (used.has(ny * map.w + nx)) continue;
+          if (inside && map.buildingIdAt(nx, ny) < 0) {
+            if (!plainOut) plainOut = { x: nx, y: ny };
+            continue;
+          }
           if (!plain) plain = { x: nx, y: ny };
-          if (r > SNAP_R) continue;
-          const sc = scoreTile(sim, nx, ny, r, bearing, stance);
+          // Past SNAP_R only a firing position is worth breaking formation for.
+          // That is findSpot's garrison reach exactly — it scored the whole
+          // r <= 5 ring — and capping the nook at SNAP_R left an eighth of a
+          // garrison in the room instead of at its windows (M3 audit).
+          const sc = r <= SNAP_R ? scoreTile(sim, nx, ny, r, bearing, stance) : W_NOOK * nook(sim, nx, ny) - SLOT_PENALTY * r;
           if (sc > bestScore) {
             bestScore = sc;
             best = { x: nx, y: ny };
@@ -235,7 +252,7 @@ export function resolveMoveSpots(sim: Sim, q: SpotQuery, used: Set<number>): Res
         }
       }
     }
-    const spot = best ?? plain;
+    const spot = best ?? plain ?? plainOut;
     if (!spot) continue;
     used.add(spot.y * map.w + spot.x);
     out.push({
