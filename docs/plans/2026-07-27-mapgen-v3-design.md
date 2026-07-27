@@ -6,7 +6,8 @@ pipeline (`src/sim/bourg/*`) the single generator. Per-kind parameter profiles r
 the legacy 2026-07-22 blob-village pipeline (`mapgen.ts tryGenerate`) for `open`,
 `woods`, `river`, `bridge` and `road`. The legacy `town` kind is retired.
 
-Every claim below cites file:line against the tree at commit b372eee.
+Every claim below cites file:line against the tree at commit b372eee, re-verified
+at c036d6d (no sim/strategic/tests changes between the two).
 
 ---
 
@@ -179,10 +180,12 @@ T16). Saves store owners + chits only (front.ts:127-141) and the sector rebuilds
 from ASCII at load (save.ts:33 `makeDefaultSector()`), so **no terrain string is
 ever persisted — zero migration surface, no load-normalization needed** (verified).
 Removals: the `MapKind` arm (mapgen.ts:112), `CELL_MINUTES.town` (sector.ts:36),
-the `'town'` half of the coarse ×7 (bridge.ts:540), `TERRAIN_ORDER`/paint case
-(render/strategic.ts:44, 247), RELIEF_BY_KIND.town (mapgen.ts:154), the density
-test (mapgen.test.ts:211-219), the town fingerprint pin (bourg.test.ts:413), and
-the perf comparison re-points at `open` (perf.test.ts:303-325).
+the `'town'` half of the coarse ×7 (bridge.ts:540), the colour/label/paint-case
+trio (render/strategic.ts:9, 38, 247), RELIEF_BY_KIND.town (mapgen.ts:154), the
+kind list in scripts/bourg-perf.mjs:80, the density test (mapgen.test.ts:211-219),
+the town fingerprint pin (bourg.test.ts:413), the `PRE_RELIEF.town` row
+(relief-wiring.test.ts:37), and the perf comparison re-points at `open`
+(perf.test.ts:303-325).
 
 ---
 
@@ -215,10 +218,24 @@ task. Argument:
 Exact re-recording plan per kind task: (a) re-freeze that kind's geometry pins in
 bourg.test.ts:404-437 (and the two default-map pins mapgen.test.ts:56-57 plus the
 two furnished open pins :71-72 when `open` lands — they are the same generator);
-(b) update/replace the kind's structural tests (§4); (c) reshoot the kind's sweep
-seeds and eyeball the contact sheet; (d) run the full suite. Final task: full sweep
-reshoot + `scripts/.balance-baseline.json` re-record, coordinated with the movement
-chain (§5).
+(b) recapture that kind's row of the `PRE_RELIEF` table
+(relief-wiring.test.ts:33-41) — **8 seeds of plain literals, deliberately NOT
+`vitest -u`-able** (":31-32 an -u run must not be able to launder a regression"),
+so P1 adds a tiny `scripts/fp.mjs` that prints `fingerprint(generateMap(seed, 320,
+240, kind, { relief: 'none' }))` rows for hand-pasting; the test's meaning — the
+relief stage is purely additive per kind — survives V3 unchanged, only the frozen
+pre-relief geometry moves; (c) update/replace the kind's structural tests (§4);
+(d) reshoot the kind's sweep seeds and eyeball the contact sheet; (e) run the full
+suite, including relief-wiring's additivity battery, which must pass on the new
+literals without edits to its logic. Final task: full sweep reshoot +
+`scripts/.balance-baseline.json` re-record, coordinated with the movement chain
+(§5).
+
+Pins that must NOT move, ever, and serve as controls: the four bourg pins
+(bourg.test.ts:384-396, including the two plain-literal relief-off values) and the
+two furnished bourg pins (mapgen.test.ts:73-74) — the bourg is untouched by V3, so
+any drift in them is a leak out of a profile refactor, caught at the task that
+caused it. The bourg seed-10 sweep crops are the same control on the art side.
 
 ---
 
@@ -274,19 +291,23 @@ Files: new `src/sim/bourg/profile.ts`; thread `KindProfile` through streets.ts,
 landmarks.ts, parcels.ts, footprints.ts, rural.ts, plan.ts, mapgen.ts
 (`tryGenerateBourg` → `tryGenerateV3(kind, profile)`, still reached only by
 `kind === 'bourg'`). Every constant listed in §1 becomes a field at its current
-value. Spec: `97b5bca`/`eb9a14e6`, `cd8c2d19`/`98495a59`, `f3c5a70`/`2f746b24`
-all unchanged; full suite green with zero pin edits. Deps: none.
+value. Also adds `scripts/fp.mjs` (the PRE_RELIEF recapture printer, §3).
+Spec: `97b5bca`/`eb9a14e6`, `cd8c2d19`/`98495a59`, `f3c5a70`/`2f746b24` and every
+PRE_RELIEF row all unchanged; full suite green with zero pin edits. Deps: none.
 
 **P2 — `road` cutover (M).**
 Files: profile.ts, mapgen.ts (route `'road'` to v3), bourg.test.ts (re-freeze road
-pins :431), new road battery cases, sweep reshoot of road-forced crops.
+pins :431), relief-wiring.test.ts PRE_RELIEF.road row (via fp.mjs), new road
+battery cases, sweep reshoot of road-forced crops.
 Spec: §2.2 profile; ribbon envelope; rearConnected asserted; MG-lane cap asserted on
 the bitmap; objectives prefix `[place, woods, (faubourg/street on w≥240)]`.
 Deps: P1.
 
 **P3 — `open` cutover (M).**
 Files: profile.ts, mapgen.ts, mapgen.test.ts (re-freeze :56-57, :71-72; port the
-seeds-1-30 reachability test to the v3 open), scenario compatibility test
+seeds-1-30 reachability test to the v3 open), PRE_RELIEF.open+road rows (open and
+road share one legacy row today, relief-wiring.test.ts:34-35 — they diverge here),
+scenario compatibility test
 (≥3 buildings near objectives[0]; objectives[0] plain road; objectives[1] passable),
 sweep reshoot. Spec: §2.3; farms 4-6 asserted; halt permitted. Deps: P1 (P2
 independent in content but the chain is sequential by decree).
