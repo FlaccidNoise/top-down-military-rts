@@ -76,6 +76,28 @@ const BOF_LEG = 20;
 // within this radius is held, and a maneuver team this close to its own post
 // is standing on the objective.
 const POST_HELD_RADIUS = 20;
+// Culmination (balance 2026-07): the share of the committed force whose loss
+// ends the attack. Attacks in open and woods ran to 60-69% casualties for zero
+// wins — an attack that has failed at 60% had already failed at 35%, and
+// nothing in the doctrine could say so, so the commander went on feeding teams
+// into a defense that had beaten it. 35% is the historical combat-ineffective
+// mark for a rifle company, and it sits above commitReserve's own trigger
+// (half of ONE maneuver team), so the reserve is still spent trying to win
+// before the attack is written off. One-way latch, like reserveCommitted:
+// `downed` is recomputed from pain and blood loss every tick (sim.ts), so men
+// stand back up and the ratio really does recover — an attack that has broken
+// off must not un-break when it does.
+const CULMINATION_LOSS = 0.35;
+// Losses alone are not culmination: three of four winning bourg attacks ran
+// past 55% casualties WHILE taking objectives (probed, seeds 1/5), and a flat
+// threshold broke them off into 30-minute holds. The attack culminates only
+// when it has ALSO taken no objective for this long — losses without
+// progress. 6 game-minutes, not less: at 3 the window elapsed INSIDE winning
+// town fights (probed again, same seeds — the grind between two bourg posts
+// runs past 3 minutes with losses already over the threshold) and the stall
+// gate broke off attacks that were winning. A 6-minute objective drought on
+// these frontages is not a slow fight, it is the defense winning.
+const CULMINATION_STALL_TICKS = 6 * 60 * 30;
 // A fresh breach this close to a cached firing position invalidates it (design
 // section 5 item 2). baseFiringSpot scores candidates on LOS to the post, and a
 // hole in a wall is precisely a change in LOS — the commander would drift onto
@@ -126,6 +148,9 @@ export class RedCommander {
   private teamPost = new Map<number, { x: number; y: number }>(); // teamId -> objective it is working this eval (briefed or rolled-onto)
   private takenPosts: { x: number; y: number }[] = []; // posts the attack has stood on and found clear
   private reserveCommitted = false;
+  private forceStart = 0; // committed effectives at classification: the culmination denominator
+  private culminated = false; // one-way: the attack has broken off and is consolidating on what it holds
+  private lastProgressTick = 0; // classification, then each objective taken: the culmination stall clock
   private breachSeen = 0; // how much of sim.breachLog this commander has already reacted to
 
   constructor(private cfg: CommanderConfig) {}
@@ -238,7 +263,49 @@ export class RedCommander {
     for (const id of this.maneuverTeamIds) {
       this.startStrength.set(id, sim.teams[id].soldierIds.filter((sid) => sim.soldiers[sid].alive).length);
     }
+    this.forceStart = this.effectives(sim, this.committedTeamIds());
+    this.lastProgressTick = sim.tick;
     this.groupsReady = true;
+  }
+
+  // Every team the commander committed to the attack. A team that is both base
+  // of fire and maneuver (the no-rifle-teams fallback above) appears twice —
+  // in the starting count and the current one alike, so the ratio holds.
+  private committedTeamIds(): number[] {
+    return [...this.baseTeamIds, ...this.maneuverTeamIds, ...this.reserveTeamIds];
+  }
+
+  // Men still in the fight: the sim's own test, so a man bleeding out on the
+  // ground counts as the loss he is rather than a rifle the attack still has.
+  private effectives(sim: Sim, teamIds: number[]): number {
+    let n = 0;
+    for (const id of teamIds) {
+      for (const sid of sim.teams[id].soldierIds) {
+        const s = sim.soldiers[sid];
+        if (s.alive && !s.downed && !s.captured) n++;
+      }
+    }
+    return n;
+  }
+
+  private updateCulmination(sim: Sim): void {
+    if (this.culminated || this.forceStart <= 0) return;
+    if (sim.tick - this.lastProgressTick < CULMINATION_STALL_TICKS) return; // an attack taking ground is not culminating, whatever it costs
+    if (this.effectives(sim, this.committedTeamIds()) / this.forceStart <= 1 - CULMINATION_LOSS) this.culminated = true;
+  }
+
+  // Consolidate: hold the ground the team is standing on — for a team that
+  // took an objective, that ground IS the objective. Holding in place is a
+  // measured choice, not a shortcut: a withdrawal leg back to the assembly
+  // area was probed (open seeds 3/4) and cost MORE than staying down — 71%
+  // final KIA vs 51% on seed 4 — because the walk back re-crosses the same
+  // arcs that culminated the attack. Issued once; re-issuing every eval would
+  // re-roll compliance on a team that has already stopped, and a 'defend'
+  // that balked is a team staying exactly where consolidating wants it.
+  private consolidate(sim: Sim, team: Team): void {
+    if (team.orderState.order?.kind === 'defend') return;
+    const c = this.centroid(sim, team.soldierIds);
+    sim.orderTeam(team.id, { kind: 'defend', x: c.x, y: c.y });
   }
 
   private centroid(sim: Sim, soldierIds: number[]): { x: number; y: number } {
@@ -254,8 +321,10 @@ export class RedCommander {
   // within ASSAULT_RANGE of a post with live threat) -> reserve commits on a maneuver
   // team's losses (spec's attack template; the assault gate uses BOTH
   // suppression-established and a cleared threat reading so the commander
-  // doesn't stall forever against an unseen post).
+  // doesn't stall forever against an unseen post) -> culmination (past
+  // CULMINATION_LOSS the attack breaks off and consolidates on its gains).
   private runAttack(sim: Sim): void {
+    this.updateCulmination(sim);
     for (const teamId of this.baseTeamIds) {
       const team = sim.teams[teamId];
       if (!team.soldierIds.some((id) => sim.soldiers[id].alive)) {
@@ -269,6 +338,14 @@ export class RedCommander {
       if (!post) continue;
       const reach = this.bofReach(sim, team);
       if (!this.baseFiring.has(teamId)) {
+        if (this.culminated) {
+          // Settle where it stands rather than finish a displacement the attack
+          // no longer needs. It never enters baseFiring, so a team that stopped
+          // short of a firing position never claims suppression it cannot
+          // deliver — the settled teams above go on firing.
+          this.consolidate(sim, team);
+          continue;
+        }
         // A cached spot that can engage the post is the team's destination and
         // is kept: re-scoring it every eval is what makes a team chase a
         // marginally better patch of cover forever and never arrive (measured:
@@ -306,10 +383,17 @@ export class RedCommander {
       // BEFORE the executing-assault guard below, so a team bleeding out
       // mid-charge (the highest-casualty moment) still triggers reinforcement.
       const start = this.startStrength.get(teamId) ?? alive.length;
-      if (!this.reserveCommitted && start > 0 && alive.length / start < 0.5) this.commitReserve(sim);
+      if (!this.culminated && !this.reserveCommitted && start > 0 && alive.length / start < 0.5) this.commitReserve(sim);
       // an executing charge owns its team until the position is clear —
       // reissuing would re-roll compliance mid-charge and restart the run-in
       if (team.orderState.order?.kind === 'assault' && team.orderState.phase === 'executing') continue;
+      if (this.culminated) {
+        // The attack is over: consolidate on what it holds instead of feeding
+        // the rest of the company into the position that broke it. A charge
+        // already running keeps its team (the guard above) and finishes.
+        this.consolidate(sim, team);
+        continue;
+      }
       const suppressed = this.suppressionEstablished(sim, post);
       // "Cleared" has to mean the commander looked and found nothing, not that
       // it never looked: under fog an objective nobody has eyes on reads
@@ -483,6 +567,7 @@ export class RedCommander {
       this.teamPost.set(team.id, p);
       return p;
     };
+    if (this.culminated) return working(cur); // a culminated attack takes no new objectives
     // Two triggers roll a team forward: it stands on its own objective with no
     // live threat left there, or the attack has ALREADY recorded that
     // objective taken. The second is what carries the base of fire, which
@@ -660,7 +745,7 @@ export class RedCommander {
   private updateVehicles(sim: Sim): void {
     for (const v of sim.vehicles) {
       if (!v.alive || v.side !== this.cfg.side || v.path) continue;
-      if (this.cfg.stance === 'attack') {
+      if (this.cfg.stance === 'attack' && !this.culminated) {
         const firstPost = Object.values(this.cfg.posts)[0];
         if (firstPost && Math.hypot(v.x - firstPost.x, v.y - firstPost.y) > 25) {
           sim.orderVehicleMove(v.id, firstPost.x, firstPost.y);

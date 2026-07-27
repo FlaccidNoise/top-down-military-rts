@@ -1,0 +1,59 @@
+{
+ "date": "2026-07-27",
+ "seeds": 4,
+ "cap": 54000,
+ "cells": [
+  {
+   "profile": "doctrine",
+   "kind": "open",
+   "blueWins": 0,
+   "redWins": 2,
+   "holds": 0,
+   "n": 2,
+   "blueKiaPct": 67.1,
+   "blueWiaPct": 8.4,
+   "redKiaPct": 46.3,
+   "meanTicks": 12657
+  }
+ ],
+ "runs": [
+  {
+   "profile": "doctrine",
+   "kind": "open",
+   "seed": 3,
+   "winner": "red",
+   "ticks": 17143,
+   "gameMin": 9.5,
+   "start": {
+    "blue": 138,
+    "red": 109
+   },
+   "blueKiaPct": 73.2,
+   "blueWiaPct": 2.2,
+   "blueCapPct": 0,
+   "redKiaPct": 46.8,
+   "redWiaPct": 2.8,
+   "redCapPct": 0,
+   "wallS": 32.9
+  },
+  {
+   "profile": "doctrine",
+   "kind": "open",
+   "seed": 4,
+   "winner": "red",
+   "ticks": 8171,
+   "gameMin": 4.5,
+   "start": {
+    "blue": 138,
+    "red": 109
+   },
+   "blueKiaPct": 60.9,
+   "blueWiaPct": 14.5,
+   "blueCapPct": 0,
+   "redKiaPct": 45.9,
+   "redWiaPct": 3.7,
+   "redCapPct": 0,
+   "wallS": 16.3
+  }
+ ]
+}
