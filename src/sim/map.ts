@@ -3,8 +3,39 @@ import { TERRAIN, type TerrainDef, type TerrainKey } from './data';
 // Walls live on tile EDGES (thin walls, Door Kickers-style) so building
 // interiors are ordinary walkable space. This is load-bearing for room-by-room
 // clearing later — do not convert to solid wall tiles.
-export const EDGE = { NONE: 0, WALL: 1, DOOR: 2, WINDOW: 3 } as const;
+// BREACH is a hole blown (or crushed) through a wall mid-battle. Deliberately
+// NOT EDGE.NONE: a rubble lip still grants cover to whoever fights across it
+// (los() below), still costs a vehicle something to cross (canStep, and only
+// when it is wide), and still has to be distinguishable from "no wall was ever
+// here" by the renderer and by the campaign scar record.
+export const EDGE = { NONE: 0, WALL: 1, DOOR: 2, WINDOW: 3, BREACH: 4 } as const;
 export type EdgeType = (typeof EDGE)[keyof typeof EDGE];
+
+// On a BREACH edge the (otherwise always-zero) top byte is reused as a width
+// class — the same "the top byte is a class code" idiom the free-standing wall
+// tops already use. Wide breaches come from tank HE, deliberate AT wall shots
+// and tank crush; everything smaller leaves a foot-only lip.
+export const BREACH_LIP = 1;
+export const BREACH_WIDE = 2;
+
+// Derived edge classes. Nothing stores these — every input is already on the
+// map (edge byte + top byte + buildingId on the two flanking tiles), so a
+// breach needs no new array and no re-index.
+export const ECLASS = { NONE: 0, GATE: 1, FENCE: 2, WALL_LOW: 3, WALL_HIGH: 4, WINDOW: 5, DOOR: 6, MASONRY: 7 } as const;
+
+// Blast energy needed to open each class, indexed by ECLASS. A gate is a
+// timber leaf in a hinge; a waist wall is one course of dry stone; a head-high
+// enclosure wall is two; a blown window IS a man-sized hole, which is why it
+// sits below a door and well below masonry; a house wall is half a metre of
+// rubble-filled masonry and wants a direct AT round.
+// FENCE is reserved: no generator emits a distinct picket top code yet, so
+// WALL_LOW stands in for both the garden wall and the fence. Adding one later
+// is a row here plus a mask value in render/enclos.ts.
+export const BREACH_THRESH: readonly number[] = [Infinity, 1.5, 1.0, 3.0, 5.0, 4.0, 4.5, 9.0];
+
+// Cover granted by a rubble lip crossed within 2 m of the target — the same
+// channel windows and hedgerow banks already use in los().
+export const BREACH_COVER = 0.35;
 
 const TERRAIN_KEYS = Object.keys(TERRAIN) as TerrainKey[];
 
@@ -139,13 +170,60 @@ export class GameMap {
     if (!t.passable) return false;
     if (mode === 'vehicle' && t.noVehicle) return false;
     let e: EdgeType = EDGE.NONE;
-    if (x1 === x0 + 1) e = this.vEdge(x1, y0);
-    else if (x1 === x0 - 1) e = this.vEdge(x0, y0);
-    else if (y1 === y0 + 1) e = this.hEdge(x0, y1);
-    else if (y1 === y0 - 1) e = this.hEdge(x0, y0);
-    if (mode === 'vehicle') return e === EDGE.NONE;
-    return e === EDGE.NONE || e === EDGE.DOOR; // walls and windows block movement
+    let ex = 0;
+    let ey = 0;
+    let horiz = false;
+    if (x1 === x0 + 1) {
+      ex = x1;
+      ey = y0;
+      e = this.vEdge(ex, ey);
+    } else if (x1 === x0 - 1) {
+      ex = x0;
+      ey = y0;
+      e = this.vEdge(ex, ey);
+    } else if (y1 === y0 + 1) {
+      ex = x0;
+      ey = y1;
+      horiz = true;
+      e = this.hEdge(ex, ey);
+    } else if (y1 === y0 - 1) {
+      ex = x0;
+      ey = y0;
+      horiz = true;
+      e = this.hEdge(ex, ey);
+    }
+    if (e === EDGE.NONE) return true;
+    if (e === EDGE.BREACH) {
+      // Foot always scrambles a lip; a hull needs the wide code.
+      if (mode === 'foot') return true;
+      return (horiz ? this.hEdgeTop(ex, ey) : this.vEdgeTop(ex, ey)) === BREACH_WIDE;
+    }
+    if (mode === 'vehicle') return false;
+    return e === EDGE.DOOR; // walls and windows block movement
   }
+}
+
+// Which kind of thing is standing on this edge? Purely derived — see ECLASS.
+// (x,y) addresses the edge the same way hEdge/vEdge do: a horizontal edge is
+// the north side of tile (x,y) (flanked by (x,y-1) and (x,y)); a vertical edge
+// is the west side of tile (x,y) (flanked by (x-1,y) and (x,y)).
+// A WALL that is neither a top-1 nor a top-2 free-standing run falls to
+// MASONRY, which is the conservative read: legacy maps stamp building walls
+// with top 0 and no grenade should open one.
+export function edgeClass(map: GameMap, x: number, y: number, horiz: boolean): number {
+  const e = horiz ? map.hEdge(x, y) : map.vEdge(x, y);
+  if (e === EDGE.NONE || e === EDGE.BREACH) return ECLASS.NONE;
+  if (e === EDGE.WINDOW) return ECLASS.WINDOW;
+  const built = horiz
+    ? map.buildingIdAt(x, y - 1) >= 0 || map.buildingIdAt(x, y) >= 0
+    : map.buildingIdAt(x - 1, y) >= 0 || map.buildingIdAt(x, y) >= 0;
+  if (e === EDGE.DOOR) return built ? ECLASS.DOOR : ECLASS.GATE;
+  if (!built) {
+    const top = horiz ? map.hEdgeTop(x, y) : map.vEdgeTop(x, y);
+    if (top === 1) return ECLASS.WALL_LOW; // waist-high garden wall
+    if (top === 2) return ECLASS.WALL_HIGH; // head-high enclosure
+  }
+  return ECLASS.MASONRY;
 }
 
 export interface LosResult {
@@ -225,6 +303,7 @@ export function los(map: GameMap, x0: number, y0: number, x1: number, y1: number
 
   let opacity = 0;
   let lastWindowT = -1;
+  let lastBreachT = -1;
   let lastLip = 0;
   let lastLipT = -1;
   let guard = map.w + map.h + 4;
@@ -239,6 +318,7 @@ export function los(map: GameMap, x0: number, y0: number, x1: number, y1: number
         if (edgeTop === 0 || z0 + dz * tMaxX < edgeTop) return { visible: false, cover: 0, conceal: 1 };
       }
       if (e === EDGE.WINDOW) lastWindowT = tMaxX;
+      else if (e === EDGE.BREACH) lastBreachT = tMaxX;
       tEntry = tMaxX;
       tx += stepX;
       tMaxX += tDeltaX;
@@ -249,6 +329,7 @@ export function los(map: GameMap, x0: number, y0: number, x1: number, y1: number
         if (edgeTop === 0 || z0 + dz * tMaxY < edgeTop) return { visible: false, cover: 0, conceal: 1 };
       }
       if (e === EDGE.WINDOW) lastWindowT = tMaxY;
+      else if (e === EDGE.BREACH) lastBreachT = tMaxY;
       tEntry = tMaxY;
       ty += stepY;
       tMaxY += tDeltaY;
@@ -298,6 +379,7 @@ export function los(map: GameMap, x0: number, y0: number, x1: number, y1: number
   }
 
   if (lastWindowT >= 0 && (1 - lastWindowT) * len <= 2) cover = Math.max(cover, 0.5);
+  if (lastBreachT >= 0 && (1 - lastBreachT) * len <= 2) cover = Math.max(cover, BREACH_COVER);
   if (lastLipT >= 0 && (1 - lastLipT) * len <= 2) cover = Math.max(cover, lastLip);
   return { visible: true, cover, conceal: Math.min(1, opacity) };
 }

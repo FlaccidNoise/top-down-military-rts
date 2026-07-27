@@ -786,10 +786,17 @@ export function reachField(map: GameMap, sx: number, sy: number, mode: 'foot' | 
     }
     open[i] = e;
   }
-  // edge transit by EDGE code: vehicles pass NONE only, foot also passes DOOR
-  const passEdge = new Uint8Array(4);
+  // edge transit by EDGE code: vehicles pass NONE only, foot also passes DOOR.
+  // BREACH is in the table purely so the array covers every EDGE value (an
+  // out-of-range index reads undefined and silently blocks); reachField only
+  // ever runs at mapgen time, before anything has been breached, and a wide
+  // breach is a runtime fact a generated map never carries.
+  const passEdge = new Uint8Array(5);
   passEdge[EDGE.NONE] = 1;
-  if (!veh) passEdge[EDGE.DOOR] = 1;
+  if (!veh) {
+    passEdge[EDGE.DOOR] = 1;
+    passEdge[EDGE.BREACH] = 1;
+  }
 
   const queue = new Int32Array(w * h); // each tile is enqueued at most once
   let head = 0;
