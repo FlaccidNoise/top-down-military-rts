@@ -491,6 +491,64 @@ describe('intel layer math', () => {
   });
 });
 
+// Night A/B (day/night design §7.4): same seed, same AI-driven strategic
+// battle, startMin 14:00 vs 02:00. Direction-only assertions, and the
+// direction asserted is the one the mechanics actually own: night caps the
+// INTEL layer (updateSpotting/sideSeesPoint, the maps commanders and the
+// player read), not live-fire acquisition, which stays weapon-range-bound by
+// design (§7.1/§7.2 — a squad exchanging fire at 60 m at midnight is the
+// muzzle-flash reality, not a bug). Total shot counts and median shot range
+// were measured across seeds 5/11/42 and move in BOTH directions
+// (212>199, 538>348, 273<649), so pinning "fewer engagements at night" would
+// pin seed noise — deliberately not asserted.
+// The liveness half (per forced-precondition-tests-hide-dead-features): these
+// runs force no spotter anywhere — both commanders fight naturally, and the
+// assertions check the cap FIRED (spots still occur at night, all inside the
+// cap) rather than merely that the mechanism exists.
+describe('night intel A/B', () => {
+  const runBattle = (seed: number, startMin: number) => {
+    const c = newCampaign(seed);
+    const front = newFront(c, makeDefaultSector());
+    const able = front.chits.find((ch) => ch.side === 'blue')!;
+    const wache = front.chits.find((ch) => ch.name === 'Brückenwache Süd')!;
+    const { sim, commander, blueCommander } = makeStrategicBattle(c, front, { attackerId: able.id, defenderId: wache.id, cell: wache.cell }, seed);
+    sim.startMin = startMin;
+    // First-spot distance for every soldier contact blue ever gains: distance
+    // from the spotted position to the nearest blue spotter at that sweep.
+    const spotDist: number[] = [];
+    let prev = new Set<number>();
+    for (let i = 0; i < 4500 && !sim.winner; i++) {
+      commander.update(sim);
+      blueCommander.update(sim);
+      sim.step();
+      if (sim.tick % SPOT_INTERVAL === 0) {
+        for (const [id, p] of sim.spotted.blue) {
+          if (prev.has(id)) continue;
+          let d = Infinity;
+          for (const s of sim.soldiers) if (s.alive && !s.downed && s.side === 'blue' && s.inVehicle < 0) d = Math.min(d, Math.hypot(s.x - p.x, s.y - p.y));
+          for (const v of sim.vehicles) if (v.alive && v.side === 'blue') d = Math.min(d, Math.hypot(v.x - p.x, v.y - p.y));
+          spotDist.push(d);
+        }
+        prev = new Set(sim.spotted.blue.keys());
+      }
+    }
+    return spotDist;
+  };
+
+  it('at 02:00 the intel picture collapses to the cap; at 14:00 it does not (seeds 11, 42)', () => {
+    for (const seed of [11, 42]) {
+      const day = runBattle(seed, 14 * 60);
+      const night = runBattle(seed, 2 * 60);
+      // measured: seed 11 day 89 spots / max 193.5 m, night 20 / 24.3 m;
+      //           seed 42 day 83 spots / max 128.2 m, night 5 / 20.4 m.
+      expect(night.length).toBeGreaterThan(0); // liveness: night spotting fires under natural dynamics
+      expect(night.length).toBeLessThan(day.length); // direction: far fewer contacts gained in the dark
+      expect(Math.max(...night)).toBeLessThanOrEqual(25.5); // every night first-spot inside the 25 m floor
+      expect(Math.max(...day)).toBeGreaterThan(25.5); // and it is the cap that binds, not map geometry
+    }
+  }, 120000);
+});
+
 // Task 14 (spec: docs/specs/2026-07-22-unit-system.md "Balance harness" — every
 // asymmetry claim is falsifiable via headless runs). Seeds are literal integer
 // ranges (1..N), not Math.random — deterministic and reproducible. Each claim

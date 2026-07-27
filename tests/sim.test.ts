@@ -5,6 +5,7 @@ import { astar } from '../src/sim/path';
 import { generateMap } from '../src/sim/mapgen';
 import { makeScenario } from '../src/sim/scenario';
 import { DT, Sim, sightBetween, smokePuff } from '../src/sim/sim';
+import { CANON_CLOCK_MIN } from '../src/sim/solar';
 
 describe('line of sight', () => {
   const wallMap = (edge: number) => {
@@ -167,6 +168,44 @@ describe('fog of war', () => {
     for (let i = 0; i < 15; i++) sim.step();
     expect(sim.contacts.blue.has(`s${red.id}`)).toBe(false); // resolved
     expect(sim.soldierVisibleTo('blue', red)).toBe(true); // permanent corpse marker
+  });
+
+  it('night caps spotting absolutely: at 02:00 a clear-LOS enemy at 60 m goes unseen, at 20 m he is seen', () => {
+    // Open ground, nothing on either ray — by day both would be spotted on
+    // the first sweep (SPOT_RANGE 200). At 02:00 light is 0 and the cap is
+    // 25 m: the far man vanishes, the near man does not. An absolute cap, not
+    // a multiplier — SPOT_RANGE x0.5 would change nothing (design §7.1).
+    const sim = new Sim(new GameMap(120, 20), 16);
+    sim.startMin = 2 * 60;
+    sim.addSquad('blue', 'a', [{ name: 'A', weapon: 'garand', x: 5.5, y: 10.5 }]);
+    sim.addSquad('red', 'r', [
+      { name: 'Far', weapon: 'kar98k', x: 65.5, y: 10.5 },
+      { name: 'Near', weapon: 'kar98k', x: 25.5, y: 10.5 },
+    ]);
+    dry(sim);
+    const [, far, near] = sim.soldiers;
+    for (let i = 0; i < 15; i++) sim.step();
+    expect(sim.soldierVisibleTo('blue', far)).toBe(false); // 60 m: beyond the 25 m night cap
+    expect(sim.soldierVisibleTo('blue', near)).toBe(true); // 20 m: inside it
+  });
+
+  it('startMin stays out of snapshot(), and the canonical default runs byte-identical to an explicit CANON', () => {
+    // Two sims differing ONLY in startMin snapshot identically at tick 0 —
+    // the clock is derivable from (startMin, tick) and adds no bytes. And a
+    // default-constructed sim IS the canonical-hour sim after a real run.
+    const a = makeScenario(7);
+    const b = makeScenario(7);
+    b.startMin = 2 * 60;
+    expect(b.snapshot()).toBe(a.snapshot());
+    const run = (explicit: boolean) => {
+      const sim = makeScenario(42);
+      if (explicit) sim.startMin = CANON_CLOCK_MIN;
+      sim.orderSquad(0, { kind: 'move', x: 80, y: 55 });
+      for (let i = 0; i < 900; i++) sim.step();
+      const spots = [...sim.spotted.blue.keys()].join(',') + '|' + [...sim.spotted.red.keys()].join(',');
+      return sim.snapshot() + '#' + spots;
+    };
+    expect(run(true)).toBe(run(false));
   });
 
   it('an unseen corpse stays hidden until a friendly gains LOS, then is known for good', () => {

@@ -110,6 +110,17 @@ describe('campaign', () => {
     return makeStrategicBattle(c, front, { attackerId: able.id, defenderId: wache.id, cell: wache.cell }, seed);
   };
 
+  it('makeStrategicBattle propagates the campaign clock into sim.startMin', () => {
+    const c = newCampaign(9);
+    const front = newFront(c, makeDefaultSector());
+    front.clockMin = 2 * 60; // a 02:00 counterpunch — the one battle where the clock matters most
+    const able = front.chits.find((ch) => ch.side === 'blue')!;
+    const wache = front.chits.find((ch) => ch.name === 'Brückenwache Süd')!;
+    const { sim } = makeStrategicBattle(c, front, { attackerId: able.id, defenderId: wache.id, cell: wache.cell }, 5);
+    expect(sim.startMin).toBe(2 * 60);
+    expect(sim.light).toBe(0); // and the night rules are live from tick 0
+  });
+
   it('battle results persist: KIA, recovery, xp, bonds growth', () => {
     const c = newCampaign(1);
     const { sim } = battleFor(c, 5);

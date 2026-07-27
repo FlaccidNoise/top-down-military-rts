@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { advanceDays, fillReplacements, newCampaign } from '../src/campaign/campaign';
 import { Front, REINFORCE_CYCLE_DAYS, REINFORCE_PER_COMPANY, operationStatus } from '../src/strategic/front';
 import { cellIndex, parseSector, makeDefaultSector, cellXY } from '../src/strategic/sector';
-import { newFront, makeStrategicBattle, applyEngagementOutcome, resolveCoarse, syncStrengths, retreat } from '../src/strategic/bridge';
+import { newFront, makeStrategicBattle, applyEngagementOutcome, resolveCoarse, setCoarseNightMult, syncStrengths, retreat } from '../src/strategic/bridge';
 import { StrategicCommander, RED_DEFENDER, BLUE_ATTACKER } from '../src/strategic/command';
 
 function fordSector() {
@@ -233,6 +233,18 @@ describe('StrategicCommander', () => {
 
     it('same campaign seed reproduces the same war', () => {
       expect(runWar(42)).toEqual(runWar(42));
+    }, 60000);
+
+    it('the coarse night hook at 1.0 reproduces the pre-hook wars bit-for-bit', () => {
+      // Tuples captured on the tree BEFORE the resolveCoarse night hook landed
+      // (N11, 2026-07-27, scripts/warsweep.mjs seeds 1-3). The hook multiplies
+      // terrainMult by exactly 1.0 below civil-dusk light and draws no RNG, so
+      // not one battle of any of these wars may move. If this pin goes red,
+      // someone changed a tuned constant without re-running warsweep.mjs.
+      setCoarseNightMult(1.0); // the default, set explicitly so the pin survives any earlier test touching it
+      expect(runWar(1)).toEqual({ status: 'lost', day: 15, logLen: 51 });
+      expect(runWar(2)).toEqual({ status: 'lost', day: 15, logLen: 81 });
+      expect(runWar(3)).toEqual({ status: 'won', day: 4, logLen: 20 });
     }, 60000);
 
     it('war terminates, varies with the campaign seed, and can go either way', () => {
