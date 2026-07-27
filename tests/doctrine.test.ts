@@ -236,17 +236,31 @@ describe('AI commander doctrine', () => {
     // a team dying mid-charge — the highest-casualty moment — never triggers
     // reinforcement. State is forced directly (no full battle) so the assert
     // isolates exactly that control-flow ordering.
+    // The force is 11 men so that the 3 losses below are 27% of it: past a
+    // maneuver team's own half-strength trigger but short of CULMINATION_LOSS,
+    // which would break the attack off and gate the reserve commit by design.
+    // Shrink it and this stops testing the ordering it was written for.
     const sim = new Sim(new GameMap(140, 60), 103);
     const post = { x: 120, y: 30 };
-    const mg = sim.addSquad('red', 'MG', [{ name: 'G', weapon: 'mg42', x: 60.5, y: 30.5 }]); // base of fire
-    // three rifle teams → maneuver = first two (pool.slice(0,2)), reserve = third
+    const mg = sim.addSquad('red', 'MG', [
+      { name: 'G', weapon: 'mg42', x: 60.5, y: 30.5 },
+      { name: 'A1', weapon: 'kar98k', x: 61.5, y: 29.5 },
+      { name: 'A2', weapon: 'kar98k', x: 61.5, y: 31.5 },
+    ]); // base of fire
+    // three rifle teams → maneuver = first two, reserve = third
     const man = sim.addSquad(
       'red',
       'Man',
       Array.from({ length: 4 }, (_, i) => ({ name: `M${i}`, weapon: 'kar98k' as const, x: 96.5, y: 28.5 + i })),
     );
-    const man2 = sim.addSquad('red', 'Man2', [{ name: 'N', weapon: 'kar98k', x: 96.5, y: 34.5 }]);
-    const reserve = sim.addSquad('red', 'Res', [{ name: 'Res', weapon: 'kar98k', x: 50.5, y: 30.5 }]);
+    const man2 = sim.addSquad('red', 'Man2', [
+      { name: 'N', weapon: 'kar98k', x: 96.5, y: 34.5 },
+      { name: 'N2', weapon: 'kar98k', x: 96.5, y: 35.5 },
+    ]);
+    const reserve = sim.addSquad('red', 'Res', [
+      { name: 'Res', weapon: 'kar98k', x: 50.5, y: 30.5 },
+      { name: 'Res2', weapon: 'kar98k', x: 50.5, y: 31.5 },
+    ]);
     sim.addSquad('blue', 'Garrison', [{ name: 'B1', weapon: 'kar98k', x: 122.5, y: 30.5 }]);
     const posts = { [mg.id]: post, [man.id]: post, [man2.id]: post, [reserve.id]: post };
     const commander = new RedCommander({ side: 'red', stance: 'attack', posts });
@@ -268,6 +282,55 @@ describe('AI commander doctrine', () => {
     commander.update(sim);
     expect(reserveTeam.orderState.order).not.toBeNull(); // reserve committed
     expect(manTeam.orderState.order?.kind).toBe('assault'); // and the charge was NOT re-rolled
+  });
+
+  it('culmination: an attack bled past the threshold breaks off, consolidates, and does not un-break when the ratio recovers', () => {
+    // The latch is the point: `downed` is recomputed from pain and blood loss
+    // every tick, so the effectives ratio really does climb back as men come
+    // round. State is forced (no full battle) so the assert isolates the gate;
+    // the liveness half — that it fires under natural dynamics — is the open
+    // and woods probe in the commit message, not this test.
+    const sim = new Sim(new GameMap(140, 60), 104);
+    const post = { x: 120, y: 30 };
+    const mg = sim.addSquad('red', 'MG', [{ name: 'G', weapon: 'mg42', x: 60.5, y: 30.5 }]);
+    const mkTeam = (name: string, y0: number) =>
+      sim.addSquad(
+        'red',
+        name,
+        Array.from({ length: 6 }, (_, i) => ({ name: `${name}${i}`, weapon: 'kar98k' as const, x: 96.5, y: y0 + i })),
+      );
+    const man = mkTeam('M', 24.5);
+    const man2 = mkTeam('N', 33.5);
+    sim.addSquad('blue', 'Garrison', [{ name: 'B1', weapon: 'kar98k', x: 122.5, y: 30.5 }]);
+    const commander = new RedCommander({ side: 'red', stance: 'attack', posts: { [mg.id]: post, [man.id]: post, [man2.id]: post } });
+
+    // first eval: classify, capture the 13-man committed force, press
+    sim.tick = SPOT_INTERVAL;
+    commander.update(sim);
+    const manTeam = sim.teams[man.teamIds[0]];
+    expect(manTeam.orderState.order?.kind).not.toBe('defend'); // pressing, not consolidating — the test is not vacuous
+
+    // down 5 of 13 (38%) — past CULMINATION_LOSS, but inside the stall window:
+    // losses alone must NOT break the attack off
+    const hit = [...man.soldierIds.slice(0, 3), ...man2.soldierIds.slice(0, 2)];
+    for (const id of hit) sim.soldiers[id].downed = true;
+    sim.tick = SPOT_INTERVAL + 150;
+    commander.update(sim);
+    expect(commander['culminated']).toBe(false); // bleeding but not stalled — still pressing
+
+    // same losses, no objective taken for 6 game-minutes (CULMINATION_STALL_TICKS
+    // = 10800, a multiple of the 150-tick eval cadence): now it culminates
+    sim.tick = SPOT_INTERVAL + 10800 + 150;
+    commander.update(sim);
+    expect(commander['culminated']).toBe(true);
+    expect(manTeam.orderState.order?.kind).toBe('defend'); // consolidating on the ground it holds
+
+    // every man back on his feet: the attack stays broken off
+    for (const id of hit) sim.soldiers[id].downed = false;
+    sim.tick = SPOT_INTERVAL + 10800 + 300;
+    commander.update(sim);
+    expect(commander['culminated']).toBe(true);
+    expect(manTeam.orderState.order?.kind).toBe('defend');
   });
 
   it('smoke before assault: the commander screens the objective with mortar smoke, and the charge steps off only after the screen is up', () => {

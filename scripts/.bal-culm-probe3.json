@@ -1,0 +1,40 @@
+{
+ "date": "2026-07-27",
+ "seeds": 5,
+ "cap": 54000,
+ "cells": [
+  {
+   "profile": "doctrine",
+   "kind": "bourg",
+   "blueWins": 1,
+   "redWins": 0,
+   "holds": 0,
+   "n": 1,
+   "blueKiaPct": 60.9,
+   "blueWiaPct": 0.7,
+   "redKiaPct": 67.9,
+   "meanTicks": 25138
+  }
+ ],
+ "runs": [
+  {
+   "profile": "doctrine",
+   "kind": "bourg",
+   "seed": 5,
+   "winner": "blue",
+   "ticks": 25138,
+   "gameMin": 14,
+   "start": {
+    "blue": 138,
+    "red": 109
+   },
+   "blueKiaPct": 60.9,
+   "blueWiaPct": 0.7,
+   "blueCapPct": 0,
+   "redKiaPct": 67.9,
+   "redWiaPct": 6.4,
+   "redCapPct": 0.9,
+   "wallS": 32.5
+  }
+ ]
+}
