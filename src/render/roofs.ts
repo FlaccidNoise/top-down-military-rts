@@ -181,16 +181,20 @@ interface Sides {
 }
 type Side = keyof Sides;
 
-// Everything buildArt needs that is not the building itself. `alongX` is how
-// a church's nave and apse end up under one continuous ridge instead of two
-// competing ones.
+// Everything buildArt needs that is not the building itself. `alongX` and
+// `ridge` are how a party-wall range (or a church's nave + apse) ends up under
+// ONE roof instead of a row of competing ones; `runKey` is how it ends up in
+// one material.
 export interface ArtCtx {
   butt: Sides;
-  alongX: boolean | null; // forced ridge axis (church group)
+  alongX: boolean | null; // forced ridge axis (terrace frontage, church group)
+  ridge: number | null; // shared ridge, world coord on the cross axis
+  runKey: number | null; // shared material key for a whole range
+  runStories: number;
 }
 
 const NO_BUTT: Sides = { n: false, s: false, e: false, w: false };
-const SOLO: ArtCtx = { butt: NO_BUTT, alongX: null };
+const SOLO: ArtCtx = { butt: NO_BUTT, alongX: null, ridge: null, runKey: null, runStories: 0 };
 
 interface RoofArt {
   key: number; // stable art-hash key (N8) — the footprint, never the array index
@@ -199,6 +203,7 @@ interface RoofArt {
   plan: RoofPlan;
   hipEnds: [boolean, boolean]; // which ridge ends are hipped — a half-hip is [false, true]
   verge: [boolean, boolean]; // barge board at the lo / hi ridge end
+  party: [boolean, boolean]; // party wall at the lo / hi ridge end (terrace)
   spireCast: number; // extra shadow length above the walls — a spire throws a long one
   spireCross: number; // gable-cross arm length, 0 on everything that is not a nave
   rr: Rect; // roof rect, after any catslide eave extension
@@ -306,17 +311,23 @@ function buildArt(b: Building, stories: number, smallOfPair: boolean, map: GameM
   const i = artKey(b);
   const role = b.role ?? 'house';
   const sacred = sacredRole(role);
+  const terraced = ctx.runKey !== null;
   const ridgeAlongX = ctx.alongX ?? b.w >= b.h;
   const loSide: Side = ridgeAlongX ? 'w' : 'n';
   const hiSide: Side = ridgeAlongX ? 'e' : 's';
   const { x, y, w, h } = roofRect(b, ctx.butt, sacred ? CHURCH_OVERHANG : OVERHANG);
 
-  const mat = pickMat(i, stories, smallOfPair, role);
+  // A party-wall range was built by one mason in one year: it takes ONE
+  // material, off the run's own key. The per-unit value jitter below still
+  // weathers each unit separately, which is the difference between a terrace
+  // and a single roof 30 m long.
+  const matKey = ctx.runKey ?? i;
+  const mat = pickMat(matKey, Math.max(stories, ctx.runStories), smallOfPair, role);
   const bases = MAT_BASES[mat];
-  const valueJitter = 1 + (hash(i, 60) - 0.5) * 0.18; // ±9%
+  const valueJitter = 1 + (hash(i, 60) - 0.5) * (terraced ? 0.1 : 0.18); // ±9%, tighter inside a range
   const hue = MAT_HUE[mat];
-  const hueJitter = hue.bias + (hash(i, 61) - 0.5) * 2 * hue.amp;
-  const weathered = mute(tint(hexToRgb(bases[i % bases.length]), valueJitter, hueJitter), MAX_SAT);
+  const hueJitter = hue.bias + (hash(matKey, 61) - 0.5) * 2 * hue.amp;
+  const weathered = mute(tint(hexToRgb(bases[matKey % bases.length]), valueJitter, hueJitter), MAX_SAT);
   // lit/shade value ratio stays ~1.6 — value separation is the legibility
   // mechanism; only the hue is pulled back toward the muted ceiling.
   const [litV, shadeV] = MAT_SLOPE[mat];
@@ -335,6 +346,7 @@ function buildArt(b: Building, stories: number, smallOfPair: boolean, map: GameM
   if (role === 'church_tower') plan = 'spire';
   else if (role === 'church') plan = 'cross'; // nave + one crossing gable for the transept
   else if (role === 'church_apse') plan = 'hip'; // half-hipped, see hipEnds
+  else if (terraced) plan = 'gable'; // a range is one continuous pitch, never five competing ones
   else if (mat === 'iron') plan = pr < 0.72 ? 'gable' : 'catslide'; // a hipped tin barn is not a thing
   else if (pr < 0.35) plan = 'gable';
   else if (pr < 0.6) plan = 'hip';
@@ -345,7 +357,14 @@ function buildArt(b: Building, stories: number, smallOfPair: boolean, map: GameM
   const span0 = ridgeAlongX ? h : w;
   const base0 = ridgeAlongX ? y : x;
   let ridgeCross = base0 + span0 * 0.5;
-  if (plan === 'catslide') {
+  if (ctx.ridge !== null) {
+    // T17. The range's ridge is a single world line. Where a unit steps off
+    // the common frontage the line is pulled back inside that unit's own span
+    // — a ridge outside the roof plane inverts a slope — so the run reads as
+    // one continuous pitch that jogs exactly where the footprints jog.
+    const m = span0 * 0.3;
+    ridgeCross = Math.max(base0 + m, Math.min(base0 + span0 - m, ctx.ridge));
+  } else if (plan === 'catslide') {
     const f = hash(i, 241) < 0.5 ? 0.4 : 0.6;
     ridgeCross = base0 + span0 * f;
     // the long shallow slope reaches further out — the Normandy catslide read
@@ -374,6 +393,11 @@ function buildArt(b: Building, stories: number, smallOfPair: boolean, map: GameM
     plan !== 'hip' && plan !== 'spire' && !ctx.butt[loSide],
     plan !== 'hip' && plan !== 'spire' && !ctx.butt[hiSide],
   ];
+  // Only the LO joint of each unit carries the drawn parapet, so a shared wall
+  // gets exactly one band rather than two units each drawing half of it and
+  // the later one overpainting the earlier.
+  const party: [boolean, boolean] = [terraced && ctx.butt[loSide], terraced && ctx.butt[hiSide]];
+
   let wing: Rect | null = null;
   if (role === 'church') {
     // The transept: one crossing gable across the full nave depth, set toward
@@ -394,7 +418,7 @@ function buildArt(b: Building, stories: number, smallOfPair: boolean, map: GameM
   // lean-to annex against a wall that is not the door wall. Never on a church
   // and never inside a range: both are the shed that breaks the silhouette.
   let lean: (Rect & { side: 'n' | 's' | 'e' | 'w' }) | null = null;
-  if (!sacred && hash(i, 244) < 0.3) {
+  if (!sacred && !terraced && hash(i, 244) < 0.3) {
     const doorSide = doorSideOf(b, map);
     const sides: ('n' | 's' | 'e' | 'w')[] = (['n', 's', 'e', 'w'] as const).filter((sd) => sd !== doorSide);
     const side = sides[(hash(i, 246) * sides.length) | 0];
@@ -448,11 +472,16 @@ function buildArt(b: Building, stories: number, smallOfPair: boolean, map: GameM
       ? { x: p - stackW / 2, y: cross - stackH / 2, w: stackW, h: stackH }
       : { x: cross - stackW / 2, y: p - stackH / 2, w: stackW, h: stackH };
   };
-  // A church has no hearth.
+  // A church has no hearth. A terrace stacks its flues ON the party wall, one
+  // per joint, which is the rhythm that reads the range as separate dwellings
+  // once the ridge below them has been made continuous.
   const chimneys: Rect[] = [];
   if (!sacred) {
-    chimneys.push(stackAt(t0));
-    if (b.w * b.h >= 70) chimneys.push(stackAt(1 - t0));
+    if (terraced) chimneys.push(stackAt(party[1] ? 0.9 : 0.5));
+    else {
+      chimneys.push(stackAt(t0));
+      if (b.w * b.h >= 70) chimneys.push(stackAt(1 - t0));
+    }
   }
 
   const wr = hash(i, 260);
@@ -498,6 +527,7 @@ function buildArt(b: Building, stories: number, smallOfPair: boolean, map: GameM
     plan,
     hipEnds,
     verge,
+    party,
     spireCast,
     spireCross,
     rr,
@@ -1120,6 +1150,33 @@ function spireInto(g: CanvasRenderingContext2D, art: RoofArt, key: number, band:
   crossInto(g, ax, ay, -SUN.dx * fl, -SUN.dy * fl, art.ridgeAlongX, band);
 }
 
+// A party wall carried up through the roof. Drawn only at a unit's LO joint so
+// each shared wall gets exactly one band, and with its own cast shadow falling
+// INTO this unit — the SE neighbour is a separate sprite drawn later and would
+// paint over anything thrown that way.
+function parapetInto(g: CanvasRenderingContext2D, art: RoofArt, band: number): void {
+  const r = art.rr;
+  const along = art.ridgeAlongX;
+  const t = 0.3;
+  const [sdx, sdy] = shadowOffset(0.5);
+  g.fillStyle = 'rgba(14,12,9,0.34)';
+  if (along) g.fillRect(r.x + t, r.y + sdy, sdx, r.h - sdy);
+  else g.fillRect(r.x + sdx, r.y + t, r.w - sdx, sdy);
+  g.fillStyle = '#8a8374';
+  if (along) g.fillRect(r.x, r.y, t, r.h);
+  else g.fillRect(r.x, r.y, r.w, t);
+  g.fillStyle = 'rgba(230,222,204,0.32)'; // coping, lit on its NW arris
+  if (along) g.fillRect(r.x, r.y, t * 0.38, r.h);
+  else g.fillRect(r.x, r.y, r.w, t * 0.38);
+  g.fillStyle = 'rgba(16,13,10,0.42)';
+  if (along) g.fillRect(r.x + t * 0.68, r.y, t * 0.32, r.h);
+  else g.fillRect(r.x, r.y + t * 0.68, r.w, t * 0.32);
+  if (band < 16) return;
+  g.fillStyle = 'rgba(60,54,44,0.30)'; // coping joints
+  if (along) for (let v = r.y + 0.5; v < r.y + r.h; v += 0.5) g.fillRect(r.x, v, t, 0.035);
+  else for (let u = r.x + 0.5; u < r.x + r.w; u += 0.5) g.fillRect(u, r.y, 0.035, t);
+}
+
 // Impact damage, painted last so it cuts through courses, dormers and stacks
 // alike. Hash keys are the quantized impact in quarter-metres, so the same
 // crater comes back identical at every band and after every rebake.
@@ -1445,6 +1502,10 @@ function drawRoof(g: CanvasRenderingContext2D, art: RoofArt, band: number, damag
   g.restore();
   for (let k = 0; k < art.chimneys.length; k++) chimneyInto(g, art.chimneys[k], i, k, band);
 
+  // the party wall between this unit and its up-street neighbour, on top of
+  // everything the two of them share
+  if (art.party[0]) parapetInto(g, art, band);
+
   drawRoofTrim(g, art, band, damage);
 }
 
@@ -1654,8 +1715,38 @@ function bakeWall(b: Building, art: RoofArt, band: number, south: boolean): HTML
 //
 // Pure and exported so the art gate can assert the grouping on a real bourg
 // plan without a canvas: RoofLayer only ever consumes what this returns.
-export function artContexts(buildings: Building[]): ArtCtx[] {
-  const kin = (a: Building, b: Building): boolean => a.groupId !== undefined && a.groupId === b.groupId;
+export function artContexts(buildings: Building[], stories: number[]): ArtCtx[] {
+  const runs = new Map<number, number[]>();
+  for (let i = 0; i < buildings.length; i++) {
+    const t = buildings[i].terraceRun;
+    if (t === undefined) continue;
+    const a = runs.get(t) ?? [];
+    a.push(i);
+    runs.set(t, a);
+  }
+
+  const info = new Map<number, { key: number; along: boolean; ridge: number; stories: number }>();
+  for (const [t, idx] of runs) {
+    if (idx.length < 2) continue; // a run of one is just a house — leave it its variety
+    const first = buildings[idx[0]];
+    // Ridge parallel to the street: a frontage on n/s puts the run along x.
+    const along = first.frontage === 'n' || first.frontage === 's' ? true : first.frontage ? false : first.w >= first.h;
+    // Median centre line, not mean: one unusually deep unit must not drag the
+    // whole range's ridge off the frontage.
+    const mid = idx
+      .map((i) => (along ? buildings[i].y + buildings[i].h / 2 : buildings[i].x + buildings[i].w / 2))
+      .sort((a, b) => a - b);
+    let key = 0;
+    let st = 0;
+    for (const i of idx) {
+      key += artKey(buildings[i]); // an order-independent sum, so the run key survives a reorder too
+      st = Math.max(st, stories[i]);
+    }
+    info.set(t, { key, along, ridge: mid[mid.length >> 1], stories: st });
+  }
+
+  const kin = (a: Building, b: Building): boolean =>
+    (a.terraceRun !== undefined && a.terraceRun === b.terraceRun) || (a.groupId !== undefined && a.groupId === b.groupId);
 
   return buildings.map((b) => {
     const butt: Sides = { n: false, s: false, e: false, w: false };
@@ -1668,13 +1759,20 @@ export function artContexts(buildings: Building[]): ArtCtx[] {
       if (ovX && o.y + o.h === b.y) butt.n = true;
       if (ovX && b.y + b.h === o.y) butt.s = true;
     }
-    let alongX: boolean | null = null;
+    const run = b.terraceRun === undefined ? undefined : info.get(b.terraceRun);
+    let alongX: boolean | null = run ? run.along : null;
     if (b.role === 'church_apse' || b.role === 'church_tower') {
       // the apse continues the nave's ridge, whichever way the nave was laid
       const nave = buildings.find((o) => o.role === 'church' && o.groupId !== undefined && o.groupId === b.groupId);
       if (nave) alongX = nave.w >= nave.h;
     }
-    return { butt, alongX };
+    return {
+      butt,
+      alongX,
+      ridge: run ? run.ridge : null,
+      runKey: run ? run.key : null,
+      runStories: run ? run.stories : 0,
+    };
   });
 }
 
@@ -1714,7 +1812,7 @@ export class RoofLayer {
         }
         return Math.max(1, m);
       });
-      const ctx = artContexts(this.buildings);
+      const ctx = artContexts(this.buildings, this.stories);
       this.art = this.buildings.map((b, i) => buildArt(b, this.stories[i], this.smallOfPair(i), sim.map, ctx[i] ?? SOLO));
       // Damage is per-battle render state and nothing else: a new buildings
       // list is a new battle, and every hole goes with it.
@@ -1787,6 +1885,10 @@ export class RoofLayer {
   // mapgen's farm house+barn, where the small one is the outbuilding.
   private smallOfPair(i: number): boolean {
     const b = this.buildings[i];
+    // N2. Inside a party-wall range EVERY unit stands within 4 m of a bigger
+    // neighbour, so this heuristic would thatch the whole high street. A
+    // terraced unit is a dwelling on the street, never an outbuilding.
+    if (b.terraceRun !== undefined) return false;
     const area = b.w * b.h;
     for (let j = 0; j < this.buildings.length; j++) {
       if (j === i) continue;
