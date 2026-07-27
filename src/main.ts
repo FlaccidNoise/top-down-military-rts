@@ -369,6 +369,12 @@ function showContactModal(e: Engagement): void {
     ? `Objective — ${held}/${objectives.length} held toward victory`
     : 'Front cell — losing shifts the front line';
   const forced = trivialMismatchWinner(attacker, defender);
+  // Standing down calls off the chit's own approach (front.step() halted it
+  // with path=[]) — correct when the player IS that chit's side, but on the
+  // AI-attacker-vs-player-defender path it would let the player veto every
+  // attack for free while the AI re-paths its whole approach. Defenders only
+  // get Attack and (when it qualifies) Auto-resolve.
+  const defending = aiSides.has(attacker.side);
   debriefEl.innerHTML = `<div class="db-scroll"><div class="db">
     <h1>CONTACT</h1>
     <p class="sub">${attacker.name} has met ${defender.name}.</p>
@@ -379,7 +385,7 @@ function showContactModal(e: Engagement): void {
     <div class="db-actions">
       <button id="fight" class="primary">Attack</button>
       ${forced ? '<button id="autoresolve">Auto-resolve</button>' : ''}
-      <button id="standdown">Stand down</button>
+      ${defending ? '' : '<button id="standdown">Stand down</button>'}
     </div>`;
   debriefEl.style.display = 'flex';
   {
@@ -397,10 +403,12 @@ function showContactModal(e: Engagement): void {
       save();
     };
   }
-  document.getElementById('standdown')!.onclick = () => {
-    debriefEl.style.display = 'none';
-    pendingEngagement = null;
-  };
+  if (!defending) {
+    document.getElementById('standdown')!.onclick = () => {
+      debriefEl.style.display = 'none';
+      pendingEngagement = null;
+    };
+  }
 }
 
 // The HUD chrome is opaque DOM sitting on top of the canvas, so the canvas
