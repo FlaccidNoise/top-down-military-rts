@@ -41,10 +41,21 @@ import {
   type StepMode,
 } from './map';
 import type { Building } from './mapgen';
-import { ambushThreshold, ASSAULT_DANGER_MULT, BALK_REASON, CHARGE_BALK_REASON, compliance, dangerScore, type OrderState, type TeamOrder } from './orders';
+import {
+  ambushThreshold,
+  ASSAULT_DANGER_MULT,
+  BALK_REASON,
+  CHARGE_BALK_REASON,
+  compliance,
+  dangerScore,
+  type OrderKind,
+  type OrderState,
+  type TeamOrder,
+} from './orders';
 import { astar } from './path';
 import { mulberry32, type Rng } from './rng';
 import { CANON_CLOCK_MIN, lightAt } from './solar';
+import { resolveMoveSpots } from './spots';
 import { LEAN_K, WIND } from './wind';
 
 export const DT = 1 / 30; // fixed timestep, seconds
@@ -1650,18 +1661,29 @@ export class Sim {
     this.moveSoldiersTo(team.soldierIds, wx, wy);
   }
 
-  private moveSoldiersTo(soldierIds: number[], wx: number, wy: number, gl = 0, facing?: number, width?: number): void {
+  // Ordered movement resolves its per-soldier tiles through the shared
+  // resolver (movement design §1.4): it walks findSpot's ring with a cover
+  // scorer inside SNAP_R, fills `used` itself, and omits men with no footing
+  // in reach (findSpot's null, same silent skip as before). ORDERED movement
+  // only — findSpot still owns dismount, vehicle bail and flee, which have no
+  // formation anchor and no player preview. The resolver runs once here, at
+  // order time, which is what keeps it inside the pathBudget amortization
+  // below; it must never be called per tick.
+  private moveSoldiersTo(
+    soldierIds: number[],
+    wx: number,
+    wy: number,
+    gl = 0,
+    facing?: number,
+    width?: number,
+    kind: OrderKind = 'move',
+    arc?: [number, number],
+  ): void {
     const eligibleIds = soldierIds.filter((id) => this.eligible(this.soldiers[id]));
-    const slots = formationSlots(eligibleIds.length, facing, width);
-    const used = new Set<number>();
-    let si = 0;
-    for (const sid of eligibleIds) {
+    const spots = resolveMoveSpots(this, { soldierIds: eligibleIds, x: wx, y: wy, facing, width, kind, arc }, new Set<number>());
+    for (const spot of spots) {
+      const sid = spot.sid;
       const s = this.soldiers[sid];
-      const [ox, oy] = slots[si];
-      si++;
-      const spot = this.findSpot(Math.floor(wx + ox), Math.floor(wy + oy), used);
-      if (!spot) continue;
-      used.add(spot.y * this.map.w + spot.x);
       // Select-all + one order is ~140 full-map A* searches in a single tick
       // (~250 ms, a visible freeze). Over budget, the search is deferred to a
       // later tick — the assigned formation spot is reserved now, so the
@@ -1738,7 +1760,7 @@ export class Sim {
     } else if (effective.kind === 'move' || effective.kind === 'fast' || effective.kind === 'sneak' || effective.kind === 'assault') {
       team.orderState = { order: effective, phase: 'executing', reason };
       if (effective.kind === 'sneak') this.sneakBaseline[team.id] = this.woundCount(team);
-      this.moveSoldiersTo(team.soldierIds, effective.x, effective.y, effective.l ?? 0, effective.facing, effective.width);
+      this.moveSoldiersTo(team.soldierIds, effective.x, effective.y, effective.l ?? 0, effective.facing, effective.width, effective.kind);
     } else if (effective.kind === 'smoke') {
       team.orderState = { order: effective, phase: 'executing', reason };
       this.deploySmoke(team, effective);
@@ -1746,7 +1768,7 @@ export class Sim {
       team.orderState = { order: effective, phase: 'executing', reason };
       const st = this.map.storiesAt(Math.floor(effective.x), Math.floor(effective.y));
       const gl = effective.l ?? (st >= 2 ? st - 1 : 0);
-      this.moveSoldiersTo(team.soldierIds, effective.x, effective.y, gl, effective.facing, effective.width);
+      this.moveSoldiersTo(team.soldierIds, effective.x, effective.y, gl, effective.facing, effective.width, effective.kind, effective.arc);
     } else {
       // fire: no movement, members engage per updateSoldier's combat section
       team.orderState = { order: effective, phase: 'executing', reason };

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { TEAMS, WEAPONS } from '../src/sim/data';
-import { EDGE, GameMap, los } from '../src/sim/map';
+import { ECLASS, EDGE, GameMap, edgeClass, los } from '../src/sim/map';
 import { astar } from '../src/sim/path';
 import { generateMap } from '../src/sim/mapgen';
 import { makeScenario } from '../src/sim/scenario';
@@ -267,18 +267,27 @@ describe('simulation', () => {
   // nothing. A waist-high garden wall (WALL_LOW, threshold 3) across the
   // ordered axis is inside a barrage round's 4 energy out to 2.25 m, so the
   // run really does open — asserted below rather than assumed.
+  //
+  // The run must stand in the CLEAR: edgeClass calls any edge touching a
+  // building MASONRY (threshold 9), which no 4-energy round can ever open.
+  // The wall used to be laid across a house, leaving two openable segments at
+  // one end, so the gate below was pinned by which way the scatter happened to
+  // fall — and any change that reshuffles the shared rng stream (the movement
+  // resolver was one) silently dropped the breach coverage. Each segment is
+  // class-checked as it is built so that cannot recur.
   const gardenWall = (sim: Sim, x: number, y0: number, y1: number) => {
     for (let y = y0; y <= y1; y++) {
       sim.map.setVEdge(x, y, EDGE.WALL);
       sim.map.vEdgeTops[y * (sim.map.w + 1) + x] = 1;
+      expect(edgeClass(sim.map, x, y, false)).toBe(ECLASS.WALL_LOW);
     }
   };
 
   it('is deterministic: same seed and orders produce identical state', () => {
     const run = () => {
       const sim = makeScenario(42);
-      gardenWall(sim, 80, 50, 60);
-      sim.callBarrage('blue', 80, 55);
+      gardenWall(sim, 80, 46, 52);
+      sim.callBarrage('blue', 80, 49);
       sim.orderSquad(0, { kind: 'move', x: 80, y: 55 });
       sim.orderSquad(1, { kind: 'move', x: 80, y: 70 });
       for (let i = 0; i < 3000; i++) sim.step();
