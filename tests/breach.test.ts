@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { BREACH_COVER, BREACH_LIP, BREACH_WIDE, ECLASS, EDGE, FLOOR_H, GameMap, edgeClass, edgeMid, los, nearestBreachable } from '../src/sim/map';
 import { astar, BREACH_STEP, CRUSH_STEP } from '../src/sim/path';
+import { RedCommander } from '../src/sim/ai';
+import { visibleEnemies } from '../src/sim/orders';
 import { Sim, type BreachEvent } from '../src/sim/sim';
 
 // Destructible terrain (docs/plans/2026-07-27-destructible-terrain-design.md).
@@ -728,5 +730,134 @@ describe('D6 snapshot breach list', () => {
   it('an unbreached battle leaves the field empty rather than absent', () => {
     const sim = new Sim(new GameMap(24, 24), 1);
     expect(JSON.parse(sim.snapshot()).breaches).toEqual([]);
+  });
+});
+
+// ── D7: AI awareness ───────────────────────────────────────────────────────
+
+describe('D7 forced repath near a fresh breach', () => {
+  // One head-high wall across the map with a single gate ten rows south, so
+  // the only route is a long detour until something opens a hole.
+  function detour(): GameMap {
+    const m = new GameMap(30, 30);
+    for (let y = 0; y < 30; y++) {
+      m.setVEdge(10, y, EDGE.WALL);
+      m.vEdgeTops[y * (m.w + 1) + 10] = 2;
+    }
+    m.setVEdge(10, 25, EDGE.DOOR); // the gate he would otherwise walk to
+    return m;
+  }
+
+  function walker(kind: 'move' | 'assault' | 'defend') {
+    const sim = new Sim(detour(), 6);
+    const squad = sim.addSquad('blue', 'A', [{ name: 'A', weapon: 'garand', x: 2.5, y: 12.5 }]);
+    sim.orderTeam(squad.teamIds[0], { kind, x: 14.5, y: 12.5 });
+    const s = sim.soldiers[squad.soldierIds[0]];
+    for (let i = 0; i < 20; i++) sim.step();
+    return { sim, s };
+  }
+
+  it('a walking squad re-solves its journey through the hole instead of finishing the detour', () => {
+    const { sim, s } = walker('move');
+    expect(s.path).not.toBeNull();
+    const before = s.path;
+    boom(sim)(10.0, 12.5, WALL_SHOT); // blow the wall on his own axis
+    expect(sim.map.vEdge(10, 12)).toBe(EDGE.BREACH);
+
+    sim.step(); // drainPendingPaths runs at the top of the tick
+    expect(s.path).not.toBe(before); // he asked the pathfinder again
+
+    let maxY = s.y;
+    for (let i = 0; i < 600; i++) {
+      sim.step();
+      maxY = Math.max(maxY, s.y);
+    }
+    expect(s.x).toBeGreaterThan(11); // through, and out the far side
+    expect(maxY).toBeLessThan(20); // never went anywhere near the gate at row 25
+  });
+
+  it('leaves an order kind that was not move or assault alone', () => {
+    const { sim, s } = walker('defend');
+    const before = s.path;
+    boom(sim)(10.0, 12.5, WALL_SHOT);
+    sim.step();
+    expect(s.path).toBe(before); // same array: nothing re-solved his route
+  });
+
+  it('is what discriminates: a plain walker is re-solved, a stretcher party is not', () => {
+    const sim = new Sim(detour(), 6);
+    const squad = sim.addSquad('blue', 'A', [
+      { name: 'R', weapon: 'garand', x: 2.5, y: 12.5 },
+      { name: 'P', weapon: 'garand', x: 2.5, y: 13.5 },
+      { name: 'C', weapon: 'garand', x: 2.5, y: 20.5 },
+    ]);
+    sim.orderTeam(squad.teamIds[0], { kind: 'move', x: 14.5, y: 12.5 });
+    for (let i = 0; i < 20; i++) sim.step();
+    const [r, plain, c] = squad.soldierIds.map((id) => sim.soldiers[id]);
+    // R is carrying the squad's casualty out. pathTo drops a task and clears
+    // `fleeing`, so the nudge has to leave him alone or a wall coming down
+    // 8 m away cancels the rescue.
+    c.downed = true;
+    c.rescuerId = r.id;
+    r.task = { kind: 'rescue', casualtyId: c.id, phase: 'goto', timer: 0 };
+    const rBefore = r.path;
+    const pBefore = plain.path;
+
+    boom(sim)(10.0, 12.5, WALL_SHOT);
+    sim.step();
+
+    expect(plain.path).not.toBe(pBefore); // the plain walker asked again
+    expect(r.path).toBe(rBefore); // the stretcher party was not touched
+  });
+});
+
+describe('D7 the LOS memo is breach-aware', () => {
+  it('visibleEnemies answers the question again in the SAME tick a wall comes down', () => {
+    const m = new GameMap(24, 24);
+    for (let y = 0; y < 24; y++) m.setVEdge(10, y, EDGE.WALL); // top 0: full-height masonry
+    const sim = new Sim(m, 2);
+    sim.addSquad('blue', 'A', [{ name: 'A', weapon: 'garand', x: 6.5, y: 10.5 }]);
+    sim.addSquad('red', 'B', [{ name: 'B', weapon: 'kar98k', x: 14.5, y: 10.5 }]);
+
+    expect(visibleEnemies(sim, 'blue')).toHaveLength(0); // walled off — and memoized
+    boom(sim)(10.0, 10.5, WALL_SHOT); // same tick, no step()
+    expect(sim.map.vEdge(10, 10)).toBe(EDGE.BREACH);
+    expect(visibleEnemies(sim, 'blue')).toHaveLength(1); // stale memo would still say 0
+  });
+});
+
+describe('D7 the commander re-scores a firing spot a breach changed', () => {
+  type Priv = {
+    baseSpot: Map<number, { x: number; y: number }>;
+    baseFiring: Set<number>;
+    invalidateBreachedSpots(sim: Sim): void;
+  };
+
+  function staged(spot: { x: number; y: number }) {
+    const sim = new Sim(wallRun(1), 3);
+    const c = new RedCommander({ side: 'red', stance: 'attack', posts: {} });
+    const priv = c as unknown as Priv;
+    priv.baseSpot.set(0, spot);
+    priv.baseFiring.add(0);
+    return { sim, priv };
+  }
+
+  it('drops the cached spot AND the settled flag when the hole is inside the radius', () => {
+    const { sim, priv } = staged({ x: 20, y: 10 }); // 10 m east of the wall run
+    boom(sim)(10.0, 10.5, WALL_SHOT);
+    priv.invalidateBreachedSpots(sim);
+    expect(priv.baseSpot.has(0)).toBe(false);
+    expect(priv.baseFiring.has(0)).toBe(false);
+  });
+
+  it('leaves a spot alone when the hole is out of the radius, and reacts only once per breach', () => {
+    const { sim, priv } = staged({ x: 200, y: 10 }); // far off
+    boom(sim)(10.0, 10.5, WALL_SHOT);
+    priv.invalidateBreachedSpots(sim);
+    expect(priv.baseSpot.has(0)).toBe(true);
+
+    priv.baseSpot.set(1, { x: 20, y: 10 });
+    priv.invalidateBreachedSpots(sim); // the same breaches, already consumed
+    expect(priv.baseSpot.has(1)).toBe(true);
   });
 });

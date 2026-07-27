@@ -115,6 +115,11 @@ const WALL_SHOT: { suppRadius: number; fragRadius: number; frags: number; dmg: [
   dmg: [20, 50],
   breach: 12,
 };
+// D7: how close a walking man has to be to a fresh hole to be worth making him
+// re-ask the pathfinder. 25 m is the "he could plausibly use it" band — wide
+// enough that the squad you blew the wall for pours through, tight enough that
+// one barrage does not re-solve half the company's journeys.
+const BREACH_REPATH_RADIUS = 25;
 // How far from the click a wall target may be picked up. Two and a half metres
 // is a tile and a half: close enough that the player is unambiguously pointing
 // at a wall, loose enough that he need not hit the edge line to the pixel.
@@ -2243,6 +2248,36 @@ export class Sim {
     const ev: BreachEvent = { horiz, x, y, cls, wide, cause };
     this.pendingBreaches.push(ev);
     this.breachLog.push(ev);
+    this.repathNearBreach(horiz ? x + 0.5 : x, horiz ? y : y + 0.5);
+  }
+
+  // The single highest-value AI change in the feature (design section 5 item
+  // 1). Pathing already reads the edge bytes live, so a NEW route is free —
+  // but a man already walking does not gain it until something makes him ask
+  // again, and an ordinary move order never repaths at all. Without this the
+  // squad finishes its walk to the door while the hole you just blew for it
+  // stands empty.
+  //
+  // It QUEUES a repath rather than clearing s.path. Clearing would strand
+  // anyone whose new search fails (pathTo only overwrites on success), and
+  // routing through pendingPaths means an 80-breach barrage cannot blow the
+  // tick: PATH_BUDGET_PER_TICK still meters the A* and a second breach near
+  // the same man overwrites his entry instead of queueing twice. The
+  // destination comes off his own path's last waypoint, so he is re-solving
+  // the journey he was already on, not being re-ordered.
+  private repathNearBreach(mx: number, my: number): void {
+    for (const s of this.soldiers) {
+      // Every exclusion here is a path this must not stomp: pathTo drops a
+      // rescue/ammo/take-over task and clears `fleeing`, so a medic mid-carry
+      // or a broken man running must not be swept up because a wall fell.
+      if (!s.path || s.task || s.fleeing || s.inVehicle >= 0 || s.mountTarget >= 0) continue;
+      if (!this.eligible(s)) continue;
+      const kind = this.teams[s.teamId].orderState.order?.kind;
+      if (kind !== 'move' && kind !== 'assault') continue;
+      if (Math.hypot(s.x - mx, s.y - my) > BREACH_REPATH_RADIUS) continue;
+      const dest = s.path[s.path.length - 1];
+      this.pendingPaths.set(s.id, { spot: { x: Math.floor(dest.x), y: Math.floor(dest.y) }, gl: dest.l ?? 0 });
+    }
   }
 
   // A hull that has just consumed a waypoint drives through whatever stood on

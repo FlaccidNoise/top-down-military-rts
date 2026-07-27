@@ -32,13 +32,22 @@ export const ASSAULT_DANGER_MULT = 1.3;
 
 const RECENT_CASUALTY_TICKS = 900; // 30s at DT=1/30
 
-// Per-(sim, tick, side) memo. This is O(enemies x friendlies) raycasts, and
-// dangerSamples calls it once per team — a select-all move order evaluated it
-// ~54 times for one unchanged answer (~87 ms of the order burst). Soldier
-// positions, levels and liveness only change inside step(), so within a tick
-// the result is invariant and the memo is exact, not an approximation.
+// Per-(sim, tick, breach-count, side) memo. This is O(enemies x friendlies)
+// raycasts, and dangerSamples calls it once per team — a select-all move order
+// evaluated it ~54 times for one unchanged answer (~87 ms of the order burst).
+//
+// The tick alone USED to be a complete key: soldier positions, levels and
+// liveness only change inside step(), so within a tick the answer was
+// invariant. Destructible terrain (the D7 LOS-memo audit, design section 5
+// item 3) broke exactly that premise — computeVisibleEnemies reads
+// sightToSoldier -> los() -> the live edge arrays, and a blast or a hull can
+// now flip one of those bytes MID-tick, inside the very step() the memo is
+// keyed on. Left alone, a wall blown at the top of a tick would still be
+// blocking sight to everything scored later in it. `breachLog.length` is a
+// monotone counter of every edge that has opened, so adding it to the key
+// makes the memo exact again for one integer compare per call.
 // Callers must treat the array as read-only (none mutate it today).
-const seenCache = new WeakMap<Sim, { tick: number; blue?: Soldier[]; red?: Soldier[] }>();
+const seenCache = new WeakMap<Sim, { tick: number; breaches: number; blue?: Soldier[]; red?: Soldier[] }>();
 
 // The honest-vision primitive: enemies any living member of `side` currently
 // has LOS to, within that member's own weapon range. Shared by dangerScore,
@@ -46,8 +55,8 @@ const seenCache = new WeakMap<Sim, { tick: number; blue?: Soldier[]; red?: Soldi
 // definition of "what a side knows" everywhere it matters.
 export function visibleEnemies(sim: Sim, side: Side): Soldier[] {
   let entry = seenCache.get(sim);
-  if (!entry || entry.tick !== sim.tick) {
-    entry = { tick: sim.tick };
+  if (!entry || entry.tick !== sim.tick || entry.breaches !== sim.breachLog.length) {
+    entry = { tick: sim.tick, breaches: sim.breachLog.length };
     seenCache.set(sim, entry);
   }
   const hit = entry[side];

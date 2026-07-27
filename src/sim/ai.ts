@@ -45,6 +45,12 @@ const ASSAULT_RANGE = 30; // m from the post at which a suppressed-in maneuver t
 const SMOKE_RANGE = 45; // m from the post at which the commander screens the objective with mortar smoke ahead of the charge
 const FLANK_OFFSET = 20; // meters either side of the direct axis to the post
 const BOF_SETTLE_RADIUS = 5; // close enough to the scored firing spot to stop moving and start firing
+// A fresh breach this close to a cached firing position invalidates it (design
+// section 5 item 2). baseFiringSpot scores candidates on LOS to the post, and a
+// hole in a wall is precisely a change in LOS — the commander would drift onto
+// the new sightline for free, but only at the next sampling, which for a
+// settled base of fire is never. Dropping the cache makes the drift immediate.
+const BREACH_RESCORE_RADIUS = 40;
 
 export class RedCommander {
   private lastEval = -EVAL_TICKS;
@@ -66,6 +72,7 @@ export class RedCommander {
   private fireStartTick = new Map<number, number>(); // base teamId -> tick its fire order began
   private startStrength = new Map<number, number>(); // maneuver teamId -> eligible count at classification
   private reserveCommitted = false;
+  private breachSeen = 0; // how much of sim.breachLog this commander has already reacted to
 
   constructor(private cfg: CommanderConfig) {}
 
@@ -79,6 +86,7 @@ export class RedCommander {
 
     if (!this.groupsReady) this.assignGroups(sim);
     this.updateThreat(sim);
+    this.invalidateBreachedSpots(sim);
 
     if (this.cfg.stance === 'attack') this.runAttack(sim);
     else this.runDefend(sim);
@@ -104,6 +112,35 @@ export class RedCommander {
       if (c.kind !== 'infantry') continue;
       this.threat.push({ x: c.x, y: c.y, conf: Math.max(0, 1 - (sim.tick - c.tick) / AI_MEMORY_TICKS) });
     }
+  }
+
+  // Walls that have opened since the last eval, read off the append-only
+  // breachLog with a private cursor — NEVER through takeBreaches(), which is
+  // the renderer's drain channel and would starve it. A cached firing spot
+  // within BREACH_RESCORE_RADIUS of a new hole is dropped along with its
+  // "settled and firing" flag, so the next eval re-scores and, if the breach
+  // really did open a better sightline, relocates onto it.
+  //
+  // fireStartTick is deliberately NOT reset: suppression already imposed is
+  // not undone by picking a better window to impose it from.
+  //
+  // Cost of a false positive is one re-score: baseFiringSpot's candidate ring
+  // includes "stay put", and a team standing on the spot it re-picks is inside
+  // BOF_SETTLE_RADIUS immediately, so it re-enters baseFiring the same eval.
+  private invalidateBreachedSpots(sim: Sim): void {
+    const log = sim.breachLog;
+    if (this.breachSeen >= log.length) return;
+    for (let i = this.breachSeen; i < log.length; i++) {
+      const b = log[i];
+      const mx = b.horiz ? b.x + 0.5 : b.x;
+      const my = b.horiz ? b.y : b.y + 0.5;
+      for (const [teamId, spot] of this.baseSpot) {
+        if (Math.hypot(spot.x - mx, spot.y - my) > BREACH_RESCORE_RADIUS) continue;
+        this.baseSpot.delete(teamId);
+        this.baseFiring.delete(teamId);
+      }
+    }
+    this.breachSeen = log.length;
   }
 
   private threatConfNear(x: number, y: number, radius: number): number {
