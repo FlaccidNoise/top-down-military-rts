@@ -107,8 +107,8 @@ describe('war goals', () => {
   it('binds the deadline and preset; campaign knobs never reach the theater', () => {
     const { theater } = build(1);
     const goals = makeWarGoals(theater, CAMP);
-    expect(goals.deadlineDay).toBe(CAMP.warDays);
-    expect(goals.objectiveNodes).toEqual(theater.objectiveNodes);
+    expect(goals.red).toContainEqual({ kind: 'deadline', day: CAMP.warDays });
+    expect(goals.blue[0]).toMatchObject({ kind: 'control', nodeIds: theater.objectiveNodes });
     expect(() => makeWarGoals({ ...theater, objectiveNodes: [] }, CAMP)).toThrow(TheaterGoalsError);
   });
 
@@ -120,18 +120,20 @@ describe('war goals', () => {
     };
     for (const f of d.forces) addForce(fr, f);
     const goals = makeWarGoals(theater, CAMP);
-    expect(warStatus(fr, goals)).toBe('ongoing');
+    const objectives = theater.objectiveNodes;
+    const deadline = CAMP.warDays;
+    expect(warStatus(fr, goals).state).toBe('ongoing');
     // Blue takes every objective on the deadline day itself: blue wins.
-    fr.day = goals.deadlineDay;
-    for (const n of goals.objectiveNodes) fr.controlByNode[n] = 'blue';
-    expect(warStatus(fr, goals)).toBe('blue');
+    fr.day = deadline;
+    for (const n of objectives) fr.controlByNode[n] = 'blue';
+    expect(warStatus(fr, goals)).toMatchObject({ state: 'decided', winner: 'blue' });
     // Past the deadline without the objectives: red wins.
-    for (const n of goals.objectiveNodes) fr.controlByNode[n] = 'red';
-    fr.day = goals.deadlineDay + 1;
-    expect(warStatus(fr, goals)).toBe('red');
+    for (const n of objectives) fr.controlByNode[n] = 'red';
+    fr.day = deadline + 1;
+    expect(warStatus(fr, goals)).toMatchObject({ state: 'decided', winner: 'red' });
     // Annihilation before the deadline: red wins.
     fr.day = 2;
     for (const f of fr.forces) if (f.side === 'blue') f.strength = 0;
-    expect(warStatus(fr, goals)).toBe('red');
+    expect(warStatus(fr, goals)).toMatchObject({ state: 'decided', winner: 'red' });
   });
 });

@@ -614,6 +614,13 @@ export function trivialMismatchWinner(attacker: Chit, defender: Chit): 'attacker
   return null;
 }
 
+// The planner's belief and the resolver's truth are ONE formula (§4.4):
+// coarseOdds is what the AI weighs an attack with and exactly what the
+// resolver rolls against — they cannot drift.
+export function coarseOdds(atkEff: number, defEff: number, terrainMult: number): number {
+  return Math.max(0.05, Math.min(0.95, atkEff / (atkEff + defEff * terrainMult)));
+}
+
 // The tuned Lanchester core — THE asset (2026-07 calibration, 16 seeds,
 // wars 1-15 days, both outcomes). One implementation, two callers: the grid
 // resolveCoarse below and the V2 theater battle layer. Draw order is frozen:
@@ -625,8 +632,7 @@ export function coarseOutcome(
   rng: Rng,
   forcedWinner?: 'attacker' | 'defender' | null,
 ): { attackerWins: boolean; atkLosses: number; defLosses: number } {
-  const score = atkStrength / (atkStrength + defStrength * terrainMult);
-  const clampedScore = Math.max(0.05, Math.min(0.95, score));
+  const clampedScore = coarseOdds(atkStrength, defStrength, terrainMult);
   // clampedScore still allows a 5% upset either way — a forced outcome (the
   // player accepted an offered "foregone conclusion") must never roll for it.
   // The roll is DRAWN either way: a skipped draw would shift every later draw

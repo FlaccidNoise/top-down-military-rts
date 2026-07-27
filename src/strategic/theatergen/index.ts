@@ -102,8 +102,10 @@ export function makeTheater(seed: number, cfg: TheaterConfig): TheaterResult {
     // T_OBJECTIVES (stage 47): the initial front is the river-anchored
     // partition — west of the main river is blue, east is red; crossing
     // nodes sit on the line and start red (the defender holds the river).
-    // Objectives: every red-side town plus every main-river crossing —
-    // the axis-of-advance targets the war goals (S19) consume.
+    // Objectives: every red-side town plus every main-river BRIDGE — never
+    // a ford: rivers are transit, orderMove refuses ford destinations, and a
+    // war goal nobody may stand on is a stalled war (found live: the planner
+    // vetoed nothing yet issued zero orders at seed 2).
     const objRng = stageStream(base, T_TAG.OBJECTIVES);
     const main = rivers[0].polyline;
     const control: Side[] = nodes.map((n) => {
@@ -111,7 +113,7 @@ export function makeTheater(seed: number, cfg: TheaterConfig): TheaterResult {
       return n.pos.x < mainRiverXAt(main, n.pos.y) ? 'blue' : 'red';
     });
     const objectiveNodes = nodes
-      .filter((n) => (n.kind === 'town' && control[n.id] === 'red') || n.crossing?.riverId === 0)
+      .filter((n) => (n.kind === 'town' && control[n.id] === 'red') || (n.crossing?.riverId === 0 && n.crossing.kind === 'bridge'))
       .map((n) => n.id)
       .sort((a, b) => a - b);
     // Supply sources: the westmost blue node and the eastmost red node —

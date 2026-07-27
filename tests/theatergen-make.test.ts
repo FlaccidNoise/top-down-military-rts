@@ -197,5 +197,5 @@ describe('TheaterGenError', () => {
 });
 
 const PIN_1 = 576375049;
-const PIN_2 = 797379600;
+const PIN_2 = 1413468753; // moved 2026-07-27: ford objectives excluded (unholdable war goals stall the planner)
 const PIN_3 = 3881454522;
