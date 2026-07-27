@@ -3,7 +3,7 @@ import { EDGE } from '../sim/map';
 import type { GameMap } from '../sim/map';
 import type { Sim, Soldier } from '../sim/sim';
 import type { Camera } from './camera';
-import { AO_ALPHA, SHADOW_ALPHA, SHADOW_SOFT_ALPHA, SUN, WIND, shadowOffset } from './light';
+import { AO_ALPHA, SUN, WIND, shadowAlpha, shadowOffset, shadowSoft, shadowSoftAlpha, sun } from './light';
 
 // Gable roofs drawn over building footprints (sim.buildings, from the map
 // plan). A roof fades out when the camera is zoomed in close or a soldier the
@@ -275,10 +275,6 @@ interface RoofArt {
   oy: number;
   ow: number;
   oh: number;
-  sx: number; // shadow sprite rect — grown SE by the cast offset plus blur margin
-  sy: number;
-  sw: number;
-  sh: number;
   wall: WallMat;
   wallFlat: string; // the plan band's body tone…
   wallTones: string[]; // …and its per-stone ramp
@@ -594,8 +590,6 @@ function buildArt(b: Building, stories: number, smallOfPair: boolean, map: GameM
   // the roof itself is 15 px wide, it is the whole church read.
   const spireCast = plan === 'spire' ? 12 : 0;
   const spireCross = role === 'church' ? Math.min(1.5, spanLen * 0.2) : 0;
-  const [csdx, csdy] = shadowOffset(CAST_SOFT * stories + spireCast);
-  const blurPad = 0.6;
 
   // The sprite must contain every plan feature or wings and lean-tos clip.
   let nx = rr.x;
@@ -646,10 +640,6 @@ function buildArt(b: Building, stories: number, smallOfPair: boolean, map: GameM
     oy: ny - PAD_NW,
     ow: mx - nx + PAD_NW + PAD_SE,
     oh: my - ny + PAD_NW + PAD_SE,
-    sx: nx - blurPad,
-    sy: ny - blurPad,
-    sw: mx - nx + csdx + blurPad * 2,
-    sh: my - ny + csdy + blurPad * 2,
     wall,
     // No lit/shade pair: a wall head seen in plan is one surface, and giving it
     // a sun side would be re-introducing the elevation this pass removed.
@@ -1650,18 +1640,53 @@ function bakeRoof(art: RoofArt, band: number, damage: Damage[]): HTMLCanvasEleme
   return c;
 }
 
+// The shadow sprite plus the world rect that positions it. They are produced
+// together and consumed together (drawShadows drawImages the canvas over the
+// rect), and BOTH are sun-dependent — the rect grows down-sun by the cast
+// offset, whichever way that points today — so they live on Baked, not on the
+// sun-independent RoofArt (§5.2: padding the RoofArt box to the worst-case
+// azimuth was budgeted at 55 MB and rejected).
+interface ShadowBake {
+  shadow: HTMLCanvasElement;
+  sx: number;
+  sy: number;
+  sw: number;
+  sh: number;
+}
+
 // Soft one-sun drop shadow. ctx.filter is a bake-time nicety — where it is
 // unsupported the assignment is a no-op and the edges simply stay hard, so
 // there is nothing to guard.
-function bakeShadow(b: Building, art: RoofArt, stories: number, band: number): HTMLCanvasElement {
-  const c = document.createElement('canvas');
-  c.width = Math.max(1, Math.round(art.sw * band));
-  c.height = Math.max(1, Math.round(art.sh * band));
-  const g = c.getContext('2d')!;
-  g.scale(band, band);
-  g.translate(-art.sx, -art.sy);
+function bakeShadow(b: Building, art: RoofArt, stories: number, band: number): ShadowBake {
   const r = art.rr;
   const l = art.lean;
+  // Plan extent of everything that casts (the roof sprite box before its
+  // NW/SE pads) — the same nx/ny/mx/my buildArt frames the roof sprite with.
+  let nx = r.x;
+  let ny = r.y;
+  let mx = r.x + r.w;
+  let my = r.y + r.h;
+  if (l) {
+    nx = Math.min(nx, l.x);
+    ny = Math.min(ny, l.y);
+    mx = Math.max(mx, l.x + l.w);
+    my = Math.max(my, l.y + l.h);
+  }
+  // A low sun is diffuse: the blur radii and the margin that contains them
+  // both scale by softMul (1 at the canonical hour, up to 3).
+  const soft = shadowSoft();
+  const blurPad = 0.6 * soft;
+  const [csdx, csdy] = shadowOffset(CAST_SOFT * stories + art.spireCast);
+  const sx = nx + Math.min(0, csdx) - blurPad;
+  const sy = ny + Math.min(0, csdy) - blurPad;
+  const sw = mx - nx + Math.abs(csdx) + blurPad * 2;
+  const sh = my - ny + Math.abs(csdy) + blurPad * 2;
+  const c = document.createElement('canvas');
+  c.width = Math.max(1, Math.round(sw * band));
+  c.height = Math.max(1, Math.round(sh * band));
+  const g = c.getContext('2d')!;
+  g.scale(band, band);
+  g.translate(-sx, -sy);
   const [sdx, sdy] = shadowOffset(CAST_CORE * stories);
   const [fdx, fdy] = shadowOffset(CAST_SOFT * stories);
   // the silhouette is whatever the roof actually is, lean-to included
@@ -1669,11 +1694,11 @@ function bakeShadow(b: Building, art: RoofArt, stories: number, band: number): H
     g.fillRect(r.x + ox, r.y + oy, r.w, r.h);
     if (l) g.fillRect(l.x + ox, l.y + oy, l.w, l.h);
   };
-  g.filter = `blur(${(0.28 * band).toFixed(2)}px)`;
-  g.fillStyle = `rgba(12,15,10,${SHADOW_SOFT_ALPHA})`;
+  g.filter = `blur(${(0.28 * band * soft).toFixed(2)}px)`;
+  g.fillStyle = `rgba(12,15,10,${shadowSoftAlpha()})`;
   cast(fdx, fdy);
-  g.filter = `blur(${(0.12 * band).toFixed(2)}px)`;
-  g.fillStyle = `rgba(12,15,10,${SHADOW_ALPHA})`;
+  g.filter = `blur(${(0.12 * band * soft).toFixed(2)}px)`;
+  g.fillStyle = `rgba(12,15,10,${shadowAlpha()})`;
   cast(sdx, sdy);
   if (art.spireCast > 0) {
     // A spire throws a tapering finger far past the tower's own shadow. At the
@@ -1699,11 +1724,11 @@ function bakeShadow(b: Building, art: RoofArt, stories: number, band: number): H
       g.closePath();
       g.fill();
     };
-    g.filter = `blur(${(0.4 * band).toFixed(2)}px)`;
-    g.fillStyle = `rgba(12,15,10,${SHADOW_SOFT_ALPHA})`;
+    g.filter = `blur(${(0.4 * band * soft).toFixed(2)}px)`;
+    g.fillStyle = `rgba(12,15,10,${shadowSoftAlpha()})`;
     finger(side * 0.3, side * 0.14);
-    g.filter = `blur(${(0.12 * band).toFixed(2)}px)`;
-    g.fillStyle = `rgba(12,15,10,${SHADOW_ALPHA})`;
+    g.filter = `blur(${(0.12 * band * soft).toFixed(2)}px)`;
+    g.fillStyle = `rgba(12,15,10,${shadowAlpha()})`;
     finger(side * 0.24, side * 0.09);
     // The finial at the tip. A vertical cross throws a cross-shaped shadow,
     // and this one lands on open churchyard — which is what tells the player
@@ -1715,7 +1740,7 @@ function bakeShadow(b: Building, art: RoofArt, stories: number, band: number): H
     const my = cy + tdy - SUN.dy * arm * 0.7;
     g.lineCap = 'round';
     g.lineWidth = Math.max(0.14, arm * 0.36);
-    g.strokeStyle = `rgba(12,15,10,${SHADOW_ALPHA})`;
+    g.strokeStyle = `rgba(12,15,10,${shadowAlpha()})`;
     g.beginPath();
     g.moveTo(mx - bx, my - by);
     g.lineTo(mx + bx, my + by);
@@ -1728,7 +1753,7 @@ function bakeShadow(b: Building, art: RoofArt, stories: number, band: number): H
   g.strokeStyle = `rgba(8,10,7,${AO_ALPHA})`;
   g.lineWidth = aoW;
   g.strokeRect(b.x + aoW / 2, b.y + aoW / 2, b.w - aoW, b.h - aoW);
-  return c;
+  return { shadow: c, sx, sy, sw, sh };
 }
 
 // --- the wall ring, in plan --------------------------------------------------
@@ -1935,12 +1960,16 @@ export function bakeBudgetMs(prewarm: boolean, still: number): number {
   return still >= STILL_FRAMES ? BAKE_MS_STATIC : BAKE_MS;
 }
 
-interface Baked {
+interface Baked extends ShadowBake {
   roof: HTMLCanvasElement;
-  shadow: HTMLCanvasElement;
+  // shadow + its world rect sx/sy/sw/sh come from ShadowBake: the rect is
+  // sun-dependent (it grows down-sun, whichever way that points today), so it
+  // is baked state, not art state.
   walls: HTMLCanvasElement[]; // the plan band, one strip per side, SIDE_N..SIDE_E
   ver: number; // damage version this was baked at — stale sprites keep serving until the rebake lands
   wallVer: number; // ...and the breach version. Two tags, because the two sprites move independently
+  // No sun tag: the sprite list this entry lives in is keyed `band:sunStep`,
+  // so every entry in it was baked under that sun by construction.
 }
 
 export class RoofLayer {
@@ -1957,9 +1986,14 @@ export class RoofLayer {
   // they need a tag of their own or a shelled house keeps its walls intact.
   private wallVer: number[] = [];
   private map: GameMap | null = null;
-  private sprites = new Map<number, (Baked | null)[]>();
+  // Keyed `band:sunStep` (N5): a sun step is a keyspace move exactly like a
+  // band change — the previous key's sprites keep serving while the new key
+  // drains through the same amortized queue, then the previous key is evicted
+  // wholesale. Same keep-current+prev rule the band map always had.
+  private sprites = new Map<string, (Baked | null)[]>();
   private band = 0;
-  private prevBand = 0;
+  private skey = '';
+  private prevKey = '';
   private queue: number[] = [];
   private prewarm = true;
   private tick = 0;
@@ -1991,7 +2025,8 @@ export class RoofLayer {
       this.wallVer = this.buildings.map(() => 0);
       this.sprites.clear();
       this.band = 0;
-      this.prevBand = 0;
+      this.skey = '';
+      this.prevKey = '';
       this.queue = [];
       this.prewarm = true;
     }
@@ -2130,12 +2165,14 @@ export class RoofLayer {
   }
 
   private setBand(band: number): void {
-    if (band === this.band) return;
-    if (this.band) this.prevBand = this.band;
+    const skey = `${band}:${sun().step}`;
+    if (skey === this.skey) return;
+    if (this.skey) this.prevKey = this.skey;
     this.band = band;
-    if (!this.sprites.has(band)) this.sprites.set(band, this.buildings.map(() => null));
-    for (const k of [...this.sprites.keys()]) if (k !== this.band && k !== this.prevBand) this.sprites.delete(k);
-    const cur = this.sprites.get(band)!;
+    this.skey = skey;
+    if (!this.sprites.has(skey)) this.sprites.set(skey, this.buildings.map(() => null));
+    for (const k of [...this.sprites.keys()]) if (k !== this.skey && k !== this.prevKey) this.sprites.delete(k);
+    const cur = this.sprites.get(skey)!;
     this.queue = [];
     // a sprite baked before this building took a hit is stale, not missing —
     // it keeps drawing (no blink) but has to be redrawn at the new band too
@@ -2154,7 +2191,12 @@ export class RoofLayer {
   private pump(cam: Camera, cw: number, ch: number): void {
     if (!this.queue.length || this.pumpedAt === this.frame) return;
     this.pumpedAt = this.frame;
-    const cur = this.sprites.get(this.band)!;
+    const cur = this.sprites.get(this.skey)!;
+    // On a sun-only step the previous key holds strips baked at THIS band, and
+    // the wall band never reads the sun — reusing them turns a 65-building sun
+    // step into roof+shadow bakes alone. parseInt reads the band off the
+    // composite key.
+    const prevSameBand = this.prevKey !== '' && parseInt(this.prevKey, 10) === this.band ? this.sprites.get(this.prevKey) : null;
     const budget = bakeBudgetMs(this.prewarm, this.still);
     const t0 = performance.now();
     // the shadow is blurred to begin with, so half resolution is free
@@ -2165,49 +2207,63 @@ export class RoofLayer {
       const b = this.buildings[i];
       const art = this.art[i];
       const was = cur[i];
+      // the shadow is damage- AND breach-independent: a hole in a wall does
+      // not shorten the throw of the roof above it. It is NOT sun-independent,
+      // but `was` lives under this key's sun by construction.
+      const sb: ShadowBake = was ?? bakeShadow(b, art, this.stories[i], sBand);
+      const prev = prevSameBand?.[i];
       cur[i] = {
         roof: bakeRoof(art, this.band, this.damage[i]),
-        // the shadow is damage- AND breach-independent: a hole in a wall does
-        // not shorten the throw of the roof above it
-        shadow: was?.shadow ?? bakeShadow(b, art, this.stories[i], sBand),
-        // the band is not. A rebake driven by a HIT still reuses it — that was
-        // the original point — but one driven by a BREACH must redraw it.
+        shadow: sb.shadow,
+        sx: sb.sx,
+        sy: sb.sy,
+        sw: sb.sw,
+        sh: sb.sh,
+        // the band is not damage-dependent. A rebake driven by a HIT still
+        // reuses it — that was the original point — but one driven by a
+        // BREACH must redraw it, and a sun-only step may lift it across keys.
         walls:
           was && was.wallVer === this.wallVer[i]
             ? was.walls
-            : [SIDE_N, SIDE_S, SIDE_W, SIDE_E].map((s) => bakeWallBand(b, art, this.band, s)),
+            : prev && prev.wallVer === this.wallVer[i]
+              ? prev.walls
+              : [SIDE_N, SIDE_S, SIDE_W, SIDE_E].map((s) => bakeWallBand(b, art, this.band, s)),
         ver: this.dmgVer[i],
         wallVer: this.wallVer[i],
       };
     }
     if (this.queue.length) return;
     this.prewarm = false;
-    // the previous band was only ever a stand-in while this one baked
-    if (this.prevBand && this.prevBand !== this.band) {
-      this.sprites.delete(this.prevBand);
-      this.prevBand = 0;
+    // the previous key was only ever a stand-in while this one baked
+    if (this.prevKey && this.prevKey !== this.skey) {
+      this.sprites.delete(this.prevKey);
+      this.prevKey = '';
     }
   }
 
   private serving(i: number): Baked | null {
-    return this.sprites.get(this.band)?.[i] ?? (this.prevBand ? this.sprites.get(this.prevBand)?.[i] ?? null : null);
+    return this.sprites.get(this.skey)?.[i] ?? (this.prevKey ? this.sprites.get(this.prevKey)?.[i] ?? null : null);
   }
 
   drawShadows(ctx: CanvasRenderingContext2D, cam: Camera, cw: number, ch: number): void {
     this.setBand(roofBandFor(cam.scale));
     this.pump(cam, cw, ch);
+    // The off-screen reject must cover the throw, and the throw stretches
+    // with the sun — without the lenMul a low-sun shadow pops in at the
+    // screen edge. (At night lenMul is 0 and the sprite is the AO ring alone,
+    // which the footprint pad already covers.)
+    const lm = sun().lenMul;
     this.withWorldTransform(ctx, cam, cw, ch, () => {
       this.buildings.forEach((b, i) => {
-        if (!this.onScreen(cam, i, cw, ch, 2 * this.stories[i])) return;
+        if (!this.onScreen(cam, i, cw, ch, 2 * this.stories[i] * lm)) return;
         // shadow tracks the roof fade: a faded roof (zoomed-in interior reveal)
         // must not leave a full-footprint shadow rect stranded on the ground
         // with no roof above it — it reads as a dark terrain stain.
         const a = this.alphas[i];
         const spr = this.serving(i);
         if (!spr) return;
-        const art = this.art[i];
         ctx.globalAlpha = a;
-        ctx.drawImage(spr.shadow, art.sx, art.sy, art.sw, art.sh);
+        ctx.drawImage(spr.shadow, spr.sx, spr.sy, spr.sw, spr.sh);
       });
       ctx.globalAlpha = 1;
     });
