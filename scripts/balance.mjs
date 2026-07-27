@@ -49,6 +49,7 @@ const argList = (name, dflt) => {
 };
 
 const SEEDS = argNum('seeds', 6);
+const SEED_START = argNum('seed-start', 1); // shard a slow cell by seed range: --seed-start 4 --seeds 6
 const CAP = argNum('cap', 54_000); // 30 game-minutes at DT=1/30s
 const KINDS = argList('kinds', ['open', 'woods', 'bourg']);
 const PROFILES = argList('profiles', ['blob', 'blob-fast', 'doctrine']);
@@ -147,7 +148,7 @@ if (MERGE) {
   let done = 0;
   for (const profile of PROFILES) {
     for (const kind of KINDS) {
-      for (let seed = 1; seed <= SEEDS; seed++) {
+      for (let seed = SEED_START; seed <= SEEDS; seed++) {
         const r = runCell(profile, kind, seed);
         runs.push(r);
         done++;
