@@ -106,11 +106,9 @@ const HEDGE_GREEN: [number, number, number] = [72, 90, 48]; // yellower, denser 
 const FLOOR: [number, number, number] = [160, 145, 122];
 const FLOOR_DARK: [number, number, number] = [141, 120, 95];
 const WATER: [number, number, number] = [70, 90, 99]; // desaturated slate, muted-Normandy — not postcard blue
-// V3 put 'bank' and 'rail' on the map; V4 owns their real art (ballast,
-// sleepers, gradient-derived batter shading). These two are TERRAIN.bank.color
-// and TERRAIN.rail.color as triples, so the placeholder base is at least the
-// right colour — see drawTileBase.
-const BANK_EARTH: [number, number, number] = [95, 107, 70]; // #5f6b46
+// A bank is turf, so it draws the ordinary grass base and adds erosion — there
+// is no BANK_EARTH tone any more. Ballast is its own material: TERRAIN.rail's
+// colour as a triple, so the flat far-LOD fill and the drawn crest agree.
 const RAIL_BALLAST: [number, number, number] = [107, 100, 89]; // #6b6459
 const FIELD_VARIANTS: [number, number, number][] = [
   [96, 84, 58], // turned earth
@@ -242,7 +240,12 @@ function drawHillshade(g: Ctx, map: GameMap, x: number, y: number): void {
   const dzdx = Math.max(-8, Math.min(8, (map.elevAt(x + 1, y) - map.elevAt(x - 1, y)) / 2));
   const dzdy = Math.max(-8, Math.min(8, (map.elevAt(x, y + 1) - map.elevAt(x, y - 1)) / 2));
   if (dzdx === 0 && dzdy === 0) return;
-  const nl = Math.hypot(dzdx, dzdy, 1);
+  // sqrt, not hypot (verticality design §2.5): undulation gives essentially
+  // every tile a non-zero gradient, so the zero early-out above stops firing
+  // and this becomes 76,800 calls per full bake. Math.hypot is a slow,
+  // overflow-guarded library call; the magnitudes here are bounded by the
+  // clamp, so the guard buys nothing.
+  const nl = Math.sqrt(dzdx * dzdx + dzdy * dzdy + 1);
   const dot = (-dzdx * LIGHT.x + -dzdy * LIGHT.y + LIGHT.z) / nl;
   const d = (dot - FLAT_DOT) * HILLSHADE;
   if (Math.abs(d) < 0.004) return;
@@ -1065,6 +1068,260 @@ function drawGrassBase(g: Ctx, x: number, y: number): void {
   }
 }
 
+// ── Railway: ballast, sleepers, rails, embankment batter (V4) ──────────────
+//
+// The sim gives the renderer two keys and an elevation field, and nothing else:
+// `rail` is the ballasted crest, `bank` the batter either side, and
+// map.crossings marks the road tiles the arterial carved through the footprint
+// (verticality design §2.2 — the road wins the tile, so a crossing is ordinary
+// road to A* and to every vehicle). Run direction, which tile of a 3-wide crest
+// carries the track, and which way a batter falls are all re-derived here.
+
+const RAIL_STEEL: [number, number, number] = [74, 72, 68];
+const SLEEPER: [number, number, number] = [64, 52, 40];
+const SLEEPER_PITCH = 0.6; // m — verticality design §2.5
+const GAUGE = 0.24; // m from the track centreline to each rail
+const SLEEPER_HALF = 0.42;
+
+export interface RailIndex {
+  /** 0 = the line runs along world x, 1 = along world y */
+  axis: number;
+  /** track centreline in world metres on the ACROSS axis, per ALONG tile */
+  centre: Float32Array;
+}
+
+// One index for the whole map, built once, because the track has to be
+// CONTINUOUS. Two facts about the generated line force this:
+//
+//   1. The line MEANDERS. R-C's crest is a constant 3 tiles wide but it drifts
+//      across the map (seed 7: x=290..292 at y=56, x=294..296 at y=208), so a
+//      single centreline column is wrong everywhere except the middle.
+//   2. Its width is NOT locally trustworthy. The level crossing eats a column
+//      out of the crest (verticality §2.2 — the road wins the tile) and the end
+//      taper narrows it, so measuring "middle of the band" at a tile put the
+//      rails at x=293 north of the road and x=294 south of it, and the line
+//      visibly jogged sideways as it crossed.
+//
+// So: measure the crest per ALONG tile, keep only the readings whose width
+// matches the line's modal width, interpolate across the rest, then box-smooth.
+// The smoothing is what turns the generator's whole-tile jogs into a drift of
+// ~0.2 m per tile, which is a railway curve rather than a kink. Half-tile
+// precision throughout: an even crest has its centreline on a tile boundary,
+// and forcing it onto a tile index would push the track off its own ballast.
+// Returns null on every map with no railway, which is every legacy kind.
+function railIndex(map: GameMap): RailIndex | null {
+  let minX = 1e9;
+  let maxX = -1e9;
+  let minY = 1e9;
+  let maxY = -1e9;
+  let n = 0;
+  for (let y = 0; y < map.h; y++) {
+    for (let x = 0; x < map.w; x++) {
+      if (map.terrainKeyAt(x, y) !== 'rail') continue;
+      n++;
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+    }
+  }
+  if (n === 0) return null;
+  const axis = maxX - minX >= maxY - minY ? 0 : 1;
+  const nU = axis === 0 ? map.w : map.h;
+  const lo = new Int16Array(nU).fill(-1);
+  const hi = new Int16Array(nU).fill(-1);
+  for (let y = 0; y < map.h; y++) {
+    for (let x = 0; x < map.w; x++) {
+      if (map.terrainKeyAt(x, y) !== 'rail') continue;
+      const u = axis === 0 ? x : y;
+      const t = axis === 0 ? y : x;
+      if (lo[u] < 0 || t < lo[u]) lo[u] = t;
+      if (t > hi[u]) hi[u] = t;
+    }
+  }
+  const widths = new Map<number, number>();
+  for (let u = 0; u < nU; u++) if (lo[u] >= 0) widths.set(hi[u] - lo[u] + 1, (widths.get(hi[u] - lo[u] + 1) ?? 0) + 1);
+  let modeW = 3;
+  let modeN = -1;
+  for (const [w, c] of widths) if (c > modeN) { modeW = w; modeN = c; }
+  const centre = new Float32Array(nU);
+  const good: number[] = [];
+  for (let u = 0; u < nU; u++) {
+    if (lo[u] < 0 || hi[u] - lo[u] + 1 !== modeW) continue;
+    centre[u] = (lo[u] + hi[u] + 1) / 2;
+    good.push(u);
+  }
+  if (good.length === 0) return null;
+  for (let i = 0, u = 0; u < nU; u++) {
+    while (i + 1 < good.length && good[i + 1] < u) i++;
+    const a = good[i];
+    const b = i + 1 < good.length ? good[i + 1] : a;
+    if (u === a || u === b) continue;
+    centre[u] = u < a || b === a ? centre[a] : centre[a] + ((centre[b] - centre[a]) * (u - a)) / (b - a);
+  }
+  const smooth = new Float32Array(nU);
+  for (let u = 0; u < nU; u++) {
+    let s = 0;
+    for (let k = -2; k <= 2; k++) s += centre[Math.max(0, Math.min(nU - 1, u + k))];
+    smooth[u] = s / 5;
+  }
+  return { axis, centre: smooth };
+}
+
+// Sleepers on their world-space pitch, then the two rails over them. World
+// phase, not per-tile phase: a sleeper rhythm that restarts at every tile seam
+// is the single most obvious way to make a railway look tiled.
+function drawTrack(g: Ctx, along0: number, c: number, axis: number, d: Detail, sunk: boolean): void {
+  const [sdx, sdy] = shadowOffset(0.14);
+  if (d >= 1) {
+    for (let k = Math.ceil(along0 / SLEEPER_PITCH); k * SLEEPER_PITCH < along0 + 1; k++) {
+      const u = k * SLEEPER_PITCH;
+      g.fillStyle = shade(SLEEPER, 0.9 + hash(k, Math.round(c), 470) * 0.26);
+      if (axis === 0) g.fillRect(u - 0.11, c - SLEEPER_HALF, 0.22, SLEEPER_HALF * 2);
+      else g.fillRect(c - SLEEPER_HALF, u - 0.11, SLEEPER_HALF * 2, 0.22);
+      g.fillStyle = 'rgba(226,214,186,0.12)'; // NW lip — creosoted timber still catches the sun
+      if (axis === 0) g.fillRect(u - 0.11, c - SLEEPER_HALF, 0.05, SLEEPER_HALF * 2);
+      else g.fillRect(c - SLEEPER_HALF, u - 0.11, SLEEPER_HALF * 2, 0.05);
+    }
+  }
+  for (const s of [-1, 1]) {
+    const p = c + s * GAUGE;
+    if (!sunk) {
+      g.fillStyle = 'rgba(16,14,11,0.42)';
+      if (axis === 0) g.fillRect(along0 + sdx, p - 0.037 + sdy, 1, 0.075);
+      else g.fillRect(p - 0.037 + sdx, along0 + sdy, 0.075, 1);
+    }
+    g.fillStyle = shade(RAIL_STEEL, 1);
+    if (axis === 0) g.fillRect(along0, p - 0.037, 1, 0.075);
+    else g.fillRect(p - 0.037, along0, 0.075, 1);
+    // the frame's other specular, pointing at the same NW sun as the puddles
+    g.fillStyle = 'rgba(214,216,212,0.36)';
+    if (axis === 0) g.fillRect(along0, p - 0.037, 1, 0.026);
+    else g.fillRect(p - 0.037, along0, 0.026, 1);
+  }
+}
+
+function drawRailTile(g: Ctx, map: GameMap, x: number, y: number, band: number, d: Detail, rail: RailIndex): void {
+  g.fillStyle = shade(RAIL_BALLAST, 0.82 + coarse(x, y) * 0.24 + hash(x, y, 471) * 0.08);
+  g.fillRect(x, y, 1, 1);
+  // crushed stone, not a poured slab: the road's own gravel scatter is exactly
+  // the right grain, and it earns its place a band earlier here because
+  // unbroken ballast is the flattest surface on the map.
+  if (d >= 1) g.drawImage(gravelStamp((hash(x, y, 472) * 8) | 0, band), x, y, 1, 1);
+  // The ballast trapezoid: where the crest stops, its shoulder falls away. Only
+  // across the run — along it the ballast simply continues.
+  const isRail = (tx: number, ty: number) => map.inBounds(tx, ty) && map.terrainKeyAt(tx, ty) === 'rail';
+  const sides: [number, number, number, number, number, number][] = rail.axis === 0
+    ? [[0, -1, x, y, 1, 0.2], [0, 1, x, y + 0.8, 1, 0.2]]
+    : [[-1, 0, x, y, 0.2, 1], [1, 0, x + 0.8, y, 0.2, 1]];
+  for (const [dx, dy, rx, ry, rw, rh] of sides) {
+    if (isRail(x + dx, y + dy)) continue;
+    g.fillStyle = 'rgba(28,24,18,0.34)';
+    g.fillRect(rx, ry, rw, rh);
+    g.fillStyle = 'rgba(206,196,172,0.12)';
+    g.fillRect(rx + (dx > 0 ? rw - 0.05 : 0), ry + (dy > 0 ? rh - 0.05 : 0), dx !== 0 ? 0.05 : rw, dy !== 0 ? 0.05 : rh);
+  }
+}
+
+// Embankment batter. The grass base is the ordinary field grass — a bank is
+// turf, not a new material — and everything added on top is derived from the
+// local elev gradient so the slope reads as a slope. Deliberately NOT
+// sun-directional: drawHillshade already lays the lambertian term over this
+// tile from the shared sun, and a second directional pass here would either
+// double it or fight it. What goes down instead is contact darkening at the
+// toe, which is ambient, plus the erosion a worked earth bank actually shows.
+function drawBankTile(g: Ctx, map: GameMap, x: number, y: number, d: Detail): void {
+  drawGrassBase(g, x, y);
+  const dzdx = map.elevAt(x + 1, y) - map.elevAt(x - 1, y);
+  const dzdy = map.elevAt(x, y + 1) - map.elevAt(x, y - 1);
+  const m = Math.sqrt(dzdx * dzdx + dzdy * dzdy);
+  if (m < 0.01 || d < 1) return;
+  const ux = dzdx / m; // unit vector pointing UPHILL
+  const uy = dzdy / m;
+  // toe shading, on the downhill edge
+  g.fillStyle = `rgba(22,26,16,${(AO_ALPHA * 0.6).toFixed(3)})`;
+  if (Math.abs(ux) > Math.abs(uy)) g.fillRect(ux > 0 ? x : x + 0.74, y, 0.26, 1);
+  else g.fillRect(x, uy > 0 ? y : y + 0.74, 1, 0.26);
+  // bare earth scoured through the turf, elongated ALONG the contour
+  for (let i = 0; i < 2; i++) {
+    const k = x * 5 + i;
+    g.fillStyle = `rgba(146,124,88,${(0.1 + hash(k, y, 473) * 0.14).toFixed(3)})`;
+    g.beginPath();
+    g.ellipse(x + 0.2 + hash(k, y, 474) * 0.6, y + 0.2 + hash(k, y, 475) * 0.6, 0.26, 0.1, Math.atan2(ux, -uy), 0, Math.PI * 2);
+    g.fill();
+  }
+  if (d < 2) return;
+  // grass combed down the fall line — the tell that this is a graded batter
+  g.lineWidth = 0.035;
+  for (let i = 0; i < 4; i++) {
+    const k = x * 7 + i;
+    const px = x + 0.15 + hash(k, y, 476) * 0.7;
+    const py = y + 0.15 + hash(k, y, 477) * 0.7;
+    const l = 0.1 + hash(k, y, 478) * 0.1;
+    g.strokeStyle = hash(k, y, 479) > 0.5 ? 'rgba(150,166,110,0.30)' : 'rgba(46,54,32,0.30)';
+    g.beginPath();
+    g.moveTo(px + ux * l, py + uy * l);
+    g.lineTo(px - ux * l, py - uy * l);
+    g.stroke();
+  }
+}
+
+// Level crossing, as a post-pass over the finished road (it has to run after
+// drawRoadWear, which would otherwise lay ruts over the timbers). Only the
+// track centreline gets a deck; the rest of the carved band is ordinary road
+// with a dust of ballast tracked onto it.
+function drawCrossings(g: Ctx, map: GameMap, tx0: number, ty0: number, tx1: number, ty1: number, d: Detail, rail: RailIndex): void {
+  for (let y = ty0; y < ty1; y++) {
+    for (let x = tx0; x < tx1; x++) {
+      if (!map.isCrossing(x, y)) continue;
+      g.fillStyle = `rgba(120,112,98,${(0.07 + hash(x, y, 480) * 0.07).toFixed(3)})`;
+      g.fillRect(x, y, 1, 1);
+      const c = rail.centre[rail.axis === 0 ? x : y];
+      if (Math.floor(c) !== (rail.axis === 0 ? y : x)) continue;
+      // timber baulks laid PARALLEL to the rails, between them and outside
+      // them — what a cart actually crosses on
+      for (let p = -3; p <= 2; p++) {
+        const t0 = c + p * 0.16 + 0.01;
+        g.fillStyle = shade(DECK, 0.8 + hash(x * 7 + p, y, 481) * 0.22);
+        if (rail.axis === 0) g.fillRect(x, t0, 1, 0.14);
+        else g.fillRect(t0, y, 0.14, 1);
+        g.fillStyle = 'rgba(24,20,14,0.30)';
+        if (rail.axis === 0) g.fillRect(x, t0, 1, 0.03);
+        else g.fillRect(t0, y, 0.03, 1);
+      }
+    }
+  }
+}
+
+// Sleepers and rails for a whole visible stretch of line, laid AFTER every
+// per-tile base and after the crossing deck. It cannot be a drawTileBase
+// branch: the track straddles a tile boundary wherever the crest is an even
+// number of tiles wide, and whichever tile owned it would have its spill
+// painted over by the neighbour the base loop reaches next.
+function drawTrackRun(g: Ctx, map: GameMap, tx0: number, ty0: number, tx1: number, ty1: number, d: Detail, rail: RailIndex): void {
+  const a0 = rail.axis === 0 ? ty0 : tx0;
+  const a1 = rail.axis === 0 ? ty1 : tx1;
+  const laid = (u: number, c: number): number => {
+    // the line exists at this along-coordinate if either column under the
+    // sleeper is ballast or carved crossing; 1 = crossing (rails set into the
+    // road deck, so no cast shadow under the foot)
+    for (const t of [Math.floor(c - 0.3), Math.floor(c + 0.3)]) {
+      const x = rail.axis === 0 ? u : t;
+      const y = rail.axis === 0 ? t : u;
+      if (!map.inBounds(x, y)) continue;
+      if (map.isCrossing(x, y)) return 1;
+      if (map.terrainKeyAt(x, y) === 'rail') return 2;
+    }
+    return 0;
+  };
+  for (let u = rail.axis === 0 ? tx0 : ty0, uEnd = rail.axis === 0 ? tx1 : ty1; u < uEnd; u++) {
+    const c = rail.centre[u];
+    if (c + SLEEPER_HALF < a0 || c - SLEEPER_HALF > a1) continue;
+    const state = laid(u, c);
+    if (state !== 0) drawTrack(g, u, c, rail.axis, d, state === 1);
+  }
+}
+
 // ── Interior floor materials (interiors design R1) ─────────────────────────
 // The material is the BUILDING's, from Building.role, not the room's: rooms are
 // not persisted (D8) and a role plus one hearth-proximity test already
@@ -1195,6 +1452,7 @@ function drawTileBase(
   d: Detail,
   roleAt: (x: number, y: number) => number,
   apron: Uint8Array | null,
+  rail: RailIndex | null,
 ): void {
   const t = map.terrainKeyAt(x, y);
   const v = 0.93 + coarse(x, y) * 0.1 + hash(x, y) * 0.04;
@@ -1317,13 +1575,10 @@ function drawTileBase(
     }
     // bank treatment lives in drawWaterBanks (post-pass — the mud fringe
     // paints onto neighboring land tiles, which raster order would overpaint)
-  } else if (t === 'bank' || t === 'rail') {
-    // PLACEHOLDER, owned by V4 (ballast trapezoid, neighbour-derived sleepers,
-    // two rail lines, batter shading off the local elev gradient). It exists
-    // because the chain's final `else` is the FLOOR branch: without this, every
-    // embankment V3 just put on the map would render as building floorboards.
-    g.fillStyle = shade(t === 'rail' ? RAIL_BALLAST : BANK_EARTH, v);
-    g.fillRect(x, y, 1, 1);
+  } else if (t === 'rail' && rail) {
+    drawRailTile(g, map, x, y, band, d, rail);
+  } else if (t === 'bank') {
+    drawBankTile(g, map, x, y, d);
   } else {
     // floor, and every furniture key — a table stands ON a floor, so the four
     // interior keys share this branch and the piece itself goes down later, in
@@ -1449,6 +1704,9 @@ export class TerrainLayer {
   // Null on any map without a hearth, which is every legacy map — the floor
   // branch then takes exactly the pre-interiors path.
   private apron: Uint8Array | null;
+  // Railway line axis + track centreline (V4). Null on every kind without an
+  // embankment, so the two new drawTileBase branches are unreachable there.
+  private rail: RailIndex | null;
   /** Chunks painted flat this frame because the bake budget ran out (mobile). */
   readonly pending = new Set<string>();
   private flat = new Map<string, string>();
@@ -1459,6 +1717,7 @@ export class TerrainLayer {
     this.hasElev = map.elev.some((e) => e !== 0);
     this.hasStairs = map.stairs.some((s) => s !== 0);
     this.patches = new PatchIndex(map);
+    this.rail = railIndex(map);
     const churchTiles = new Uint8Array(map.w * map.h);
     for (const b of buildings) {
       if (b.role !== 'church' && b.role !== 'church_tower' && b.role !== 'church_apse') continue;
@@ -1558,11 +1817,16 @@ export class TerrainLayer {
     const tx1 = Math.min(this.map.w, x0 + CHUNK + pad);
     const ty1 = Math.min(this.map.h, y0 + CHUNK + pad);
     for (let y = ty0; y < ty1; y++) {
-      for (let x = tx0; x < tx1; x++) drawTileBase(g, this.map, this.patches, x, y, band, d, this.roleAt, this.apron);
+      for (let x = tx0; x < tx1; x++) drawTileBase(g, this.map, this.patches, x, y, band, d, this.roleAt, this.apron, this.rail);
     }
     drawCropRows(g, this.map, this.patches, tx0, ty0, tx1, ty1, d);
     drawPaving(g, this.map, this.patches, tx0, ty0, tx1, ty1, band, d);
     drawRoadWear(g, this.map, tx0, ty0, tx1, ty1, d, (x, y) => this.patches.pavedAt(x, y));
+    // after the wear pass, which would otherwise lay ruts across the timbers
+    if (this.rail) {
+      drawCrossings(g, this.map, tx0, ty0, tx1, ty1, d, this.rail);
+      drawTrackRun(g, this.map, tx0, ty0, tx1, ty1, d, this.rail);
+    }
     drawWaterBanks(g, this.map, tx0, ty0, tx1, ty1);
     drawYardGround(g, this.map, this.patches, this.yards, tx0, ty0, tx1, ty1, d);
     drawEnclosureGround(g, this.map, this.enclos, tx0, ty0, tx1, ty1, d);
