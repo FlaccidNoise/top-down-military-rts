@@ -205,7 +205,12 @@ export function propsFor(map: GameMap, patches: PatchIndex): Prop[] {
         const ny = y + dy;
         if (!map.inBounds(nx, ny)) continue;
         const nk = map.terrainKeyAt(nx, ny);
-        if (nk === k || nk === 'hedge' || nk === 'water' || nk === 'floor') continue;
+        // `buildingIdAt` rather than the `floor` key alone: with interiors on
+        // (I9) the tile behind an exterior wall can be a hearth or a dresser
+        // instead of bare floor, and the key test alone then plants a fence
+        // panel flat against the house. Identical on an unfurnished map, where
+        // every building interior tile is `floor`.
+        if (nk === k || nk === 'hedge' || nk === 'water' || nk === 'floor' || map.buildingIdAt(nx, ny) >= 0) continue;
         // only a border a lane actually runs past
         let lane = false;
         for (let i = 0; i <= 3 && !lane; i++) lane = roadAt(nx + dx * i, ny + dy * i);

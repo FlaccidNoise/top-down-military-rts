@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { generateMap, reachField } from '../src/sim/mapgen';
+import { generateMap, reachField, type MapKind } from '../src/sim/mapgen';
 import { astar } from '../src/sim/path';
 
 // FNV-1a over the map's raw arrays — a compact geometry + elevation fingerprint.
@@ -13,6 +13,25 @@ function fingerprint(seed: number): string {
     }
   }
   return (h >>> 0).toString(16);
+}
+
+// I12 · the furnished configuration's own drift tripwire.
+//
+// A DIFFERENT hash from the one above on purpose, and not comparable with it:
+// it adds `hEdgeTops`/`vEdgeTops` to the seven arrays. Interiors writes wall
+// tops (every partition it cuts is stamped at the mass's storey height), and
+// the seven-array hash is blind to them — a partitioner that silently started
+// emitting top 0 instead of top 6 would sail straight through it.
+function furnishedFingerprint(seed: number, w: number, h: number, kind: MapKind): string {
+  const { map } = generateMap(seed, w, h, kind, { interiors: true });
+  let x = 0x811c9dc5;
+  for (const a of [map.tiles, map.hEdges, map.vEdges, map.hEdgeTops, map.vEdgeTops, map.elev, map.stories, map.buildingId, map.stairs]) {
+    for (let i = 0; i < a.length; i++) {
+      x ^= a[i];
+      x = Math.imul(x, 0x01000193);
+    }
+  }
+  return (x >>> 0).toString(16);
 }
 
 describe('mapgen', () => {
@@ -36,6 +55,23 @@ describe('mapgen', () => {
   it('matches known snapshots (catches accidental generator drift)', () => {
     expect(fingerprint(1)).toMatchInlineSnapshot(`"8105059f"`);
     expect(fingerprint(2)).toMatchInlineSnapshot(`"d2a77805"`);
+  });
+
+  // I12 · interiors §6.2. The answer to "you only fingerprint the config you do
+  // not ship": bridge.ts and scenario.ts both pass `{ interiors: true }`, so
+  // these four are the shipped path's tripwire and the two above are the
+  // flag-off one. THE TWO ARE INDEPENDENT — an interiors change moves these and
+  // must leave those alone, and a change that moves BOTH is a generator change
+  // that has leaked out of the interiors module.
+  //
+  // The two bourg lines also move legitimately when the BOURG layout is meant
+  // to change, in which case tests/bourg.test.ts's 97b5bca / eb9a14e6 move in
+  // the same commit. One of them moving alone is a bug.
+  it('pins the furnished configuration (interiors: true)', () => {
+    expect(furnishedFingerprint(1, 160, 120, 'open')).toMatchInlineSnapshot(`"8ab735cc"`);
+    expect(furnishedFingerprint(2, 160, 120, 'open')).toMatchInlineSnapshot(`"d6cff694"`);
+    expect(furnishedFingerprint(1, 320, 240, 'bourg')).toMatchInlineSnapshot(`"f3c5a70"`);
+    expect(furnishedFingerprint(2, 320, 240, 'bourg')).toMatchInlineSnapshot(`"2f746b24"`);
   });
 
   // The validation gate inlines canStep (mapgen.ts reachField) for speed, so it
