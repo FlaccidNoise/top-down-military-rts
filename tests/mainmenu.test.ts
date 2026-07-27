@@ -69,9 +69,20 @@ describe('renderStorageBanner', () => {
 describe('mainmenu.ts import surface', () => {
   it('imports no sim/strategic/campaign runtime state', () => {
     const src = readFileSync(new URL('../src/ui/mainmenu.ts', import.meta.url), 'utf8');
-    const imports = [...src.matchAll(/^import .*?from ['"](.+?)['"];?$/gm)].map((m) => m[1]);
+    // `from '...'` anywhere, not ^import-anchored: a multi-line import puts the
+    // specifier on its own last line and would slip an anchored match.
+    const imports = [...src.matchAll(/from\s+['"](.+?)['"]/g)].map((m) => m[1]);
     for (const spec of imports) {
       expect(spec).not.toMatch(/\/(sim|strategic|campaign)(\/|$)/);
     }
+  });
+
+  it('escapes save-controlled strings before they reach innerHTML', () => {
+    const hostile = `<img src=x onerror=alert(1)>`;
+    const corrupt = renderContinueBlock({ status: 'corrupt', detail: hostile });
+    expect(corrupt).not.toContain('<img');
+    expect(corrupt).toContain('&#60;img');
+    const ok = renderContinueBlock({ status: 'ok', day: 1, clock: '06:00', theaterName: hostile, menFit: 1 });
+    expect(ok).not.toContain('<img');
   });
 });

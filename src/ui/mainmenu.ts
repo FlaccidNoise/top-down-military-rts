@@ -20,6 +20,12 @@ export interface MainMenuCallbacks {
   onDiscardSave(): void;
 }
 
+// Save-file strings (detail, clock, theaterName) reach innerHTML; a corrupt
+// save is hostile input and must reject visibly WITHOUT executing.
+function esc(s: string): string {
+  return s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+}
+
 const CONTINUE_ID = 'mm-continue';
 const CONTINUE_LEGACY_ID = 'mm-continue-legacy';
 const DISCARD_ID = 'mm-discard';
@@ -50,7 +56,7 @@ export function renderContinueBlock(probe: SaveProbe): string {
       </div>`;
     case 'corrupt':
       return `<div class="mm-continue">
-        <p class="mm-msg">Save is corrupt${probe.detail ? `: ${probe.detail}` : '.'}</p>
+        <p class="mm-msg">Save is corrupt${probe.detail ? `: ${esc(probe.detail)}` : '.'}</p>
         <div class="mm-continue-actions">
           <button id="${DISCARD_ID}">Discard</button>
         </div>
@@ -58,7 +64,7 @@ export function renderContinueBlock(probe: SaveProbe): string {
     case 'ok':
       return `<div class="mm-continue">
         <button id="${CONTINUE_ID}" class="primary">Continue</button>
-        <p class="mm-status">Day ${probe.day} · ${probe.clock} · ${probe.theaterName} · ${probe.menFit} fit</p>
+        <p class="mm-status">Day ${probe.day} · ${esc(probe.clock ?? '')} · ${esc(probe.theaterName ?? '')} · ${probe.menFit} fit</p>
       </div>`;
   }
 }
