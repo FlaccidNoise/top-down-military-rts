@@ -1,8 +1,20 @@
 import { buildObjectives } from './bourg/objectives';
 import { planBourg, stampBourg, type BourgPlan } from './bourg/plan';
 import { zoneOf } from './bourg/rural';
+import { stampStructure } from './bourg/stamp';
 import { subStream, TAG } from './bourg/streets';
+import { furnishInteriors } from './interiors/furnish';
 import { EDGE, FLOOR_H, GameMap } from './map';
+import {
+  applyRelief,
+  laneRuns,
+  NO_RELIEF,
+  planHalt,
+  stampHalt,
+  type FlatZone,
+  type ReliefContext,
+  type ReliefProfile,
+} from './relief';
 import { mulberry32, type Rng } from './rng';
 
 // Roads-first Normandy generator: a wandering arterial road west→east, a
@@ -33,7 +45,8 @@ export type BuildingRole =
   | 'halle'
   | 'church'
   | 'church_tower'
-  | 'church_apse';
+  | 'church_apse'
+  | 'halt'; // V5: the railway halt beside the embankment (bourg only)
 
 // A door opening on one face of a structure: the DOOR edge on `side` of tile
 // (x,y). (x,y) is the structure's OWN floor tile and `side` faces outward, so
@@ -79,7 +92,7 @@ export interface Vec {
 
 // What each objective IS, so tooling stops index-guessing. Parallel to
 // MapPlan.objectives.
-export type ObjectiveKind = 'place' | 'woods' | 'faubourg' | 'church' | 'street';
+export type ObjectiveKind = 'place' | 'woods' | 'faubourg' | 'church' | 'street' | 'halt';
 
 export interface MapPlan {
   map: GameMap;
@@ -127,22 +140,84 @@ export type MapKind = 'open' | 'woods' | 'town' | 'river' | 'bridge' | 'road' | 
 
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 
-export function generateMap(seed: number, w = 160, h = 120, kind: MapKind = 'open'): MapPlan {
+// ── micro-relief (docs/plans/2026-07-26-verticality-design.md §1.4) ─────────
+//
+// Which archetype gets what. 'town' is deliberately null (H8: the bourg design
+// freezes it and every sweep crop depends on it), and the whole table is gated
+// on RELIEF_MIN_W/H below, so the 160x120 default and the 60x40 floor make ZERO
+// relief draws and ZERO relief writes — which is what keeps the two inline
+// fingerprints in tests/mapgen.test.ts byte-identical with no argument.
+export const RELIEF_BY_KIND: Record<MapKind, ReliefProfile> = {
+  open: { undulation: 2, hedgeBanks: true, rail: true, sunken: 0 },
+  road: { undulation: 1, hedgeBanks: true, rail: false, sunken: 0 },
+  woods: { undulation: 2, hedgeBanks: true, rail: false, sunken: 2 },
+  town: NO_RELIEF, // H8 — frozen
+  river: { undulation: 1, hedgeBanks: true, rail: false, sunken: 0 },
+  bridge: { undulation: 1, hedgeBanks: true, rail: false, sunken: 0 },
+  // DEVIATION from §1.4, which asks for sunken: 1 here. The bourg's farm tracks
+  // are recoverable off the finished map by relief's laneRuns() exactly as
+  // mapgen's are, so the wiring is identical — but a bourg's tracks run right up
+  // to the outlying compounds' yards, and a bank thrown against a barn wall is
+  // the seam the flat zone exists to prevent. Left at 0 until the bourg's own
+  // lane inventory (rural.ts growFarmLanes) is exposed with its compound
+  // approaches trimmed. Everything else in the profile is as specified.
+  bourg: { undulation: 2, hedgeBanks: true, rail: true, sunken: 0 },
+};
+
+// H7's size gate. 320x240 is the design scale; 240x180 is the smallest map that
+// still holds a 7-10 tile embankment footprint clear of everything else.
+const RELIEF_MIN_W = 240;
+const RELIEF_MIN_H = 180;
+
+export interface GenerateOpts {
+  // 'none' forces the null profile at any size; an explicit profile forces that
+  // profile at any size (the per-element guards inside relief.ts still apply, so
+  // a 60x40 map with rail: true simply grows no embankment). Absent = the table.
+  relief?: ReliefProfile | 'none';
+  // I9 / interiors D2. Default FALSE, and the guard sits in front of the single
+  // shared-stream draw, so a map generated without it takes zero extra draws and
+  // zero extra writes: every pinned fingerprint holds by construction rather
+  // than by care. Production opts in (bridge.ts, scenario.ts); every pinned test
+  // calls the <=4-argument form or passes only `relief`.
+  //
+  // DEVIATION from the design's §2.3, which spells this as a new fifth
+  // parameter `opts: { interiors?: boolean }`. `GenerateOpts` already IS the
+  // fifth parameter (H7's relief switch got there first), so this is a field on
+  // it, not a sixth argument.
+  interiors?: boolean;
+}
+
+const reliefActive = (p: ReliefProfile): boolean => p.undulation > 0 || p.hedgeBanks || p.rail || p.sunken > 0;
+
+function reliefFor(kind: MapKind, w: number, h: number, opts?: GenerateOpts): ReliefProfile {
+  if (opts?.relief === 'none') return NO_RELIEF;
+  if (opts?.relief) return opts.relief;
+  return w >= RELIEF_MIN_W && h >= RELIEF_MIN_H ? RELIEF_BY_KIND[kind] : NO_RELIEF;
+}
+
+// §1.5's sub-stream factory, spelled out rather than imported from
+// bourg/streets so the relief stage carries no bourg dependency. Same formula,
+// disjoint tag space: relief owns 20-29, the bourg owns 1-14.
+const reliefStreams = (base: number) => (tag: number): Rng => mulberry32((base ^ Math.imul(tag, 0x9e3779b1)) >>> 0);
+
+export function generateMap(seed: number, w = 160, h = 120, kind: MapKind = 'open', opts?: GenerateOpts): MapPlan {
   // village clearing radius + road margins need real space; below this the
   // clamp bounds invert and the layout degenerates
   if (w < 60 || h < 40) throw new Error(`mapgen: map ${w}x${h} too small (min 60x40)`);
+  const relief = reliefFor(kind, w, h, opts);
+  const interiors = opts?.interiors === true;
   for (let attempt = 0; attempt < 8; attempt++) {
     const rng = mulberry32((seed ^ 0x51ab3fc7) + attempt * 0x9e3779b9);
-    const plan = tryGenerate(rng, w, h, kind);
+    const plan = tryGenerate(rng, w, h, kind, relief, interiors);
     if (plan && validate(plan)) return plan;
   }
   throw new Error(`mapgen: no valid layout for seed ${seed}`);
 }
 
-function tryGenerate(rng: Rng, w: number, h: number, kind: MapKind): MapPlan | null {
+function tryGenerate(rng: Rng, w: number, h: number, kind: MapKind, relief: ReliefProfile, interiors: boolean): MapPlan | null {
   // The guard sits before the first draw, so every legacy kind's draw sequence
   // is bit-for-bit what it was before the bourg existed (D1).
-  if (kind === 'bourg') return tryGenerateBourg(rng, w, h);
+  if (kind === 'bourg') return tryGenerateBourg(rng, w, h, relief, interiors);
   const map = new GameMap(w, h);
   const road = new Uint8Array(w * h);
 
@@ -391,13 +466,61 @@ function tryGenerate(rng: Rng, w: number, h: number, kind: MapKind): MapPlan | n
       }
   }
 
+  const spawns = { west: { x: 3, y: roadY[3] }, east: { x: w - 4, y: roadY[w - 4] } };
+
+  // Micro-relief: LAST, after the domes (H7b). Nothing above this line reads
+  // the rng again, and the stage writes only `elev`, `tiles` (rail/bank) and
+  // `crossings` — so every road, building, hedge, wood, orchard, field,
+  // objective and spawn on the map is bit-identical to the pre-relief
+  // generator at every size, and identical to `relief: 'none'` at 320x240.
+  if (reliefActive(relief)) {
+    const reliefBase = rng.int(0x7fffffff); // ONE draw on the shared stream (§1.5)
+    const flatZone: FlatZone = () => false; // no flat zone outside the bourg
+    const ctx: ReliefContext = {
+      crossX,
+      hamletX: settlements.length > 1 ? settlements[1].x : undefined,
+      nearBuilding,
+      lanes: relief.sunken > 0 ? laneRuns(map, flatZone) : undefined,
+      spawns,
+    };
+    applyRelief(map, relief, reliefStreams(reliefBase), flatZone, ctx);
+  }
+
+  // Interiors: LAST, after the relief stage (I9). See furnishHere for why the
+  // order matters and why this is byte-safe with the flag off.
+  furnishHere(interiors, rng, map, buildings, objectives[0]);
+
   return {
     map,
     buildings,
-    spawns: { west: { x: 3, y: roadY[3] }, east: { x: w - 4, y: roadY[w - 4] } },
+    spawns,
     objectives,
     woodsStands,
   };
+}
+
+// I9 · the interiors wiring, one helper shared by both branches so the draw
+// discipline is written down once.
+//
+//  - Flag OFF: not one draw, not one write. `8105059f` / `d2a77805`, both bourg
+//    fingerprints and every ≤4-arg pinned test hold by construction (D2a).
+//  - Flag ON: the ONE shared-stream draw is the LAST draw of the attempt, taken
+//    strictly AFTER the relief stage's own `reliefBase` draw. That ordering is
+//    load-bearing and the design doc's §6.1 predates it: relief (H7b) was added
+//    after the interiors design was written and now owns the last draw, so
+//    taking the interiors draw first would shift `reliefBase` and move every
+//    embankment, bank and cutting on the map.
+//  - Nothing downstream consumes the draw, so with the flag on the pre-existing
+//    arrays are bit-identical to the same seed's unfurnished map: only furniture
+//    tiles, interior edges and at most one added exterior DOOR per mass differ
+//    (§6.2's delta invariant).
+//  - It runs inside `tryGenerate`, so it is before `validate` (D2) — a furnished
+//    map is validated as furnished, and a rejected attempt is refurnished from
+//    scratch on the next one.
+function furnishHere(on: boolean, rng: Rng, map: GameMap, buildings: readonly Building[], objective?: Vec): void {
+  if (!on) return;
+  const furnBase = rng.int(0x7fffffff); // ONE draw on the shared stream (§6.1)
+  furnishInteriors(map, buildings, furnBase, objective);
 }
 
 // ── the bourg branch ────────────────────────────────────────────────────────
@@ -411,7 +534,7 @@ function tryGenerate(rng: Rng, w: number, h: number, kind: MapKind): MapPlan | n
 // documents why. What lives here is only what needs the shared rng, the
 // GameMap, or the MapPlan: the base draw, maxStories, the objectives (which
 // need stampBourg's woods stands) and elevation.
-function tryGenerateBourg(rng: Rng, w: number, h: number): MapPlan | null {
+function tryGenerateBourg(rng: Rng, w: number, h: number, relief: ReliefProfile, interiors: boolean): MapPlan | null {
   const bourgBase = rng.int(0x7fffffff);
   const plan = planBourg(bourgBase, w, h); // stages 1-11a, pure — no GameMap yet
   const map = new GameMap(w, h);
@@ -421,10 +544,57 @@ function tryGenerateBourg(rng: Rng, w: number, h: number): MapPlan | null {
   // disables occlusion for a map whose set-piece is a 4-storey tower.
   map.maxStories = st.maxStories;
   const { objectives, objectiveKinds } = buildObjectives(plan.sk, plan.land, plan.fp, st.woodsStands);
-  elevateBourg(map, plan, bourgBase); // stage 13 — last, always
+  // The flat mask is hoisted out of elevateBourg so the dome pass and the
+  // relief stage share ONE definition of where the town is (§1.3's rule, read
+  // onto this pipeline: T11's `expand(R_env, 4)` is not what the bourg
+  // actually built — see bourgFlatMask). Two consumers, one region.
+  const flat = bourgFlatMask(map, plan);
+  elevateBourg(map, bourgBase, flat); // stage 13 — last, always
+  let buildings = plan.fp.buildings;
+
+  if (reliefActive(relief)) {
+    const reliefBase = rng.int(0x7fffffff); // ONE draw on the shared stream (§1.5)
+    const S = reliefStreams(reliefBase);
+    const flatZone: FlatZone = (x, y) => flat[y * w + x] === 1;
+    const res = applyRelief(map, relief, S, flatZone, {
+      // The place is the bourg's junction; the railway keeps its 40 tiles of
+      // clearance from it exactly as it does from a legacy village crossroads.
+      // nearBuilding is already folded into `flat` (buildings dilated by 1),
+      // so a second per-tile rect scan would be dead weight.
+      crossX: Math.round(plan.sk.place.x),
+      nearBuilding: () => false,
+      lanes: relief.sunken > 0 ? laneRuns(map, flatZone) : undefined,
+      spawns: plan.spawns,
+    });
+    // V5 · the halt. Strictly optional: no embankment or no candidate band
+    // leaves the map exactly as the relief stage left it.
+    if (res.rail) {
+      const halt = planHalt(map, res.rail, plan.sk.env.x + plan.sk.env.w / 2, S(23), flatZone);
+      if (halt) {
+        stampHalt(map, halt);
+        const b: Building = {
+          ...halt.rect,
+          role: 'halt',
+          frontage: halt.side < 0 ? 'e' : 'w', // the booking hall faces its own platform
+        };
+        // Appended AFTER every bourg building, so the bourg's own emission
+        // order — and therefore every buildingId it stamped — is untouched.
+        map.maxStories = Math.max(map.maxStories, stampStructure(map, b, buildings.length));
+        buildings = [...buildings, b];
+        objectives.push(halt.centre);
+        objectiveKinds.push('halt');
+      }
+    }
+  }
+
+  // Interiors: LAST. After the relief block rather than inside it, because V5's
+  // halt is APPENDED to `buildings` in there — furnishing before it would leave
+  // the one building on the map that most wants a second door without one.
+  furnishHere(interiors, rng, map, buildings, objectives[0]);
+
   return {
     map,
-    buildings: plan.fp.buildings,
+    buildings,
     spawns: plan.spawns,
     objectives,
     objectiveKinds,
@@ -450,9 +620,8 @@ function tryGenerateBourg(rng: Rng, w: number, h: number): MapPlan | null {
 // free-standing wall edge. Region-shaped rather than per-wall on purpose:
 // skipping only the wall tiles would leave each garden's interior domed and its
 // own boundary flat, i.e. a cliff inside every garden.
-function elevateBourg(map: GameMap, plan: BourgPlan, base: number): void {
+function elevateBourg(map: GameMap, base: number, flat: Uint8Array): void {
   const { w, h } = map;
-  const flat = bourgFlatMask(map, plan);
   const r14 = subStream(base, TAG.ELEV);
   for (let i = 0, n = 2 + r14.int(3); i < n; i++) {
     const cx = r14.int(w);
@@ -586,9 +755,13 @@ function addBuilding(map: GameMap, b: Building, door: 'n' | 's' | 'e' | 'w', id:
 // canStep is INLINED here rather than called: at ~12 step tests per tile over
 // 76,800 tiles the two property chains inside terrainAt (TERRAIN[KEYS[byte]])
 // dominate, and hoisting them into a per-tile `open` bitmap plus raw edge-array
-// reads is the difference between ~8 ms and ~2 ms per pass. map.ts:112-125 is
+// reads is the difference between ~8 ms and ~2 ms per pass. map.ts canStep is
 // the authority for the rule; `tests/mapgen.test.ts` asserts reachField against
-// astar directly so the copy cannot drift silently.
+// astar directly so the copy cannot drift silently. It HAD drifted: this copy
+// carried its own 'floor'/'woods'/'hedge' vehicle blacklist and V1's 'bank'
+// never reached it, so validate believed vehicles could climb an embankment
+// batter that canStep forbids. Both now read TerrainDef.noVehicle, which is
+// what makes the drift structurally impossible rather than merely tested for.
 //
 // The four orthogonal steps out of the popped tile are evaluated once and
 // reused as the first leg of each diagonal's corner test.
@@ -607,8 +780,8 @@ export function reachField(map: GameMap, sx: number, sy: number, mode: 'foot' | 
     if (e < 0) {
       const x = i % w;
       const y = (i / w) | 0;
-      const k = map.terrainKeyAt(x, y);
-      e = map.terrainAt(x, y).passable && (!veh || (k !== 'floor' && k !== 'woods' && k !== 'hedge')) ? 1 : 0;
+      const d = map.terrainAt(x, y);
+      e = d.passable && (!veh || !d.noVehicle) ? 1 : 0;
       byTile[t] = e;
     }
     open[i] = e;

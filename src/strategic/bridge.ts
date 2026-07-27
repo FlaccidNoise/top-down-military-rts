@@ -132,7 +132,10 @@ export function makeStrategicBattle(
   const defender = front.chits.find((ch) => ch.id === e.defenderId)!;
   const attackerSide = attacker.side;
   const viaFord = front.sector.cells[attacker.cell].terrain === 'river';
-  const plan = generateMap(seed, 320, 240, viaFord ? 'river' : front.sector.cells[e.cell].terrain);
+  // I9: the campaign's battles are the shipped configuration, so they are the
+  // ones that get furnished interiors. The pinned generator tests all call the
+  // <=4-argument form and are unaffected.
+  const plan = generateMap(seed, 320, 240, viaFord ? 'river' : front.sector.cells[e.cell].terrain, { interiors: true });
   const sim = new Sim(plan.map, seed);
   sim.buildings = plan.buildings;
 

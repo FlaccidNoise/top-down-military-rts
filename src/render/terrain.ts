@@ -105,6 +105,12 @@ const HEDGE_GREEN: [number, number, number] = [72, 90, 48]; // yellower, denser 
 const FLOOR: [number, number, number] = [160, 145, 122];
 const FLOOR_DARK: [number, number, number] = [141, 120, 95];
 const WATER: [number, number, number] = [70, 90, 99]; // desaturated slate, muted-Normandy — not postcard blue
+// V3 put 'bank' and 'rail' on the map; V4 owns their real art (ballast,
+// sleepers, gradient-derived batter shading). These two are TERRAIN.bank.color
+// and TERRAIN.rail.color as triples, so the placeholder base is at least the
+// right colour — see drawTileBase.
+const BANK_EARTH: [number, number, number] = [95, 107, 70]; // #5f6b46
+const RAIL_BALLAST: [number, number, number] = [107, 100, 89]; // #6b6459
 const FIELD_VARIANTS: [number, number, number][] = [
   [96, 84, 58], // turned earth
   [142, 124, 71], // wheat
@@ -1180,6 +1186,13 @@ function drawTileBase(g: Ctx, map: GameMap, patches: PatchIndex, x: number, y: n
     }
     // bank treatment lives in drawWaterBanks (post-pass — the mud fringe
     // paints onto neighboring land tiles, which raster order would overpaint)
+  } else if (t === 'bank' || t === 'rail') {
+    // PLACEHOLDER, owned by V4 (ballast trapezoid, neighbour-derived sleepers,
+    // two rail lines, batter shading off the local elev gradient). It exists
+    // because the chain's final `else` is the FLOOR branch: without this, every
+    // embankment V3 just put on the map would render as building floorboards.
+    g.fillStyle = shade(t === 'rail' ? RAIL_BALLAST : BANK_EARTH, v);
+    g.fillRect(x, y, 1, 1);
   } else {
     // floor: plank rows every 0.33m, two wood tones, staggered butt joints.
     // rowIdx is world-space (y*3+r) so joints don't repeat identically tile to tile.

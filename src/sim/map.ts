@@ -23,6 +23,11 @@ export class GameMap {
   readonly hEdgeTops: Uint8Array; // top height (m) of a horizontal wall edge; 0 = full-height block
   readonly vEdgeTops: Uint8Array; // top height (m) of a vertical wall edge; 0 = full-height block
   maxStories = 0;
+  // Set by the interiors pass when it writes its first furniture tile. Same
+  // pattern as maxStories above (which gates the whole slab-LOS path in los()):
+  // every interiors-aware behaviour change in sim.ts is guarded on it, so an
+  // unfurnished map executes zero new instructions and is provably unchanged.
+  hasFurniture = false;
   // Road tiles carved over the water band — passable road to the sim (no
   // separate terrain kind), a plank deck to the renderer. Recorded by mapgen
   // because the road overwrites the water, destroying the overlap the renderer
@@ -120,17 +125,19 @@ export class GameMap {
 
   // Can a unit step between two orthogonally adjacent tiles?
   // Vehicles can't enter buildings, woods or the batter of an embankment, and
-  // never pass any edge feature. Slope is expressed as the 'bank' terrain key
-  // rather than a grade rule over elev: every legacy map already carries
-  // multi-metre elevation steps straight against its roads (the mapgen dome
-  // pass skips road/water/floor tiles), so a global max-grade check would wall
-  // off the arterial on maps that generate fine today.
+  // never pass any edge feature. Which terrain closes to vehicles is
+  // TerrainDef.noVehicle (data.ts), not a key list here — the same rule is
+  // inlined by mapgen's reachField and read by sim's findVehicleSpot, and three
+  // hand-kept copies had already drifted. Slope is expressed as the 'bank'
+  // terrain key rather than a grade rule over elev: every legacy map already
+  // carries multi-metre elevation steps straight against its roads (the mapgen
+  // dome pass skips road/water/floor tiles), so a global max-grade check would
+  // wall off the arterial on maps that generate fine today.
   canStep(x0: number, y0: number, x1: number, y1: number, mode: 'foot' | 'vehicle' = 'foot'): boolean {
-    if (!this.inBounds(x1, y1) || !this.terrainAt(x1, y1).passable) return false;
-    if (mode === 'vehicle') {
-      const k = this.terrainKeyAt(x1, y1);
-      if (k === 'floor' || k === 'woods' || k === 'hedge' || k === 'bank') return false;
-    }
+    if (!this.inBounds(x1, y1)) return false;
+    const t = this.terrainAt(x1, y1);
+    if (!t.passable) return false;
+    if (mode === 'vehicle' && t.noVehicle) return false;
     let e: EdgeType = EDGE.NONE;
     if (x1 === x0 + 1) e = this.vEdge(x1, y0);
     else if (x1 === x0 - 1) e = this.vEdge(x0, y0);

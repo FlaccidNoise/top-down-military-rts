@@ -370,8 +370,28 @@ describe('AI commander doctrine', () => {
     expect(sawSchuetzenManeuver).toBe(true); // and the rifle team maneuvered instead of also firing in place
   });
 
-  // 60s budget: a design-scale 138v36 battle steps ~1-2ms/tick headless
-  it('existing campaign battles still produce a winner within 20k ticks', { timeout: 60_000 }, () => {
+  // 150s budget: a design-scale 138v36 battle steps ~1ms/tick headless.
+  //
+  // The tick budget was 20k until I9/I10 turned `interiors: true` on at
+  // bridge.ts's generateMap call. This is a LIVENESS test — "the battle still
+  // resolves, it does not deadlock" — and interiors made the same battle
+  // measurably longer, exactly as the interiors design's §5.1 said it would:
+  // a defender behind a counter or a pew has coverBehind 0.40-0.50 where he
+  // previously had bare floor, and I10's `findSpot` then puts the garrison in
+  // the window nooks rather than the middle of the room. MEASURED on seed 5,
+  // blue wins every time, same commander, same press loop:
+  //
+  //     interiors off ............ 11,918 ticks
+  //     + I9 (furnished map) ..... 21,038
+  //     + I10 (nook garrison) .... 27,985
+  //
+  // 40k is that plus a 43 % margin. If this fails again, the question to ask
+  // FIRST is whether the fight DEADLOCKED — red alive and static behind
+  // furniture — rather than whether the number wants raising again: furniture
+  // is impassable, so a sealing bug would show up here as a flat casualty
+  // curve, and tests/interiors.test.ts's non-sealing sweep is what proves it
+  // did not happen.
+  it('existing campaign battles still produce a winner within 40k ticks', { timeout: 150_000 }, () => {
     const c = newCampaign(1);
     const front = newFront(c, makeDefaultSector());
     const able = front.chits.find((ch) => ch.side === 'blue')!;
@@ -403,7 +423,7 @@ describe('AI commander doctrine', () => {
     pressBlue();
 
     let steps = 0;
-    while (sim.winner === null && steps < 20000) {
+    while (sim.winner === null && steps < 40000) {
       if (steps % 1000 === 0) pressBlue(); // keep pushing toward red's current mass
       commander.update(sim);
       sim.step();

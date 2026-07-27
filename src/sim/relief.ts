@@ -1,5 +1,5 @@
 import type { TerrainKey } from './data';
-import { GameMap } from './map';
+import { EDGE, GameMap } from './map';
 import type { Rng } from './rng';
 
 // Micro-relief: the pure-geometry half of the verticality work (design
@@ -237,6 +237,42 @@ export function sunkenLane(map: GameMap, run: readonly Pt[], Hs: number, flatZon
   }
 }
 
+// The farm-track inventory R-D consumes. Both generators carve their lanes as
+// 1-tile-wide road into open country — mapgen's compound lane (mapgen.ts, the
+// outlying-farm loop) and the bourg's space-colonisation tracks (rural.ts
+// growFarmLanes) — and neither keeps a tile list, so the runs are recovered off
+// the FINISHED map by one rule: a road tile whose two perpendicular neighbours
+// are not road. The arterial (3 wide), the cross lane (2 wide) and every town
+// street therefore fail it by construction, which is exactly the intent — a
+// sunken high street would wall the map off.
+//
+// A dogleg's corner tile fails the rule on both axes, so a bent track comes out
+// as its two straight legs. That matters: sunkenLane takes ONE perpendicular
+// per run and would fray a shoulder across a kink.
+export function laneRuns(map: GameMap, flatZone: FlatZone, minLen = 8): Pt[][] {
+  const { w, h } = map;
+  const road = (x: number, y: number): boolean =>
+    x >= 0 && y >= 0 && x < w && y < h && map.terrainKeyAt(x, y) === 'road';
+  const runs: Pt[][] = [];
+  const sweep = (n: number, m: number, at: (a: number, b: number) => Pt, thin: (p: Pt) => boolean): void => {
+    for (let a = 0; a < n; a++) {
+      let run: Pt[] = [];
+      for (let b = 0; b <= m; b++) {
+        const p = b < m ? at(a, b) : null;
+        if (p && road(p.x, p.y) && thin(p) && !flatZone(p.x, p.y)) {
+          run.push(p);
+          continue;
+        }
+        if (run.length >= minLen) runs.push(run);
+        run = [];
+      }
+    }
+  };
+  sweep(w, h, (x, y) => ({ x, y }), (p) => !road(p.x - 1, p.y) && !road(p.x + 1, p.y));
+  sweep(h, w, (y, x) => ({ x, y }), (p) => !road(p.x, p.y - 1) && !road(p.x, p.y + 1));
+  return runs;
+}
+
 // Flood fill from `from` to `to` over canStep(..., 'vehicle'). 4-neighbour,
 // bounded by the tile count, no allocation per step beyond one queue.
 export function vehicleReaches(map: GameMap, from: Pt, to: Pt): boolean {
@@ -383,4 +419,132 @@ export function applyRelief(map: GameMap, profile: ReliefProfile, S: (tag: numbe
   let reverted = false;
   if (profile.rail) ({ rail, reverted } = embankment(map, S(21), flatZone, ctx, journal));
   return { rail, reverted, writes: journal.length };
+}
+
+// ── V5 · the halt / station (design §2.4) ───────────────────────────────────
+//
+// A 7x4 structure on the town side of the embankment toe, a 2x10 road platform
+// deck laid on the flank at crest-minus-one, and the platform centre as an
+// objective. The whole thing is optional by construction: no candidate band, no
+// halt, and nothing downstream depends on one existing.
+
+const HALT_W = 7;
+const HALT_H = 4;
+const PLATFORM_LEN = 10;
+const PLATFORM_W = 2;
+// Columns from the crest edge to the building's near face. The platform owns
+// offsets 1..PLATFORM_W and stampHalt levels a 1-tile border around the rect,
+// so the building has to start at PLATFORM_W + 2 or the levelling pass would
+// flatten the platform deck it just laid.
+const HALT_GAP = PLATFORM_W + 2;
+
+export interface Halt {
+  rect: { x: number; y: number; w: number; h: number }; // the structure's mass
+  platform: Pt[]; // deck tiles, written as road at platformElev
+  platformElev: number; // H - 1: a platform is level with the carriage floor
+  centre: Pt; // deck centre — the objective candidate
+  side: -1 | 1; // -1 = the town lies west of the line, +1 = east
+}
+
+// Enumerate-then-draw, exactly as the railX selection does: every 10-row band
+// is tested, the qualifying starts are collected, and ONE draw picks among
+// them. An empty list returns null without touching the stream — S.int(0) still
+// burns a draw (rng.ts).
+export function planHalt(map: GameMap, rail: RailLine, townX: number, S: Rng, flatZone: FlatZone): Halt | null {
+  const { w, h } = map;
+  const { H, Wt, centreline } = rail;
+  const half = (Wt - 1) >> 1;
+  const side: -1 | 1 = townX < rail.railX ? -1 : 1;
+  // The column `off` tiles outboard of the crest edge, on the town side.
+  const col = (y: number, off: number): number => {
+    const left = centreline[y] - half;
+    return side < 0 ? left - off : left + Wt - 1 + off;
+  };
+  const clear = (x: number, y: number): boolean => {
+    if (x < 1 || y < 1 || x >= w - 1 || y >= h - 1) return false;
+    if (flatZone(x, y) || map.buildingId[y * w + x] >= 0) return false;
+    const k = map.terrainKeyAt(x, y);
+    // road excludes the level crossing (a platform across the arterial is a
+    // level crossing with a building on it); water/floor exclude anything the
+    // embankment's column test somehow let through.
+    return k !== 'road' && k !== 'water' && k !== 'floor';
+  };
+  const openEdges = (x: number, y: number): boolean =>
+    map.hEdge(x, y) === EDGE.NONE &&
+    map.hEdge(x, y + 1) === EDGE.NONE &&
+    map.vEdge(x, y) === EDGE.NONE &&
+    map.vEdge(x + 1, y) === EDGE.NONE;
+
+  // The rect hangs off the band's OUTERMOST gap column, so the wander (±2) can
+  // never push a platform tile into the building or its levelled border.
+  const rectX = (y0: number): number => {
+    let edge = col(y0, HALT_GAP);
+    for (let y = y0; y < y0 + PLATFORM_LEN; y++) {
+      const c = col(y, HALT_GAP);
+      if (side < 0 ? c < edge : c > edge) edge = c;
+    }
+    return side < 0 ? edge - HALT_W + 1 : edge;
+  };
+
+  const fits = (y0: number): boolean => {
+    for (let y = y0; y < y0 + PLATFORM_LEN; y++)
+      for (let k = 1; k <= PLATFORM_W; k++) {
+        const x = col(y, k);
+        if (!clear(x, y) || map.crossings[y * w + x] === 1) return false;
+      }
+    const rx = rectX(y0);
+    const ry = y0 + ((PLATFORM_LEN - HALT_H) >> 1);
+    for (let y = ry - 1; y <= ry + HALT_H; y++)
+      for (let x = rx - 1; x <= rx + HALT_W; x++) {
+        if (!clear(x, y) || !openEdges(x, y)) return false;
+        const k = map.terrainKeyAt(x, y);
+        if (k === 'bank' || k === 'rail') return false; // keep the mass off the batter
+      }
+    return true;
+  };
+
+  const candidates: number[] = [];
+  for (let y0 = 1; y0 + PLATFORM_LEN < h - 1; y0++) if (fits(y0)) candidates.push(y0);
+  if (candidates.length === 0) return null;
+  const y0 = candidates[S.int(candidates.length)];
+
+  const platform: Pt[] = [];
+  for (let y = y0; y < y0 + PLATFORM_LEN; y++)
+    for (let k = 1; k <= PLATFORM_W; k++) platform.push({ x: col(y, k), y });
+  const cy = y0 + (PLATFORM_LEN >> 1);
+  return {
+    rect: { x: rectX(y0), y: y0 + ((PLATFORM_LEN - HALT_H) >> 1), w: HALT_W, h: HALT_H },
+    platform,
+    platformElev: H - 1,
+    centre: { x: col(cy, 1), y: cy },
+    side,
+  };
+}
+
+// Write the halt's GROUND: the deck, and a level forecourt under the mass.
+// The structure itself is stamped by the caller (stampStructure is bourg
+// vocabulary and relief.ts knows nothing about Buildings).
+//
+// The levelling is not cosmetic. Every other building on the map predates the
+// elevation passes and is skipped by them (mapgen's dome pass and undulate both
+// honour nearBuilding), so no legacy floor slab straddles an elevation step.
+// The halt is placed after undulation ran over ground it did not yet own, so
+// without this its four floor tiles could sit on three different heights — an
+// LOS anomaly inside the one structure §2.4 calls a strongpoint.
+export function stampHalt(map: GameMap, halt: Halt): void {
+  const { w } = map;
+  for (const p of halt.platform) {
+    map.setTerrain(p.x, p.y, 'road');
+    map.elev[p.y * w + p.x] = halt.platformElev < 255 ? halt.platformElev : 255;
+  }
+  const { x, y, w: rw, h: rh } = halt.rect;
+  let e = 255;
+  for (let yy = y - 1; yy <= y + rh; yy++)
+    for (let xx = x - 1; xx <= x + rw; xx++) {
+      if (!map.inBounds(xx, yy)) continue;
+      const v = map.elev[yy * w + xx];
+      if (v < e) e = v;
+    }
+  for (let yy = y - 1; yy <= y + rh; yy++)
+    for (let xx = x - 1; xx <= x + rw; xx++) if (map.inBounds(xx, yy)) map.elev[yy * w + xx] = e;
 }

@@ -22,7 +22,7 @@ import {
   type WeaponKey,
 } from './data';
 import { crewDegrade, crewHasLos, crewNear, friendlyHasLos, loadsReady, pickFirer, type Emplacement } from './emplacement';
-import { EYE_H, FLOOR_H, GameMap, los, type LosResult } from './map';
+import { EDGE, EYE_H, FLOOR_H, GameMap, los, type LosResult } from './map';
 import type { Building } from './mapgen';
 import { ambushThreshold, ASSAULT_DANGER_MULT, BALK_REASON, CHARGE_BALK_REASON, compliance, dangerScore, type OrderState, type TeamOrder } from './orders';
 import { astar } from './path';
@@ -1043,6 +1043,12 @@ export class Sim {
     }
   }
 
+  // Nearest tile a vehicle may actually occupy. The test MUST be canStep's
+  // (TerrainDef.noVehicle), not a local key list: returning a tile astar can
+  // never enter makes orderVehicleMove find no route and drop the order in
+  // silence. That is the bug the old 'floor'/'woods'/'hedge' list already had
+  // for 'bank' — an embankment batter was a legal destination and an illegal
+  // step — and it is why furniture must be excluded here as well as in canStep.
   private findVehicleSpot(x: number, y: number): { x: number; y: number } | null {
     for (let r = 0; r <= 6; r++) {
       for (let dy = -r; dy <= r; dy++) {
@@ -1051,8 +1057,8 @@ export class Sim {
           const nx = x + dx;
           const ny = y + dy;
           if (!this.map.inBounds(nx, ny)) continue;
-          const k = this.map.terrainKeyAt(nx, ny);
-          if (this.map.terrainAt(nx, ny).passable && k !== 'floor' && k !== 'woods' && k !== 'hedge') return { x: nx, y: ny };
+          const t = this.map.terrainAt(nx, ny);
+          if (t.passable && !t.noVehicle) return { x: nx, y: ny };
         }
       }
     }
@@ -1637,7 +1643,22 @@ export class Sim {
     return squad.teamIds.some((tid) => this.teams[tid].orderState.phase === 'balked');
   }
 
+  // I10 · interiors §5.2. The ring scan that actually places a garrisoning
+  // squad. It used to return the FIRST passable unused tile in ring order,
+  // which on a furnished map lands a man in the middle of the floor with the
+  // window nook one tile away. Now it takes the highest-scoring tile, ties to
+  // the first in the same iteration order.
+  //
+  // The guard is airtight two ways over. `garrisonScore` is identically 0
+  // unless the map is furnished, so max-with-first-wins would return exactly
+  // the old tile anyway; and because that is true, the unfurnished path keeps
+  // the old EARLY RETURN as well, so it is not merely behaviourally identical
+  // but the same instructions in the same order at the same cost. The scoring
+  // path is the only one that pays for the full 121-tile sweep.
   private findSpot(x: number, y: number, used: Set<number>): { x: number; y: number } | null {
+    const scored = this.map.hasFurniture;
+    let best: { x: number; y: number } | null = null;
+    let bestScore = -1;
     for (let r = 0; r <= 5; r++) {
       for (let dy = -r; dy <= r; dy++) {
         for (let dx = -r; dx <= r; dx++) {
@@ -1646,11 +1667,36 @@ export class Sim {
           const ny = y + dy;
           if (!this.map.inBounds(nx, ny) || !this.map.terrainAt(nx, ny).passable) continue;
           if (used.has(ny * this.map.w + nx)) continue;
-          return { x: nx, y: ny };
+          if (!scored) return { x: nx, y: ny };
+          const s = this.garrisonScore(nx, ny);
+          if (s > bestScore) {
+            bestScore = s;
+            best = { x: nx, y: ny };
+            if (s === 3) return best; // nothing can beat a covered nook
+          }
         }
       }
     }
-    return null;
+    return best;
+  }
+
+  // A garrison tile is worth more if it is a firing position. Deliberately NOT
+  // scored on generic terrain cover: doing that would move formation spots on
+  // open ground on every map, which is a large unrelated behaviour change
+  // hiding inside an interiors task.
+  private garrisonScore(x: number, y: number): number {
+    if (this.map.buildingIdAt(x, y) < 0) return 0;
+    const nook =
+      this.map.hEdge(x, y) === EDGE.WINDOW ||
+      this.map.hEdge(x, y + 1) === EDGE.WINDOW ||
+      this.map.vEdge(x, y) === EDGE.WINDOW ||
+      this.map.vEdge(x + 1, y) === EDGE.WINDOW
+        ? 2
+        : 0;
+    // 0.40 is furn_heavy's coverBehind — a counter, a pew block or a dresser
+    // in one of the four orthogonal neighbours (sim.coverAt maxes them).
+    const cov = this.coverAt(x + 0.5, y + 0.5) >= 0.4 ? 1 : 0;
+    return nook + cov;
   }
 
   takeEvents(): ShotEvent[] {
