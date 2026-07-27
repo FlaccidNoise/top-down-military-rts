@@ -49,14 +49,28 @@ export interface SpotQuery {
   width?: number; // TeamOrder.width
   kind: OrderKind; // stance + threat-bearing policy
   arc?: [number, number]; // defend/ambush facing arc
+  l?: number; // target floor level, 0-based (orderLevel below). Omitted = ground.
 }
 
 export interface ResolvedSpot {
   sid: number;
   x: number; // integer tile coords — feed pathTo/pendingPaths directly
   y: number;
+  l: number; // floor level of the tile — astar's goal level, and what the preview labels
   covered: boolean; // the scorer's own judgment against the threat bearing (drives the green dot)
   snapped: boolean; // resolved tile differs from the naive slot tile (drives the slot→spot tail)
+}
+
+// The floor an order lands on, in ONE place: an explicit level (the floor menu)
+// wins; defend and ambush otherwise garrison the TOP storey of the anchor tile;
+// everything else is ground. sim.orderTeam and the order preview both call
+// this, so preview === execution holds across floors as well as tiles — the
+// preview used to draw ground-floor dots for an order the sim sent upstairs.
+export function orderLevel(sim: Sim, kind: OrderKind, x: number, y: number, l?: number): number {
+  if (l !== undefined) return l;
+  if (kind !== 'defend' && kind !== 'ambush') return 0;
+  const stories = sim.map.storiesAt(Math.floor(x), Math.floor(y));
+  return stories >= 2 ? stories - 1 : 0;
 }
 
 // Threat bearing ladder (§1.3): intel first, travel last.
@@ -232,6 +246,7 @@ export function resolveMoveSpots(sim: Sim, q: SpotQuery, used: Set<number>): Res
   const stance = stanceForKind(q.kind);
   const slots = formationSlots(n, q.facing, q.width);
   const map = sim.map;
+  const level = q.l ?? 0;
   for (let i = 0; i < n; i++) {
     const [ox, oy] = slots[i];
     const sx = Math.floor(q.x + ox);
@@ -256,6 +271,15 @@ export function resolveMoveSpots(sim: Sim, q: SpotQuery, used: Set<number>): Res
           const ny = sy + dy;
           if (!map.inBounds(nx, ny) || !map.terrainAt(nx, ny).passable) continue;
           if (used.has(ny * map.w + nx)) continue;
+          // Upstairs, a tile only exists where the building HAS that storey.
+          // Terrain and walls are one 2-D layer shared by every floor
+          // (interiors D1), so the storey count is the only per-level fact
+          // there is — and it is the one that matters: without it an upstairs
+          // order resolves ground-floor tiles, and a man sent to the second
+          // floor of a single-storey wing walks out the door and stands on
+          // thin air. A slot with no storey in reach is refused instead, which
+          // the caller and the preview already surface.
+          if (level > 0 && map.storiesAt(nx, ny) <= level) continue;
           if (inside && map.buildingIdAt(nx, ny) < 0) {
             if (!plainOut) plainOut = { x: nx, y: ny };
             continue;
@@ -280,6 +304,7 @@ export function resolveMoveSpots(sim: Sim, q: SpotQuery, used: Set<number>): Res
       sid: q.soldierIds[i],
       x: spot.x,
       y: spot.y,
+      l: level,
       covered: isCovered(sim, spot.x, spot.y, bearing, stance),
       snapped: spot.x !== sx || spot.y !== sy,
     });

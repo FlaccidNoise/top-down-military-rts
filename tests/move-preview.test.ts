@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { GameMap } from '../src/sim/map';
+import { EDGE, GameMap } from '../src/sim/map';
 import { Sim, TEAM_FAN } from '../src/sim/sim';
-import { previewMoveSpots, type MovePreview, type OverlayState } from '../src/ui/overlays';
+import { formatContextChip, previewMoveSpots, type MovePreview, type OverlayState } from '../src/ui/overlays';
 
 // M4 (movement design §3): the order preview resolves through the same
 // function execution does. These cover the failure states first — men the
@@ -25,24 +25,29 @@ const state = (o: Partial<OverlayState>): OverlayState => ({
 const men = (n: number, x: number, y: number) =>
   Array.from({ length: n }, (_, i) => ({ name: `S${i}`, weapon: 'garand' as const, x, y: y + i * 0.1 }));
 
-// Where the sim decided a man is going. Only PATH_BUDGET_PER_TICK (6) A*
-// searches run on the order tick; the rest hold their reserved spot in
-// pendingPaths until a later tick, so both have to be read to see a whole
-// order — which is what the design's parity plan (§4.2) says to compare.
-type PendingPeek = { pendingPaths: Map<number, { spot: { x: number; y: number } }> };
-function destOf(sim: Sim, sid: number): [number, number] | null {
+// Where the sim decided a man is going, as [x, y, level]. Only
+// PATH_BUDGET_PER_TICK (6) A* searches run on the order tick; the rest hold
+// their reserved spot in pendingPaths until a later tick, so both have to be
+// read to see a whole order — which is what the design's parity plan (§4.2)
+// says to compare.
+type PendingPeek = { pendingPaths: Map<number, { spot: { x: number; y: number; l: number } }> };
+function destOf(sim: Sim, sid: number): [number, number, number] | null {
   const path = sim.soldiers[sid].path;
-  if (path && path.length > 0) return [path[path.length - 1].x - 0.5, path[path.length - 1].y - 0.5];
+  if (path && path.length > 0) {
+    const last = path[path.length - 1];
+    return [last.x - 0.5, last.y - 0.5, last.l ?? 0];
+  }
   const pending = (sim as unknown as PendingPeek).pendingPaths.get(sid);
-  return pending ? [pending.spot.x, pending.spot.y] : null;
+  return pending ? [pending.spot.x, pending.spot.y, pending.spot.l] : null;
 }
 
-// Every previewed man must end up on the tile the sim sends him to.
+// Every previewed man must end up on the tile — and the floor — the sim sends
+// him to.
 function expectParity(sim: Sim, pv: MovePreview): void {
   let checked = 0;
   for (const t of pv.teams) {
     for (const sp of t.spots) {
-      expect(destOf(sim, sp.sid), `soldier ${sp.sid} was previewed but never dispatched`).toEqual([sp.x, sp.y]);
+      expect(destOf(sim, sp.sid), `soldier ${sp.sid} was previewed but never dispatched`).toEqual([sp.x, sp.y, sp.l]);
       checked++;
     }
   }
@@ -124,6 +129,88 @@ describe('cover truth and snap tails', () => {
     const sim = hedgeSim();
     const pv = previewMoveSpots(sim, state({ selectedSquads: [0], cursor: { x: 28.4, y: 12.3 }, armedOrder: 'smoke' }))!;
     expect(pv.kind).toBe('move');
+  });
+});
+
+// M4b. The preview used to be level-blind: commitOrder's floor-menu path
+// issues {l}, and orderTeam sends a defend order to the top storey on its own,
+// but SpotQuery had no level — so an upstairs order drew ground-floor dots.
+describe('floors: the preview resolves on the storey the order lands on (M4b)', () => {
+  // One building, one buildingId: a two-storey block at x 10..16 with a
+  // single-storey wing bolted on at x 17..30. Door in the west wall, stair in
+  // the block, so upstairs is genuinely reachable and A* returns levelled
+  // waypoints — which is what makes the parity assertion mean anything.
+  function houseSim(): Sim {
+    const sim = new Sim(new GameMap(48, 30), 5);
+    const m = sim.map;
+    for (let y = 10; y <= 16; y++) {
+      for (let x = 10; x <= 30; x++) {
+        m.setTerrain(x, y, 'floor');
+        m.buildingId[y * m.w + x] = 0;
+        m.stories[y * m.w + x] = x <= 16 ? 2 : 1;
+      }
+    }
+    for (let x = 10; x <= 30; x++) {
+      m.setHEdge(x, 10, EDGE.WALL);
+      m.setHEdge(x, 17, EDGE.WALL);
+    }
+    for (let y = 10; y <= 16; y++) {
+      m.setVEdge(10, y, EDGE.WALL);
+      m.setVEdge(31, y, EDGE.WALL);
+    }
+    m.setVEdge(10, 13, EDGE.DOOR);
+    m.stairs[11 * m.w + 11] = 1;
+    m.maxStories = 2;
+    sim.addSquad('blue', 'A', men(6, 7.5, 13));
+    return sim;
+  }
+
+  it('a defend order garrisons the top storey, and the dots say so', () => {
+    const sim = houseSim();
+    const cursor = { x: 13.5, y: 13.5 };
+    const pv = previewMoveSpots(sim, state({ selectedSquads: [0], cursor, armedOrder: 'defend' }))!;
+    expect(pv.teams[0].level).toBe(1);
+    expect(pv.level).toBe(1); // the chip's FLOOR 2 line
+    expect(pv.placed).toBe(6);
+    for (const sp of pv.teams[0].spots) {
+      expect(sp.l).toBe(1);
+      expect(sim.map.storiesAt(sp.x, sp.y)).toBe(2); // never over the single-storey wing
+    }
+    sim.orderSquad(0, { kind: 'defend', x: cursor.x, y: cursor.y });
+    expectParity(sim, pv);
+  });
+
+  it('the floor menu overrules the garrison default, both in the preview and in the order', () => {
+    const sim = houseSim();
+    const cursor = { x: 13.5, y: 13.5 };
+    const pv = previewMoveSpots(sim, state({ selectedSquads: [0], cursor, armedOrder: 'defend', orderFloor: 0 }))!;
+    expect(pv.teams[0].level).toBe(0);
+    expect(pv.level).toBe(0); // an explicit pick is reported even on the ground
+    sim.orderSquad(0, { kind: 'defend', x: cursor.x, y: cursor.y, l: 0 });
+    expectParity(sim, pv);
+  });
+
+  it('an upstairs order where the building has no upstairs refuses the men, and says NO FOOTING', () => {
+    const sim = houseSim();
+    // Deep in the single-storey wing: no tile within the resolver's reach
+    // carries a second storey, so there is nowhere to put anybody.
+    const pv = previewMoveSpots(sim, state({ selectedSquads: [0], cursor: { x: 25.5, y: 13.5 }, orderFloor: 1 }))!;
+    expect(pv.placed).toBe(0);
+    expect(pv.refused).toBe(6);
+    expect(formatContextChip({ danger: null, covered: 0, placed: 0, refused: 6, eta: null, verdict: null, level: pv.level }).lines).toEqual([
+      'FLOOR 2',
+      'NO FOOTING',
+    ]);
+  });
+
+  it('a plain move over the same building is a ground order and says nothing about floors', () => {
+    const sim = houseSim();
+    const pv = previewMoveSpots(sim, state({ selectedSquads: [0], cursor: { x: 13.5, y: 13.5 } }))!;
+    expect(pv.teams[0].level).toBe(0);
+    expect(pv.level).toBeNull();
+    expect(formatContextChip({ danger: null, covered: 0, placed: 6, refused: 0, eta: null, verdict: null, level: pv.level }).lines).toEqual([
+      '0/6 COVERED',
+    ]);
   });
 });
 

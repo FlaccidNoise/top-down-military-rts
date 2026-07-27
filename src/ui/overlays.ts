@@ -1,8 +1,8 @@
 import type { Camera } from '../render/camera';
-import { view } from '../render/view';
+import { MOBILE, view } from '../render/view';
 import { ASSAULT_DANGER_MULT, compliance, dangerSamples, dangerScore, MOVE_FAMILY, type OrderKind } from '../sim/orders';
 import { eligible, fanOffsets, formationSlots, TEAM_FAN, SQUAD_FAN, type Side, type Sim, type UnitEvent } from '../sim/sim';
-import { resolveMoveSpots, type ResolvedSpot } from '../sim/spots';
+import { orderLevel, resolveMoveSpots, type ResolvedSpot } from '../sim/spots';
 import { TEAM } from './hud';
 import type { ShotSolution } from './tooltip';
 
@@ -17,6 +17,11 @@ export interface OverlayState {
   selectedSquads: number[]
   selectRect: { x: number; y: number; w: number; h: number } | null
   formationDrag: { ax: number; ay: number; facing: number; width: number } | null
+  // The floor the pending order carries, when the player has picked one (the
+  // floor menu, open, hovering a row). null = no pick, so the level comes from
+  // orderLevel — ground for a move, the top storey for defend/ambush.
+  orderFloor?: number | null
+  floorFocus?: number // -1 = all floors; else the storey F has focused (main.ts)
 }
 
 function teamCentroid(sim: Sim, soldierIds: number[]): { x: number; y: number } | null {
@@ -43,6 +48,7 @@ export interface PreviewTeam {
   teamId: number;
   x: number; // post-fan team anchor: the exact order.x/y orderTeam will receive
   y: number;
+  level: number; // the floor this team's spots sit on — orderLevel of ITS anchor
   spots: PreviewSpot[];
   refused: { sid: number; slotX: number; slotY: number }[]; // no footing in reach — the sim drops these men silently
   danger: number | null; // focus teams under an armed order only (8 raycast samples/team)
@@ -55,6 +61,9 @@ export interface MovePreview {
   placed: number;
   covered: number;
   refused: number;
+  // Highest floor any team is being sent to, or null when floors are not part
+  // of this order at all (every team on the ground and no explicit pick).
+  level: number | null;
 }
 
 // The order preview, resolved through the SAME function execution runs
@@ -104,12 +113,17 @@ export function previewMoveSpots(sim: Sim, st: OverlayState): MovePreview | null
   let placed = 0;
   let covered = 0;
   let refused = 0;
+  let top = 0;
   for (const t of teams) {
     placed += t.spots.length;
     refused += t.refused.length;
+    top = Math.max(top, t.level);
     for (const sp of t.spots) if (sp.covered) covered++;
   }
-  return { kind, teams, placed, covered, refused };
+  // An explicit pick is worth reporting even when it is the ground floor: the
+  // player chose it off the floor menu and the chip must confirm the choice.
+  const level = top > 0 || st.orderFloor != null ? top : null;
+  return { kind, teams, placed, covered, refused, level };
 }
 
 function pushPreviewTeam(
@@ -127,7 +141,11 @@ function pushPreviewTeam(
   if (!team) return;
   const ids = team.soldierIds.filter((id) => eligible(sim.soldiers[id]));
   if (ids.length === 0) return; // orderTeam's own early return
-  const spots = resolveMoveSpots(sim, { soldierIds: ids, x, y, facing, width, kind }, new Set<number>());
+  // Per TEAM anchor, exactly as orderTeam derives it after orderSquad's fan: a
+  // squad straddling a tall building and a low one garrisons two storeys, and
+  // the preview has to say so.
+  const level = orderLevel(sim, kind, x, y, st.orderFloor ?? undefined);
+  const spots = resolveMoveSpots(sim, { soldierIds: ids, x, y, facing, width, kind, l: level }, new Set<number>());
   const slots = formationSlots(ids.length, facing, width);
   const placed = new Map(spots.map((sp) => [sp.sid, sp]));
   const mine: PreviewSpot[] = [];
@@ -151,7 +169,7 @@ function pushPreviewTeam(
     danger = dangerScore(sim, team, { x, y }) * (kind === 'assault' ? ASSAULT_DANGER_MULT : 1);
     verdict = compliance(sim, team, danger);
   }
-  out.push({ teamId, x, y, spots: mine, refused, danger, verdict });
+  out.push({ teamId, x, y, level, spots: mine, refused, danger, verdict });
 }
 
 // Same-tick memo (design §3.3). The resolver is ~50k array reads for a
@@ -167,12 +185,102 @@ const previewMemo = new WeakMap<Sim, { key: string; val: MovePreview | null }>()
 function movePreview(sim: Sim, st: OverlayState): MovePreview | null {
   if (st.targetMode || !st.cursor || st.selectedSquads.length === 0) return null;
   const d = st.formationDrag;
-  const key = `${sim.tick}|${st.selectedSquads.join(',')}|${st.selectedSquad}|${st.selectedTeam}|${st.squadForce}|${st.armedOrder}|${st.cursor.x},${st.cursor.y}|${d ? `${d.ax},${d.ay},${d.facing},${d.width}` : ''}`;
+  const key = `${sim.tick}|${st.selectedSquads.join(',')}|${st.selectedSquad}|${st.selectedTeam}|${st.squadForce}|${st.armedOrder}|${st.orderFloor}|${st.cursor.x},${st.cursor.y}|${d ? `${d.ax},${d.ay},${d.facing},${d.width}` : ''}`;
   const hit = previewMemo.get(sim);
   if (hit && hit.key === key) return hit.val;
   const val = previewMoveSpots(sim, st);
   previewMemo.set(sim, { key, val });
   return val;
+}
+
+// ── Storey indicator ────────────────────────────────────────────────────────
+// "How many floors has this house got" answered without clicking anything. A
+// FLAT stack of ticks on the roof — one tick per storey, ground at the bottom
+// — never a projected elevation: the game is strict plan view (art rules), so
+// height is expressed as a count, the way a map symbol does it.
+//
+// Only multi-storey buildings get one (a single tick everywhere is noise), and
+// only from BADGE_SCALE up, which is the same zoom the renderer starts drawing
+// its per-soldier floor badge at — below it the tick pitch is under a pixel.
+// Measured, not guessed: at 0.72 alpha over a slate roof the first version of
+// this glyph composited to rgb(106,105,94) against a rgb(93,98,106) roof — a
+// 10-value difference, i.e. invisible. The backing is now the same opaque ink
+// the order chips and the soldier floor badge use, and the ticks are drawn at
+// full alpha.
+const BADGE_SCALE = 14; // px/m — matches renderer.ts's soldier floor badge
+const TICK_W = 9;
+const TICK_H = 2;
+const TICK_PITCH = 4;
+const BADGE_PAD = 3;
+
+// storiesAt is per TILE; a building's storey count is the max over its
+// footprint (roofs.ts derives its shadow height the same way). Keyed on the
+// buildings array identity, which is a new battle — the count itself never
+// changes mid-battle, breaches and holes included.
+const storeyMemo = new WeakMap<Sim, { of: unknown; stories: number[] }>();
+function buildingStoreys(sim: Sim): number[] {
+  const hit = storeyMemo.get(sim);
+  if (hit && hit.of === sim.buildings) return hit.stories;
+  const stories = sim.buildings.map((b) => {
+    let m = 0;
+    for (let y = b.y; y < b.y + b.h; y++) for (let x = b.x; x < b.x + b.w; x++) m = Math.max(m, sim.map.storiesAt(x, y));
+    return m;
+  });
+  storeyMemo.set(sim, { of: sim.buildings, stories });
+  return stories;
+}
+
+// Which storey of which building the pending order is aiming at, so the badge
+// can light that tick: the target floor reads off the BUILDING even where the
+// dots themselves are hidden under a roof.
+function previewTargets(sim: Sim, preview: MovePreview | null): Map<number, number> {
+  const out = new Map<number, number>();
+  if (!preview) return out;
+  for (const t of preview.teams) {
+    if (t.level <= 0) continue;
+    for (const sp of t.spots) {
+      const bid = sim.map.buildingIdAt(sp.x, sp.y);
+      if (bid >= 0) out.set(bid, Math.max(out.get(bid) ?? 0, t.level));
+    }
+  }
+  return out;
+}
+
+function drawStoreyBadges(ctx: CanvasRenderingContext2D, cam: Camera, sim: Sim, st: OverlayState, preview: MovePreview | null): void {
+  if (cam.scale < BADGE_SCALE || sim.buildings.length === 0) return;
+  const cw = view.w;
+  const ch = view.h;
+  const stories = buildingStoreys(sim);
+  const targets = previewTargets(sim, preview);
+  const focus = st.floorFocus ?? -1;
+  const k = Math.min(2, Math.max(1, cam.scale / 22)); // grows with the zoom, like the soldier badge's font
+  const tw = Math.round(TICK_W * k);
+  const th = Math.max(2, Math.round(TICK_H * k));
+  const pitch = Math.round(TICK_PITCH * k);
+  const pad = Math.round(BADGE_PAD * k);
+  const w = tw + pad * 2;
+  sim.buildings.forEach((b, i) => {
+    const n = stories[i];
+    if (n < 2) return; // a one-storey house has nothing to tell the player
+    const [sx, sy] = cam.worldToScreen(b.x + b.w / 2, b.y + b.h / 2, cw, ch);
+    const h = n * pitch + pad;
+    if (sx < -w || sy < -h || sx > cw + w || sy > ch + h) return;
+    const x = Math.round(sx - w / 2);
+    const y = Math.round(sy - h / 2);
+    const target = targets.get(sim.map.buildingIdAt(b.x + (b.w >> 1), b.y + (b.h >> 1))) ?? -1;
+    ctx.fillStyle = 'rgba(18,22,15,0.9)';
+    ctx.fillRect(x, y, w, h);
+    ctx.strokeStyle = 'rgba(74,82,64,0.9)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+    for (let lv = 0; lv < n; lv++) {
+      // Ground at the bottom tick, so the stack reads the way the building
+      // stands even though nothing here is drawn in elevation.
+      const ty = y + h - pad / 2 - (lv + 1) * pitch + (pitch - th);
+      ctx.fillStyle = lv === target ? '#ffca6a' : lv === focus ? '#e8e4d8' : CHIP_MUTED;
+      ctx.fillRect(x + pad, Math.round(ty), tw, th);
+    }
+  });
 }
 
 function worseVerdict(a: ChipVerdict, b: ChipVerdict): ChipVerdict {
@@ -259,6 +367,7 @@ export function drawOverlays(ctx: CanvasRenderingContext2D, cam: Camera, sim: Si
   // place at all gets a refusal cross ON his slot — the silent drop
   // (moveSoldiersTo skips him) is now a preview-time failure state.
   const preview = movePreview(sim, st);
+  drawStoreyBadges(ctx, cam, sim, st, preview);
   if (preview) {
     const r = Math.max(2.5, cam.scale * 0.18);
     for (const t of preview.teams) {
@@ -345,7 +454,7 @@ export function drawOverlays(ctx: CanvasRenderingContext2D, cam: Camera, sim: Si
         eta = eta === null ? secs : Math.max(eta, secs);
       }
     }
-    const fmt = formatContextChip({ danger, covered: preview.covered, placed: preview.placed, refused: preview.refused, eta, verdict });
+    const fmt = formatContextChip({ danger, covered: preview.covered, placed: preview.placed, refused: preview.refused, eta, verdict, level: preview.level });
     const [sx, sy] = cam.worldToScreen(st.cursor.x, st.cursor.y, cw, ch);
     contextChip(ctx, sx, sy, cw, ch, fmt.lines, fmt.color);
   }
@@ -434,6 +543,7 @@ export interface ChipInput {
   refused: number; // men it could not place at all
   eta: number | null;
   verdict: ChipVerdict | null;
+  level?: number | null; // target floor; null = a ground order with no floor pick, so say nothing
 }
 
 // Pure formatting for the order context chip, exported for tests — canvas
@@ -443,6 +553,9 @@ export interface ChipInput {
 // is actually buying (design §3.4).
 export function formatContextChip(o: ChipInput): { lines: string[]; color: string } {
   const lines: string[] = [];
+  // Floor first: it says WHERE the dots are, and an upstairs dot is drawn on
+  // the same pixels a ground-floor one would be.
+  if (o.level != null) lines.push(o.level === 0 ? 'GROUND' : `FLOOR ${o.level + 1}`);
   if (o.danger !== null) lines.push(`RISK ${o.danger < 0.2 ? 'LOW' : o.danger < 0.5 ? 'MED' : 'HIGH'} ${o.danger.toFixed(2)}`);
   if (o.placed > 0) {
     let env = `${o.covered}/${o.placed} COVERED`;
@@ -474,6 +587,15 @@ function contextChip(
   let y = sy - 16 - h;
   if (x + w > cw - 4) x = sx - 16 - w; // flip left at the right edge
   if (y < 4) y = sy + 16; // flip below at the top edge
+  // A phone has no cursor to sit beside — the "cursor" is the finger, and the
+  // bottom third of the screen belongs to the docked tooltip sheet and the
+  // touch bar, which are DOM and paint OVER the canvas. So the chip docks
+  // top-left instead, clear of the top bar and of the thumb. One fixed place
+  // also means it never moves while the order is being dragged.
+  if (MOBILE) {
+    x = 8;
+    y = 64;
+  }
   const r = 3;
   ctx.beginPath();
   ctx.moveTo(x + r, y);

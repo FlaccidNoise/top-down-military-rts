@@ -55,7 +55,7 @@ import {
 import { astar } from './path';
 import { mulberry32, type Rng } from './rng';
 import { CANON_CLOCK_MIN, lightAt } from './solar';
-import { resolveMoveSpots } from './spots';
+import { orderLevel, resolveMoveSpots } from './spots';
 import { LEAN_K, WIND } from './wind';
 
 export const DT = 1 / 30; // fixed timestep, seconds
@@ -803,7 +803,7 @@ export class Sim {
   // Staggered dismount: one passenger every 0.5s (spec: "1 per 0.5s").
   private dismountQueue: { vehicleId: number; soldierId: number; tick: number }[] = [];
   private pathBudget = PATH_BUDGET_PER_TICK;
-  private pendingPaths = new Map<number, { spot: { x: number; y: number }; gl: number }>();
+  private pendingPaths = new Map<number, { spot: { x: number; y: number; l: number } }>();
 
   constructor(readonly map: GameMap, seed: number) {
     this.rng = mulberry32(seed);
@@ -1681,7 +1681,7 @@ export class Sim {
     arc?: [number, number],
   ): void {
     const eligibleIds = soldierIds.filter((id) => this.eligible(this.soldiers[id]));
-    const spots = resolveMoveSpots(this, { soldierIds: eligibleIds, x: wx, y: wy, facing, width, kind, arc }, new Set<number>());
+    const spots = resolveMoveSpots(this, { soldierIds: eligibleIds, x: wx, y: wy, facing, width, kind, arc, l: gl }, new Set<number>());
     for (const spot of spots) {
       const sid = spot.sid;
       const s = this.soldiers[sid];
@@ -1694,14 +1694,18 @@ export class Sim {
       // perturb the shared rng stream.
       if (this.pathBudget > 0) {
         this.pathBudget--;
-        this.pathTo(s, spot, gl);
+        this.pathTo(s, spot);
       } else {
-        this.pendingPaths.set(sid, { spot, gl });
+        this.pendingPaths.set(sid, { spot });
       }
     }
   }
 
-  private pathTo(s: Soldier, spot: { x: number; y: number }, gl: number): void {
+  // The spot carries its own floor: the resolver only hands out tiles that have
+  // the storey, so the goal level is a property of the destination and never a
+  // second argument that can disagree with it.
+  private pathTo(s: Soldier, spot: { x: number; y: number; l: number }): void {
+    const gl = spot.l;
     let path = astar(this.map, Math.floor(s.x), Math.floor(s.y), spot.x, spot.y, 'foot', s.level, gl);
     if (!path && gl > 0) {
       path = astar(this.map, Math.floor(s.x), Math.floor(s.y), spot.x, spot.y, 'foot', s.level, 0);
@@ -1722,7 +1726,7 @@ export class Sim {
       const s = this.soldiers[sid];
       if (!this.eligible(s)) continue; // died/broke while queued: drop it
       this.pathBudget--;
-      this.pathTo(s, req.spot, req.gl);
+      this.pathTo(s, req.spot);
     }
   }
 
@@ -1761,14 +1765,16 @@ export class Sim {
     } else if (effective.kind === 'move' || effective.kind === 'fast' || effective.kind === 'sneak' || effective.kind === 'assault') {
       team.orderState = { order: effective, phase: 'executing', reason };
       if (effective.kind === 'sneak') this.sneakBaseline[team.id] = this.woundCount(team);
-      this.moveSoldiersTo(team.soldierIds, effective.x, effective.y, effective.l ?? 0, effective.facing, effective.width, effective.kind);
+      const gl = orderLevel(this, effective.kind, effective.x, effective.y, effective.l);
+      this.moveSoldiersTo(team.soldierIds, effective.x, effective.y, gl, effective.facing, effective.width, effective.kind);
     } else if (effective.kind === 'smoke') {
       team.orderState = { order: effective, phase: 'executing', reason };
       this.deploySmoke(team, effective);
     } else if (effective.kind === 'defend' || effective.kind === 'ambush') {
       team.orderState = { order: effective, phase: 'executing', reason };
-      const st = this.map.storiesAt(Math.floor(effective.x), Math.floor(effective.y));
-      const gl = effective.l ?? (st >= 2 ? st - 1 : 0);
+      // Auto-top-floor garrison: the defend/ambush default, owned by orderLevel
+      // so the preview can show the same storey the men will hold.
+      const gl = orderLevel(this, effective.kind, effective.x, effective.y, effective.l);
       this.moveSoldiersTo(team.soldierIds, effective.x, effective.y, gl, effective.facing, effective.width, effective.kind, effective.arc);
     } else {
       // fire: no movement, members engage per updateSoldier's combat section
@@ -2397,7 +2403,7 @@ export class Sim {
       if (kind !== 'move' && kind !== 'assault') continue;
       if (Math.hypot(s.x - mx, s.y - my) > BREACH_REPATH_RADIUS) continue;
       const dest = s.path[s.path.length - 1];
-      this.pendingPaths.set(s.id, { spot: { x: Math.floor(dest.x), y: Math.floor(dest.y) }, gl: dest.l ?? 0 });
+      this.pendingPaths.set(s.id, { spot: { x: Math.floor(dest.x), y: Math.floor(dest.y), l: dest.l ?? 0 } });
     }
   }
 

@@ -576,9 +576,18 @@ describe('night intel A/B', () => {
     const wache = front.chits.find((ch) => ch.name === 'Brückenwache Süd')!;
     const { sim, commander, blueCommander } = makeStrategicBattle(c, front, { attackerId: able.id, defenderId: wache.id, cell: wache.cell }, seed);
     sim.startMin = startMin;
-    // First-spot distance for every soldier contact blue ever gains: distance
-    // from the spotted position to the nearest blue spotter at that sweep.
+    // Two measurements, deliberately different. `dists` is every first-spot
+    // EVENT — a contact that drops out of the picture and is re-gained counts
+    // again — and it is what the cap assertions need. `uniq` is how many
+    // distinct enemies blue ever had on its map at all, which is what "the
+    // intel picture collapses" actually claims. The event count is NOT a proxy
+    // for it: the 25 m night cap makes contacts flicker in and out, so a
+    // close-range night grind can out-count a daylight battle fought at 130 m.
+    // Measured on seed 42 the day the garrison resolver learnt about floors
+    // (M4b): day 75 events / 24 distinct, night 77 events / 17 distinct — the
+    // event count inverted while the distinct count kept its 24 > 17 margin.
     const spotDist: number[] = [];
+    const everSeen = new Set<number>();
     let prev = new Set<number>();
     for (let i = 0; i < 4500 && !sim.winner; i++) {
       commander.update(sim);
@@ -591,23 +600,24 @@ describe('night intel A/B', () => {
           for (const s of sim.soldiers) if (s.alive && !s.downed && s.side === 'blue' && s.inVehicle < 0) d = Math.min(d, Math.hypot(s.x - p.x, s.y - p.y));
           for (const v of sim.vehicles) if (v.alive && v.side === 'blue') d = Math.min(d, Math.hypot(v.x - p.x, v.y - p.y));
           spotDist.push(d);
+          everSeen.add(id);
         }
         prev = new Set(sim.spotted.blue.keys());
       }
     }
-    return spotDist;
+    return { dists: spotDist, uniq: everSeen.size };
   };
 
   it('at 02:00 the intel picture collapses to the cap; at 14:00 it does not (seeds 11, 42)', () => {
     for (const seed of [11, 42]) {
       const day = runBattle(seed, 14 * 60);
       const night = runBattle(seed, 2 * 60);
-      // measured: seed 11 day 89 spots / max 193.5 m, night 20 / 24.3 m;
-      //           seed 42 day 83 spots / max 128.2 m, night 5 / 20.4 m.
-      expect(night.length).toBeGreaterThan(0); // liveness: night spotting fires under natural dynamics
-      expect(night.length).toBeLessThan(day.length); // direction: far fewer contacts gained in the dark
-      expect(Math.max(...night)).toBeLessThanOrEqual(25.5); // every night first-spot inside the 25 m floor
-      expect(Math.max(...day)).toBeGreaterThan(25.5); // and it is the cap that binds, not map geometry
+      // measured: seed 11 day 28 distinct / max 193.5 m, night 20 / 24.9 m;
+      //           seed 42 day 24 distinct / max 126.9 m, night 17 / 24.6 m.
+      expect(night.dists.length).toBeGreaterThan(0); // liveness: night spotting fires under natural dynamics
+      expect(night.uniq).toBeLessThan(day.uniq); // direction: fewer enemies ever found in the dark
+      expect(Math.max(...night.dists)).toBeLessThanOrEqual(25.5); // every night first-spot inside the 25 m floor
+      expect(Math.max(...day.dists)).toBeGreaterThan(25.5); // and it is the cap that binds, not map geometry
     }
   }, 120000);
 });

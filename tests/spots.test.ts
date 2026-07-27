@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { EDGE, GameMap } from '../src/sim/map';
-import { resolveMoveSpots, SNAP_R, threatBearing, type SpotQuery } from '../src/sim/spots';
+import { orderLevel, resolveMoveSpots, SNAP_R, threatBearing, type SpotQuery } from '../src/sim/spots';
 import { RedCommander } from '../src/sim/ai';
 import { eligible, Sim, type Side } from '../src/sim/sim';
 
@@ -304,6 +304,72 @@ describe('red runDefend garrisons through the resolver (M3)', () => {
       return w(sim.map.hEdge(x, y)) || w(sim.map.hEdge(x, y + 1)) || w(sim.map.vEdge(x, y)) || w(sim.map.vEdge(x + 1, y));
     });
     expect(atNook.length).toBeGreaterThanOrEqual(4); // every loophole manned
+  });
+});
+
+// M4b: the resolver learns which floor it is resolving on. Terrain and walls
+// are one 2-D layer shared by every storey (interiors D1), so the storey COUNT
+// is the only per-level fact — and it decides whether a tile exists upstairs
+// at all.
+function storeys(sim: Sim, x0: number, y0: number, x1: number, y1: number, n: number): void {
+  const m = sim.map;
+  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) m.stories[y * m.w + x] = n;
+  m.maxStories = Math.max(m.maxStories, n);
+}
+
+describe('floors: the resolver only hands out tiles that have the storey (M4b)', () => {
+  const EAST: [number, number] = [-0.5, 0.5];
+
+  // One building: a three-storey block at 10..14 with a single-storey lean-to
+  // bolted on its east side at 15..18. Upstairs, only the block exists.
+  function leanTo(): Sim {
+    const sim = new Sim(new GameMap(40, 30), 3);
+    room(sim, 10, 10, 18, 16);
+    storeys(sim, 10, 10, 14, 16, 3);
+    storeys(sim, 15, 10, 18, 16, 1);
+    return sim;
+  }
+
+  it('an upstairs order never puts a man over the single-storey wing', () => {
+    const sim = leanTo();
+    const ids = Array.from({ length: 6 }, (_, i) => addOne(sim, 'blue', 20.5, 12.5 + i * 0.1));
+    // Anchor deliberately IN the lean-to: every man has to be pulled west.
+    const spots = resolveMoveSpots(sim, { soldierIds: ids, x: 16.5, y: 13.5, kind: 'defend', arc: EAST, l: 2 }, new Set());
+    expect(spots.length).toBe(6);
+    for (const s of spots) {
+      expect(sim.map.storiesAt(s.x, s.y)).toBeGreaterThan(2);
+      expect(s.l).toBe(2);
+      expect(s.x).toBeLessThanOrEqual(14);
+    }
+  });
+
+  it('a floor the building does not reach refuses the man instead of inventing one', () => {
+    const sim = leanTo();
+    const ids = [addOne(sim, 'blue', 20.5, 13.5)];
+    // Level 3 is the fourth floor; the tallest thing here has three.
+    expect(resolveMoveSpots(sim, { soldierIds: ids, x: 12.5, y: 13.5, kind: 'defend', arc: EAST, l: 3 }, new Set())).toEqual([]);
+  });
+
+  it('ground orders are untouched: no storey gate, and l is 0', () => {
+    const sim = leanTo();
+    const ids = [addOne(sim, 'blue', 20.5, 13.5)];
+    const q: SpotQuery = { soldierIds: ids, x: 16.5, y: 13.5, kind: 'move' };
+    const bare = resolveMoveSpots(sim, q, new Set());
+    const zero = resolveMoveSpots(sim, { ...q, l: 0 }, new Set());
+    expect(bare).toEqual(zero);
+    expect(bare[0].l).toBe(0);
+    expect([bare[0].x, bare[0].y]).toEqual([16, 13]); // the lean-to tile, storeys or not
+  });
+
+  it('orderLevel: explicit wins, defend and ambush garrison the top storey, everything else is ground', () => {
+    const sim = leanTo();
+    expect(orderLevel(sim, 'defend', 12.5, 13.5)).toBe(2); // three storeys ⇒ the third
+    expect(orderLevel(sim, 'ambush', 12.5, 13.5)).toBe(2);
+    expect(orderLevel(sim, 'move', 12.5, 13.5)).toBe(0); // walking there is a ground-floor job
+    expect(orderLevel(sim, 'defend', 16.5, 13.5)).toBe(0); // the lean-to has one storey
+    expect(orderLevel(sim, 'defend', 25.5, 25.5)).toBe(0); // open ground
+    expect(orderLevel(sim, 'defend', 12.5, 13.5, 1)).toBe(1); // the floor menu overrules the default
+    expect(orderLevel(sim, 'move', 12.5, 13.5, 2)).toBe(2);
   });
 });
 
