@@ -1,7 +1,7 @@
 import type { WeaponKey } from '../sim/data';
 import { EDGE, type GameMap } from '../sim/map';
 import { WIND_SPEED } from '../sim/wind';
-import { SUN, WIND as LIGHT_WIND } from './light';
+import { SUN, sun, WIND as LIGHT_WIND } from './light';
 import { hash } from './noise';
 
 // Baked particle atlas — the effects layer's answer to dudes.ts/getSprite.
@@ -177,7 +177,15 @@ const cache = new Map<string, HTMLCanvasElement>();
 
 function getFx(kind: FxKind, px: number): HTMLCanvasElement {
   const band = px <= 48 ? BAKE_SMALL : BAKE_LARGE;
-  const key = `${kind}|${band}`;
+  // chunk*/pock* bake a pale crescent OPPOSITE the sun (the "same light"
+  // contract marks.ts documents), so their key carries the sun's AZIMUTH
+  // bucket only (design §5.4) — direction is the whole read; the crescent's
+  // couple of pixels of length/alpha never show an elevation ramp. Dropping
+  // the elevation cuts the keyspace 21x, and a mark stamped at 13:50 keeps
+  // its sprite when the sun steps at 14:05 instead of leaving a mismatched
+  // pair on the same wall. sun().step is azBucket * 32 + elBucket.
+  const sunned = kind.startsWith('pock') || kind.startsWith('chunk');
+  const key = sunned ? `${kind}|${band}|a${(sun().step / 32) | 0}` : `${kind}|${band}`;
   let c = cache.get(key);
   if (!c) {
     c = bake(kind, band);
