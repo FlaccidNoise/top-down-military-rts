@@ -1,3 +1,7 @@
+import { buildObjectives } from './bourg/objectives';
+import { planBourg, stampBourg, type BourgPlan } from './bourg/plan';
+import { zoneOf } from './bourg/rural';
+import { subStream, TAG } from './bourg/streets';
 import { EDGE, FLOOR_H, GameMap } from './map';
 import { mulberry32, type Rng } from './rng';
 
@@ -136,6 +140,9 @@ export function generateMap(seed: number, w = 160, h = 120, kind: MapKind = 'ope
 }
 
 function tryGenerate(rng: Rng, w: number, h: number, kind: MapKind): MapPlan | null {
+  // The guard sits before the first draw, so every legacy kind's draw sequence
+  // is bit-for-bit what it was before the bourg existed (D1).
+  if (kind === 'bourg') return tryGenerateBourg(rng, w, h);
   const map = new GameMap(w, h);
   const road = new Uint8Array(w * h);
 
@@ -393,6 +400,116 @@ function tryGenerate(rng: Rng, w: number, h: number, kind: MapKind): MapPlan | n
   };
 }
 
+// ── the bourg branch ────────────────────────────────────────────────────────
+//
+// D2: exactly ONE draw on the shared stream, taken inside the guard. Every
+// stage below runs on a sub-stream derived from it (streets.ts subStream), so
+// its draw count is independent of every other stage's — retuning stage 8
+// cannot move stage 9, and no bourg tuning can ever move a legacy kind.
+//
+// The stage order is not negotiable and getting it wrong is silent; plan.ts
+// documents why. What lives here is only what needs the shared rng, the
+// GameMap, or the MapPlan: the base draw, maxStories, the objectives (which
+// need stampBourg's woods stands) and elevation.
+function tryGenerateBourg(rng: Rng, w: number, h: number): MapPlan | null {
+  const bourgBase = rng.int(0x7fffffff);
+  const plan = planBourg(bourgBase, w, h); // stages 1-11a, pure — no GameMap yet
+  const map = new GameMap(w, h);
+  const st = stampBourg(map, plan); // terrain → roads → buildings → enclosures
+  // stampBourg RETURNS the story count rather than writing it. map.ts:156 gates
+  // the entire slab-occlusion path on maxStories, so leaving it at 0 silently
+  // disables occlusion for a map whose set-piece is a 4-storey tower.
+  map.maxStories = st.maxStories;
+  const { objectives, objectiveKinds } = buildObjectives(plan.sk, plan.land, plan.fp, st.woodsStands);
+  elevateBourg(map, plan, bourgBase); // stage 13 — last, always
+  return {
+    map,
+    buildings: plan.fp.buildings,
+    spawns: plan.spawns,
+    objectives,
+    objectiveKinds,
+    woodsStands: st.woodsStands,
+  };
+}
+
+// Stage 13 · tag 14. Structurally the dome pass above, with one added skip mask.
+//
+// §2.2 specifies `flatZone = expand(R_env, 4)` and that number is wrong for
+// this pipeline. The parcel zone is R_env + 6, so plots, gardens and their
+// walls reach two tiles OUTSIDE a +4 box, and T9's outlying farms have walled
+// yards in open country far beyond it. A 5 m dome running under a 2 m garden
+// wall next to a floor tile at elev 0 is exactly the seam and the LOS anomaly
+// the flat zone exists to prevent.
+//
+// The mask is therefore: the parcel zone itself (rural.ts's own zoneOf, so the
+// flat region and the region rural fabric refuses to enter cannot drift apart);
+// every compound rect dilated by 2, which is what catches the outlying farms;
+// every building mass dilated by 1, which is mapgen's `nearBuilding` rule read
+// off the authoritative footprint mask instead of an O(n) rect scan per tile;
+// and, as a backstop for anything the first three miss, every tile carrying a
+// free-standing wall edge. Region-shaped rather than per-wall on purpose:
+// skipping only the wall tiles would leave each garden's interior domed and its
+// own boundary flat, i.e. a cliff inside every garden.
+function elevateBourg(map: GameMap, plan: BourgPlan, base: number): void {
+  const { w, h } = map;
+  const flat = bourgFlatMask(map, plan);
+  const r14 = subStream(base, TAG.ELEV);
+  for (let i = 0, n = 2 + r14.int(3); i < n; i++) {
+    const cx = r14.int(w);
+    const cy = r14.int(h);
+    const r = 8 + r14.int(12);
+    const peak = 3 + r14.int(6);
+    const r2 = r * r;
+    for (let y = Math.max(0, cy - r); y <= Math.min(h - 1, cy + r); y++)
+      for (let x = Math.max(0, cx - r); x <= Math.min(w - 1, cx + r); x++) {
+        const d2 = (x - cx) * (x - cx) + (y - cy) * (y - cy);
+        if (d2 > r2 || flat[y * w + x]) continue;
+        const k = map.terrainKeyAt(x, y);
+        if (k === 'road' || k === 'water' || k === 'floor') continue;
+        const e = Math.round(peak * 0.5 * (1 + Math.cos(Math.PI * Math.min(1, Math.sqrt(d2) / r))));
+        if (e > map.elev[y * w + x]) map.elev[y * w + x] = e;
+      }
+  }
+}
+
+function bourgFlatMask(map: GameMap, plan: BourgPlan): Uint8Array {
+  const { w, h } = map;
+  const flat = new Uint8Array(w * h);
+  const inZone = zoneOf(plan.sk);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) if (inZone(x, y)) flat[y * w + x] = 1;
+  for (const c of plan.fp.compounds)
+    for (let y = Math.max(0, c.rect.y - 2), y1 = Math.min(h, c.rect.y + c.rect.h + 2); y < y1; y++)
+      for (let x = Math.max(0, c.rect.x - 2), x1 = Math.min(w, c.rect.x + c.rect.w + 2); x < x1; x++) flat[y * w + x] = 1;
+  const occ = plan.fp.occ;
+  for (let y = 0; y < h; y++)
+    for (let x = 0; x < w; x++) {
+      if (!occ[y * w + x]) continue;
+      for (let dy = -1; dy <= 1; dy++)
+        for (let dx = -1; dx <= 1; dx++) {
+          const nx = x + dx;
+          const ny = y + dy;
+          if (nx >= 0 && ny >= 0 && nx < w && ny < h) flat[ny * w + nx] = 1;
+        }
+    }
+  // A free-standing wall is WALL with a top of 1 or 2 (§3.2); a building wall
+  // is stories*FLOOR_H, i.e. >= 3. Four edge reads per tile, once.
+  const freeTop = (t: number) => t === 1 || t === 2;
+  for (let y = 0; y < h; y++)
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x;
+      if (flat[i]) continue;
+      const vRow = y * (w + 1);
+      if (
+        (map.hEdge(x, y) === EDGE.WALL && freeTop(map.hEdgeTops[i])) ||
+        (map.hEdge(x, y + 1) === EDGE.WALL && freeTop(map.hEdgeTops[i + w])) ||
+        (map.vEdge(x, y) === EDGE.WALL && freeTop(map.vEdgeTops[vRow + x])) ||
+        (map.vEdge(x + 1, y) === EDGE.WALL && freeTop(map.vEdgeTops[vRow + x + 1]))
+      )
+        flat[i] = 1;
+    }
+  return flat;
+}
+
 // Perimeter walls with windows every 3 tiles, a door mid-span on the
 // road-facing side, floor interior, and a partitioned second room when wide
 // enough (partition door aligned with the entrance row/column).
@@ -567,9 +684,12 @@ export function validate(plan: MapPlan): boolean {
   const west = reachField(map, spawns.west.x, spawns.west.y, 'foot');
   for (const o of objectives) if (!reaches(map, west, o.x, o.y)) return false;
   for (const b of buildings) if (!reaches(map, west, b.x + (b.w >> 1), b.y + (b.h >> 1))) return false;
-  // every stair tile (2-story buildings) must be foot-reachable at ground level
+  // every stair tile must be foot-reachable at ground level. `>= 2` rather than
+  // `=== 2`: every legacy kind emits 1- or 2-storey buildings only, so this is
+  // byte-identical for them, but a bourg's church tower is 4 and its stair was
+  // silently exempt from the gate — the one object §1.4 calls the set-piece.
   for (let i = 0; i < map.stairs.length; i++)
-    if (map.stairs[i] === 1 && map.stories[i] === 2 && !reaches(map, west, i % map.w, (i / map.w) | 0)) return false;
+    if (map.stairs[i] === 1 && map.stories[i] >= 2 && !reaches(map, west, i % map.w, (i / map.w) | 0)) return false;
   const east = reachField(map, spawns.east.x, spawns.east.y, 'foot');
   for (const o of objectives) if (!reaches(map, east, o.x, o.y)) return false;
   const veh = reachField(map, spawns.west.x, spawns.west.y, 'vehicle');

@@ -41,7 +41,11 @@ const CELL = 22; // bocage jittered-grid cell
 const clamp = (v: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, v));
 
 // ── the town/country line ────────────────────────────────────────────────────
-function zoneOf(sk: Skeleton): (x: number, y: number) => boolean {
+// Exported because T11's elevation flat zone must be the SAME region: if the
+// dome pass and the rural passes disagree about where town ends, a hill runs
+// under the outermost gardens' walls, which is the seam §2.2 stage 13 exists to
+// prevent.
+export function zoneOf(sk: Skeleton): (x: number, y: number) => boolean {
   const x0 = sk.env.x - 6;
   const y0 = sk.env.y - 6;
   const x1 = sk.env.x + sk.env.w + 5;
