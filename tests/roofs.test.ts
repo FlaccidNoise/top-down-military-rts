@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { generateMap, type Building } from '../src/sim/mapgen';
-import { artContexts, artKey, pickMat } from '../src/render/roofs';
+import { artContexts, artKey, bakeBudgetMs, nextBake, pickMat } from '../src/render/roofs';
 
-// Lane B, T15 / T17. Everything here is the PURE half of roofs.ts — the
+// Lane B, T15 / T17 / T22. Everything here is the PURE half of roofs.ts — the
 // decisions the bake reads off, with no canvas in sight. The pixels are judged
 // through scripts/sweep.mjs; what a unit test can hold down is that the church
-// is always a church and that a party-wall range agrees with itself.
+// is always a church, that a party-wall range agrees with itself, and that the
+// bake queue serves the camera before it serves the array.
 
 const W = 320;
 const H = 240;
@@ -171,5 +172,35 @@ describe('artContexts: party-wall ranges (T17)', () => {
       expect(c.alongX).toBeNull();
       expect(c.butt).toEqual({ n: false, s: false, e: false, w: false });
     }
+  });
+});
+
+describe('bake queue (T22)', () => {
+  it('takes the first on-screen entry, not the first entry', () => {
+    const q = [7, 8, 9, 3, 4];
+    expect(nextBake(q, (i) => i === 3)).toBe(3);
+    expect(q).toEqual([7, 8, 9, 4]);
+  });
+
+  it('falls back to FIFO when nothing in the queue is on screen', () => {
+    const q = [7, 8, 9];
+    expect(nextBake(q, () => false)).toBe(7);
+    expect(q).toEqual([8, 9]);
+  });
+
+  it('drains the whole first band in one go and trickles after it', () => {
+    expect(bakeBudgetMs(true, 0)).toBe(Infinity);
+    expect(bakeBudgetMs(false, 0)).toBeLessThanOrEqual(5);
+  });
+
+  it('raises the budget once the camera has held still, so a paused inspection settles', () => {
+    const moving = bakeBudgetMs(false, 0);
+    const still = bakeBudgetMs(false, 4);
+    expect(still).toBeGreaterThan(moving);
+    // §5.5: a 65-building bourg costs ~4 ms a building at the top band, so the
+    // still budget has to settle one in the order of a dozen frames, and the
+    // moving one must still fit inside a 60 Hz frame.
+    expect(moving).toBeLessThan(16.7);
+    expect(Math.ceil((65 * 4) / still)).toBeLessThanOrEqual(20);
   });
 });

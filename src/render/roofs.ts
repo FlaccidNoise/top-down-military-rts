@@ -31,7 +31,17 @@ const FADED_ALPHA = 0.18; // revealed roofs keep a readable ghost of the mass
 // Bake resolutions (px/m). No 48 band: above FADE_SCALE every roof is at
 // FADED_ALPHA, so a 32 px/m sprite upscaled there is invisible loss.
 const ROOF_BANDS = [8, 16, 32];
-const BAKES_PER_FRAME = 2; // amortized so a band change never stalls a frame
+const BAKES_PER_FRAME = 2; // floor: a frame always makes at least this much progress
+// T22. The budget is TIME, not a sprite count: one building costs ~4 ms at
+// band 32 and a fraction of that at band 8, so a fixed count is either a stall
+// at the top band or a crawl at the bottom. A still camera is an inspection
+// rather than play — nothing else is asking for the frame, and every frame
+// spent trickling is a frame of visible pop-in in a paused screenshot. Two
+// identical poses is enough to call it still; one is a scroll-wheel notch
+// landing between two frames.
+const BAKE_MS = 4;
+const BAKE_MS_STATIC = 16;
+const STILL_FRAMES = 2;
 const TAU = Math.PI * 2;
 const TONE_STEPS = 9; // per-tile value ramp, precomputed so the bake builds no strings
 
@@ -1776,6 +1786,26 @@ export function artContexts(buildings: Building[], stories: number[]): ArtCtx[] 
   });
 }
 
+// --- bake queue (T22) --------------------------------------------------------
+
+// On-screen first. A band change queues every building in the town, and
+// draining that in index order spends the first second baking roofs behind the
+// camera while the ones the player is looking at hold the previous band.
+export function nextBake(queue: number[], onScreen: (i: number) => boolean): number {
+  for (let k = 0; k < queue.length; k++) if (onScreen(queue[k])) return queue.splice(k, 1)[0];
+  return queue.shift()!;
+}
+
+// Milliseconds this frame may spend baking. The first band after a buildings
+// change drains in one go (it lands on the paused boot frame, where a stall
+// costs nothing); after that a moving camera gets the trickle and a still one
+// gets the inspection budget. BAKES_PER_FRAME is a floor underneath this, so a
+// band whose sprites each overrun the whole budget still drains.
+export function bakeBudgetMs(prewarm: boolean, still: number): number {
+  if (prewarm) return Infinity;
+  return still >= STILL_FRAMES ? BAKE_MS_STATIC : BAKE_MS;
+}
+
 interface Baked {
   roof: HTMLCanvasElement;
   shadow: HTMLCanvasElement;
@@ -1798,6 +1828,10 @@ export class RoofLayer {
   private queue: number[] = [];
   private prewarm = true;
   private tick = 0;
+  private frame = 0;
+  private pumpedAt = -1; // the budget is per FRAME, not per draw call — two passes pump
+  private camPose = Number.NaN;
+  private still = 0;
 
   update(sim: Sim, cam: Camera, dt: number): void {
     if (this.buildings !== sim.buildings) {
@@ -1825,6 +1859,15 @@ export class RoofLayer {
       this.prewarm = true;
     }
     this.tick = sim.tick;
+    this.frame++;
+    // T22. Stillness is measured on the camera pose alone: a paused inspection
+    // and an idle player both hold it, and both are frames with budget to burn.
+    const pose = cam.x * 8192 + cam.y * 31 + cam.scale * 1e6;
+    if (pose === this.camPose) this.still++;
+    else {
+      this.camPose = pose;
+      this.still = 0;
+    }
     if (cam.scale > FADE_SCALE) this.zoomFaded = true;
     else if (cam.scale < FADE_SCALE_RESTORE) this.zoomFaded = false;
     this.buildings.forEach((b, i) => {
@@ -1946,15 +1989,21 @@ export class RoofLayer {
 
   // Amortized bake. The first band after a buildings change drains in one go —
   // that lands on the paused boot frame, where a stall costs nothing; every
-  // later band change trickles while the previous band keeps serving.
-  private pump(): void {
-    if (!this.queue.length) return;
+  // later band change trickles while the previous band keeps serving. T22: the
+  // trickle is ordered by on-screen-ness and widened while the camera is still,
+  // because a 65-building bourg is 65 queue entries and draining that two a
+  // frame in index order is two seconds of pop-in in the wrong half of town.
+  private pump(cam: Camera, cw: number, ch: number): void {
+    if (!this.queue.length || this.pumpedAt === this.frame) return;
+    this.pumpedAt = this.frame;
     const cur = this.sprites.get(this.band)!;
-    const n = this.prewarm ? this.queue.length : BAKES_PER_FRAME;
+    const budget = bakeBudgetMs(this.prewarm, this.still);
+    const t0 = performance.now();
     // the shadow is blurred to begin with, so half resolution is free
     const sBand = Math.max(8, this.band / 2);
-    for (let k = 0; k < n && this.queue.length; k++) {
-      const i = this.queue.shift()!;
+    for (let k = 0; this.queue.length; k++) {
+      if (k >= BAKES_PER_FRAME && performance.now() - t0 >= budget) break;
+      const i = nextBake(this.queue, (j) => this.onScreen(cam, j, cw, ch, 2));
       const b = this.buildings[i];
       const art = this.art[i];
       cur[i] = {
@@ -1982,7 +2031,7 @@ export class RoofLayer {
 
   drawShadows(ctx: CanvasRenderingContext2D, cam: Camera, cw: number, ch: number): void {
     this.setBand(roofBandFor(cam.scale));
-    this.pump();
+    this.pump(cam, cw, ch);
     this.withWorldTransform(ctx, cam, cw, ch, () => {
       this.buildings.forEach((b, i) => {
         if (!this.onScreen(cam, i, cw, ch, 2 * this.stories[i])) return;
@@ -2018,7 +2067,7 @@ export class RoofLayer {
 
   drawTops(ctx: CanvasRenderingContext2D, cam: Camera, cw: number, ch: number): void {
     this.setBand(roofBandFor(cam.scale));
-    this.pump();
+    this.pump(cam, cw, ch);
     const px = -SUN.dx * PARALLAX;
     const py = -SUN.dy * PARALLAX;
     this.withWorldTransform(ctx, cam, cw, ch, () => {
