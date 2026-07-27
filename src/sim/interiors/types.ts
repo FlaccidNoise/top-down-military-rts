@@ -345,6 +345,11 @@ export const FURN_TAG = {
   art: 4, // render-facing variant bits
 } as const;
 
+// Math.imul, not `*`: the design doc writes `x * 73856093`, whose product
+// overflows 2^31 for any x > 29 and is only well defined because `^` coerces
+// through ToInt32. imul is the same intent with no double in the middle. It
+// changes the numbers, which is free — nothing has been generated with the
+// other spelling — so do not "correct" it back.
 export const structKey = (b: { x: number; y: number; w: number; h: number }): number =>
   (Math.imul(b.x, 73856093) ^ Math.imul(b.y, 19349663) ^ Math.imul(b.w, 83492791) ^ b.h) >>> 0;
 
