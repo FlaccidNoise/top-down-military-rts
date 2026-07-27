@@ -28,7 +28,9 @@ function addVehicleOnRoad(sim: Sim, side: Side, kind: VehicleKey, x: number, y: 
 }
 
 export function makeScenario(seed: number): Sim {
-  const plan = generateMap(seed);
+  // I9: the skirmish scenario is shipped configuration too. The defaults are
+  // spelled out because `interiors` rides on the fifth parameter.
+  const plan = generateMap(seed, 160, 120, 'open', { interiors: true });
   const sim = new Sim(plan.map, seed);
   sim.buildings = plan.buildings;
   const { west, east } = plan.spawns;

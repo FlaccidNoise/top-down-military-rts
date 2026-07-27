@@ -3,6 +3,7 @@ import { planBourg, stampBourg, type BourgPlan } from './bourg/plan';
 import { zoneOf } from './bourg/rural';
 import { stampStructure } from './bourg/stamp';
 import { subStream, TAG } from './bourg/streets';
+import { furnishInteriors } from './interiors/furnish';
 import { EDGE, FLOOR_H, GameMap } from './map';
 import {
   applyRelief,
@@ -173,6 +174,17 @@ export interface GenerateOpts {
   // profile at any size (the per-element guards inside relief.ts still apply, so
   // a 60x40 map with rail: true simply grows no embankment). Absent = the table.
   relief?: ReliefProfile | 'none';
+  // I9 / interiors D2. Default FALSE, and the guard sits in front of the single
+  // shared-stream draw, so a map generated without it takes zero extra draws and
+  // zero extra writes: every pinned fingerprint holds by construction rather
+  // than by care. Production opts in (bridge.ts, scenario.ts); every pinned test
+  // calls the <=4-argument form or passes only `relief`.
+  //
+  // DEVIATION from the design's §2.3, which spells this as a new fifth
+  // parameter `opts: { interiors?: boolean }`. `GenerateOpts` already IS the
+  // fifth parameter (H7's relief switch got there first), so this is a field on
+  // it, not a sixth argument.
+  interiors?: boolean;
 }
 
 const reliefActive = (p: ReliefProfile): boolean => p.undulation > 0 || p.hedgeBanks || p.rail || p.sunken > 0;
@@ -193,18 +205,19 @@ export function generateMap(seed: number, w = 160, h = 120, kind: MapKind = 'ope
   // clamp bounds invert and the layout degenerates
   if (w < 60 || h < 40) throw new Error(`mapgen: map ${w}x${h} too small (min 60x40)`);
   const relief = reliefFor(kind, w, h, opts);
+  const interiors = opts?.interiors === true;
   for (let attempt = 0; attempt < 8; attempt++) {
     const rng = mulberry32((seed ^ 0x51ab3fc7) + attempt * 0x9e3779b9);
-    const plan = tryGenerate(rng, w, h, kind, relief);
+    const plan = tryGenerate(rng, w, h, kind, relief, interiors);
     if (plan && validate(plan)) return plan;
   }
   throw new Error(`mapgen: no valid layout for seed ${seed}`);
 }
 
-function tryGenerate(rng: Rng, w: number, h: number, kind: MapKind, relief: ReliefProfile): MapPlan | null {
+function tryGenerate(rng: Rng, w: number, h: number, kind: MapKind, relief: ReliefProfile, interiors: boolean): MapPlan | null {
   // The guard sits before the first draw, so every legacy kind's draw sequence
   // is bit-for-bit what it was before the bourg existed (D1).
-  if (kind === 'bourg') return tryGenerateBourg(rng, w, h, relief);
+  if (kind === 'bourg') return tryGenerateBourg(rng, w, h, relief, interiors);
   const map = new GameMap(w, h);
   const road = new Uint8Array(w * h);
 
@@ -473,6 +486,10 @@ function tryGenerate(rng: Rng, w: number, h: number, kind: MapKind, relief: Reli
     applyRelief(map, relief, reliefStreams(reliefBase), flatZone, ctx);
   }
 
+  // Interiors: LAST, after the relief stage (I9). See furnishHere for why the
+  // order matters and why this is byte-safe with the flag off.
+  furnishHere(interiors, rng, map, buildings, objectives[0]);
+
   return {
     map,
     buildings,
@@ -480,6 +497,30 @@ function tryGenerate(rng: Rng, w: number, h: number, kind: MapKind, relief: Reli
     objectives,
     woodsStands,
   };
+}
+
+// I9 · the interiors wiring, one helper shared by both branches so the draw
+// discipline is written down once.
+//
+//  - Flag OFF: not one draw, not one write. `8105059f` / `d2a77805`, both bourg
+//    fingerprints and every ≤4-arg pinned test hold by construction (D2a).
+//  - Flag ON: the ONE shared-stream draw is the LAST draw of the attempt, taken
+//    strictly AFTER the relief stage's own `reliefBase` draw. That ordering is
+//    load-bearing and the design doc's §6.1 predates it: relief (H7b) was added
+//    after the interiors design was written and now owns the last draw, so
+//    taking the interiors draw first would shift `reliefBase` and move every
+//    embankment, bank and cutting on the map.
+//  - Nothing downstream consumes the draw, so with the flag on the pre-existing
+//    arrays are bit-identical to the same seed's unfurnished map: only furniture
+//    tiles, interior edges and at most one added exterior DOOR per mass differ
+//    (§6.2's delta invariant).
+//  - It runs inside `tryGenerate`, so it is before `validate` (D2) — a furnished
+//    map is validated as furnished, and a rejected attempt is refurnished from
+//    scratch on the next one.
+function furnishHere(on: boolean, rng: Rng, map: GameMap, buildings: readonly Building[], objective?: Vec): void {
+  if (!on) return;
+  const furnBase = rng.int(0x7fffffff); // ONE draw on the shared stream (§6.1)
+  furnishInteriors(map, buildings, furnBase, objective);
 }
 
 // ── the bourg branch ────────────────────────────────────────────────────────
@@ -493,7 +534,7 @@ function tryGenerate(rng: Rng, w: number, h: number, kind: MapKind, relief: Reli
 // documents why. What lives here is only what needs the shared rng, the
 // GameMap, or the MapPlan: the base draw, maxStories, the objectives (which
 // need stampBourg's woods stands) and elevation.
-function tryGenerateBourg(rng: Rng, w: number, h: number, relief: ReliefProfile): MapPlan | null {
+function tryGenerateBourg(rng: Rng, w: number, h: number, relief: ReliefProfile, interiors: boolean): MapPlan | null {
   const bourgBase = rng.int(0x7fffffff);
   const plan = planBourg(bourgBase, w, h); // stages 1-11a, pure — no GameMap yet
   const map = new GameMap(w, h);
@@ -545,6 +586,11 @@ function tryGenerateBourg(rng: Rng, w: number, h: number, relief: ReliefProfile)
       }
     }
   }
+
+  // Interiors: LAST. After the relief block rather than inside it, because V5's
+  // halt is APPENDED to `buildings` in there — furnishing before it would leave
+  // the one building on the map that most wants a second door without one.
+  furnishHere(interiors, rng, map, buildings, objectives[0]);
 
   return {
     map,

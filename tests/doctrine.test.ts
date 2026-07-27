@@ -370,8 +370,24 @@ describe('AI commander doctrine', () => {
     expect(sawSchuetzenManeuver).toBe(true); // and the rifle team maneuvered instead of also firing in place
   });
 
-  // 60s budget: a design-scale 138v36 battle steps ~1-2ms/tick headless
-  it('existing campaign battles still produce a winner within 20k ticks', { timeout: 60_000 }, () => {
+  // 120s budget: a design-scale 138v36 battle steps ~1-2ms/tick headless.
+  //
+  // The tick budget was 20k until I9 turned `interiors: true` on at
+  // bridge.ts's generateMap call. This is a LIVENESS test — "the battle still
+  // resolves, it does not deadlock" — and interiors made the same battle
+  // measurably longer, exactly as the interiors design's §5.1 said it would:
+  // a defender behind a counter or a pew has coverBehind 0.40-0.50 where he
+  // previously had bare floor, so clearing a garrisoned building is now a real
+  // job. MEASURED, seed 5, blue wins both times, same commander, same press
+  // loop:  interiors off → 11,918 ticks;  interiors on → 21,038.
+  //
+  // 35k is that 21k plus a 65 % margin, which is the same proportional
+  // headroom the 20k budget had over the 11.9k baseline. If this ever fails
+  // again, the question to ask is whether the fight DEADLOCKED (red alive and
+  // static behind furniture that astar will not route around) rather than
+  // whether the number needs raising again — furniture is impassable, so a
+  // genuine sealing bug would show up here as a flat casualty curve.
+  it('existing campaign battles still produce a winner within 35k ticks', { timeout: 120_000 }, () => {
     const c = newCampaign(1);
     const front = newFront(c, makeDefaultSector());
     const able = front.chits.find((ch) => ch.side === 'blue')!;
@@ -403,7 +419,7 @@ describe('AI commander doctrine', () => {
     pressBlue();
 
     let steps = 0;
-    while (sim.winner === null && steps < 20000) {
+    while (sim.winner === null && steps < 35000) {
       if (steps % 1000 === 0) pressBlue(); // keep pushing toward red's current mass
       commander.update(sim);
       sim.step();
