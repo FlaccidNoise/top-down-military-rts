@@ -16,6 +16,14 @@ export const TERRAIN = {
   hedge: { color: '#2f4a28', moveCost: 1.8, cover: 0.35, opacity: 0.5, coverBehind: 0.5, passable: true, featureHeight: 2 },
   field: { color: '#6a7245', moveCost: 1.1, cover: 0.05, opacity: 0, passable: true },
   water: { color: '#465a63', moveCost: 1, cover: 0, opacity: 0, passable: false },
+  // GameMap.tiles stores TERRAIN_KEYS.indexOf(key) and TERRAIN_KEYS is
+  // Object.keys(TERRAIN), so tile indices are positional: new keys APPEND after
+  // water (grass=0 .. water=6 must never move) or every existing map fingerprint
+  // shifts. bank = the batter of an embankment/sunken-lane shoulder: infantry
+  // scramble it, vehicles cannot (map.ts canStep blacklist). rail = ballasted
+  // crest of a railway embankment: drivable but slow.
+  bank: { color: '#5f6b46', moveCost: 1.5, cover: 0.1, opacity: 0, passable: true },
+  rail: { color: '#6b6459', moveCost: 1.15, cover: 0.15, opacity: 0, passable: true },
 } satisfies Record<string, TerrainDef>;
 
 export type TerrainKey = keyof typeof TERRAIN;

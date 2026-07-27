@@ -4,7 +4,7 @@ import { EDGE, GameMap, los } from '../src/sim/map';
 import { astar } from '../src/sim/path';
 import { generateMap } from '../src/sim/mapgen';
 import { makeScenario } from '../src/sim/scenario';
-import { DT, Sim, sightBetween, SMOKE_H } from '../src/sim/sim';
+import { DT, Sim, sightBetween, smokePuff } from '../src/sim/sim';
 
 describe('line of sight', () => {
   const wallMap = (edge: number) => {
@@ -672,12 +672,15 @@ describe('casualty chain v2: succession, two-man carry, aidman', () => {
 
 describe('3D smoke columns (plan 2026-07-23-3d-height-sim §4)', () => {
   // Flat map; two ground-smoke puffs on the east-west ray, close to the
-  // observer end so the upstairs eye-line clears the 3.5m column tops with
-  // margin (lineZ 4.24 / 4.00 at the puffs).
+  // observer end so the upstairs eye-line clears the column tops with margin
+  // (lineZ 4.24 / 4.00 at the puffs). Deployed 3 seconds ago: that is the age
+  // at which the aged column matches the old fixed SMOKE_H = 3.5 (see the
+  // calibration test in tests/smoke.test.ts), so these results are the
+  // pre-V11 ones unchanged.
   const groundSmokeSim = () => {
     const sim = new Sim(new GameMap(40, 20), 1);
-    sim.smoke.push({ x: 8.5, y: 10.5, z0: 0, h: SMOKE_H, ttl: 60 });
-    sim.smoke.push({ x: 10.5, y: 10.5, z0: 0, h: SMOKE_H, ttl: 60 });
+    sim.smoke.push(smokePuff(8.5, 10.5, 0, 60, 0, 3));
+    sim.smoke.push(smokePuff(10.5, 10.5, 0, 60, 0, 3));
     return sim;
   };
 
@@ -698,16 +701,16 @@ describe('3D smoke columns (plan 2026-07-23-3d-height-sim §4)', () => {
 
   it('upstairs observer is blind through smoke deployed on their own floor', () => {
     const sim = new Sim(new GameMap(40, 20), 1);
-    // level-1 deploy: z-interval [3, 6.5] contains the 4.6m eye-line
-    sim.smoke.push({ x: 8.5, y: 10.5, z0: 3, h: SMOKE_H, ttl: 60 });
-    sim.smoke.push({ x: 10.5, y: 10.5, z0: 3, h: SMOKE_H, ttl: 60 });
+    // level-1 deploy: z-interval [3, 6.46] contains the 4.6m eye-line
+    sim.smoke.push(smokePuff(8.5, 10.5, 3, 60, 0, 3));
+    sim.smoke.push(smokePuff(10.5, 10.5, 3, 60, 0, 3));
     expect(sightBetween(sim, 5.5, 10.5, 30.5, 10.5, 1, 1).visible).toBe(false);
   });
 
   it('flat-map snapshot stays byte-identical across same-seed double runs with smoke live', () => {
     const run = () => {
       const sim = makeScenario(42);
-      sim.smoke.push({ x: 30.5, y: 40.5, z0: 0, h: SMOKE_H, ttl: 60 }); // still live at snapshot
+      sim.smoke.push(smokePuff(30.5, 40.5, 0, 60)); // still live at snapshot, and ageing through it
       for (let i = 0; i < 300; i++) sim.step();
       return sim.snapshot();
     };

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { RedCommander } from '../src/sim/ai';
 import { GameMap, los } from '../src/sim/map';
 import { generateMap, type Vec } from '../src/sim/mapgen';
-import { Sim, type Squad } from '../src/sim/sim';
+import { Sim, sightBetween, smokePuff, type Squad } from '../src/sim/sim';
 import { COMPANY_TOE, companyHeadcount } from '../src/sim/toe';
 
 // Task 14 perf: headless tick-time benchmark at design scale (a full US
@@ -209,6 +209,35 @@ describe('perf: los micro-benchmark', () => {
     const median = reps[2];
     const ratio = reps[2] / flatReps[2];
     console.log(`[perf] los-micro ${JSON.stringify({ medianMs: round(median), flatMs: round(flatReps[2]), ratio: round(ratio), calls: 10_000, buildingTiles: bldg.length, acc: round(acc) })}`);
+    expect(ratio).toBeLessThan(LOS_MICRO_MAX_RATIO);
+  }, 60_000);
+
+  // V11's smoke arm. The aged column is O(1) per puff with a hard instruction
+  // bound — one projection for the cheap reject, one more for the surviving
+  // few, and everything age-dependent (h, r, r2max) precomputed once per tick
+  // in stepSmoke, never per ray. Same load-invariant ratio shape as above:
+  // 10k sightBetween calls through a 12-puff screen of mixed ages against the
+  // identical calls with sim.smoke = [].
+  it('los-micro: 10k sightBetween calls through a 12-puff mixed-age screen', () => {
+    const sim = new Sim(new GameMap(MAP_W, MAP_H), SEED);
+    const puffs = Array.from({ length: 12 }, (_, i) =>
+      smokePuff(60 + (i % 4) * 6, 40 + Math.floor(i / 4) * 6, 0, 60, (i % 6 === 5 ? 1 : 0) as 0 | 1, i * 5),
+    );
+    let acc = 0;
+    const run = (smoke: boolean): number => {
+      sim.smoke = smoke ? puffs : [];
+      const t0 = performance.now();
+      for (let i = 0; i < 10_000; i++) {
+        const r = sightBetween(sim, 20.5 + (i % 17), 20.5 + (i % 13), 100.5 - (i % 19), 60.5 + (i % 11));
+        acc += r.conceal;
+      }
+      return performance.now() - t0;
+    };
+    run(true); run(false); // JIT warmup, untimed
+    const smokeReps = [run(true), run(true), run(true), run(true), run(true)].sort((x, y) => x - y);
+    const bareReps = [run(false), run(false), run(false), run(false), run(false)].sort((x, y) => x - y);
+    const ratio = smokeReps[2] / bareReps[2];
+    console.log(`[perf] los-micro-smoke ${JSON.stringify({ smokeMs: round(smokeReps[2]), bareMs: round(bareReps[2]), ratio: round(ratio), puffs: puffs.length, acc: round(acc) })}`);
     expect(ratio).toBeLessThan(LOS_MICRO_MAX_RATIO);
   }, 60_000);
 });

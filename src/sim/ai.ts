@@ -1,7 +1,7 @@
 import { EMPLACEMENTS, WEAPONS, type WeaponDef } from './data';
 import { crewNear, friendlyHasLos, type Emplacement } from './emplacement';
 import { dangerScore } from './orders';
-import { CONTACT_TTL, SPOT_INTERVAL, sightBetween, type Side, type Sim, type Team } from './sim';
+import { CONTACT_TTL, EYE_CROUCH, EYE_STAND, SPOT_INTERVAL, sightBetween, type Side, type Sim, type Team } from './sim';
 
 // Red commander: issues squad orders through the same public order API the
 // player uses. Design requirement (decision log): must maneuver and
@@ -247,7 +247,15 @@ export class RedCommander {
     for (const [dx, dy] of offsets) {
       const p = { x: c.x + dx, y: c.y + dy };
       if (!sim.map.inBounds(Math.floor(p.x), Math.floor(p.y))) continue;
-      const los = sightBetween(sim, p.x, p.y, post.x, post.y).visible ? 1 : 0;
+      // Scored at the stance the team will actually ADOPT at this spot, not the
+      // standing eye it would have while walking there: a base of fire settles
+      // in (stanceOf's defend/engaged branches are both a crouch). Evaluating
+      // at 1.6 m would over-value overwatch spots on relief maps — every hollow
+      // that reads "clear LOS to the post" from a standing eye can be blind
+      // from the crouch the team will really be in. The post itself is a map
+      // point, so it keeps the standing target height every sideSeesPoint-style
+      // call uses.
+      const los = sightBetween(sim, p.x, p.y, post.x, post.y, 0, 0, EYE_CROUCH, EYE_STAND).visible ? 1 : 0;
       const cover = sim.inCover(p.x, p.y) ? 1 : 0;
       const score = los * 2 + cover - dangerScore(sim, team, p);
       if (score > bestScore) {

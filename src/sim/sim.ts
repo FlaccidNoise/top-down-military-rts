@@ -27,6 +27,7 @@ import type { Building } from './mapgen';
 import { ambushThreshold, ASSAULT_DANGER_MULT, BALK_REASON, CHARGE_BALK_REASON, compliance, dangerScore, type OrderState, type TeamOrder } from './orders';
 import { astar } from './path';
 import { mulberry32, type Rng } from './rng';
+import { LEAN_K, WIND } from './wind';
 
 export const DT = 1 / 30; // fixed timestep, seconds
 const BASE_SPEED = 2; // m/s
@@ -295,9 +296,13 @@ interface Barrage {
   nextTick: number;
 }
 
-// Smoke column height (m). Blinds ground-floor eyes (EYE_H 1.6m); a floor-2
-// eye (elev + FLOOR_H + EYE_H = 4.6m) sees over it. Plan §4 open question 1:
-// 3.5, not 4.5 — floor-2 should clear it decisively, not marginally.
+// Shell smoke's height three seconds after deploy (m) — the calibration anchor
+// for PLUME[0], not a constant the sim reads any more. It used to be THE column
+// height: fixed at 3.5 so a ground eye (1.6m) was blind and a floor-2 eye
+// (elev + FLOOR_H + EYE_H = 4.6m) saw over. The column now ages (see PLUME),
+// and grow(3, …) lands within 1% of this number, so the first seconds of a
+// screen behave as they always did. A test pins that agreement, which is what
+// stops a future retune of PLUME[0] from silently rewriting smoke doctrine.
 export const SMOKE_H = 3.5;
 // Suppression addend multiplier per floor slab between blast and soldier
 // (plan 2026-07-23-3d-height-sim §5): felt through the floor, not lethal.
@@ -307,8 +312,47 @@ export interface Smoke {
   x: number;
   y: number;
   z0: number; // column base z: ground elevation + deployer level * FLOOR_H at deploy
-  h: number; // column height, m (SMOKE_H)
+  h: number; // CURRENT column height, m — recomputed from age once per tick
   ttl: number; // seconds left
+  age: number; // seconds since deploy
+  kind: 0 | 1; // 0 = shell/grenade smoke, 1 = fire (burning wreck or building)
+  r: number; // CURRENT column radius, m
+  r2max: number; // cached (r + LEAN_K*h)^2 — the per-ray early-reject radius, squared
+}
+
+// Growth curves per smoke kind. Rational and saturating, never exponential:
+// Math.exp/pow/hypot are not guaranteed correctly-rounded across JS engines,
+// while + − × ÷ are IEEE-exact, so a/(a+T) replays identically everywhere.
+const PLUME = [
+  { h0: 1.5, hMax: 10, T: 10, r0: 1.5, rMax: 3.0 }, // 0 shell/grenade smoke
+  { h0: 2.0, hMax: 20, T: 8, r0: 2.0, rMax: 4.5 }, // 1 fire
+] as const;
+
+export function grow(a: number, v0: number, vMax: number, T: number): number {
+  return v0 + (vMax - v0) * (a / (a + T));
+}
+
+// The single construction path for a puff, so the age-derived fields can never
+// disagree with the curve the LOS test reads. `age` is a parameter because a
+// screen is only a screen once it has grown: a puff deployed this tick is
+// 1.5 m tall and a standing man (1.6 m) can still see over it for the ~4 ticks
+// it takes to climb past his eye. Tests that want a developed screen pass 3 s,
+// the height the old constant-height model always had.
+export function smokePuff(x: number, y: number, z0: number, ttl: number, kind: 0 | 1 = 0, age = 0): Smoke {
+  const p: Smoke = { x, y, z0, h: 0, ttl, age, kind, r: 0, r2max: 0 };
+  agePuff(p);
+  return p;
+}
+
+// Evaluate the age-dependent geometry ONCE per puff per tick (never per ray):
+// sightBetween's smoke loop is O(puffs) on the hottest path in the game, so it
+// must see nothing but comparisons.
+function agePuff(p: Smoke): void {
+  const k = PLUME[p.kind];
+  p.h = grow(p.age, k.h0, k.hMax, k.T);
+  p.r = grow(p.age, k.r0, k.rMax, k.T);
+  const R = p.r + LEAN_K * p.h;
+  p.r2max = R * R;
 }
 
 export interface DroppedKit {
@@ -401,6 +445,49 @@ function closestT(px: number, py: number, x0: number, y0: number, x1: number, y1
   return len2 > 0 ? Math.max(0, Math.min(1, ((px - x0) * dx + (py - y0) * dy) / len2)) : 0;
 }
 
+// --- Stance and eye heights (verticality design §3) ---
+// Between two men on level ground the eye-line is horizontal, so a rise only
+// discriminates by stance at exactly 1 m: it blocks prone (0.4) and passes
+// crouch (1.1) and stand (1.6). 2 m and up blocks everybody. That is why the
+// relief work puts its tactical payload in 1 m features (hedge banks, road
+// verges, sunken-lane shoulders) and treats a 3 m embankment as a hard wall.
+export type Stance = 'stand' | 'crouch' | 'prone';
+export const EYE_STAND = EYE_H; // 1.6 — the engine's existing eye; moving it would rewrite every legacy LOS result
+export const EYE_CROUCH = 1.1;
+export const EYE_PRONE = 0.4;
+// A vehicle sights from the commander's cupola and is itself a hull-sized
+// target: a bank that hides a man does not hide a tank.
+export const EYE_VEHICLE = 2.2;
+export const HULL_VEHICLE = 2.0;
+
+// Stance is DERIVED, never stored: no field on Soldier, no bytes in snapshot().
+// This is the renderer's own pose predicate hoisted sim-side so the two cannot
+// drift — renderer.ts calls this function rather than re-testing `mental`.
+//
+// It takes the sim because a man's posture is mostly a matter of ORDERS, not of
+// his own state (V8): a team lying in ambush is prone, a team dug in on defend
+// is crouched, and both are the whole point of a 1 m hedge bank. Passing the
+// sim rather than defaulting an order argument is deliberate — a default would
+// let a new call site silently sight a prone ambusher at standing height, which
+// is exactly the class of miss the sight-caller gate exists to prevent.
+export function stanceOf(sim: Sim, s: Soldier): Stance {
+  if (!s.alive || s.downed || s.captured) return 'prone';
+  if (s.mental === 'pinned' || (s.mental === 'broken' && !s.path)) return 'prone';
+  // Advancing under fire = low crawl. The renderer has drawn this since before
+  // stance existed; sighting him at 1.6 m while drawing him flat was the one
+  // WYSIWYG gap V6 left open.
+  if (s.path) return s.suppression > 0.5 ? 'prone' : 'stand';
+  const kind = sim.teams[s.teamId]?.orderState.order?.kind;
+  if (kind === 'ambush') return 'prone'; // lying up: the reverse-slope ambush
+  if (kind === 'defend') return 'crouch'; // dug in on the post
+  return s.targetId >= 0 && s.suppression > 0.15 ? 'crouch' : 'stand';
+}
+
+export function eyeOf(sim: Sim, s: Soldier): number {
+  const st = stanceOf(sim, s);
+  return st === 'prone' ? EYE_PRONE : st === 'crouch' ? EYE_CROUCH : EYE_STAND;
+}
+
 // The one LOS wrapper every soldier-vision (and vehicle-sight) call site must
 // route through: same as map.ts's los(), plus smoke. map.ts's signature stays
 // untouched — this only adds smoke's contribution on top of its result. Each
@@ -408,21 +495,41 @@ function closestT(px: number, py: number, x0: number, y0: number, x1: number, y1
 // the crossing point falls inside the puff's z-interval [z0, z0+h] — so an
 // upstairs observer sees over a ground smoke column. >=1 blocks same as
 // terrain.
-export function sightBetween(sim: Sim, x0: number, y0: number, x1: number, y1: number, l0 = 0, l1 = 0): LosResult {
-  const base = los(sim.map, x0, y0, x1, y1, l0, l1);
+// e0/e1 are the observer's and target's heights above their feet; they feed
+// both los()'s profile check and the smoke z-line below, so the two agree.
+export function sightBetween(sim: Sim, x0: number, y0: number, x1: number, y1: number, l0 = 0, l1 = 0, e0 = EYE_H, e1 = EYE_H): LosResult {
+  const base = los(sim.map, x0, y0, x1, y1, l0, l1, e0, e1);
   if (!base.visible || sim.smoke.length === 0) return base;
   const dx = x1 - x0;
   const dy = y1 - y0;
-  const zEye0 = sim.map.elevAt(Math.floor(x0), Math.floor(y0)) + l0 * FLOOR_H + EYE_H;
-  const zEye1 = sim.map.elevAt(Math.floor(x1), Math.floor(y1)) + l1 * FLOOR_H + EYE_H;
+  const zEye0 = sim.map.elevAt(Math.floor(x0), Math.floor(y0)) + l0 * FLOOR_H + e0;
+  const zEye1 = sim.map.elevAt(Math.floor(x1), Math.floor(y1)) + l1 * FLOOR_H + e1;
   let opacity = 0;
   for (const p of sim.smoke) {
+    // 1. Cheap reject against the ENLARGED radius (column + full lean), one
+    // projection and no z arithmetic. Prunes nearly every puff.
     const t = closestT(p.x, p.y, x0, y0, x1, y1);
     const cx = p.x - (x0 + t * dx);
     const cy = p.y - (y0 + t * dy);
-    if (cx * cx + cy * cy > 2.25) continue; // 1.5m gate, squared
+    if (cx * cx + cy * cy > p.r2max) continue;
+    // 2. Height of the eye-line where the column's BASE sits.
     const lineZ = zEye0 + (zEye1 - zEye0) * t;
-    if (lineZ < p.z0 || lineZ > p.z0 + p.h) continue; // eye-line passes over/under the column
+    if (lineZ < p.z0) continue; // the ray passes under the column
+    const top = p.z0 + p.h;
+    const zc = lineZ < top ? lineZ : top; // clamp to the column top
+    // 3. Re-project against the axis AT that height: the column leans downwind
+    // by LEAN_K metres per metre of rise, so a tall plume blocks a line its
+    // base does not. One fixed-point refinement, no iteration.
+    const off = LEAN_K * (zc - p.z0);
+    const ax = p.x + WIND.dx * off;
+    const ay = p.y + WIND.dy * off;
+    const t2 = closestT(ax, ay, x0, y0, x1, y1);
+    const bx = ax - (x0 + t2 * dx);
+    const by = ay - (y0 + t2 * dy);
+    if (bx * bx + by * by > p.r * p.r) continue;
+    // 4. Confirm the z-interval at the refined parameter.
+    const lineZ2 = zEye0 + (zEye1 - zEye0) * t2;
+    if (lineZ2 < p.z0 || lineZ2 > top) continue;
     opacity += 0.5;
   }
   if (opacity >= 1) return { visible: false, cover: 0, conceal: 1 };
@@ -440,8 +547,11 @@ export function sightBetween(sim: Sim, x0: number, y0: number, x1: number, y1: n
 // no RNG. Every soldier-target sense (acquire, live fire, ambush trigger,
 // honest vision, fog-of-war spotting) routes through this; sight to a map
 // point stays on sightBetween.
-export function sightToSoldier(sim: Sim, x0: number, y0: number, t: Soldier, l0 = 0): LosResult {
-  const sight = sightBetween(sim, x0, y0, t.x, t.y, l0, t.level);
+// The target's eye is DERIVED here, never passed: no caller may disagree with
+// stanceOf about how tall the man it is looking at is. Observers still pass
+// their own eye — a vehicle looking at a soldier is EYE_VEHICLE.
+export function sightToSoldier(sim: Sim, x0: number, y0: number, t: Soldier, l0 = 0, e0 = EYE_H): LosResult {
+  const sight = sightBetween(sim, x0, y0, t.x, t.y, l0, t.level, e0, eyeOf(sim, t));
   const order = sim.teams[t.teamId].orderState.order;
   if (
     sight.visible &&
@@ -1049,7 +1159,7 @@ export class Sim {
     this.mortarShells = this.mortarShells.filter((sh) => {
       if (this.tick < sh.tick) return true;
           // Mortar/barrage smoke lands at ground level 0, wherever it falls.
-      if (sh.smoke) this.smoke.push({ x: sh.x, y: sh.y, z0: this.map.elevAt(Math.floor(sh.x), Math.floor(sh.y)), h: SMOKE_H, ttl: 60 });
+      if (sh.smoke) this.smoke.push(smokePuff(sh.x, sh.y, this.map.elevAt(Math.floor(sh.x), Math.floor(sh.y)), 60));
       else this.explode(sh.x, sh.y, { suppRadius: 10, fragRadius: 5, frags: 2, dmg: [25, 75] });
       return false;
     });
@@ -1187,7 +1297,7 @@ export class Sim {
     for (const v of this.vehicles) {
       if (!v.alive || v.side === e.side) continue;
       const d = Math.hypot(v.x - e.x, v.y - e.y);
-      if (d <= w.range && d < bestD && sightBetween(this, e.x, e.y, v.x, v.y).visible) {
+      if (d <= w.range && d < bestD && sightBetween(this, e.x, e.y, v.x, v.y, 0, 0, EYE_H, HULL_VEHICLE).visible) {
         bestD = d;
         best = v;
       }
@@ -1203,13 +1313,15 @@ export class Sim {
     const crewTeam = this.teams[e.crewTeamId];
     const order = crewTeam.orderState.order;
     const arc = order?.kind === 'defend' || order?.kind === 'ambush' ? order.arc : undefined;
-    const targetId = this.acquireSoldierTarget(e.x, e.y, e.side, w.range, arc);
+    // A served gun sights at about chest height, so emplacements keep EYE_H
+    // (passed explicitly, not defaulted, so the grep gate sees an answer here).
+    const targetId = this.acquireSoldierTarget(e.x, e.y, e.side, w.range, arc, 0, EYE_H);
     if (targetId < 0) return;
     const t = this.soldiers[targetId];
     let aim = this.aimFactor(firer) * this.crewAimMult(firer, w);
     if (arc && this.inArc(e.x, e.y, t.x, t.y, arc)) aim *= 1.25;
     if (order?.kind === 'defend' && crewTeam.ambushBonusTick === this.tick) aim *= 1.3;
-    const p = this.shotPreview(e.x, e.y, def.weapon, t, false, aim);
+    const p = this.shotPreview(e.x, e.y, def.weapon, t, false, aim, 0, EYE_H);
     if (!p.visible) return;
     if (!this.consumeEmplacementAmmo(e, firer, w.ammo.type)) return;
     firer.crewSkill.mg = Math.min(1, (firer.crewSkill.mg ?? 0) + 0.0005);
@@ -1455,8 +1567,8 @@ export class Sim {
     // from an upstairs window screens that floor, not the street.
     const deployer = team.soldierIds.map((id) => this.soldiers[id]).find((s) => s.alive);
     const z0 = this.map.elevAt(Math.floor(order.x), Math.floor(order.y)) + (deployer?.level ?? 0) * FLOOR_H;
-    this.smoke.push({ x: order.x - 1, y: order.y, z0, h: SMOKE_H, ttl: 60 });
-    this.smoke.push({ x: order.x + 1, y: order.y, z0, h: SMOKE_H, ttl: 60 });
+    this.smoke.push(smokePuff(order.x - 1, order.y, z0, 60));
+    this.smoke.push(smokePuff(order.x + 1, order.y, z0, 60));
   }
 
   private inArc(fx: number, fy: number, tx: number, ty: number, arc: [number, number]): boolean {
@@ -1482,7 +1594,7 @@ export class Sim {
         if (!e.alive || e.downed || e.captured || e.side !== enemySide) continue;
         if (order.arc && !this.inArc(s.x, s.y, e.x, e.y, order.arc)) continue;
         const d = Math.hypot(e.x - s.x, e.y - s.y);
-        if (d <= thresh && sightToSoldier(this, s.x, s.y, e, s.level).visible) {
+        if (d <= thresh && sightToSoldier(this, s.x, s.y, e, s.level, eyeOf(this, s)).visible) {
           triggered = true;
           break outer;
         }
@@ -1674,7 +1786,11 @@ export class Sim {
 
   private stepSmoke(): void {
     if (this.smoke.length === 0) return;
-    for (const p of this.smoke) p.ttl -= DT;
+    for (const p of this.smoke) {
+      p.ttl -= DT;
+      p.age += DT;
+      agePuff(p); // once per puff per tick; sightBetween only ever reads the cache
+    }
     this.smoke = this.smoke.filter((p) => p.ttl > 0);
   }
 
@@ -1768,6 +1884,9 @@ export class Sim {
       for (let i = Math.abs(s.level - l); i > 0; i--) atten *= SLAB_SUPP_FACTOR;
       s.suppression = Math.min(1, s.suppression + 0.6 * (1 - d / p.suppRadius) * (1.3 - s.courage * 0.6) * mult * atten);
       if (d > p.fragRadius) continue;
+      // Blast LOS is deliberately stance-NEUTRAL (both eyes default to EYE_H):
+      // threading a prone body height in here would silently change explosion
+      // lethality on every map that already exists. Pinned by a test.
       if (!los(this.map, x, y, s.x, s.y, l, s.level).visible) continue; // walls/floors stop fragments
       const frags = d < 2 ? p.frags : d < p.fragRadius * 0.55 ? Math.max(1, p.frags - 1) : 1;
       for (let i = 0; i < frags; i++) {
@@ -1827,7 +1946,7 @@ export class Sim {
       for (const s of this.soldiers) {
         if (!s.alive || s.downed || s.captured || s.side === v.side || s.inVehicle >= 0) continue;
         const d = Math.hypot(s.x - v.x, s.y - v.y);
-        if (d < 30 && sightBetween(this, v.x, v.y, s.x, s.y, 0, s.level).visible) {
+        if (d < 30 && sightBetween(this, v.x, v.y, s.x, s.y, 0, s.level, EYE_VEHICLE, eyeOf(this, s)).visible) {
           s.suppression = Math.min(1, s.suppression + 0.05 * (1.3 - s.courage * 0.6));
         }
       }
@@ -1843,7 +1962,7 @@ export class Sim {
       for (const e of this.vehicles) {
         if (!e.alive || e.side === v.side) continue;
         const d = Math.hypot(e.x - v.x, e.y - v.y);
-        if (d <= def.gunRange && d < bestD && sightBetween(this, v.x, v.y, e.x, e.y).visible) {
+        if (d <= def.gunRange && d < bestD && sightBetween(this, v.x, v.y, e.x, e.y, 0, 0, EYE_VEHICLE, HULL_VEHICLE).visible) {
           bestD = d;
           v.targetVehicleId = e.id;
         }
@@ -1851,7 +1970,7 @@ export class Sim {
     }
     if (v.targetVehicleId >= 0 && v.gunCooldown <= 0 && v.ammo.ap > 0) {
       const e = this.vehicles[v.targetVehicleId];
-      if (e.alive && sightBetween(this, v.x, v.y, e.x, e.y).visible) {
+      if (e.alive && sightBetween(this, v.x, v.y, e.x, e.y, 0, 0, EYE_VEHICLE, HULL_VEHICLE).visible) {
         if (this.turretBearingReady(v, def, e.x, e.y)) {
           this.fireApAt(v.x, v.y, def.gunPen, def.gunAccuracy, def.gunRange, e, v.path !== null);
           v.ammo.ap--;
@@ -1865,7 +1984,7 @@ export class Sim {
 
     // otherwise work the infantry: HE from the gun, bursts from the hull MG
     if ((this.tick + v.id) % RETARGET_TICKS === 0 || v.targetSoldierId < 0) {
-      v.targetSoldierId = this.acquireSoldierTarget(v.x, v.y, v.side, def.mgRange);
+      v.targetSoldierId = this.acquireSoldierTarget(v.x, v.y, v.side, def.mgRange, undefined, 0, EYE_VEHICLE);
     }
     const t = v.targetSoldierId >= 0 ? this.soldiers[v.targetSoldierId] : null;
     if (t && (!t.alive || t.downed || t.captured)) {
@@ -1873,7 +1992,7 @@ export class Sim {
       return;
     }
     if (t) {
-      if (!sightToSoldier(this, v.x, v.y, t, 0).visible) {
+      if (!sightToSoldier(this, v.x, v.y, t, 0, EYE_VEHICLE).visible) {
         v.targetSoldierId = -1;
         return;
       }
@@ -1919,7 +2038,7 @@ export class Sim {
   // "members only acquire targets inside arc"). Vehicle crew are normally
   // hull-protected and untargetable — except an open-top vehicle's pintle
   // gunner, who's standing up in the back exposed to small arms.
-  private acquireSoldierTarget(x: number, y: number, side: Side, range: number, arc?: [number, number], l0 = 0): number {
+  private acquireSoldierTarget(x: number, y: number, side: Side, range: number, arc?: [number, number], l0 = 0, e0 = EYE_H): number {
     const candidates: { id: number; d: number }[] = [];
     for (const e of this.soldiers) {
       if (!e.alive || e.downed || e.captured || e.side === side) continue;
@@ -1934,7 +2053,7 @@ export class Sim {
     for (const c of candidates) {
       const e = this.soldiers[c.id];
       if (arc && !this.inArc(x, y, e.x, e.y, arc)) continue;
-      if (sightToSoldier(this, x, y, e, l0).visible) return c.id;
+      if (sightToSoldier(this, x, y, e, l0, e0).visible) return c.id;
     }
     return -1;
   }
@@ -1970,6 +2089,11 @@ export class Sim {
     v.burning = true;
     v.path = null;
     this.pendingBooms.push({ x: v.x, y: v.y });
+    // A brewed-up tank burns for three minutes and throws a 20 m column
+    // (PLUME[1]) that screens the street it died in and is visible from
+    // anywhere on the map. It is ordinary smoke: stepSmoke ages it, the LOS
+    // capsule blocks through it and the renderer draws it, all off one record.
+    this.smoke.push(smokePuff(v.x, v.y, this.map.elevAt(Math.floor(v.x), Math.floor(v.y)), 180, 1));
     // survivors (crew and any passengers still aboard) bail out shaken
     const aboard = [...v.crewIds];
     for (const tid of v.passengerTeamIds) {
@@ -1994,8 +2118,8 @@ export class Sim {
 
   // The exact accuracy math live fire uses, exposed for hit-chance previews —
   // the UI must never re-derive (and drift from) this formula.
-  shotPreview(fx: number, fy: number, weapon: WeaponKey, t: Soldier, shooterMoving: boolean, aim: number, l0 = 0): ShotPreview {
-    const sight = sightToSoldier(this, fx, fy, t, l0);
+  shotPreview(fx: number, fy: number, weapon: WeaponKey, t: Soldier, shooterMoving: boolean, aim: number, l0 = 0, e0 = EYE_H): ShotPreview {
+    const sight = sightToSoldier(this, fx, fy, t, l0, e0);
     const d = Math.hypot(t.x - fx, t.y - fy);
     if (!sight.visible) return { visible: false, dist: d, cover: 0, acc: 0, concealed: sight.concealed };
     const w = WEAPONS[weapon];
@@ -2026,8 +2150,8 @@ export class Sim {
   }
 
   // Shared small-arms resolution used by soldiers and vehicle MGs.
-  private resolveSmallArmsShot(fx: number, fy: number, weapon: WeaponKey, t: Soldier, shooterMoving: boolean, aim: number, l0 = 0): { fired: boolean; kill: boolean } {
-    const p = this.shotPreview(fx, fy, weapon, t, shooterMoving, aim, l0);
+  private resolveSmallArmsShot(fx: number, fy: number, weapon: WeaponKey, t: Soldier, shooterMoving: boolean, aim: number, l0 = 0, e0 = EYE_H): { fired: boolean; kill: boolean } {
+    const p = this.shotPreview(fx, fy, weapon, t, shooterMoving, aim, l0, e0);
     if (!p.visible) return { fired: false, kill: false };
     const w = WEAPONS[weapon];
     const hit = this.rng.next() < p.acc;
@@ -2039,13 +2163,16 @@ export class Sim {
   }
 
   // Vehicle hull MGs: unlimited ammo — no vehicle ammo model until Task 10.
+  // EYE_VEHICLE, not EYE_H: the acquire path already sights from the cupola, so
+  // resolving the shot at rifleman height would let a hull-down tank acquire a
+  // target across an embankment and then never be able to fire at it.
   private fireVehicleMg(fx: number, fy: number, weapon: WeaponKey, t: Soldier, shooterMoving: boolean): boolean {
-    return this.resolveSmallArmsShot(fx, fy, weapon, t, shooterMoving, 1).kill;
+    return this.resolveSmallArmsShot(fx, fy, weapon, t, shooterMoving, 1, 0, EYE_VEHICLE).kill;
   }
 
   // Infantry small-arms fire: consumes the shooter's mag and builds barrel heat.
   private fireSmallArms(shooter: Soldier, t: Soldier, shooterMoving: boolean, aim = 1): boolean {
-    const r = this.resolveSmallArmsShot(shooter.x, shooter.y, shooter.weapon, t, shooterMoving, aim, shooter.level);
+    const r = this.resolveSmallArmsShot(shooter.x, shooter.y, shooter.weapon, t, shooterMoving, aim, shooter.level, eyeOf(this, shooter));
     if (!r.fired) return false;
     shooter.magLeft--;
     const w: WeaponDef = WEAPONS[shooter.weapon];
@@ -2306,7 +2433,7 @@ export class Sim {
       for (const v of this.vehicles) {
         if (!v.alive || v.side === s.side) continue;
         const d = Math.hypot(v.x - s.x, v.y - s.y);
-        if (d <= w.range && d < bestD && sightBetween(this, s.x, s.y, v.x, v.y, s.level, 0).visible) {
+        if (d <= w.range && d < bestD && sightBetween(this, s.x, s.y, v.x, v.y, s.level, 0, eyeOf(this, s), HULL_VEHICLE).visible) {
           bestD = d;
           bestV = v;
         }
@@ -2329,7 +2456,7 @@ export class Sim {
       for (const v of this.vehicles) {
         if (!v.alive || v.side === s.side) continue;
         const d = Math.hypot(v.x - s.x, v.y - s.y);
-        if (d <= faust.range && d < bestD && sightBetween(this, s.x, s.y, v.x, v.y, s.level, 0).visible) {
+        if (d <= faust.range && d < bestD && sightBetween(this, s.x, s.y, v.x, v.y, s.level, 0, eyeOf(this, s), HULL_VEHICLE).visible) {
           bestD = d;
           bestV = v;
         }
@@ -2796,22 +2923,24 @@ export class Sim {
   sideSeesPoint(side: Side, x: number, y: number): boolean {
     for (const s of this.soldiers) {
       if (!s.alive || s.downed || s.captured || s.side !== side || s.inVehicle >= 0) continue;
-      if (Math.hypot(s.x - x, s.y - y) <= SPOT_RANGE && sightBetween(this, s.x, s.y, x, y, s.level, 0).visible) return true;
+      if (Math.hypot(s.x - x, s.y - y) <= SPOT_RANGE && sightBetween(this, s.x, s.y, x, y, s.level, 0, eyeOf(this, s), EYE_H).visible) return true;
     }
     for (const v of this.vehicles) {
       if (!v.alive || v.side !== side) continue;
-      if (Math.hypot(v.x - x, v.y - y) <= SPOT_RANGE && sightBetween(this, v.x, v.y, x, y, 0, 0).visible) return true;
+      if (Math.hypot(v.x - x, v.y - y) <= SPOT_RANGE && sightBetween(this, v.x, v.y, x, y, 0, 0, EYE_VEHICLE, EYE_H).visible) return true;
     }
     return false;
   }
 
   private updateSpotting(side: Side): void {
     const enemySide: Side = side === 'blue' ? 'red' : 'blue';
-    const spotters: { x: number; y: number; l: number }[] = [];
+    // `e` is the spotter's eye height: a prone man's fog-of-war sweep is as
+    // blind as his rifle is, and a tank sweeps from the cupola.
+    const spotters: { x: number; y: number; l: number; e: number }[] = [];
     for (const s of this.soldiers) {
-      if (s.alive && !s.downed && !s.captured && s.side === side && s.inVehicle < 0) spotters.push({ x: s.x, y: s.y, l: s.level });
+      if (s.alive && !s.downed && !s.captured && s.side === side && s.inVehicle < 0) spotters.push({ x: s.x, y: s.y, l: s.level, e: eyeOf(this, s) });
     }
-    for (const v of this.vehicles) if (v.alive && v.side === side) spotters.push({ x: v.x, y: v.y, l: 0 });
+    for (const v of this.vehicles) if (v.alive && v.side === side) spotters.push({ x: v.x, y: v.y, l: 0, e: EYE_VEHICLE });
     const spotted = this.spotted[side];
     const spottedV = this.spottedVehicles[side];
     const seen = this.seenStatic[side];
@@ -2833,7 +2962,7 @@ export class Sim {
         contacts.delete(key); // and any foot-position ghost is moot
       } else if (t.alive) {
         const now = meleeContact.has(t.id) ||
-          spotters.some((p) => Math.hypot(t.x - p.x, t.y - p.y) <= SPOT_RANGE && sightToSoldier(this, p.x, p.y, t, p.l).visible);
+          spotters.some((p) => Math.hypot(t.x - p.x, t.y - p.y) <= SPOT_RANGE && sightToSoldier(this, p.x, p.y, t, p.l, p.e).visible);
         if (now) {
           spotted.set(t.id, { x: t.x, y: t.y });
           contacts.delete(key);
@@ -2981,7 +3110,7 @@ export class Sim {
     for (const e of this.soldiers) {
       if (!e.alive || e.downed || e.captured || e.side === s.side || e.inVehicle >= 0) continue;
       if (Math.hypot(e.x - order.x, e.y - order.y) > ASSAULT_RADIUS) continue;
-      if (sightToSoldier(this, s.x, s.y, e, s.level).visible) out.push(e);
+      if (sightToSoldier(this, s.x, s.y, e, s.level, eyeOf(this, s)).visible) out.push(e);
     }
     return out;
   }
@@ -3048,7 +3177,7 @@ export class Sim {
       if (!e.alive || e.downed || e.captured || e.side === s.side || e.inVehicle >= 0) continue;
       const d = Math.hypot(e.x - s.x, e.y - s.y);
       if (d > GRENADE_RANGE || d >= bestD) continue;
-      if (!sightToSoldier(this, s.x, s.y, e, s.level).visible) continue;
+      if (!sightToSoldier(this, s.x, s.y, e, s.level, eyeOf(this, s)).visible) continue;
       bestD = d;
       best = e;
     }
@@ -3247,11 +3376,11 @@ export class Sim {
   private acquire(s: Soldier): number {
     const order = this.teams[s.teamId].orderState.order;
     const arc = (order?.kind === 'defend' || order?.kind === 'ambush') ? order.arc : undefined;
-    return this.acquireSoldierTarget(s.x, s.y, s.side, WEAPONS[s.weapon].range, arc, s.level);
+    return this.acquireSoldierTarget(s.x, s.y, s.side, WEAPONS[s.weapon].range, arc, s.level, eyeOf(this, s));
   }
 
   private fire(s: Soldier, t: Soldier): void {
-    if (!sightToSoldier(this, s.x, s.y, t, s.level).visible) {
+    if (!sightToSoldier(this, s.x, s.y, t, s.level, eyeOf(this, s)).visible) {
       s.targetId = -1;
       return;
     }
@@ -3416,7 +3545,16 @@ export class Sim {
         e.hasTarget,
         e.smokeRoundsLeft,
       ]),
-      smoke: this.smoke.map((p) => [Math.round(p.x * 1e6), Math.round(p.y * 1e6), Math.round(p.z0 * 1e6), Math.round(p.h * 1e6), Math.round(p.ttl * 1e6)]),
+      smoke: this.smoke.map((p) => [
+        Math.round(p.x * 1e6),
+        Math.round(p.y * 1e6),
+        Math.round(p.z0 * 1e6),
+        Math.round(p.h * 1e6),
+        Math.round(p.ttl * 1e6),
+        Math.round(p.age * 1e6),
+        p.kind,
+        Math.round(p.r * 1e6),
+      ]),
       pendingGrenades: this.pendingGrenades.map((g) => [Math.round(g.x * 1e6), Math.round(g.y * 1e6), g.fuse, g.l]),
       droppedKit: this.droppedKit.map((k) => [
         k.side,

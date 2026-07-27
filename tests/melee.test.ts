@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { EDGE, GameMap } from '../src/sim/map';
-import { Sim, sightToSoldier } from '../src/sim/sim';
+import { Sim, sightToSoldier, smokePuff } from '../src/sim/sim';
 
 // Open ground; soldiers get zeroed ammo unless a test needs live rounds, so
 // melee is the only combat channel (and the RNG sequence stays melee-only).
@@ -128,7 +128,7 @@ describe('melee', () => {
 describe('melee × fog of war', () => {
   // two puffs on the ray = accumulated opacity 1.0: LOS fully blocked at any range
   const smokeAt = (sim: Sim, x: number, y: number) => {
-    sim.smoke.push({ x, y, z0: 0, h: 3.5, ttl: 9999 }, { x, y, z0: 0, h: 3.5, ttl: 9999 });
+    sim.smoke.push(smokePuff(x, y, 0, 9999, 0, 3), smokePuff(x, y, 0, 9999, 0, 3));
   };
 
   it('smoke does not stop a melee lock, and contact spots both fighters for both sides', () => {

@@ -1,5 +1,5 @@
 import { WEAPONS, type WeaponDef } from './data';
-import { sightBetween, sightToSoldier, type Side, type Sim, type Soldier, type Team } from './sim';
+import { EYE_STAND, eyeOf, sightBetween, sightToSoldier, type Side, type Sim, type Soldier, type Team } from './sim';
 
 // The order vocabulary (spec: docs/specs/2026-07-22-order-execution.md). One
 // order per team; the executor in sim.ts decomposes it into per-soldier tasks.
@@ -64,7 +64,7 @@ function computeVisibleEnemies(sim: Sim, side: Side): Soldier[] {
   const seen: Soldier[] = [];
   for (const e of enemies) {
     for (const f of friendlies) {
-      if (Math.hypot(f.x - e.x, f.y - e.y) <= WEAPONS[f.weapon].range && sightToSoldier(sim, f.x, f.y, e, f.level).visible) {
+      if (Math.hypot(f.x - e.x, f.y - e.y) <= WEAPONS[f.weapon].range && sightToSoldier(sim, f.x, f.y, e, f.level, eyeOf(sim, f)).visible) {
         seen.push(e);
         break;
       }
@@ -100,7 +100,9 @@ export function dangerSamples(sim: Sim, team: Team, dest: { x: number; y: number
     if (sim.coverAt(px, py) < 0.1) point += 0.05;
     for (const e of known) {
       const w = WEAPONS[e.weapon];
-      if (Math.hypot(e.x - px, e.y - py) <= w.range && sightBetween(sim, e.x, e.y, px, py, e.level, 0).visible) {
+      // The mover we are scoring danger FOR is a hypothetical upright man, so
+      // the target eye is EYE_STAND, not the sampled point's terrain.
+      if (Math.hypot(e.x - px, e.y - py) <= w.range && sightBetween(sim, e.x, e.y, px, py, e.level, 0, eyeOf(sim, e), EYE_STAND).visible) {
         point += 0.15;
         break; // one covering enemy is enough to flag the point; not per-enemy
       }

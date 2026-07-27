@@ -230,6 +230,12 @@ describe('order vocabulary: fire/smoke/defend/ambush', () => {
     expect(sightBetween(sim, 5.5, 5.5, 25.5, 5.5).visible).toBe(true);
     sim.orderTeam(0, { kind: 'smoke', x: 15, y: 5.5 });
     expect(sim.smoke.length).toBe(2);
+    // V11: the column grows from 1.5 m instead of springing up at a fixed
+    // 3.5 m, so for the first four ticks a standing man (eye 1.6 m) can still
+    // see over a grenade he just threw. 0.13 s later the screen is up and
+    // stays up — it only gets taller and wider from here.
+    expect(sightBetween(sim, 5.5, 5.5, 25.5, 5.5).visible).toBe(true);
+    for (let i = 0; i < 4; i++) sim.step();
     expect(sightBetween(sim, 5.5, 5.5, 25.5, 5.5).visible).toBe(false);
   });
 
