@@ -32,8 +32,10 @@ export type BuildingRole =
   | 'church_apse';
 
 // A door opening on one face of a structure: the DOOR edge on `side` of tile
-// (x,y). width 2 writes two adjacent DOOR edges (cart entry, halle opening) —
-// the second runs +x for 'n'/'s' and +y for 'e'/'w'.
+// (x,y). (x,y) is the structure's OWN floor tile and `side` faces outward, so
+// the edge is hEdge(x,y) for 'n', hEdge(x,y+1) for 's', vEdge(x,y) for 'w' and
+// vEdge(x+1,y) for 'e'. width 2 writes two adjacent DOOR edges (cart entry,
+// halle opening) — the second runs +x for 'n'/'s' and +y for 'e'/'w'.
 export interface DoorEdge {
   x: number;
   y: number;
