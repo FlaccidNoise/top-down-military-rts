@@ -54,6 +54,11 @@ const CAP = argNum('cap', 54_000); // 30 game-minutes at DT=1/30s
 const KINDS = argList('kinds', ['open', 'woods', 'bourg']);
 const PROFILES = argList('profiles', ['blob', 'blob-fast', 'doctrine']);
 const OUT = argList('out', ['.balance-baseline.json'])[0];
+// --out resolves against THIS script's directory, not cwd — 'scripts/x.json'
+// from the repo root doubles to scripts/scripts/ and the ENOENT lands AFTER
+// the whole sweep has run. Touch the target now so a bad path dies in 1s.
+const OUT_URL = new URL(`./${OUT}`, import.meta.url);
+writeFileSync(OUT_URL, '', { flag: 'a' });
 
 // One cell: campaign seed = battle seed = `seed`, defender is the
 // full-strength (109-man) Garnison St-Aubin, engagement cell terrain forced to
@@ -194,8 +199,5 @@ for (const c of cells) {
   );
 }
 
-writeFileSync(
-  new URL(`./${OUT}`, import.meta.url),
-  JSON.stringify({ date: new Date().toISOString().slice(0, 10), seeds: SEEDS, cap: CAP, cells, runs }, null, 1),
-);
+writeFileSync(OUT_URL, JSON.stringify({ date: new Date().toISOString().slice(0, 10), seeds: SEEDS, cap: CAP, cells, runs }, null, 1));
 console.log(`\nwrote scripts/${OUT}`);
