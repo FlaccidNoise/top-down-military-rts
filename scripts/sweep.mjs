@@ -15,7 +15,7 @@
 //   Output: .screenshots/sweep/s<seed>-<crop>.png + index.html contact sheet
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { arg, launch, gotoStaged, deriveTargets, place } from './lib/stage.mjs';
+import { arg, launch, gotoStaged, deriveTargets, place, stageVehicles } from './lib/stage.mjs';
 
 const PORT = Number(arg('port', '5198'));
 const SEEDS = arg('seeds', '1,2,3,4,5,6,7,8,9,10').split(',').map(Number);
@@ -23,7 +23,11 @@ const CAMP = 42; // pinned campaign — fixed chit layout across runs
 // Water art never shows up unless a red chit happens to sit on a river cell,
 // so two sweep slots force the defender's cell terrain before carving.
 const FORCE_KIND = { 3: 'bridge', 8: 'river' };
-const ORDER = ['farlod', 'village', 'woods', 'hamlet', 'farm', 'bocage', 'units', 'enemy'];
+// `soldiers48` is the close-inspection unit crop: kit, webbing and helmet
+// detail only exist at band 48, so the 32 px/m `units` crop cannot regress it.
+// `vehicles` is ALWAYS last — staging it spawns five hulls into the live sim,
+// which would photobomb every crop shot after it.
+const ORDER = ['farlod', 'village', 'woods', 'hamlet', 'farm', 'bocage', 'units', 'enemy', 'soldiers48'];
 const OUT = '.screenshots/sweep';
 
 mkdirSync(OUT, { recursive: true });
@@ -46,9 +50,9 @@ for (const seed of SEEDS) {
   console.log(`seed ${seed}${FORCE_KIND[seed] ? ` (${FORCE_KIND[seed]})` : ''}`);
   const kind = await gotoStaged(page, { port: PORT, seed, camp: CAMP, forceKind: FORCE_KIND[seed] });
   const targets = await deriveTargets(page, { seed, kind });
-  const order = targets.bridge ? [...ORDER, 'bridge'] : ORDER;
+  const order = [...(targets.bridge ? [...ORDER, 'bridge'] : ORDER), 'vehicles'];
   for (const name of order) {
-    const t = targets[name];
+    const t = name === 'vehicles' ? await stageVehicles(page, targets.units) : targets[name];
     await place(page, t.x, t.y, t.scale);
     const file = `s${seed}-${name}.png`;
     await page.screenshot({ path: join(OUT, file) });
