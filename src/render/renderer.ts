@@ -279,6 +279,7 @@ export class Renderer {
       this.boomSeq++;
       this.booms.push({ ...b, at: now, landed: 0 });
       this.decals.scorch(b.x, b.y, boomScale(b.r));
+      this.roofs.noteImpact(b.x, b.y); // roof damage is render-derived from the same detonation, never from sim HP
       // Ignition is render-derived: a blast inside a building footprint is the
       // only cause of a building fire, because that is the only cause the
       // player watched happen.
