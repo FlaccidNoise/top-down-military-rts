@@ -21,8 +21,8 @@ export interface SectorMap {
 const CHAR_TERRAIN: Record<string, CellTerrain> = {
   '.': 'open',
   w: 'woods',
-  t: 'town',
-  T: 'town', // objective town
+  t: 'bourg',
+  T: 'bourg', // objective town
   '~': 'river',
   '=': 'bridge',
   r: 'road',
