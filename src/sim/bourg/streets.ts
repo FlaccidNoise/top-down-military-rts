@@ -175,7 +175,13 @@ export function segsFromTiles(tiles: Vec[], width: 1 | 2 | 3, rank: 0 | 1 | 2 | 
 // Width is carved CENTRED, matching both legacy conventions: the 3-wide
 // arterial spans roadY-1..roadY+1 (mapgen.ts:149) and the 2-wide cross lane
 // spans laneX..laneX+1 (mapgen.ts:165).
-export function carveSeg(road: Uint8Array, w: number, h: number, s: Seg): void {
+// `block` (stage 4's reservations) clips the carve. Only the flanks of the
+// band are ever clipped — the centreline is checked free before a street is
+// accepted — so connectivity is unaffected, and the notch is exactly where the
+// enclosure wall goes. Without it a 2-wide street hugging the churchyard's
+// CHAMFER puts road inside the enclosure, which is both a broken reservation
+// and a hole in the wall T8 is about to build.
+export function carveSeg(road: Uint8Array, w: number, h: number, s: Seg, block?: Uint8Array): void {
   const half = (s.width - 1) >> 1;
   const lo0 = s.axis === 'h' ? Math.min(s.ax, s.bx) : Math.min(s.ay, s.by);
   const hi0 = s.axis === 'h' ? Math.max(s.ax, s.bx) : Math.max(s.ay, s.by);
@@ -183,7 +189,9 @@ export function carveSeg(road: Uint8Array, w: number, h: number, s: Seg): void {
     for (let p = lo0; p <= hi0; p++) {
       const x = s.axis === 'h' ? p : s.ax + k;
       const y = s.axis === 'h' ? s.ay + k : p;
-      if (x >= 0 && y >= 0 && x < w && y < h) road[y * w + x] = 1;
+      if (x < 0 || y < 0 || x >= w || y >= h) continue;
+      if (block && block[y * w + x]) continue;
+      road[y * w + x] = 1;
     }
 }
 
@@ -545,7 +553,7 @@ export function growMinorStreets(sk: Skeleton, input: GrowthInput): void {
   const accept = (tiles: Vec[], width: 1 | 2 | 3, rank: 0 | 1 | 2 | 3, t: number): Street | null => {
     if (tiles.length < MIN_SPUR) return null;
     const made = segsFromTiles(tiles, width, rank, t);
-    for (const s of made) carveSeg(road, w, h, s);
+    for (const s of made) carveSeg(road, w, h, s, resv);
     segs.push(...made);
     const st: Street = { tiles, width, rank, t, cursor: 0, mouths: [] };
     streets.push(st);
@@ -744,11 +752,17 @@ function tangentAlong(
 ): Vec[] | null {
   const rx = stop.x;
   const ry = stop.y;
+  // the tile one step further in the proposal's direction must be reserved
+  // (that is the boundary we are hugging) AND the tangent's own tile must not
+  // be, or the chamfer staircase puts the tangent's centreline inside the
+  // enclosure and the clipped carve leaves it in two disconnected pieces
   const probe = (a: number): boolean => {
     const px = vertical ? a : rx + dir;
     const py = vertical ? ry + dir : a;
+    const ox = vertical ? a : rx;
+    const oy = vertical ? ry : a;
     if (px < 0 || py < 0 || px >= w || py >= h) return false;
-    return resv[py * w + px] !== 0;
+    return resv[py * w + px] !== 0 && resv[oy * w + ox] === 0;
   };
   const at = vertical ? stop.x : stop.y;
   if (!probe(at)) return null;
