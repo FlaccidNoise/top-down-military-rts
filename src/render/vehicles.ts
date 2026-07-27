@@ -1,6 +1,6 @@
 import { VEHICLES, type VehicleKey } from '../sim/data';
 import type { Side } from '../sim/sim';
-import { tier } from './dudes';
+import { DUDE_SCALE, kitTones, tier } from './dudes';
 import { AO_ALPHA } from './light';
 import { hash } from './noise';
 import { SpriteCache } from './spritecache';
@@ -470,6 +470,40 @@ function teamRim(g: Ctx, long: number, wide: number, band: number, color: string
   g.restore();
 }
 
+// --- Motion state carried into the bake (U7) --------------------------------
+// Two bake-time dimensions that would be absurd as parameters threaded through
+// eight drawing functions: which third of a link pitch the track is on, and
+// how full an open top is. Set once per bake by getVehicleSprite, read by
+// trackStrip and drawHalftrack — the same single-threaded bake contract
+// dudes.ts's `mono` and `kitBits` use.
+let bakePhase = 0;
+let bakeOcc = 0;
+let bakeSide: Side = 'blue';
+
+// Bucketed occupancy for the sprite key. Deliberately not the raw head count:
+// four buckets is what the cache can afford (an open top's canvas is ~590 KB
+// at band 48), and nobody reads the difference between six men and seven.
+// Bucket 1 is "crewed but empty" — a transport with a driver and a gunner and
+// nothing in the bed, which floor(n/3) would have drawn as abandoned.
+export function occBucket(kind: VehicleKey, aboard: number): number {
+  if (!isOpenTop(kind) || aboard <= 0) return 0;
+  return aboard <= 2 ? 1 : aboard <= 6 ? 2 : 3;
+}
+
+// `openTop` is optional in the vehicle table, so it only narrows inside a
+// switch that has already excluded the closed kinds. One accessor instead of
+// a cast at every call site.
+function isOpenTop(kind: VehicleKey): boolean {
+  return (VEHICLES[kind] as { openTop?: boolean }).openTop === true;
+}
+
+// Half the distance between the two track centres — where a track mark or a
+// dust puff belongs, in hull space.
+export function trackGauge(kind: VehicleKey): number {
+  const { wide } = dims(kind);
+  return wide / 2 - (isOpenTop(kind) ? 0.42 : 0.5) / 2;
+}
+
 function trackStrip(g: Ctx, x0: number, x1: number, y: number, h: number, color: string, linkColor: string, gap?: [number, number]): void {
   g.fillStyle = color;
   if (gap) {
@@ -482,7 +516,10 @@ function trackStrip(g: Ctx, x0: number, x1: number, y: number, h: number, color:
   g.lineWidth = 0.045;
   g.beginPath();
   const step = 0.32;
-  for (let x = x0 + step / 2; x < x1; x += step) {
+  // The whole of the track-churn animation: the link row starts a third of a
+  // pitch further along per phase. At 4.5 m/s the phase steps about every
+  // other frame — churn, not strobe.
+  for (let x = x0 + step / 2 + (bakePhase * step) / 3; x < x1; x += step) {
     if (gap && x > gap[0] && x < gap[1]) continue;
     g.moveTo(x, y);
     g.lineTo(x, y + h);
@@ -876,6 +913,61 @@ function drawStug(g: Ctx, band: number, c: Palette, wreck: boolean, long: number
   mudSkirt(g, 3, long, wide, d);
 }
 
+// One man seen from above at ~0.62 of a soldier sprite's scale: shoulders,
+// helmet, and (close in) the rifle across his knees. Soldiers with
+// `inVehicle >= 0` are filtered out of every soldier pass in the renderer, so
+// this bake is the only place a passenger can exist.
+const OCC = 0.62 * DUDE_SCALE; // body units → metres, at passenger scale
+
+function occupant(g: Ctx, band: number, x: number, y: number, facing: number, d: Detail): void {
+  const k = kitTones(bakeSide);
+  g.save();
+  g.translate(x, y);
+  g.rotate(facing);
+  g.fillStyle = 'rgba(0,0,0,0.2)';
+  g.beginPath();
+  g.ellipse(-0.04 * OCC, 0, 0.24 * OCC, 0.34 * OCC, 0, 0, TAU); // he sits ON the bench, not in the floor
+  g.fill();
+  g.fillStyle = k.uniform; // torso value, not sleeve — the helmet has to be the darkest thing on him
+  g.beginPath();
+  g.ellipse(-0.04 * OCC, 0, 0.2 * OCC, 0.3 * OCC, 0, 0, TAU); // shoulders
+  g.fill();
+  g.fillStyle = k.helmet;
+  g.beginPath();
+  g.arc(0.06 * OCC, 0, 0.175 * OCC, 0, TAU);
+  g.fill();
+  if (!d.d2) {
+    g.restore();
+    return;
+  }
+  g.strokeStyle = 'rgba(0,0,0,0.32)';
+  g.lineWidth = Math.max(0.025, hair(band));
+  g.stroke();
+  g.strokeStyle = 'rgba(255,255,255,0.09)';
+  g.beginPath();
+  g.arc(0.06 * OCC, 0, 0.1 * OCC, Math.PI * 0.85, Math.PI * 1.75);
+  g.stroke();
+  g.restore();
+}
+
+// Who is riding, by occupancy bucket: 1 = driver + pintle gunner only,
+// 2 = plus four in the bed, 3 = packed. Alternating outboard facings are what
+// make the bed read as men rather than a grid of dots.
+function crewAboard(g: Ctx, band: number, bedX0: number, bedX1: number, bedY: number, d: Detail): void {
+  const rows = bakeOcc >= 3 ? 4 : bakeOcc >= 2 ? 2 : 0;
+  const x0 = bedX0 + 0.42;
+  const x1 = bedX1 - 1.25;
+  for (let i = 0; i < rows; i++) {
+    const px = x0 + ((x1 - x0) * i) / (rows - 1);
+    for (const s of [-1, 1] as const) {
+      occupant(g, band, px, s * (bedY - 0.3), (s * Math.PI) / 2, d);
+    }
+  }
+  if (bakeOcc >= 3) occupant(g, band, (x0 + x1) / 2, 0, Math.PI, d); // the odd man out, facing the tailgate
+  occupant(g, band, bedX1 - 0.52, -0.3, 0, d); // driver, behind his visor plate
+  occupant(g, band, bedX1 - 1.08, 0.38, 0, d); // gunner, standing to the pintle
+}
+
 function drawHalftrack(g: Ctx, band: number, c: Palette, wreck: boolean, long: number, wide: number, d: Detail, faceted: boolean): void {
   const half = long / 2;
   const trackH = 0.42;
@@ -996,18 +1088,7 @@ function drawHalftrack(g: Ctx, band: number, c: Palette, wreck: boolean, long: n
     jerrycan(g, band, bedX0 + 0.28, -0.38, c, d);
     jerrycan(g, band, bedX0 + 0.28, 0.38, c, d);
   }
-  if (!wreck) {
-    g.fillStyle = c.metalDark;
-    for (const [hx, hy] of [
-      [-0.6, -0.25],
-      [0.3, 0.2],
-      [-1.1, 0.15],
-    ] as const) {
-      g.beginPath();
-      g.arc(hx, hy, 0.16, 0, TAU);
-      g.fill();
-    }
-  }
+  if (!wreck && bakeOcc > 0) crewAboard(g, band, bedX0, bedX1, bedY, d);
   mudSkirt(g, faceted ? 4 : 5, long, wide, d);
 }
 
@@ -1018,10 +1099,16 @@ export function vehicleCacheStats(): { entries: number; bytes: number } {
   return cache.stats();
 }
 
-export function getVehicleSprite(kind: VehicleKey, side: Side, state: State, band: number): HTMLCanvasElement {
-  const key = `${kind}|${side}|${state}|${band}`;
+// `tphase` (track churn, 0-2) and `occ` (open-top occupancy bucket, 0-3) are
+// extra cache dimensions, so both must be 0 wherever they cannot be seen —
+// the renderer pins them at far bands and on wrecks. See occBucket().
+export function getVehicleSprite(kind: VehicleKey, side: Side, state: State, band: number, tphase = 0, occ = 0): HTMLCanvasElement {
+  const key = `${kind}|${side}|${state}|${band}|${tphase}|${occ}`;
   const hit = cache.get(key);
   if (hit) return hit;
+  bakePhase = tphase;
+  bakeOcc = occ;
+  bakeSide = side;
 
   const px = VEHICLE_SPAN * band;
   const c = document.createElement('canvas');
@@ -1124,6 +1211,8 @@ export function getVehicleShadow(kind: VehicleKey, state: State, band: number): 
   const key = `${kind}|${state}|${sb}`;
   const hit = shadowCache.get(key);
   if (hit) return hit;
+  bakePhase = 0;
+  bakeOcc = 0; // the silhouette is the hull; it never gains or loses a passenger
   const px = VEHICLE_SPAN * sb;
   const c = document.createElement('canvas');
   c.width = px;

@@ -108,6 +108,15 @@ function deadKit(k: Kit): Kit {
   };
 }
 
+// The two tones a figure is legible by at a glance — uniform value and helmet
+// value. Exported so the open-top vehicle bake (U7) can draw its crew in the
+// same faction colours the soldier sprites use instead of forking a palette
+// that would drift the first time KITS is retuned.
+export function kitTones(side: Side): { uniform: string; sleeve: string; helmet: string } {
+  const k = KITS[side];
+  return { uniform: k.uniform, sleeve: k.sleeve, helmet: k.helmet };
+}
+
 // Monochrome pass. The cast-shadow bake re-runs the *same* pose code with
 // every colour collapsed to one ink and every non-silhouette flourish skipped,
 // so a man's shadow can never drift from the man throwing it. Bakes are

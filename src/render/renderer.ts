@@ -10,7 +10,7 @@ import { craterSpots } from './props';
 import { RoofLayer } from './roofs';
 import { TerrainLayer } from './terrain';
 import { view } from './view';
-import { getVehicleShadow, getVehicleSprite, turretBlob, turretCenter, vehicleBandFor, VEHICLE_SPAN } from './vehicles';
+import { getVehicleShadow, getVehicleSprite, occBucket, trackGauge, turretBlob, turretCenter, vehicleBandFor, VEHICLE_SPAN } from './vehicles';
 
 interface Tracer extends ShotEvent {
   at: number; // ms timestamp
@@ -49,6 +49,26 @@ interface RState {
   wy: number;
   dfacing: number; // drawn facing, including the dead man's per-id jitter
 }
+
+// Render-only per-vehicle state (U7), mirroring the soldier `rs` map. Every
+// motion cue here is driven by the ODOMETER, not by wall-clock: `dist` only
+// grows when the hull actually moves, so a paused game freezes the track
+// churn, the dust and the rut stamping exactly like it freezes a walk cycle.
+interface VState {
+  px: number;
+  py: number;
+  dist: number; // metres travelled, the clock for everything below
+  dust: { x: number; y: number; at: number }[]; // ring buffer, `at` in odometer metres
+  di: number; // ring write index
+  puffAt: number; // odometer of the last puff
+  markAt: number; // odometer of the last rut stamp
+}
+
+const DUST_RING = 6;
+const DUST_EVERY = 0.5; // m of travel per puff
+const DUST_LIFE = 2.5; // m of travel a puff survives
+const MARK_EVERY = 0.7; // m of travel per rut stamp
+const TRACK_PITCH = 0.16; // m of travel per track-phase step
 
 interface Boom {
   x: number;
@@ -186,6 +206,7 @@ export class Renderer {
   private tracers: Tracer[] = [];
   private meleeFx: (MeleeEvent & { at: number })[] = [];
   private rs = new Map<number, RState>();
+  private vrs = new Map<number, VState>();
   private deadVehicles = new Set<number>(); // scorch stamped once, on first dead frame
   private lastNow = 0;
   private booms: Boom[] = [];
@@ -412,6 +433,10 @@ export class Renderer {
     // player's side — the renderer never re-derives vision.
     const vis = (s: Soldier) => this.sim.soldierVisibleTo(PLAYER_SIDE, s);
     const visV = (v: Vehicle) => this.sim.vehicleVisibleTo(PLAYER_SIDE, v);
+    // Travel dust goes down as its own pass, before ANY hull: a puff thrown by
+    // one tank must not be painted over by the tank itself and must not paint
+    // over the tank parked next to it.
+    for (const v of this.sim.vehicles) if (v.alive && visV(v)) this.drawVehicleDust(ctx, cam, v, cw, ch);
     for (const v of this.sim.vehicles) if (!v.alive && visV(v)) this.drawVehicle(ctx, cam, v, cw, ch);
     // Floor-aware draw order: within each category pass, lower floors first
     // so upper floors paint on top. maxStories===0 collapses to the exact
@@ -550,7 +575,9 @@ export class Renderer {
         getSprite(s.side, s.weapon, 'aim', 0, band, v);
         for (let f = 0; f < WALK_FRAMES; f++) getSprite(s.side, s.weapon, 'walk', f, band, v);
       }
-      for (const v of this.sim.vehicles) getVehicleSprite(v.kind, v.side, v.alive ? 'ok' : 'dead', vband);
+      // Phase 0 only: the churn variants are minted lazily by whatever
+      // actually drives, so a band change never pays for three tracks per kind.
+      for (const v of this.sim.vehicles) getVehicleSprite(v.kind, v.side, v.alive ? 'ok' : 'dead', vband, 0, v.alive ? occBucket(v.kind, this.aboard(v)) : 0);
     };
     if (typeof requestIdleCallback === 'function') requestIdleCallback(run, { timeout: 400 });
     else setTimeout(run, 0);
@@ -889,6 +916,51 @@ export class Renderer {
     }
   }
 
+  // Odometer bookkeeping (U7): distance travelled since the last frame, with
+  // the same >2 m teleport guard drawSoldier uses, plus the rut stamps and
+  // dust puffs that fall out of it. Returns the track phase to bake with.
+  private vehicleMotion(v: Vehicle, band: number, scale: number): number {
+    let st = this.vrs.get(v.id);
+    if (!st) {
+      st = { px: v.x, py: v.y, dist: 0, dust: [], di: 0, puffAt: 0, markAt: 0 };
+      this.vrs.set(v.id, st);
+    }
+    const step = Math.hypot(v.x - st.px, v.y - st.py);
+    st.px = v.x;
+    st.py = v.y;
+    if (!v.alive) return 0;
+    if (step < 2) st.dist += step; // a bigger jump is a respawn/teleport, not a drive
+    const gauge = trackGauge(v.kind);
+    if (st.dist - st.markAt >= MARK_EVERY) {
+      st.markAt = st.dist;
+      this.decals.trackMark(v.x, v.y, v.facing, gauge);
+    }
+    if (tier(band) >= 2 && scale >= 8 && st.dist - st.puffAt >= DUST_EVERY) {
+      st.puffAt = st.dist;
+      // alternate rear corners, so the trail staggers instead of pulsing
+      const s = st.di % 2 === 0 ? -1 : 1;
+      const cs = Math.cos(v.facing);
+      const sn = Math.sin(v.facing);
+      const rx = -VEHICLE_SPAN * 0.28; // roughly the rear of any hull in this set
+      const p = { x: v.x + rx * cs - s * gauge * sn, y: v.y + rx * sn + s * gauge * cs, at: st.dist };
+      if (st.dust.length < DUST_RING) st.dust.push(p);
+      else st.dust[st.di % DUST_RING] = p;
+      st.di++;
+    }
+    return tier(band) >= 2 ? Math.floor(st.dist / TRACK_PITCH) % 3 : 0;
+  }
+
+  private drawVehicleDust(ctx: CanvasRenderingContext2D, cam: Camera, v: Vehicle, cw: number, ch: number): void {
+    const st = this.vrs.get(v.id);
+    if (!st) return;
+    for (const p of st.dust) {
+      const age = (st.dist - p.at) / DUST_LIFE;
+      if (age >= 1) continue;
+      const [sx, sy] = cam.worldToScreen(p.x, p.y, cw, ch);
+      blit(ctx, 'dustTan', sx, sy, (0.6 + age * 1.1) * cam.scale, 0.26 * (1 - age));
+    }
+  }
+
   private drawVehicle(ctx: CanvasRenderingContext2D, cam: Camera, v: Vehicle, cw: number, ch: number): void {
     const [x, y] = cam.worldToScreen(v.x, v.y, cw, ch);
     const pad = VEHICLE_SPAN * cam.scale;
@@ -897,7 +969,10 @@ export class Renderer {
       this.deadVehicles.add(v.id);
       this.decals.scorch(v.x, v.y); // stamped once, under the wreck sprite from here on
     }
-    const spr = getVehicleSprite(v.kind, v.side, v.alive ? 'ok' : 'dead', vehicleBandFor(cam.scale));
+    const band = vehicleBandFor(cam.scale);
+    const tphase = this.vehicleMotion(v, band, cam.scale);
+    const occ = v.alive ? occBucket(v.kind, this.aboard(v)) : 0;
+    const spr = getVehicleSprite(v.kind, v.side, v.alive ? 'ok' : 'dead', band, tphase, occ);
     ctx.save();
     ctx.translate(x, y);
     ctx.rotate(v.facing);
@@ -912,6 +987,15 @@ export class Renderer {
     }
     // v.burning is drawn by drawFires (shared with building fires), not here —
     // a brew-up has to sit above the roofs a wreck can be parked against.
+  }
+
+  // Living bodies aboard: crew plus every passenger team. Only ever consumed
+  // through occBucket, which collapses it to four cache-affordable states.
+  private aboard(v: Vehicle): number {
+    let n = 0;
+    for (const id of v.crewIds) if (this.sim.soldiers[id]?.alive) n++;
+    for (const t of v.passengerTeamIds) for (const id of this.sim.teams[t]?.soldierIds ?? []) if (this.sim.soldiers[id]?.alive) n++;
+    return n;
   }
 
   // Simple crewed-weapon glyph — follows drawVehicle's scheme (team-colored
