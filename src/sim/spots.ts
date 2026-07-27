@@ -59,13 +59,21 @@ export interface ResolvedSpot {
   snapped: boolean; // resolved tile differs from the naive slot tile (drives the slot→spot tail)
 }
 
-// Threat bearing ladder (§1.3): intel first, facing second, travel last.
+// Threat bearing ladder (§1.3): intel first, travel last.
+//
+// The design's second rung was `q.facing`, on the reading that a right-drag
+// "faced the line somewhere". It does not: facing is the long axis the
+// rank-and-file grid SPREADS along (formationSlots, sim.ts) and main.ts fans
+// squads by cos/sin of it. A line dragged east-west would have been scored as
+// a threat due east, 90° off, on the most deliberate order in the game. The
+// threat is perpendicular to a drawn line and facing cannot say which side, so
+// the rung is gone: intel or the direction of advance answers it, and both
+// know which way the men came from. (M3 audit; the only producer of
+// TeamOrder.facing is the player right-drag in main.ts.)
 export function threatBearing(sim: Sim, q: SpotQuery): number {
   // 1. defend/ambush arc — the player literally drew the threat direction.
   if (q.arc) return arcMidpoint(q.arc);
-  // 2. right-drag formation — the player faced the line somewhere.
-  if (q.facing !== undefined) return q.facing;
-  // 3. nearest known contact of the ordering side within INTEL_RANGE of the
+  // 2. nearest known contact of the ordering side within INTEL_RANGE of the
   //    anchor: spotted positions plus ghost contacts. NOT visibleEnemies —
   //    that is weapon-range-gated and blind during the approach march.
   const first = sim.soldiers[q.soldierIds[0]];
@@ -91,8 +99,10 @@ export function threatBearing(sim: Sim, q: SpotQuery): number {
     }
   }
   if (bd <= INTEL_RANGE) return Math.atan2(by - q.y, bx - q.x);
-  // 4. travel direction: team centroid → anchor (you default to covering the
-  //    way you are advancing).
+  // 3. travel direction: team centroid → anchor (you default to covering the
+  //    way you are advancing). Men told to dig in exactly where they stand
+  //    give atan2(0, 0) = 0 — due east on no evidence at all. Deterministic
+  //    and cheap, but it is a guess; see the M3 handoff.
   let cx = 0;
   let cy = 0;
   let n = 0;

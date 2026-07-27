@@ -196,7 +196,13 @@ score(tile) =
 Priority:
 1. `q.arc` midpoint when the order carries one (defend/ambush — the player literally
    drew the threat direction).
-2. `q.facing` when set (right-drag formation — the player faced the line somewhere).
+2. ~~`q.facing` when set (right-drag formation — the player faced the line somewhere).~~
+   **DELETED at M3, by audit.** A right-drag does not face the line: `facing` is the
+   long axis the rank-and-file grid spreads ALONG (formationSlots, sim.ts:524-526) and
+   main.ts:797-804 fans squads by cos/sin of it. Reading it as a threat bearing put a
+   line dragged east-west 90° off. The threat is perpendicular to a drawn line and
+   `facing` cannot say which of the two sides, so rungs 3 and 4 — which both know where
+   the men came from — answer it instead.
 3. Nearest **known contact** of the ordering side within 100 m of the anchor:
    `sim.spotted[side]` positions plus `sim.contacts[side]` ghosts (sim.ts:749,
    3525-3560, CONTACT_TTL sim.ts:713). NOT `visibleEnemies` — it is weapon-range-gated

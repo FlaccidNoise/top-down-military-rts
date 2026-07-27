@@ -45,14 +45,19 @@ describe('threatBearing ladder (design §1.3)', () => {
     expect(Math.sin(wrap)).toBeCloseTo(0, 6);
   });
 
-  it('2: facing when no arc', () => {
+  it('facing is NOT a rung: it is the formation long axis, not a threat direction (M3)', () => {
     const sim = new Sim(new GameMap(40, 20), 1);
     const ids = [addOne(sim, 'blue', 5.5, 10.5)];
-    sim.spotted.blue.set(999, { x: 20.5, y: 2.5 });
-    expect(threatBearing(sim, q0(sim, ids, { facing: 1.2, width: 6 }))).toBe(1.2);
+    sim.spotted.blue.set(999, { x: 20.5, y: 18.5 }); // 8 m south of the anchor
+    // a line dragged east-west (facing 0) with the enemy south reads south,
+    // not east — the drag axis says nothing about which side the threat is on
+    expect(threatBearing(sim, q0(sim, ids, { facing: 0, width: 6 }))).toBeCloseTo(Math.PI / 2, 6);
+    // and with no intel at all it falls to travel direction, still not facing
+    sim.spotted.blue.clear();
+    expect(threatBearing(sim, q0(sim, ids, { facing: 1.2, width: 6 }))).not.toBe(1.2);
   });
 
-  it('3: nearest known contact within 100 m of the anchor — spotted and ghost contacts both count', () => {
+  it('2: nearest known contact within 100 m of the anchor — spotted and ghost contacts both count', () => {
     const sim = new Sim(new GameMap(40, 20), 1);
     const ids = [addOne(sim, 'blue', 5.5, 10.5)];
     sim.spotted.blue.set(999, { x: 20.5, y: 18.5 }); // 8 m south of the anchor
@@ -62,7 +67,7 @@ describe('threatBearing ladder (design §1.3)', () => {
     expect(threatBearing(sim, q0(sim, ids))).toBeCloseTo(-Math.PI / 2, 6);
   });
 
-  it('4: intel beyond 100 m is ignored — travel direction (centroid → anchor) is the fallback', () => {
+  it('3: intel beyond 100 m is ignored — travel direction (centroid → anchor) is the fallback', () => {
     const sim = new Sim(new GameMap(200, 20), 1);
     const ids = [addOne(sim, 'blue', 30.5, 10.5)];
     sim.spotted.blue.set(999, { x: 150.5, y: 10.5 }); // 130 m east of the anchor: out of intel range
