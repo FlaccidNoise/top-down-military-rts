@@ -19,6 +19,18 @@ import type { FurnitureKey, Structure } from './types';
 //   reachInterior  the 8-connected BFS that mirrors path.ts's corner rule
 //   keepClear      the mask K of §4.1
 //   Furnisher      the commit rule of §4.2 — the non-sealing guarantee
+//
+// ORDER OF OPERATIONS, per structure. It is not interchangeable:
+//
+//   1. interiorOf     — reads the mass, the exterior doors and the stairs
+//   2. resetInterior  — D10; every later step assumes a clean interior
+//   3. planRooms      — rooms.ts / church.ts; writes the partition walls AND
+//                       the interior doors
+//   4. keepClear      — must run AFTER 3, because seed 2 reads the interior
+//                       doors the partitioner just wrote and seed 6 needs its
+//                       RoomPlan.spine
+//   5. new Furnisher  — snapshots reachability from the primary door as it
+//                       stands after 3, then guards every candidate group
 
 // The working form of a Structure: its mass as a local-frame bitmask over the
 // bbox of its rects, plus everything the partitioners and the mask builder need
