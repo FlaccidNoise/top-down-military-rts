@@ -1110,34 +1110,35 @@ export interface RailIndex {
 // and forcing it onto a tile index would push the track off its own ballast.
 // Returns null on every map with no railway, which is every legacy kind.
 function railIndex(map: GameMap): RailIndex | null {
+  // one pass over the map, because this runs in the TerrainLayer ctor on every
+  // battle boot and a 320x240 scan is 76,800 terrainKeyAt calls
+  const xs: number[] = [];
+  const ys: number[] = [];
   let minX = 1e9;
   let maxX = -1e9;
   let minY = 1e9;
   let maxY = -1e9;
-  let n = 0;
   for (let y = 0; y < map.h; y++) {
     for (let x = 0; x < map.w; x++) {
       if (map.terrainKeyAt(x, y) !== 'rail') continue;
-      n++;
+      xs.push(x);
+      ys.push(y);
       if (x < minX) minX = x;
       if (x > maxX) maxX = x;
       if (y < minY) minY = y;
       if (y > maxY) maxY = y;
     }
   }
-  if (n === 0) return null;
+  if (xs.length === 0) return null;
   const axis = maxX - minX >= maxY - minY ? 0 : 1;
   const nU = axis === 0 ? map.w : map.h;
   const lo = new Int16Array(nU).fill(-1);
   const hi = new Int16Array(nU).fill(-1);
-  for (let y = 0; y < map.h; y++) {
-    for (let x = 0; x < map.w; x++) {
-      if (map.terrainKeyAt(x, y) !== 'rail') continue;
-      const u = axis === 0 ? x : y;
-      const t = axis === 0 ? y : x;
-      if (lo[u] < 0 || t < lo[u]) lo[u] = t;
-      if (t > hi[u]) hi[u] = t;
-    }
+  for (let i = 0; i < xs.length; i++) {
+    const u = axis === 0 ? xs[i] : ys[i];
+    const t = axis === 0 ? ys[i] : xs[i];
+    if (lo[u] < 0 || t < lo[u]) lo[u] = t;
+    if (t > hi[u]) hi[u] = t;
   }
   const widths = new Map<number, number>();
   for (let u = 0; u < nU; u++) if (lo[u] >= 0) widths.set(hi[u] - lo[u] + 1, (widths.get(hi[u] - lo[u] + 1) ?? 0) + 1);
@@ -1285,6 +1286,7 @@ function drawCrossings(g: Ctx, map: GameMap, tx0: number, ty0: number, tx1: numb
         g.fillStyle = shade(DECK, 0.8 + hash(x * 7 + p, y, 481) * 0.22);
         if (rail.axis === 0) g.fillRect(x, t0, 1, 0.14);
         else g.fillRect(t0, y, 0.14, 1);
+        if (d < 1) continue; // a 0.03 m joint is sub-pixel below band 16
         g.fillStyle = 'rgba(24,20,14,0.30)';
         if (rail.axis === 0) g.fillRect(x, t0, 1, 0.03);
         else g.fillRect(t0, y, 0.03, 1);
@@ -1397,14 +1399,16 @@ function earthFloorStamp(v: number, band: number, d: Detail): HTMLCanvasElement 
       g.ellipse(0.15 + hash(k, 1, 443) * 0.7, 0.15 + hash(k, 2, 443) * 0.7, 0.16, 0.11, hash(k, 3, 443) * Math.PI, 0, Math.PI * 2);
       g.fill();
     }
+    // Loose straw, kept quiet: at 0.42 alpha the wisps read as pale scratches
+    // across the floor rather than as chaff on it.
     g.lineWidth = 0.03;
-    for (let i = 0; i < 7; i++) {
+    for (let i = 0; i < 5; i++) {
       const k = v * 13 + i;
       const a = hash(k, 0, 444) * Math.PI;
       const px = 0.1 + hash(k, 1, 444) * 0.8;
       const py = 0.1 + hash(k, 2, 444) * 0.8;
       const l = 0.06 + hash(k, 3, 444) * 0.12;
-      g.strokeStyle = hash(k, 4, 444) > 0.5 ? 'rgba(178,160,110,0.42)' : 'rgba(132,116,74,0.36)';
+      g.strokeStyle = hash(k, 4, 444) > 0.5 ? 'rgba(170,152,106,0.22)' : 'rgba(126,110,72,0.20)';
       g.beginPath();
       g.moveTo(px - Math.cos(a) * l, py - Math.sin(a) * l);
       g.lineTo(px + Math.cos(a) * l, py + Math.sin(a) * l);

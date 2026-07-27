@@ -514,13 +514,15 @@ function drawStraw(g: Ctx, v: number, d: number): void {
   g.ellipse(0.5, 0.5, 0.36, 0.3, 0, 0, Math.PI * 2);
   g.fill();
   if (d < 1) return;
+  // wisps inside the mound's silhouette and close to its own value — a bale
+  // that throws long pale strokes across the tile reads as a scratch, not straw
   g.lineWidth = 0.035;
-  for (let i = 0; i < 9; i++) {
+  for (let i = 0; i < 8; i++) {
     const a = hash(v * 11 + i, 0, 416) * Math.PI;
-    const x = 0.2 + hash(v * 11 + i, 1, 416) * 0.6;
-    const y = 0.22 + hash(v * 11 + i, 2, 416) * 0.56;
-    const l = 0.1 + hash(v * 11 + i, 3, 416) * 0.16;
-    g.strokeStyle = hash(v * 11 + i, 4, 416) > 0.5 ? tone(STRAW_C, 1.15) : tone(STRAW_C, 0.7);
+    const x = 0.26 + hash(v * 11 + i, 1, 416) * 0.48;
+    const y = 0.28 + hash(v * 11 + i, 2, 416) * 0.44;
+    const l = 0.07 + hash(v * 11 + i, 3, 416) * 0.1;
+    g.strokeStyle = hash(v * 11 + i, 4, 416) > 0.5 ? tone(STRAW_C, 1.05) : tone(STRAW_C, 0.78);
     g.beginPath();
     g.moveTo(x - Math.cos(a) * l, y - Math.sin(a) * l);
     g.lineTo(x + Math.cos(a) * l, y + Math.sin(a) * l);
