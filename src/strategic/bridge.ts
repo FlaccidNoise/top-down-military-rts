@@ -442,11 +442,15 @@ export function makeStrategicBattle(
   // Briefed avenue of approach for whichever side defends: every attacker
   // (either side) deploys at the west spawn, and the defense is sited on it —
   // the same knowledge the garrison anchors already encode.
+  // The attacker is briefed on the whole objective list, not just the one post
+  // its squads deployed onto: every squad picks the objective nearest its own
+  // anchor and every anchor sits in the same west strip, so posts alone name a
+  // single objective and the attack has nowhere to go once it takes it.
   const blueCommander = new RedCommander({
     side: 'blue',
     stance: attackerSide === 'blue' ? 'attack' : 'defend',
     posts: bluePosts,
-    ...(attackerSide === 'red' ? { approach: { x: west.x, y: west.y } } : {}),
+    ...(attackerSide === 'blue' ? { objectives: attackObjectives } : { approach: { x: west.x, y: west.y } }),
   });
   return {
     sim,
@@ -454,7 +458,7 @@ export function makeStrategicBattle(
       side: 'red',
       stance,
       posts: commanderPosts,
-      ...(stance === 'defend' ? { approach: { x: west.x, y: west.y } } : {}),
+      ...(stance === 'attack' ? { objectives: attackObjectives } : { approach: { x: west.x, y: west.y } }),
     }),
     blueCommander,
     name: `${defender.name} at (${x}, ${y})`,
