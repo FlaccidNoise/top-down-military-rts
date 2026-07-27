@@ -2,8 +2,12 @@ import { describe, expect, it } from 'vitest';
 import { BREACH_COVER, BREACH_LIP, BREACH_WIDE, ECLASS, EDGE, FLOOR_H, GameMap, edgeClass, edgeMid, los, nearestBreachable } from '../src/sim/map';
 import { astar, BREACH_STEP, CRUSH_STEP } from '../src/sim/path';
 import { RedCommander } from '../src/sim/ai';
+import { newCampaign } from '../src/campaign/campaign';
+import { generateMap } from '../src/sim/mapgen';
+import { applyEngagementOutcome, applyScars, breachScars, makeStrategicBattle, newFront } from '../src/strategic/bridge';
+import { makeDefaultSector } from '../src/strategic/sector';
 import { visibleEnemies } from '../src/sim/orders';
-import { Sim, type BreachEvent } from '../src/sim/sim';
+import { SPOT_INTERVAL, Sim, type BreachEvent } from '../src/sim/sim';
 
 // Destructible terrain (docs/plans/2026-07-27-destructible-terrain-design.md).
 // D1: the edge code, the derived class, the passage rules and the rubble-lip
@@ -850,6 +854,18 @@ describe('D7 the commander re-scores a firing spot a breach changed', () => {
     expect(priv.baseFiring.has(0)).toBe(false);
   });
 
+  it('is wired into the eval, not just callable — update() advances the cursor', () => {
+    const sim = new Sim(wallRun(1), 3);
+    const sq = sim.addSquad('red', 'MG', [{ name: 'G', weapon: 'mg42', x: 14.5, y: 10.5 }]);
+    const c = new RedCommander({ side: 'red', stance: 'attack', posts: { [sq.id]: { x: 4, y: 10 } } });
+    const priv = c as unknown as Priv & { breachSeen: number };
+    for (let i = 0; i <= SPOT_INTERVAL; i++) sim.step();
+    boom(sim)(10.0, 10.5, WALL_SHOT);
+    expect(sim.breachLog.length).toBeGreaterThan(0);
+    c.update(sim);
+    expect(priv.breachSeen).toBe(sim.breachLog.length);
+  });
+
   it('leaves a spot alone when the hole is out of the radius, and reacts only once per breach', () => {
     const { sim, priv } = staged({ x: 200, y: 10 }); // far off
     boom(sim)(10.0, 10.5, WALL_SHOT);
@@ -859,5 +875,87 @@ describe('D7 the commander re-scores a firing spot a breach changed', () => {
     priv.baseSpot.set(1, { x: 20, y: 10 });
     priv.invalidateBreachedSpots(sim); // the same breaches, already consumed
     expect(priv.baseSpot.has(1)).toBe(true);
+  });
+});
+
+// ── D8: campaign emission and the scar re-stamp ────────────────────────────
+
+describe('D8 scar re-stamp', () => {
+  // The exactness claim the whole scar system rests on: a battle map is
+  // REGENERATED from (seed, w, h, kind), never persisted, so an edge recorded
+  // by tile index refers to the same wall on every future generation.
+  it('re-stamping a freshly generated map reproduces the one the battle left behind', () => {
+    const kind = 'bourg';
+    const fought = generateMap(3, 120, 90, kind).map;
+    const sim = new Sim(fought, 8);
+
+    // Shell the first few walls the generator put down, wherever they are.
+    let hit = 0;
+    for (let y = 0; y < fought.h && hit < 5; y++) {
+      for (let x = 0; x < fought.w && hit < 5; x++) {
+        if (edgeClass(fought, x, y, false) === ECLASS.NONE) continue;
+        boom(sim)(x, y + 0.5, WALL_SHOT);
+        hit++;
+      }
+    }
+    expect(sim.breachLog.length).toBeGreaterThanOrEqual(5);
+
+    const fresh = generateMap(3, 120, 90, kind).map;
+    applyScars(fresh, breachScars(sim.breachLog));
+    expect(fresh.vEdges).toEqual(fought.vEdges);
+    expect(fresh.hEdges).toEqual(fought.hEdges);
+    expect(fresh.vEdgeTops).toEqual(fought.vEdgeTops);
+    expect(fresh.hEdgeTops).toEqual(fought.hEdgeTops);
+    expect(fresh.hasBreach).toBe(true);
+  });
+
+  it('carries the width code, so a hull route survives the re-stamp', () => {
+    const m = new GameMap(24, 24);
+    applyScars(m, [
+      { kind: 'breach', horiz: false, x: 10, y: 10, wide: true },
+      { kind: 'breach', horiz: true, x: 12, y: 12, wide: false },
+    ]);
+    expect(m.vEdge(10, 10)).toBe(EDGE.BREACH);
+    expect(m.vEdgeTop(10, 10)).toBe(BREACH_WIDE);
+    expect(m.canStep(9, 10, 10, 10, 'vehicle')).toBe(true);
+    expect(m.hEdge(12, 12)).toBe(EDGE.BREACH);
+    expect(m.hEdgeTop(12, 12)).toBe(BREACH_LIP);
+    expect(m.canStep(12, 11, 12, 12, 'vehicle')).toBe(false);
+  });
+
+  it('an empty scar list leaves the map, and its fast-path hint, untouched', () => {
+    const m = new GameMap(24, 24);
+    applyScars(m, []);
+    expect(m.hasBreach).toBe(false);
+  });
+});
+
+describe('D8 battle-result emission', () => {
+  it('the engagement outcome carries the breach log alongside the casualties', () => {
+    const c = newCampaign(10);
+    const front = newFront(c, makeDefaultSector());
+    const able = front.chits.find((ch) => ch.side === 'blue')!;
+    const wache = front.chits.find((ch) => ch.name === 'Brückenwache Süd')!;
+    const e = { attackerId: able.id, defenderId: wache.id, cell: wache.cell };
+    const { sim } = makeStrategicBattle(c, front, e, 6);
+
+    // One deliberate wall shot somewhere on the generated map.
+    let opened = false;
+    for (let y = 0; y < sim.map.h && !opened; y++) {
+      for (let x = 0; x < sim.map.w && !opened; x++) {
+        if (edgeClass(sim.map, x, y, false) === ECLASS.NONE) continue;
+        boom(sim)(x, y + 0.5, WALL_SHOT);
+        opened = true;
+      }
+    }
+    expect(opened).toBe(true);
+
+    for (const s of sim.soldiers) if (s.side === 'red') s.alive = false;
+    sim.step();
+    const out = applyEngagementOutcome(c, front, e, sim);
+    expect(out.breaches.length).toBeGreaterThan(0);
+    expect(out.breaches).toEqual(sim.breachLog);
+    // No save-schema bump: the persisted record still carries casualties only.
+    expect(Object.keys(out.record).sort()).toEqual(['day', 'kia', 'won', 'wounded']);
   });
 });
