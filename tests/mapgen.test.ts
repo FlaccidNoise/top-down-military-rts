@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { generateMap } from '../src/sim/mapgen';
+import { generateMap, reachField } from '../src/sim/mapgen';
 import { astar } from '../src/sim/path';
 
 // FNV-1a over the map's raw arrays — a compact geometry + elevation fingerprint.
@@ -36,6 +36,28 @@ describe('mapgen', () => {
   it('matches known snapshots (catches accidental generator drift)', () => {
     expect(fingerprint(1)).toMatchInlineSnapshot(`"8105059f"`);
     expect(fingerprint(2)).toMatchInlineSnapshot(`"d2a77805"`);
+  });
+
+  // The validation gate inlines canStep (mapgen.ts reachField) for speed, so it
+  // is a copy of map.ts:112-125 + path.ts:108-114 that can drift. This compares
+  // it against astar exhaustively — every tile of a 60x40 map, both modes, on a
+  // 'bridge' layout (water, hedges, doors, windows, floors) and an 'open' one.
+  it('the flood-fill reach field agrees with astar on every tile (60x40)', () => {
+    const mismatches: string[] = [];
+    for (const kind of ['open', 'bridge'] as const) {
+      const p = generateMap(4, 60, 40, kind);
+      const { map } = p;
+      const { x: sx, y: sy } = p.spawns.west;
+      for (const mode of ['foot', 'vehicle'] as const) {
+        const field = reachField(map, sx, sy, mode);
+        for (let y = 0; y < map.h; y++)
+          for (let x = 0; x < map.w; x++) {
+            const flood = map.terrainAt(x, y).passable && field[y * map.w + x] === 1;
+            if (flood !== (astar(map, sx, sy, x, y, mode) !== null)) mismatches.push(`${kind}/${mode} @${x},${y}`);
+          }
+      }
+    }
+    expect(mismatches).toEqual([]);
   });
 
   it('spawns reach objectives and buildings on foot; the road carries vehicles (seeds 1-30)', () => {
