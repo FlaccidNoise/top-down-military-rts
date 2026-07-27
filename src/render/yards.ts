@@ -103,7 +103,13 @@ function legalise(map: GameMap, patches: PatchIndex, b: BuildingBox, side: Side,
   }
 }
 
-export function buildYards(map: GameMap, patches: PatchIndex): Yard[] {
+// `enclosed` vetoes ground that a generator-authored enclosure already walls
+// (src/render/enclos.ts). Without it a bourg garden gets two boundaries — the
+// map's own 1 m wall and this module's guessed one — crossing each other in
+// the same tail, and a farm cour gets pale wall stubs standing in the middle
+// of its beaten earth. Legacy kinds have no enclosures, so the predicate never
+// fires there and their yards are unchanged.
+export function buildYards(map: GameMap, patches: PatchIndex, enclosed: (wx: number, wy: number) => boolean = () => false): Yard[] {
   const out: Yard[] = [];
   for (const b of patches.buildings) {
     const dr = doorOf(map, b);
@@ -132,7 +138,9 @@ export function buildYards(map: GameMap, patches: PatchIndex): Yard[] {
         let ok = 0;
         for (let i = 0; i < 9; i++) {
           const u = u0 + ((i + 0.5) / 9) * (u1 - u0);
-          if (paintable(map, patches, px(b, s, u, t), py(b, s, u, t))) ok++;
+          const wx = px(b, s, u, t);
+          const wy = py(b, s, u, t);
+          if (paintable(map, patches, wx, wy) && !enclosed(wx, wy)) ok++;
         }
         if (ok >= 7) return t;
       }

@@ -230,7 +230,10 @@ export class Renderer {
   selectedVehicle = -1;
 
   constructor(private sim: Sim) {
-    this.terrain = new TerrainLayer(sim.map);
+    // Buildings, not just the map: telling a churchyard from a farm cour and a
+    // shop from a house needs `role`, which lives on the plan and nowhere in
+    // the grid. Legacy kinds emit no roles, so those maps behave as before.
+    this.terrain = new TerrainLayer(sim.map, sim.buildings);
     this.decals = new DecalLayer(sim.map.w, sim.map.h);
     // Five world-anchored haze bands, generated once from the map dimensions
     // so the same map always breathes the same way.

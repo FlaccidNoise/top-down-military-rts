@@ -112,6 +112,46 @@ describe('PatchIndex', () => {
     expect(hit).toBeGreaterThanOrEqual(7);
   });
 
+  // T19. The place ramp is a rounded rectangle whose corner radius is
+  // min(rx, ry), so a square square is the disc it always was. That is the
+  // whole legacy-safety argument and it is worth an exact assertion rather
+  // than an art baseline: a re-snapshotted crop is an invisible regression.
+  it('leaves every legacy kind paving exactly the disc it did before T19', () => {
+    const disc = (sq: { cx: number; cy: number; rx: number }[], x: number, y: number) => {
+      let a = 0;
+      for (const s of sq) a = Math.max(a, Math.min(0.88, (s.rx - Math.hypot(x + 0.5 - s.cx, y + 0.5 - s.cy)) / 3.5));
+      return Math.max(0, a);
+    };
+    for (const kind of ['town', 'road', 'bridge', 'river'] as const) {
+      for (const seed of [1, 3, 7, 11]) {
+        const { map } = generateMap(seed, 320, 240, kind);
+        const pi = new PatchIndex(map);
+        for (const s of pi.squares) expect(s.rx).toBe(s.ry);
+        for (let y = 0; y < map.h; y += 3) {
+          for (let x = 0; x < map.w; x += 3) expect(pi.pavedAt(x, y)).toBe(disc(pi.squares, x, y));
+        }
+      }
+    }
+  }, 20_000);
+
+  it('gives the bourg place one elongated square instead of a chain of discs', () => {
+    for (const seed of [10, 11, 12]) {
+      const { map } = generateMap(seed, 320, 240, 'bourg');
+      const pi = new PatchIndex(map);
+      const wide = pi.squares.filter((s) => s.rx !== s.ry);
+      // exactly one widening per bourg, and every crossing inside it collapses
+      // onto the same rectangle rather than paving its own disc
+      expect(wide.length).toBe(1);
+      const [s] = wide;
+      expect(Math.max(s.rx, s.ry) / Math.min(s.rx, s.ry)).toBeGreaterThan(1.3);
+      // the ends of the widening are paved, which is the defect T19 exists
+      // for: the pre-T19 11 m cap could not reach past 22 m of frontage
+      let span = 0;
+      for (let x = 0; x < map.w; x++) if (pi.pavedAt(x, Math.round(s.cy)) > 0.3) span++;
+      expect(span).toBeGreaterThan(24);
+    }
+  }, 20_000);
+
   it('building boxes match buildingIdAt bounds exactly', () => {
     for (const seed of SEEDS) {
       const { map } = generateMap(seed, 320, 240, 'town');
