@@ -375,9 +375,25 @@ describe('bourg determinism (§5.4)', () => {
   // tripwire. These churned freely through T4-T13 and are frozen here; from
   // now on, changing them is legitimate only when the bourg layout was MEANT
   // to change, and a diff that moves them without saying so is a bug.
+  //
+  // Moved by V3: 320x240 is inside the micro-relief size gate (mapgen
+  // RELIEF_MIN_W/H), so a bourg now carries an undulation field, hedge banks
+  // and a railway embankment. The test below is what makes that legitimate
+  // rather than silent — with the stage switched off, T14's numbers come back
+  // bit for bit.
   it('pins the bourg fingerprints', () => {
-    expect(fingerprint(town(1))).toMatchInlineSnapshot(`"cd8c2d19"`);
-    expect(fingerprint(town(2))).toMatchInlineSnapshot(`"98495a59"`);
+    expect(fingerprint(town(1))).toMatchInlineSnapshot(`"de02e677"`);
+    expect(fingerprint(town(2))).toMatchInlineSnapshot(`"4f4af051"`);
+  });
+
+  it('reproduces T14 exactly with relief off — the stage is purely additive', () => {
+    // Relief writes elev, the two new terrain keys and crossings, and nothing
+    // else: no street, plot, wall, door, storey or objective of the bourg
+    // pipeline moves. These two literals are T14's frozen values, captured
+    // before V3 existed, and they are deliberately NOT inline snapshots — an
+    // `-u` run must never be able to "fix" them.
+    expect(fingerprint(generateMap(1, W, H, 'bourg', { relief: 'none' }))).toBe('cd8c2d19');
+    expect(fingerprint(generateMap(2, W, H, 'bourg', { relief: 'none' }))).toBe('98495a59');
   });
 
   // §5.1's one-draw guard. The MECHANISM is D1 (the guard sits before

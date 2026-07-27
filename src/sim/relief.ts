@@ -1,5 +1,5 @@
 import type { TerrainKey } from './data';
-import { GameMap } from './map';
+import { EDGE, GameMap } from './map';
 import type { Rng } from './rng';
 
 // Micro-relief: the pure-geometry half of the verticality work (design
@@ -235,6 +235,42 @@ export function sunkenLane(map: GameMap, run: readonly Pt[], Hs: number, flatZon
         if (key !== 'hedge') map.setTerrain(x, y, 'bank');
       }
   }
+}
+
+// The farm-track inventory R-D consumes. Both generators carve their lanes as
+// 1-tile-wide road into open country — mapgen's compound lane (mapgen.ts, the
+// outlying-farm loop) and the bourg's space-colonisation tracks (rural.ts
+// growFarmLanes) — and neither keeps a tile list, so the runs are recovered off
+// the FINISHED map by one rule: a road tile whose two perpendicular neighbours
+// are not road. The arterial (3 wide), the cross lane (2 wide) and every town
+// street therefore fail it by construction, which is exactly the intent — a
+// sunken high street would wall the map off.
+//
+// A dogleg's corner tile fails the rule on both axes, so a bent track comes out
+// as its two straight legs. That matters: sunkenLane takes ONE perpendicular
+// per run and would fray a shoulder across a kink.
+export function laneRuns(map: GameMap, flatZone: FlatZone, minLen = 8): Pt[][] {
+  const { w, h } = map;
+  const road = (x: number, y: number): boolean =>
+    x >= 0 && y >= 0 && x < w && y < h && map.terrainKeyAt(x, y) === 'road';
+  const runs: Pt[][] = [];
+  const sweep = (n: number, m: number, at: (a: number, b: number) => Pt, thin: (p: Pt) => boolean): void => {
+    for (let a = 0; a < n; a++) {
+      let run: Pt[] = [];
+      for (let b = 0; b <= m; b++) {
+        const p = b < m ? at(a, b) : null;
+        if (p && road(p.x, p.y) && thin(p) && !flatZone(p.x, p.y)) {
+          run.push(p);
+          continue;
+        }
+        if (run.length >= minLen) runs.push(run);
+        run = [];
+      }
+    }
+  };
+  sweep(w, h, (x, y) => ({ x, y }), (p) => !road(p.x - 1, p.y) && !road(p.x + 1, p.y));
+  sweep(h, w, (y, x) => ({ x, y }), (p) => !road(p.x, p.y - 1) && !road(p.x, p.y + 1));
+  return runs;
 }
 
 // Flood fill from `from` to `to` over canStep(..., 'vehicle'). 4-neighbour,
