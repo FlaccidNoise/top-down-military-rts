@@ -67,12 +67,12 @@ export function frameOf(map: GameMap, it: Interior): Frame {
   return { side, A, D, doorA, x0, y0, x1, y1, seed };
 }
 
-const tileX = (f: Frame, a: number, d: number): number =>
+export const tileX = (f: Frame, a: number, d: number): number =>
   f.side === 'n' || f.side === 's' ? f.x0 + a : f.side === 'w' ? f.x0 + d : f.x1 - 1 - d;
-const tileY = (f: Frame, a: number, d: number): number =>
+export const tileY = (f: Frame, a: number, d: number): number =>
   f.side === 'n' ? f.y0 + d : f.side === 's' ? f.y1 - 1 - d : f.y0 + a;
-const aOf = (f: Frame, x: number, y: number): number => (f.side === 'n' || f.side === 's' ? x - f.x0 : y - f.y0);
-const dOf = (f: Frame, x: number, y: number): number =>
+export const aOf = (f: Frame, x: number, y: number): number => (f.side === 'n' || f.side === 's' ? x - f.x0 : y - f.y0);
+export const dOf = (f: Frame, x: number, y: number): number =>
   f.side === 'n' ? y - f.y0 : f.side === 's' ? f.y1 - 1 - y : f.side === 'w' ? x - f.x0 : f.x1 - 1 - x;
 
 // The wall separating deep index d-1 from deep index d, over across [a0, a1).
