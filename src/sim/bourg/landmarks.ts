@@ -35,6 +35,11 @@ export interface Landmarks {
 
 const clamp = (v: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, v));
 
+// Columns of plain 3-wide Grande Rue the place widening must leave at each end
+// of its run. See widenPlace — this is what keeps §1.4's MG-lane cap true on
+// the carved bitmap and not just in the Seg list.
+const JOG_CLEAR = 3;
+
 export function reserveLandmarks(sk: Skeleton): Landmarks {
   const { w, h, road, place } = sk;
   const r4 = sk.S(TAG.LANDMARK);
@@ -137,13 +142,34 @@ function widenPlace(sk: Skeleton, r4: Rng, resv: Uint8Array): Rect {
   const width = 11 + r4.int(7);
   const northShare = 3 + r4.int(width - 5);
 
-  // clipped to the straight run containing the place, so the widening never
-  // straddles a jog and come out as two offset rectangles
+  // Clipped to the straight run containing the place, so the widening never
+  // straddles a jog and comes out as two offset rectangles — and held JOG_CLEAR
+  // columns short of each end of that run.
+  //
+  // Clipping to the run alone is not enough, and this is §1.4's cap failing in
+  // the one place §5.2's bitmap proxy does not look. A jog moves the Grande Rue
+  // 2-3 rows, so consecutive runs' 3-row bands overlap in at most one row and
+  // the band breaks at every jog — until the widening reaches the jog column.
+  // There the widening's extra rows ARE the next run's rows, the band is
+  // continuous across the joint, and two 45-tile arms plus the place merge into
+  // one lane: measured 101 tiles on seed 7, 74/78/72 on three more, i.e. an MG
+  // on the place covering both approaches end to end. That is exactly the "one
+  // bad corridor" §1.4 caps the runs to prevent.
+  //
+  // The vertical jog seg is 3 wide, so it owns columns runHi-1..runHi+1; the
+  // widening has to stop clear of that with at least one plain 3-wide column
+  // between, hence 3. The place shrinks by up to 6 tiles on a short run, which
+  // is the right trade: §1.3's 26-42 length is a look, §1.4's cap is the fight.
   const run = grandeRueRunAt(sk.grandeRue, place.x);
-  const runLo = run ? Math.min(run.ax, run.bx) : place.x - (len >> 1);
-  const runHi = run ? Math.max(run.ax, run.bx) : place.x + (len >> 1);
-  const x0 = clamp(place.x - (len >> 1), Math.max(2, runLo), w - 3);
-  const x1 = clamp(x0 + len - 1, 2, Math.min(w - 3, runHi));
+  const runLo = (run ? Math.min(run.ax, run.bx) : place.x - (len >> 1)) + JOG_CLEAR;
+  const runHi = (run ? Math.max(run.ax, run.bx) : place.x + (len >> 1)) - JOG_CLEAR;
+  // …but never so far that the carrefour itself falls outside its own place:
+  // land.anchor (objectives[0], the MG42 emplacement) is searched outward from
+  // sk.place, and the market island is centred in the returned rect.
+  const lo = Math.min(runLo, place.x);
+  const hi = Math.max(runHi, place.x);
+  const x0 = clamp(place.x - (len >> 1), Math.max(2, lo), w - 3);
+  const x1 = clamp(x0 + len - 1, x0, Math.min(w - 3, Math.max(hi, x0)));
   const y0 = clamp(place.y - northShare, 2, h - 3);
   const y1 = clamp(place.y + (width - 1 - northShare), 2, h - 3);
 
