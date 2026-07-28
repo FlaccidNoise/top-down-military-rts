@@ -1915,7 +1915,7 @@ export class TerrainLayer {
       this.apron = a;
     }
     this.yards = buildYards(map, this.patches, (wx, wy) => this.enclos.enclosureIdAt(Math.floor(wx), Math.floor(wy)) >= 0);
-    for (const p of propsFor(map, this.patches)) {
+    for (const p of propsFor(map, this.patches, this.enclos)) {
       const [ex0, ey0, ex1, ey1] = propExtent(p);
       for (let cy = Math.floor(ey0 / CHUNK); cy <= Math.floor(ey1 / CHUNK); cy++) {
         for (let cx = Math.floor(ex0 / CHUNK); cx <= Math.floor(ex1 / CHUNK); cx++) {

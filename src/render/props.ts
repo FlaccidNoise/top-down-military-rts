@@ -1,4 +1,5 @@
 import { EDGE, type GameMap } from '../sim/map';
+import type { EnclosureIndex } from './enclos';
 import { AO_ALPHA, shadowOffset, shadowOffsetLegible, sunStepFor, sweptRectPath } from './light';
 import { hash } from './noise';
 import type { PatchIndex } from './patches';
@@ -126,6 +127,11 @@ class Placer {
   }
 }
 
+// A yard already served by a well (rules 2-3's farm court) does not get a
+// second one: measured over 24 maps, the two rules agreed on the same court
+// often enough to put two wellheads inside one wall.
+const YARD_WELL_GAP = 14;
+
 // Crop type has to agree with terrain.ts's own read of the parcel seed —
 // haystacks belong on cereal, not on a ploughed field.
 const isCereal = (seed: number) => {
@@ -133,7 +139,7 @@ const isCereal = (seed: number) => {
   return t >= 0.4 && t < 0.75;
 };
 
-export function propsFor(map: GameMap, patches: PatchIndex): Prop[] {
+export function propsFor(map: GameMap, patches: PatchIndex, enclos?: EnclosureIndex): Prop[] {
   const p = new Placer(map);
   const roadAt = (x: number, y: number) => map.inBounds(x, y) && map.terrainKeyAt(x, y) === 'road' && !map.isBridge(x, y);
 
@@ -188,10 +194,41 @@ export function propsFor(map: GameMap, patches: PatchIndex): Prop[] {
     if (hash(seed, 0, 263) < 0.7) near(yx, yy, seed, 263, 'cart', hash(seed, 3, 263) < 0.5 ? 0 : 1);
     if (hash(seed, 0, 264) < 0.45) near(yx, yy, seed, 264, 'well');
   }
+  const wells: [number, number][] = [];
+  // (3b) A WALLED yard gets the well. Rules (2-3) read a yard as "two
+  // buildings within 4 m", which is a guess at where the work happens; an
+  // enclosure of kind 'yard' is the real thing — a trodden court the wall
+  // itself defines — and a farmstead's well belongs in it rather than out on
+  // the open side of the barn. Seeded off the enclosure so it never moves.
+  // Runs BEFORE the settlement rule so a walled yard's well claims the ground
+  // and the village pump is sited clear of it, not on top of it.
+  const pockets = enclos?.enclosures ?? [];
+  for (let id = 0; id < pockets.length; id++) {
+    // The array index IS the id enclosureAt stores (pockets() assigns
+    // `enclosures.length` before pushing).
+    const e = pockets[id];
+    if (e.kind !== 'yard') continue;
+    // The farm-court rule above may already have dropped a well in this very
+    // pocket (its "two buildings within 4 m" guess and a real walled cour are
+    // often the same place). One well per yard.
+    const cx = (e.minX + e.maxX) / 2;
+    const cy = (e.minY + e.maxY) / 2;
+    if (p.out.some((q) => q.kind === 'well' && Math.hypot(q.x - cx, q.y - cy) < YARD_WELL_GAP)) continue;
+    for (let k = 0; k < 16; k++) {
+      // Jittered sample inside the pocket, kept off the walls: a well tight
+      // against a wall reads as a buttress from above.
+      const x = e.minX + 1 + hash(e.seed, k, 269) * Math.max(0.5, e.maxX - e.minX - 2);
+      const y = e.minY + 1 + hash(e.seed, k + 16, 269) * Math.max(0.5, e.maxY - e.minY - 2);
+      if (enclos!.enclosureIdAt(Math.floor(x), Math.floor(y)) !== id) continue;
+      if (p.add(x, y, 'well', (hash(e.seed, 2, 269) * 4096) | 0)) {
+        wells.push([x, y]);
+        break;
+      }
+    }
+  }
   // (4) One well per settlement, not per junction: mapgen's 3-tile arterial
   // splits a single village crossroads into several crossing clusters, and a
   // well on each of them turns the square into a well farm.
-  const wells: [number, number][] = [];
   for (let i = 0; i < patches.junctions.length; i++) {
     const j = patches.junctions[i];
     if (j.buildings < 4) continue;
