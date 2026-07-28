@@ -20,7 +20,7 @@ import {
   type FrontV2,
   type TheaterEvent,
 } from './force';
-import { detectContacts, graphGap, haltAtContact, type Contact } from './contact';
+import { CONTACT_M, detectContacts, graphGap, haltAtContact, type Contact } from './contact';
 import { stepMovement } from './step';
 
 export const RETREAT_SETBACK_M = 1500;
@@ -318,7 +318,7 @@ export function stepWar(front: FrontV2, campaign: Campaign, opts: StepOptions = 
   for (const f of front.forces) {
     if (f.engagedIn !== null || f.strength <= 0) continue;
     for (const b of front.battles) {
-      if (graphGap(front.theater, f.pos, b.site) <= 300) {
+      if (graphGap(front.theater, f.pos, b.site) <= CONTACT_M) {
         joinBattle(front, b, f);
         break;
       }
