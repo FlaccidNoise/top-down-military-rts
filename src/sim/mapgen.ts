@@ -548,6 +548,14 @@ function tryGenerateV3(
 ): MapPlan | null {
   const bourgBase = rng.int(0x7fffffff);
   const plan = planBourg(bourgBase, w, h, profile); // stages 1-11a, pure — no GameMap yet
+  // The legacy pipeline's own floor (`if (buildings.length < 4) return null`),
+  // carried onto the profiles: a hamlet that came out as three sheds is not a
+  // hamlet, and scenario.ts destructures `[b0, , b2]` out of this list. Placed
+  // here rather than in validate() because it is a per-KIND expectation and
+  // validate is the shared gate; rejecting before the stamp also makes the
+  // reroll free. profile.minBuildings 0 disables it, which is what keeps every
+  // kind frozen before its own cutover.
+  if (plan.fp.buildings.length < profile.minBuildings) return null;
   const map = new GameMap(w, h);
   const st = stampBourg(map, plan); // terrain → roads → buildings → enclosures
   // stampBourg RETURNS the story count rather than writing it. map.ts:156 gates

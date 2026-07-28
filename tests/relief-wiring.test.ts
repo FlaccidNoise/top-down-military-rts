@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { GameMap } from '../src/sim/map';
 import { generateMap, RELIEF_BY_KIND, type MapKind, type MapPlan, type Vec } from '../src/sim/mapgen';
+import { PROFILES } from '../src/sim/bourg/profile';
 import { astar } from '../src/sim/path';
 
 // V3 (wiring micro-relief into generateMap) and V5 (the bourg halt) of
@@ -31,7 +32,9 @@ function fingerprint(plan: MapPlan): string {
 // relief.ts but no call to it. Plain literals, never inline snapshots: an
 // `-u` run must not be able to launder a regression into a new baseline.
 const PRE_RELIEF: Record<MapKind, string[]> = {
-  open: ['1a0f1a77', '2889751a', '17a7e937', 'e7cf92ca', '32f8c6cc', '7aeb14ca', '3976b433', 'f2c9fe27'],
+  // Recaptured at the mapgen-v3 P3 cutover, when 'open' left the legacy
+  // pipeline for the organic one (scripts/fp.mjs --kind open).
+  open: ['4edf4a39', '19f92704', '282359e7', 'dad20c4a', '6acb50d4', '8814cb3e', '509acb34', 'e1066bdf'],
   // Recaptured at the mapgen-v3 P2 cutover, when 'road' left the legacy
   // pipeline for the organic one (scripts/fp.mjs --kind road). It shared the
   // 'open' row above until then, which is the clearest statement of what the
@@ -211,29 +214,39 @@ describe('V3 the level crossing and the vehicle route', () => {
   });
 });
 
-describe('V5 the bourg halt', () => {
+describe('V5 the railway halt', () => {
   const SEEDS = [1, 2, 3, 4, 5, 6, 7, 8];
   const haltOf = (p: MapPlan) => p.buildings.filter((b) => b.role === 'halt');
+  // Who gets a halt is not a kind name and never was: it is `rail` on the
+  // relief profile, read by a kind that reaches the v3 pipeline (mapgen.ts
+  // tryGenerateV3 — planHalt hangs off the relief stage's embankment). The
+  // bourg was the only such kind until the mapgen-v3 P3 cutover put 'open'
+  // there, and RELIEF_BY_KIND.open has carried rail: true since V3. §2.3 of
+  // the v3 design accepts it explicitly — a rural halt is a good fight — so
+  // this is derived rather than listed, and P4-P6 need not touch it.
+  const RAIL_KINDS = KINDS.filter((k) => PROFILES[k] !== undefined && RELIEF_BY_KIND[k].rail);
 
-  it('stands exactly one 7x4 halt on every bourg seed, appended after the bourg', () => {
-    for (const seed of SEEDS) {
-      const p = gen(seed, W, H, 'bourg');
-      const halts = haltOf(p);
-      expect([seed, halts.length]).toEqual([seed, 1]);
-      expect([seed, halts[0].w, halts[0].h]).toEqual([seed, 7, 4]);
-      // appended LAST, so every buildingId the bourg pipeline stamped is
-      // exactly the index it had before V5
-      expect([seed, p.buildings[p.buildings.length - 1].role]).toEqual([seed, 'halt']);
-      const off = gen(seed, W, H, 'bourg', true);
-      expect([seed, p.buildings.slice(0, -1)]).toEqual([seed, off.buildings]);
-    }
+  it('stands exactly one 7x4 halt on every rail-kind seed, appended after the village', () => {
+    expect(RAIL_KINDS).toEqual(['open', 'bourg']);
+    for (const kind of RAIL_KINDS)
+      for (const seed of SEEDS) {
+        const p = gen(seed, W, H, kind);
+        const halts = haltOf(p);
+        expect([kind, seed, halts.length]).toEqual([kind, seed, 1]);
+        expect([kind, seed, halts[0].w, halts[0].h]).toEqual([kind, seed, 7, 4]);
+        // appended LAST, so every buildingId the pipeline stamped is exactly
+        // the index it had before V5
+        expect([kind, seed, p.buildings[p.buildings.length - 1].role]).toEqual([kind, seed, 'halt']);
+        const off = gen(seed, W, H, kind, true);
+        expect([kind, seed, p.buildings.slice(0, -1)]).toEqual([kind, seed, off.buildings]);
+      }
   });
 
-  it('only the bourg gets one — never a legacy kind, never with relief off', () => {
+  it('no other kind gets one, and no kind gets one with relief off', () => {
     for (const kind of KINDS)
       for (const seed of [1, 5]) {
         expect([kind, seed, haltOf(gen(seed, W, H, kind, true)).length]).toEqual([kind, seed, 0]);
-        if (kind !== 'bourg') expect([kind, seed, haltOf(gen(seed, W, H, kind)).length]).toEqual([kind, seed, 0]);
+        if (!RAIL_KINDS.includes(kind)) expect([kind, seed, haltOf(gen(seed, W, H, kind)).length]).toEqual([kind, seed, 0]);
       }
   });
 

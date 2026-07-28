@@ -33,9 +33,17 @@ export interface KindProfile {
   churchPct: number;
   marketPct: number;
   forecourtPct: number;
-  placeLen: [number, number]; // columns of Grande Rue the widening spans
-  // stage 9 — the cap that sheds block-interior sheds before frontage
+  // Columns of Grande Rue the widening spans, or null for "there is no place".
+  // §1 spells this as a separate `placeWiden: boolean` beside a length; one
+  // nullable field instead, because two fields can disagree and this one
+  // cannot. null leaves the carrefour as the plain 3-wide crossing it was.
+  placeLen: [number, number] | null;
+  // stage 9 — the cap that sheds block-interior sheds before frontage, and the
+  // floor under which the whole attempt is rerolled. 0 disables the floor,
+  // which is what keeps a kind frozen before its own cutover: the reroll is
+  // new behaviour, not extraction (mapgen.ts tryGenerateV3).
   maxBuildings: number;
+  minBuildings: number;
   // stage 11 — the rural fabric
   farms: [number, number];
   bocageCell: number;
@@ -62,6 +70,7 @@ export const BOURG: KindProfile = {
   forecourtPct: 100,
   placeLen: [26, 17],
   maxBuildings: 80,
+  minBuildings: 0,
   farms: [2, 2],
   bocageCell: 22,
   stands: [2, 3],
@@ -102,8 +111,63 @@ export const ROAD: KindProfile = {
   forecourtPct: 40,
   placeLen: [16, 8],
   maxBuildings: 55,
+  minBuildings: 0,
   farms: [2, 2],
   bocageCell: 22,
+  stands: [3, 3],
+  standRadius: [6, 5],
+};
+
+// §2.3 — scattered farmsteads, hedged parcels, a tiny nucleus. The inversion
+// of the bourg: there, the rural fabric is the frame around the town; here the
+// rural fabric IS the map and the nucleus is a detail in it. Nothing about the
+// pipeline changes — only which stages get room to run.
+//
+// The envelope is 34-45 x 26-33, a hamlet: enough for a crossroads with a
+// dozen plots round it and no more. densFalloff 20 against the bourg's 12
+// collapses the density gradient onto the junction itself, so the four corners
+// of the crossroads terrace and everything past them comes out as detached
+// cottages with gardens — which is what a carrefour hamlet is. Streets 3-8:
+// the two arms of the crossing plus a lane or two off it.
+//
+// Landmarks are suppressed rather than tuned down. A wayside chapel on one
+// seed in ten is the only one a hamlet earns (churchPct 10); there is no
+// market and no mairie at this scale, and placeLen null keeps the junction a
+// plain 3-wide crossing. That last one is load-bearing beyond the look:
+// scenario.ts emplaces the MG42 on objectives[0], which is land.anchor, and
+// with no widening and no market island the anchor is the carrefour tile
+// itself rather than a lane beside a paved square.
+//
+// maxBuildings 24 is the nucleus cap; the outlying farms are appended past it
+// (rural.ts emitRural), so a 320x240 open map runs 20-40 buildings all in.
+// minBuildings 4 is the legacy floor carried over verbatim — the blob
+// pipeline rerolled an attempt that placed under four (mapgen.ts tryGenerate),
+// and scenario.ts destructures `[b0, , b2]` out of the list, so it is a
+// contract and not a preference.
+//
+// The rural numbers are where the kind actually lives: farms 4-6 against the
+// bourg's 2-3, and bocage CELL 20 against 22 — a tighter grid of smaller
+// parcels, which is the difference between hedges as scenery and hedges as the
+// terrain. Every farm cour is a strongpoint, every hedge gate a choke, and the
+// MG lanes are one field long instead of one street long.
+export const OPEN: KindProfile = {
+  archetypeW: [
+    ['carrefour', 70],
+    ['bourgRue', 30],
+  ],
+  envW: [34, 12],
+  envH: [26, 8],
+  densFalloff: 20,
+  minStreets: 3,
+  maxStreets: 8,
+  churchPct: 10,
+  marketPct: 0,
+  forecourtPct: 0,
+  placeLen: null,
+  maxBuildings: 24,
+  minBuildings: 4,
+  farms: [4, 3],
+  bocageCell: 20,
   stands: [3, 3],
   standRadius: [6, 5],
 };
@@ -114,4 +178,5 @@ export const ROAD: KindProfile = {
 export const PROFILES: Partial<Record<MapKind, KindProfile>> = {
   bourg: BOURG,
   road: ROAD,
+  open: OPEN,
 };

@@ -10,15 +10,21 @@ import { shopfrontsFor } from '../src/render/shops';
 // baseline in scripts/sweep.mjs depends on it, and a re-snapshotted baseline
 // is a regression nothing downstream would ever flag.
 
-// 'road' left this list at the mapgen-v3 P2 cutover: it runs the organic
-// pipeline now, so it emits edge tops and roles and IS dressed. It moved to
-// V3_KINDS below rather than simply dropping out, because "draws nothing where
-// there is no data" is only half the contract — the other half is that it
-// draws exactly the data there is.
-const LEGACY = ['town', 'bridge', 'river', 'open'] as const;
+// 'road' left this list at the mapgen-v3 P2 cutover and 'open' at P3: they run
+// the organic pipeline now, so they emit edge tops and roles and ARE dressed.
+// Each moved to V3_KINDS below rather than simply dropping out, because "draws
+// nothing where there is no data" is only half the contract — the other half is
+// that it draws exactly the data there is.
+const LEGACY = ['town', 'bridge', 'river'] as const;
+// [kind, seeds, minimum claimed edges]. The floor is per kind because the wall
+// count is: measured over seeds 1-40 at 320x240, the bourg claims 353-575
+// edges, road 236-437 and open 140-293 — a hamlet has a dozen gardens where a
+// bourg has fifty. One shared bound would have to sit under 140 and would then
+// assert nothing about the two kinds that carry the most masonry.
 const V3_KINDS = [
-  ['bourg', [10, 11, 12]],
-  ['road', [1, 3, 7, 11]],
+  ['bourg', [10, 11, 12], 300],
+  ['road', [1, 3, 7, 11], 200],
+  ['open', [1, 3, 7, 11], 120],
 ] as const;
 const BOURG_SEEDS = [10, 11, 12];
 const empty = new Uint8Array(320 * 240);
@@ -39,7 +45,7 @@ describe('EnclosureIndex', () => {
   }, 20_000);
 
   it('claims exactly the free-standing wall and gate edges, and no house wall', () => {
-    for (const [kind, seeds] of V3_KINDS) for (const seed of seeds) {
+    for (const [kind, seeds, minOwned] of V3_KINDS) for (const seed of seeds) {
       const { map } = generateMap(seed, 320, 240, kind);
       const idx = new EnclosureIndex(map, new Uint8Array(map.w * map.h));
       const built = (x: number, y: number) => map.buildingIdAt(x, y) >= 0;
@@ -70,7 +76,7 @@ describe('EnclosureIndex', () => {
           if (idx.ownsV(x, y)) owned++;
         }
       }
-      expect(owned).toBeGreaterThan(200);
+      expect([kind, seed, owned > minOwned]).toEqual([kind, seed, true]);
       expect(idx.runs.some((r) => r.top === 2)).toBe(true);
       expect(idx.gates.length).toBeGreaterThan(0);
     }

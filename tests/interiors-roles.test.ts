@@ -94,7 +94,11 @@ describe('interiors roles — §3.7 legacy inference', () => {
   });
 
   test('every building on every legacy kind ends up with a role, and it is deterministic', () => {
-    for (const kind of ['open', 'town', 'woods', 'river'] as const) {
+    // 'open' left this list at the mapgen-v3 P3 cutover: the organic pipeline
+    // roles every mass it emits, including 9 shops on seed 7, so inferRoles is
+    // a no-op there and the "at most two shops" bound is about the INFERENCE
+    // and not about the map. It is asserted with the bourg below instead.
+    for (const kind of ['town', 'woods', 'river'] as const) {
       const a = generateMap(7, 160, 120, kind);
       const b = generateMap(7, 160, 120, kind);
       inferRoles(a.buildings, a.objectives[0]);
@@ -107,11 +111,14 @@ describe('interiors roles — §3.7 legacy inference', () => {
     }
   });
 
-  test('the bourg is untouched — every building already carries its generator role', () => {
-    const plan = generateMap(1, 320, 240, 'bourg');
-    const before = plan.buildings.map((b) => b.role);
-    inferRoles(plan.buildings, plan.objectives[0]);
-    expect(plan.buildings.map((b) => b.role)).toEqual(before);
+  test('a v3 kind is untouched — every building already carries its generator role', () => {
+    for (const [kind, w, h] of [['bourg', 320, 240], ['road', 320, 240], ['open', 160, 120]] as const) {
+      const plan = generateMap(1, w, h, kind);
+      const before = plan.buildings.map((b) => b.role);
+      expect(before.every((r) => r !== undefined), kind).toBe(true);
+      inferRoles(plan.buildings, plan.objectives[0]);
+      expect(plan.buildings.map((b) => b.role), kind).toEqual(before);
+    }
   });
 });
 

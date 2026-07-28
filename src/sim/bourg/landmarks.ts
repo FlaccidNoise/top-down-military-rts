@@ -141,6 +141,13 @@ function reserveChurchyard(
 // already requires (terrain.ts:673-681), so G7 cobbles fire for free.
 function widenPlace(sk: Skeleton, r4: Rng, resv: Uint8Array): Rect {
   const { w, h, road, place } = sk;
+  // KindProfile.placeLen null — a hamlet has a crossroads, not a place. The
+  // roll-anyway discipline the landmark probabilities keep (see profile.ts)
+  // does NOT apply here: this is a structural switch rather than a tuning
+  // dial, and the two sub-stages downstream of it both need a rect taller than
+  // three rows to place anything at all, so drawing three values to throw them
+  // away would buy nothing. The 3-wide band is what the carrefour already is.
+  if (sk.profile.placeLen === null) return { x: place.x - 1, y: place.y - 1, w: 3, h: 3 };
   const len = sk.profile.placeLen[0] + r4.int(sk.profile.placeLen[1]);
   const width = 11 + r4.int(7);
   const northShare = 3 + r4.int(width - 5);

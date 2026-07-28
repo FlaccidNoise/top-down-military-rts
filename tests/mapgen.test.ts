@@ -52,9 +52,12 @@ describe('mapgen', () => {
     expect(() => generateMap(1, 160, 39)).toThrow(/too small/);
   });
 
+  // Re-frozen at the mapgen-v3 P3 cutover: `generateMap(seed)` defaults to
+  // 'open', which is the organic pipeline now (8105059f/d2a77805 were the
+  // legacy blob village).
   it('matches known snapshots (catches accidental generator drift)', () => {
-    expect(fingerprint(1)).toMatchInlineSnapshot(`"8105059f"`);
-    expect(fingerprint(2)).toMatchInlineSnapshot(`"d2a77805"`);
+    expect(fingerprint(1)).toMatchInlineSnapshot(`"768c6c15"`);
+    expect(fingerprint(2)).toMatchInlineSnapshot(`"14d954d5"`);
   });
 
   // I12 · interiors §6.2. The answer to "you only fingerprint the config you do
@@ -68,8 +71,11 @@ describe('mapgen', () => {
   // to change, in which case tests/bourg.test.ts's 97b5bca / eb9a14e6 move in
   // the same commit. One of them moving alone is a bug.
   it('pins the furnished configuration (interiors: true)', () => {
-    expect(furnishedFingerprint(1, 160, 120, 'open')).toMatchInlineSnapshot(`"8ab735cc"`);
-    expect(furnishedFingerprint(2, 160, 120, 'open')).toMatchInlineSnapshot(`"d6cff694"`);
+    // The two open lines re-froze at the P3 cutover with the geometry under
+    // them (8ab735cc/d6cff694 were the legacy blob village); the two bourg
+    // lines did not move, and are P3's leak control on the interiors side.
+    expect(furnishedFingerprint(1, 160, 120, 'open')).toMatchInlineSnapshot(`"d796a7cf"`);
+    expect(furnishedFingerprint(2, 160, 120, 'open')).toMatchInlineSnapshot(`"a7569fd7"`);
     expect(furnishedFingerprint(1, 320, 240, 'bourg')).toMatchInlineSnapshot(`"f3c5a70"`);
     expect(furnishedFingerprint(2, 320, 240, 'bourg')).toMatchInlineSnapshot(`"2f746b24"`);
   });
@@ -94,7 +100,11 @@ describe('mapgen', () => {
       }
     }
     expect(mismatches).toEqual([]);
-  });
+    // 20 s, not the 5 s default: 'open' runs the organic pipeline since P3, so
+    // its 60x40 map carries hedges, gates and enclosure walls that the blob
+    // village did not, and 9600 astar calls over that took the default timeout
+    // under a full parallel suite while running 1.8 s standalone.
+  }, 20_000);
 
   it('spawns reach objectives and buildings on foot; the road carries vehicles (seeds 1-30)', () => {
     for (let seed = 1; seed <= 30; seed++) {
@@ -119,13 +129,32 @@ describe('mapgen', () => {
     }
   });
 
-  it('village buildings stay first; farms append after (seeds 1-15)', () => {
-    for (let seed = 1; seed <= 15; seed++) {
+  // mapgen-v3 §2.3's compatibility battery for the quick-battle path. These
+  // are the four things src/sim/scenario.ts reads off a default 'open' map,
+  // and nothing else about the generator is a contract to it:
+  //   - `const [b0, , b2] = plan.buildings` garrisons two Gruppen, so the list
+  //     needs three entries and the first and third have to be nucleus plots,
+  //     not outlying farms 90 tiles from the fight;
+  //   - the MG42 is emplaced on objectives[0], which patches.ts also needs
+  //     road under for the cobbles;
+  //   - a red squad spawns on objectives[1], so it has to be standable.
+  // The old form of this test bounded the first three buildings at 30 tiles
+  // from the crossroads. That measured the legacy blob cluster's own 24-tile
+  // span rather than the property: the v3 hamlet envelope is 34-45 wide, and a
+  // plot at its far corner is legitimately 40 tiles out. Measured over seeds
+  // 1-200 at 160x120: buildings[0] 5-32, buildings[2] 3-40, 10-25 buildings
+  // inside 30 tiles, and never fewer than the four minBuildings guarantees.
+  it("the quick-battle scenario's reads hold on the default map (seeds 1-30)", () => {
+    for (let seed = 1; seed <= 30; seed++) {
       const p = generateMap(seed);
-      for (const b of p.buildings.slice(0, 3)) {
-        const d2 = (b.x - p.objectives[0].x) ** 2 + (b.y - p.objectives[0].y) ** 2;
-        expect(d2).toBeLessThan(30 * 30);
-      }
+      const o0 = p.objectives[0];
+      const dist = (b: { x: number; y: number; w: number; h: number }) =>
+        Math.hypot(b.x + b.w / 2 - o0.x, b.y + b.h / 2 - o0.y);
+      expect([seed, p.buildings.length >= 3]).toEqual([seed, true]);
+      expect([seed, dist(p.buildings[0]) <= 48, dist(p.buildings[2]) <= 48]).toEqual([seed, true, true]);
+      expect([seed, p.buildings.filter((b) => dist(b) < 30).length >= 3]).toEqual([seed, true]);
+      expect([seed, p.map.terrainKeyAt(o0.x, o0.y)]).toEqual([seed, 'road']);
+      expect([seed, p.map.terrainAt(p.objectives[1].x, p.objectives[1].y).passable]).toEqual([seed, true]);
     }
   });
 
@@ -155,7 +184,11 @@ describe('mapgen', () => {
           ) isolatedTrees++;
         }
     }
-    // woods-stand fringe alone yields ~95 across seeds 1-5; orchards push it ~192
+    // woods-stand fringe alone yields ~95 across seeds 1-5; orchards push it
+    // ~192. Measured 325 since P3 put 'open' on the organic pipeline, whose
+    // stand pass runs 4-6 extra stands over the same country — the bound is
+    // left where it is, because what it catches is the orchard pass going
+    // silent, not the exact count.
     expect(isolatedTrees).toBeGreaterThan(150);
   });
 
@@ -208,15 +241,14 @@ describe('mapgen', () => {
     }
   });
 
-  it('town maps pack a denser village around the crossroads (320x240)', () => {
-    const near = (p: ReturnType<typeof generateMap>) =>
-      p.buildings.filter((b) => (b.x - p.objectives[0].x) ** 2 + (b.y - p.objectives[0].y) ** 2 < 40 * 40).length;
-    for (const seed of [1, 5, 9]) {
-      const town = generateMap(seed, 320, 240, 'town');
-      const open = generateMap(seed, 320, 240);
-      expect(near(town)).toBeGreaterThanOrEqual(near(open) + 6);
-    }
-  });
+  // DELETED at the mapgen-v3 P3 cutover: 'town maps pack a denser village
+  // around the crossroads'. It asserted near(town) >= near(open) + 6 within 40
+  // tiles of the crossroads, and that is now false — measured deltas +4, -2, -6
+  // on seeds 1, 5, 9, because the organic hamlet packs its carrefour harder
+  // than the legacy blob cluster ever did. The half of it worth keeping (the
+  // open nucleus IS dense) is asserted directly by the scenario battery above
+  // and by the open structure battery in tests/bourg.test.ts; the other half
+  // compared two different generators and dies with 'town' at P6 anyway.
 
   it('bridge objective sits on the carved road-water crossing (seeds 1-15)', () => {
     for (const kind of ['bridge', 'river'] as const) {
@@ -251,12 +283,18 @@ describe('mapgen', () => {
     expect(count('river')).toBeGreaterThan(count('bridge'));
   });
 
-  it('large maps grow a second hamlet and stay connected (320x240)', () => {
+  it('large maps keep the second-settlement objective slot and stay connected (320x240)', () => {
     for (const seed of [1, 5, 9]) {
       const a = generateMap(seed, 320, 240);
       const b = generateMap(seed, 320, 240);
       expect(a.map.tiles).toEqual(b.map.tiles);
-      expect(a.objectives.length).toBe(3);
+      // The w >= 240 slot survived the P3 cutover, but the list around it did
+      // not stay three long: the organic pipeline appends a greedy garrison
+      // fill and, on 'open', a railway halt, so it runs 6-10 objectives.
+      // objectiveKinds is what pins the slot now — measured 'street' on all 60
+      // seeds, because 'open' weights no 'faubourg' archetype.
+      expect(a.objectives.length).toBeGreaterThanOrEqual(3);
+      expect(a.objectiveKinds?.slice(0, 3)).toEqual(['place', 'woods', 'street']);
       expect(a.buildings.length).toBeGreaterThanOrEqual(7);
       const hamlet = a.objectives[2];
       const hamletBuildings = a.buildings.filter(

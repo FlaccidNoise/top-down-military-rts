@@ -8,7 +8,7 @@ import { buildFootprints } from '../src/sim/bourg/footprints';
 import { reserveLandmarks } from '../src/sim/bourg/landmarks';
 import { buildParcels } from '../src/sim/bourg/parcels';
 import { planBourg, stampBourg, type BourgPlan, type BourgStamp } from '../src/sim/bourg/plan';
-import { BOURG, ROAD } from '../src/sim/bourg/profile';
+import { BOURG, OPEN, ROAD } from '../src/sim/bourg/profile';
 import { addRuralFabric, paintRural } from '../src/sim/bourg/rural';
 import { MIN_REAR_SPAN_Q8, stampEnclosures } from '../src/sim/bourg/enclosures';
 import { stampStructure } from '../src/sim/bourg/stamp';
@@ -528,6 +528,199 @@ describe('road connectivity (mapgen-v3 §2.2)', () => {
   });
 });
 
+// ── open: the bocage countryside (mapgen-v3 §2.3, battery §4) ───────────────
+//
+// The third kind on the v3 pipeline, and the inversion of the bourg: there the
+// rural fabric frames a town, here it IS the map and the nucleus is a detail in
+// it. So the assertions that matter are the ones the bourg's battery does not
+// have — how many farm compounds there are, that the junction stayed a plain
+// crossroads, and that the landmark suppression actually took — while the
+// shared invariants (garrison coverage, gate permeability, orphans, passable
+// stands) are the bourg's, unchanged.
+const openCache = new Map<string, MapPlan>();
+function hamlet(seed: number, w = W, h = H): MapPlan {
+  const key = `${seed}:${w}:${h}`;
+  let p = openCache.get(key);
+  if (!p) {
+    p = generateMap(seed, w, h, 'open');
+    openCache.set(key, p);
+  }
+  return p;
+}
+
+function openStamp(seed: number): { plan: BourgPlan; stamp: BourgStamp } {
+  const base = mulberry32((seed ^ 0x51ab3fc7) >>> 0).int(0x7fffffff);
+  const plan = planBourg(base, W, H, OPEN);
+  const map = new GameMap(W, H);
+  return { plan, stamp: stampBourg(map, plan) };
+}
+
+describe('open structure (mapgen-v3 §2.3)', () => {
+  it('emits 18-40 buildings, a nucleus with farms round it', () => {
+    // KindProfile.maxBuildings caps the nucleus at 24 and the outlying farms
+    // add two apiece past that cap, so 36 is the working ceiling. Measured
+    // 18-37 over seeds 1-200 (median 28) at 320x240, and 20-36 at 160x120 —
+    // the hamlet does not grow with the map, the countryside does.
+    for (const seed of SEEDS) {
+      const n = hamlet(seed).buildings.length;
+      expect([seed, n >= 18, n <= 40]).toEqual([seed, true, true]);
+    }
+  });
+
+  it('scatters 4-6 outlying farm compounds and appends them after the nucleus', () => {
+    // §2.3's headline number and the kind's whole tactical premise: the cours
+    // are the strongpoints and the hedge gates between them are the chokes.
+    // The append order is a contract too — scenario.ts garrisons buildings[0]
+    // and [2], which must be nucleus plots and not a farm 90 tiles away.
+    for (const seed of SEEDS) {
+      const { plan } = openStamp(seed);
+      const farms = plan.rural.farms.length;
+      expect([seed, farms >= 4, farms <= 6]).toEqual([seed, true, true]);
+      // placeFarms emits (logis, grange) per compound, in order, at the end
+      const tail = plan.fp.buildings.slice(plan.fp.buildings.length - 2 * farms);
+      expect([seed, tail.map((b) => b.role)]).toEqual([seed, Array.from({ length: 2 * farms }, (_, i) => (i % 2 ? 'barn' : 'farmhouse'))]);
+    }
+  });
+
+  it('leaves the carrefour a plain crossroads, with no market and no mairie', () => {
+    // KindProfile.placeLen null. A widened place would put objectives[0] — the
+    // MG42 emplacement, scenario.ts — on a lane beside a paved square instead
+    // of on the junction itself, and a market island would build over it.
+    // marketPct 0 and forecourtPct 0 are asserted through the roles they would
+    // otherwise emit, which is the only place their absence is observable.
+    for (const seed of SEEDS) {
+      const { plan } = openStamp(seed);
+      expect([seed, plan.land.place.w, plan.land.place.h]).toEqual([seed, 3, 3]);
+      expect([seed, plan.land.market, plan.land.forecourt]).toEqual([seed, null, null]);
+      expect([seed, plan.fp.buildings.filter((b) => b.role === 'halle' || b.role === 'civic')]).toEqual([seed, []]);
+    }
+  });
+
+  it('raises a wayside chapel on about one seed in ten, never more than one', () => {
+    // churchPct 10. The bourg always has a church and asserts exactly one;
+    // here the assertion is that the roll is real — measured 2/20 on these
+    // seeds and 17/200 over 1-200, against 20/20 if the suppression leaked.
+    let seeds = 0;
+    for (const seed of SEEDS) {
+      const towers = hamlet(seed).buildings.filter((b) => b.role === 'church_tower').length;
+      expect([seed, towers <= 1]).toEqual([seed, true]);
+      seeds += towers;
+    }
+    expect(seeds >= 1 && seeds <= 6).toBe(true);
+  });
+
+  it('keeps the MG lane off the whole-map scale', () => {
+    // Same bitmap proxy and the same bound as the bourg and road. §2.3 claims
+    // open's lanes are "field-length, never street-length" and that is not
+    // what the map says: the regional arterial is 3 wide and crosses all 320
+    // columns, so the longest run measures 25-65 over seeds 1-200 (median 40)
+    // — which is the arterial, not a street. The legacy blob pipeline scores
+    // 14-57 on the same measure, so this is the terrain the kind always had.
+    for (const seed of SEEDS) expect([seed, longest3WideRoadRun(hamlet(seed).map) <= 80]).toEqual([seed, true]);
+  });
+
+  it('garrisons every building: no centre outside 45 m of an objective', () => {
+    for (const seed of SEEDS) {
+      const { buildings, objectives } = hamlet(seed);
+      const r2 = GARRISON_RADIUS * GARRISON_RADIUS;
+      const uncovered = buildings
+        .filter((b) => {
+          const c = centreOf(b);
+          return !objectives.some((o) => (c.x - o.x) * (c.x - o.x) + (c.y - o.y) * (c.y - o.y) <= r2);
+        })
+        .map((b) => `${b.role}@${b.x},${b.y}`);
+      expect([seed, uncovered]).toEqual([seed, []]);
+    }
+  });
+
+  it('pins the objective prefix, keeps the arrays parallel, and puts the MG42 on road', () => {
+    // 'open' weights no 'faubourg' archetype, so the w >= 240 slot is always
+    // the far end of the through road, tagged 'street' — measured on 200/200.
+    for (const seed of SEEDS) {
+      const { map, objectives, objectiveKinds } = hamlet(seed);
+      expect([seed, objectiveKinds?.length]).toEqual([seed, objectives.length]);
+      expect([seed, objectiveKinds?.slice(0, 3)]).toEqual([seed, ['place', 'woods', 'street']]);
+      expect([seed, map.terrainKeyAt(objectives[0].x, objectives[0].y)]).toEqual([seed, 'road']);
+      for (const o of objectives) expect([seed, o, map.terrainAt(o.x, o.y).passable]).toEqual([seed, o, true]);
+    }
+  });
+
+  it('keeps every woods stand passable', () => {
+    for (const seed of SEEDS) {
+      const { map, woodsStands } = hamlet(seed);
+      expect([seed, woodsStands.length > 0]).toEqual([seed, true]);
+      for (const s of woodsStands) expect([seed, s, map.terrainAt(s.x, s.y).passable]).toEqual([seed, s, true]);
+    }
+  });
+
+  it('generates at every size generateMap accepts', () => {
+    // 160x120 is the size the quick-battle scenario asks for (scenario.ts), so
+    // it is the one that has to hold rather than merely not throw.
+    for (const [w, h] of [
+      [60, 40],
+      [160, 120],
+      [240, 180],
+    ] as [number, number][])
+      for (const seed of [1, 2, 3]) {
+        const p = hamlet(seed, w, h);
+        expect(p.objectiveKinds?.[0]).toBe('place');
+        expect(p.buildings.length).toBeGreaterThanOrEqual(OPEN.minBuildings);
+        expect(p.map.terrainKeyAt(p.objectives[0].x, p.objectives[0].y)).toBe('road');
+      }
+  });
+});
+
+describe('open connectivity (mapgen-v3 §2.3)', () => {
+  it('reaches every objective from both spawns on foot, every door and stair from the west, and east by vehicle', () => {
+    for (const seed of SEEDS) {
+      const { map, spawns, objectives, buildings } = hamlet(seed);
+      const west = reachField(map, spawns.west.x, spawns.west.y, 'foot');
+      const east = reachField(map, spawns.east.x, spawns.east.y, 'foot');
+      const veh = reachField(map, spawns.west.x, spawns.west.y, 'vehicle');
+      const at = (f: Uint8Array, v: Vec): number => f[Math.round(v.y) * W + Math.round(v.x)];
+      for (const o of objectives) expect([seed, o, at(west, o), at(east, o)]).toEqual([seed, o, 1, 1]);
+      expect([seed, at(veh, spawns.east)]).toEqual([seed, 1]);
+      let strandedDoors = 0;
+      for (const b of buildings) for (const d of b.doors ?? []) if (!west[d.y * W + d.x]) strandedDoors++;
+      let strandedStairs = 0;
+      for (let i = 0; i < map.stairs.length; i++) if (map.stairs[i] && !west[i]) strandedStairs++;
+      expect([seed, strandedDoors, strandedStairs]).toEqual([seed, 0, 0]);
+    }
+  });
+
+  it('makes every gate in a free-standing wall infantry-permeable and vehicle-proof', () => {
+    // On this kind these are the bocage gates and the farm-yard gateways —
+    // §2.3's chokes. Measured 16-31 a seed over 1-200, against the road
+    // kind's 16-46: fewer walls, but they are the only way through a hedged
+    // parcel, so a vehicle-passable one would hand armour the whole field.
+    for (const seed of SEEDS) {
+      const { map } = hamlet(seed);
+      let gates = 0;
+      const bad: string[] = [];
+      eachFreeStandingGate(hamlet(seed), (ax, ay, bx, by) => {
+        gates++;
+        if (!map.canStep(ax, ay, bx, by, 'foot')) bad.push(`foot blocked at ${bx},${by}`);
+        if (map.canStep(ax, ay, bx, by, 'vehicle')) bad.push(`vehicle passes at ${bx},${by}`);
+      });
+      expect([seed, gates > 10, bad]).toEqual([seed, true, []]);
+    }
+  });
+
+  it('strands no enclosure', () => {
+    // rearConnected is deliberately NOT asserted here, unlike road/bourg: a
+    // hamlet has no continuous frontage, so it has no rear-garden band to
+    // connect. What survives is the invariant that does apply — every walled
+    // yard has a way in. Measured 0 orphans over seeds 1-200.
+    for (const seed of SEEDS) {
+      const { plan, stamp } = openStamp(seed);
+      // the replay is the shipped map only while attempt 0 validates; assert
+      // it rather than assume it
+      expect([seed, plan.fp.buildings]).toEqual([seed, generateMap(seed, W, H, 'open', { relief: 'none' }).buildings]);
+      expect([seed, stamp.enclosures.orphans]).toEqual([seed, 0]);
+    }
+  });
+});
+
 // ── §5.4 determinism ────────────────────────────────────────────────────────
 
 describe('bourg determinism (§5.4)', () => {
@@ -580,6 +773,17 @@ describe('bourg determinism (§5.4)', () => {
     expect(fingerprint(generateMap(2, W, H, 'road'))).toMatchInlineSnapshot(`"4da60d82"`);
   });
 
+  // The open kind's, frozen at the P3 cutover. Unlike road, RELIEF_BY_KIND.open
+  // carries rail, so these cover the halt as well as the relief stage; the
+  // relief-off control is the PRE_RELIEF.open row in relief-wiring.test.ts.
+  // tests/mapgen.test.ts pins the same generator at 160x120, which is the size
+  // the quick-battle scenario uses — the two move together or one of them is
+  // a bug.
+  it('pins the open fingerprints', () => {
+    expect(fingerprint(generateMap(1, W, H, 'open'))).toMatchInlineSnapshot(`"780f6474"`);
+    expect(fingerprint(generateMap(2, W, H, 'open'))).toMatchInlineSnapshot(`"105d0d5f"`);
+  });
+
   it('reproduces T14 exactly with relief off — the stage is purely additive', () => {
     // Relief writes elev, the two new terrain keys and crossings, and nothing
     // else: no street, plot, wall, door, storey or objective of the bourg
@@ -592,13 +796,14 @@ describe('bourg determinism (§5.4)', () => {
 
   // §5.1's one-draw guard. The MECHANISM is D1 (the guard sits before
   // tryGenerate's first draw) plus D2 (one shared-stream draw, inside it), but
-  // the mechanism is not the test. tests/mapgen.test.ts:36-39 pins 'open';
-  // these pin the rest, and all six were verified byte-identical to `main`
-  // over 6 kinds x 3 sizes x 12 seeds at the commit that added them.
+  // the mechanism is not the test. These pin the kinds the legacy pipeline
+  // still owns, and all six were verified byte-identical to `main` over 6 kinds
+  // x 3 sizes x 12 seeds at the commit that added them.
   //
-  // 'road' left this list at the mapgen-v3 P2 cutover — it is a v3 kind now and
-  // has its own pin above. The four that remain are the leak controls for every
-  // task after P2: a profile change that moves one of them has escaped its kind.
+  // 'road' left this list at the mapgen-v3 P2 cutover and 'open' at P3 — each
+  // is a v3 kind now with its own pin above. The four that remain are the leak
+  // controls for every task after P3: a profile change that moves one of them
+  // has escaped its kind.
   it('leaves every legacy kind byte-identical', () => {
     const fp = (kind: 'woods' | 'town' | 'river' | 'bridge', seed: number): string =>
       fingerprint(generateMap(seed, 160, 120, kind));
