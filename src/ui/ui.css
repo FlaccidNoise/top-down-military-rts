@@ -610,6 +610,14 @@ button.hbtn:focus-visible,
   transition: width 0.2s linear;
 }
 .emp-towed { color: var(--state-shaken); white-space: nowrap; }
+/* Why a called fire mission is or is not shooting — the whole row exists so a
+   gun that is holding never looks like a gun that is broken. */
+.emp-mission {
+  flex-basis: 100%;
+  white-space: nowrap;
+  color: var(--state-steady);
+}
+.emp-mission.warn { color: var(--state-pinned); }
 
 /* ---- balk chip ---- */
 .balk-chip {

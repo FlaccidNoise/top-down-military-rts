@@ -1,5 +1,5 @@
 import { EMPLACEMENTS, VEHICLES, WEAPONS, type EmplacementDef, type VehicleDef, type WeaponDef } from '../sim/data';
-import { crewNear, loadsReady, type Emplacement } from '../sim/emplacement';
+import { crewNear, friendlyHasLos, loadsReady, type Emplacement } from '../sim/emplacement';
 import { BALK_HINT, canArm, ORDER_AFFORDANCE, type ArmTarget, type OrderAffordance } from './order-data';
 import type { OrderKind } from '../sim/orders';
 import { canBreachByHand, type Sim, type Soldier, type Squad, type Vehicle } from '../sim/sim';
@@ -636,7 +636,22 @@ function emplacementStateRow(sim: Sim, e: Emplacement): string {
     ? `<span class="emp-bar"><i style="width:${pct}%"></i></span>`
     : '';
   const towed = e.towedBy >= 0 ? ` · towed by ${VEHICLES[sim.vehicles[e.towedBy]?.kind]?.name ?? 'vehicle'}` : '';
-  return `<div class="emp-state"><span class="emp-label">${def.name} · ${e.state}</span>${bar}<span class="emp-towed">${towed}</span></div>`;
+  return `<div class="emp-state"><span class="emp-label">${def.name} · ${e.state}</span>${bar}<span class="emp-towed">${towed}</span>${missionRow(sim, e)}</div>`;
+}
+
+// A mortar with a fire mission on ground NOBODY can see holds fire — the
+// shared-vision rule (friendlyHasLos), re-checked every tick, so it is a wait
+// and not a refusal. Silently, until now: the player called a mission, watched
+// nothing happen, and had no way to learn why. Says which it is.
+function missionRow(sim: Sim, e: Emplacement): string {
+  const w: WeaponDef = WEAPONS[EMPLACEMENTS[e.kind].weapon];
+  if (!w.arc || !e.hasTarget || e.state !== 'deployed') return '';
+  const d = Math.hypot(e.targetX - e.x, e.targetY - e.y);
+  const label = e.smokeRoundsLeft > 0 ? `smoke mission · ${e.smokeRoundsLeft} left` : 'fire mission';
+  if (d < w.arc.minRange) return `<div class="emp-mission warn">${label} · TOO CLOSE (min ${w.arc.minRange} m)</div>`;
+  if (d > w.range) return `<div class="emp-mission warn">${label} · OUT OF RANGE (${Math.round(d)} of ${w.range} m)</div>`;
+  if (!friendlyHasLos(sim, e.side, e.targetX, e.targetY)) return `<div class="emp-mission warn">${label} · NO EYES ON THE TARGET — holding</div>`;
+  return `<div class="emp-mission">${label} · firing</div>`;
 }
 
 // Context-action buttons for a selected emplacement's crew squad: state
