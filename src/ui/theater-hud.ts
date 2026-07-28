@@ -31,7 +31,7 @@ export class TheaterHud {
     });
   }
 
-  update(front: FrontV2, goals: WarGoals, selectedForce: number, paused: boolean, speedIdx: number, supplyOn = false): void {
+  update(front: FrontV2, goals: WarGoals, selectedForce: number, paused: boolean, speedIdx: number, supplyOn = false, reconOn = false): void {
     const control = goals.blue.find((c) => c.kind === 'control');
     const objectives = control && control.kind === 'control' ? control.nodeIds : [];
     const held = objectives.filter((n) => front.controlByNode[n] === 'blue').length;
@@ -39,10 +39,11 @@ export class TheaterHud {
     const hh = Math.floor((front.clockMin % 1440) / 60).toString().padStart(2, '0');
     const mm = (front.clockMin % 60).toString().padStart(2, '0');
     const lastEvent = front.events.length > 0 ? front.events[front.events.length - 1] : null;
+    const contacts = front.intel?.blue.length ?? 0;
     const sig = [
       front.day, hh, mm, held, paused, speedIdx, selectedForce,
       sel ? `${sel.strength}:${sel.path.length}:${sel.engagedIn}:${sel.untracedMin}` : '',
-      front.events.length, lastEvent?.text ?? '', supplyOn,
+      front.events.length, lastEvent?.text ?? '', supplyOn, reconOn, contacts,
     ].join('|');
     if (sig === this.lastSig) return;
     this.lastSig = sig;
@@ -84,6 +85,7 @@ export class TheaterHud {
         </span>
       </div>
       ${selCard}
+      ${reconOn && contacts === 0 ? '<div class="panel th-nocontact">NO CONTACT REPORTED — push a screen toward the enemy</div>' : ''}
       <div class="panel th-log">${log || '<div class="th-ev">No contact yet — select a company and right-click a town to advance.</div>'}</div>`;
   }
 }

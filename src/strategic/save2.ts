@@ -8,7 +8,7 @@
 import type { Campaign } from '../campaign/campaign';
 import { GEN_VERSION, type CampaignConfig, type TheaterConfig } from '../campaign/spec';
 import { makeTheater } from './theatergen';
-import type { CoarseBattle, Force, FrontV2, TheaterEvent } from './theater/force';
+import type { CoarseBattle, Force, FrontV2, StratContact, TheaterEvent } from './theater/force';
 
 const KEY_V4 = 'ccg-save-v4';
 const KEY_V3 = 'ccg-save-v3';
@@ -30,6 +30,7 @@ export interface SaveV4 {
     battles: CoarseBattle[];
     events: TheaterEvent[];
     defileQueues: Record<number, number[]>;
+    intel?: Record<'blue' | 'red', StratContact[]>; // S53: absent when omniscient
   };
 }
 
@@ -51,6 +52,7 @@ export function saveGameV2(seed: number, cfg: TheaterConfig, campaignCfg: Campai
       battles: front.battles,
       events: front.events,
       defileQueues: front.defileQueues,
+      intel: front.intel,
     },
   };
   try {

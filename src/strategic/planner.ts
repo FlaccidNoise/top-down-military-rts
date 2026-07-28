@@ -173,8 +173,9 @@ export class Commander2 {
       best?.axis.assigned.push(f.id);
     }
     if (axes.length > 1) {
+      const byId = new Map(mobiles.map((f) => [f.id, f]));
       const mass = (axis: Axis): number =>
-        axis.assigned.reduce((a, id) => a + effStrength(front.forces.find((f) => f.id === id)!), 0);
+        axis.assigned.reduce((a, id) => a + effStrength(byId.get(id)!), 0);
       const need = (axis: Axis): number => this.doctrine.concentrationRatio * Math.max(1, this.defendersAt(front, intel, axis.objective));
       const weak = axes.filter((ax) => mass(ax) < need(ax));
       if (weak.length === axes.length) {
@@ -235,12 +236,18 @@ export class Commander2 {
       }
 
       if (plan.reserveIds.includes(f.id)) {
-        // Reserves answer only to commit triggers: a friendly battle going bad.
+        // Reserves answer only to commit triggers: a friendly battle going
+        // bad. The enemy side of the ledger reads CONTACTS, never truth —
+        // an engaged enemy is a contact at gap 0, so under fog the sweep
+        // has seen it; under omniscience the values are identical (§4.3).
         for (const b of [...front.battles].sort((p, q) => p.id - q.id)) {
-          const mine = front.forces.filter((x) => [b.attackerId, b.defenderId, ...b.joined].includes(x.id) && x.side === this.side);
-          const theirs = front.forces.filter((x) => [b.attackerId, b.defenderId, ...b.joined].includes(x.id) && x.side !== this.side);
+          const ids = [b.attackerId, b.defenderId, ...b.joined];
+          const mine = own.filter((x) => ids.includes(x.id));
           const mineEff = mine.reduce((a, x) => a + effStrength(x), 0);
-          const theirsEff = theirs.reduce((a, x) => a + effStrength(x), 0);
+          const theirsEff = intel
+            .contacts()
+            .filter((c) => ids.includes(c.forceId))
+            .reduce((a, c) => a + c.strength, 0);
           if (mine.length > 0 && mineEff < theirsEff && b.site.kind === 'node') {
             const r = orderMove(front, f.id, b.site.nodeId);
             if (r.ok) orders.push({ forceId: f.id, dest: b.site.nodeId, why: 'commit-reserve' });
@@ -263,7 +270,7 @@ export class Commander2 {
         // to clears the floor, and the reinforcement-join machinery stacks
         // them at the site.
         const axisEff = axis.assigned.reduce((a, id) => {
-          const g = front.forces.find((x) => x.id === id);
+          const g = own.find((x) => x.id === id);
           return g && g.strength > 0 ? a + effStrength(g) : a;
         }, 0);
         const ownEff = Math.max(axisEff, effStrength(f));

@@ -34,7 +34,7 @@ import { SPEC_TAG, specStream, type CampaignConfig, type TheaterConfig } from '.
 import { makeTheater, TheaterGenError } from './strategic/theatergen';
 import { DispositionError, makeDisposition } from './strategic/theatergen/disposition';
 import { makeWarGoals, warStatus, type WarGoals } from './strategic/goals';
-import { OmniscientIntel } from './strategic/intel';
+import { ContactIntel, OmniscientIntel, type IntelView } from './strategic/intel';
 import { Commander2, RED_V2 } from './strategic/planner';
 import { addForce, orderMove, type CoarseBattle, type FrontV2, type MoveReject } from './strategic/theater/force';
 import { battleCatchUpMin, openBattle, retreatForce, stepWar } from './strategic/theater/war';
@@ -126,7 +126,7 @@ interface SessionV2 {
   front: FrontV2;
   goals: WarGoals;
   red: Commander2;
-  redIntel: OmniscientIntel;
+  redIntel: IntelView; // OQ6: the AI plays under the campaign's OWN fog
   view: TheaterView;
   battle: { b: CoarseBattle; tb: TheaterBattle } | null;
   pending: Contact | null;
@@ -729,7 +729,11 @@ function deployPlace(wx: number, wy: number): void {
 // is safe to show (the debrief queues it behind its own overlay).
 function stepTheaterMinuteV2(v2: SessionV2): void {
   v2.red.evaluate(v2.front, v2.redIntel);
-  const r = stepWar(v2.front, S().campaign, { autoBattle: () => false, supply: v2.campaignCfg.supply });
+  const r = stepWar(v2.front, S().campaign, {
+    autoBattle: () => false,
+    supply: v2.campaignCfg.supply,
+    recon: v2.campaignCfg.recon,
+  });
   if (v2.front.day > prevDay) {
     advanceDays(S().campaign, v2.front.day - prevDay);
     if (v2.front.day % REINFORCE_CYCLE_DAYS === 0) {
@@ -977,8 +981,10 @@ function startCampaignV2(
         front,
         goals,
         red: new Commander2('red', RED_V2, goals, camp.warDays),
-        redIntel: new OmniscientIntel(front, 'red'),
-        view: Object.assign(new TheaterView(front.theater), { supplyOn: camp.supply }),
+        // OQ6 (A): identical fog and detection — red reads ghosts when the
+        // campaign runs contacts, exactly as the player's map does.
+        redIntel: camp.recon === 'contacts' ? new ContactIntel(front, 'red') : new OmniscientIntel(front, 'red'),
+        view: Object.assign(new TheaterView(front.theater), { supplyOn: camp.supply, recon: camp.recon }),
         battle: null,
         pending: null,
         selectedForce: -1,
@@ -1670,7 +1676,7 @@ function frame(now: number): void {
     }
     v2.view.clampPan(view.w, view.h);
     v2.view.draw(ctx, v2.front, v2.selectedForce, stratPaused, SPEEDS[speedIdx], view.w, view.h);
-    theaterHud.update(v2.front, v2.goals, v2.selectedForce, stratPaused, speedIdx, v2.campaignCfg.supply);
+    theaterHud.update(v2.front, v2.goals, v2.selectedForce, stratPaused, speedIdx, v2.campaignCfg.supply, v2.campaignCfg.recon === 'contacts');
     if (touchHold) drawHoldRing(ctx, touchHold, now);
   } else if (mode === 'strategic') {
     hud.updateIdle('strategic', selectedChit >= 0 || stratPaused);

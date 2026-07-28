@@ -24,6 +24,7 @@ import { detectContacts, graphGap, haltAtContact, type Contact } from './contact
 import { stepMovement } from './step';
 import { effStrength } from './combat';
 import { updateSupplyMinute } from './supply';
+import { updateIntelMinute } from '../intel';
 
 export const RETREAT_SETBACK_M = 1500;
 export const THREAT_M = 1500;
@@ -311,6 +312,7 @@ export interface StepOptions {
   // leave it PENDING for the caller (the player's contact flow — pin+queue).
   autoBattle?: (c: Contact) => boolean;
   supply?: boolean; // S50: run the hourly supply trace (CampaignConfig.supply)
+  recon?: 'omniscient' | 'contacts'; // S53: run the 15-min detection sweep
 }
 
 export interface StepResult {
@@ -356,5 +358,7 @@ export function stepWar(front: FrontV2, campaign: Campaign, opts: StepOptions = 
       }
     }
   }
+  // 5) FOW detection sweep (S53) over FINAL positions, 15-min cadence.
+  if (opts.recon === 'contacts') updateIntelMinute(front);
   return { events, resolved: done, pendingContacts: pending };
 }

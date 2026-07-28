@@ -7,6 +7,8 @@
 import { pointAlong, type Region, type TerrainClass, type Theater } from '../strategic/theater';
 import { forceEtaMinutes, type Force, type FrontV2 } from '../strategic/theater/force';
 import { supplyTierOf, type SupplyTier } from '../strategic/theater/supply';
+import { contactConf } from '../strategic/intel';
+import type { ReconMode } from '../campaign/spec';
 
 import type { Side } from '../sim/sim';
 import { MOBILE } from './view';
@@ -40,6 +42,7 @@ export class TheaterView {
   panX = 0;
   panY = 0;
   supplyOn = false; // S50: gates cut hatching + tier tags (set from CampaignConfig)
+  recon: ReconMode = 'omniscient'; // S53: 'contacts' fogs every enemy-derived mark
   private flashText = '';
   private flashUntil = 0;
 
@@ -174,8 +177,14 @@ export class TheaterView {
     // Drawn from the player's (blue) perspective; the FOW lane gates this on
     // contact visibility when recon: 'contacts' ships.
     if (this.supplyOn) {
-      for (const f of front.forces) {
-        if (f.side !== 'red' || f.strength <= 0 || f.pos.kind !== 'edge') continue;
+      // Under fog the hatch derives from KNOWN contacts, never truth — a cut
+      // you have not seen is a cut you have not seen.
+      const interdictors: { pos: Force['pos'] }[] =
+        this.recon === 'contacts'
+          ? (front.intel?.blue ?? [])
+          : front.forces.filter((f) => f.side === 'red' && f.strength > 0);
+      for (const f of interdictors) {
+        if (f.pos.kind !== 'edge') continue;
         const e = this.theater.edges[f.pos.edgeId];
         ctx.strokeStyle = 'rgba(181, 83, 60, 0.85)';
         ctx.lineWidth = 3;
@@ -222,7 +231,13 @@ export class TheaterView {
     }
 
     // Battles: a pulsing ring at the site (deterministic phase from clock).
+    // Under fog only battles with an OWN participant ring — an AI-vs-AI
+    // fight behind the line would leak positions the sweep never earned.
     for (const b of front.battles) {
+      if (this.recon === 'contacts') {
+        const ids = [b.attackerId, b.defenderId, ...b.joined];
+        if (!front.forces.some((f) => ids.includes(f.id) && f.side === 'blue')) continue;
+      }
       const p = b.site.kind === 'node' ? this.theater.nodes[b.site.nodeId].pos : pointAlong(this.theater.edges[b.site.edgeId], b.site.s);
       const [sx, sy] = this.toScreen(p.x, p.y, w, h);
       const pulse = 8 + 3 * Math.sin((front.clockMin % 8) / 8 * Math.PI * 2);
@@ -233,9 +248,30 @@ export class TheaterView {
       ctx.stroke();
     }
 
+    // FOW ghosts (S53): the enemy is drawn from the contact map, aged — a
+    // hollow outline that fades as confidence decays. Rendered BEFORE own
+    // forces so live friendly markers always read on top.
+    if (this.recon === 'contacts') {
+      for (const c of front.intel?.blue ?? []) {
+        const conf = contactConf(c, front.clockMin);
+        const p = c.pos.kind === 'node' ? this.theater.nodes[c.pos.nodeId].pos : pointAlong(this.theater.edges[c.pos.edgeId], c.pos.s);
+        const [sx, sy] = this.toScreen(p.x, p.y, w, h);
+        ctx.globalAlpha = 0.3 + 0.7 * conf;
+        ctx.strokeStyle = SIDE_COLOR.red;
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(sx - 7, sy - 5, 14, 10);
+        ctx.fillStyle = 'rgba(230, 200, 190, 0.9)';
+        ctx.font = '9px ui-monospace, monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText(`~${c.strength}`, sx, sy + 15);
+        ctx.globalAlpha = 1;
+      }
+    }
+
     // Forces: rectangles at continuous positions, strength bar underneath.
     for (const f of [...front.forces].sort((a, b) => a.id - b.id)) {
       if (f.strength <= 0) continue;
+      if (this.recon === 'contacts' && f.side === 'red') continue; // ghosts own the enemy picture
       const p = this.forceXY(f);
       const [sx, sy] = this.toScreen(p.x, p.y, w, h);
       const sel = f.id === selectedForce;

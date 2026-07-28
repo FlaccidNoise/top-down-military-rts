@@ -49,6 +49,15 @@ export interface TheaterEvent {
   nodeId?: number;
 }
 
+// S53 FOW: a last-seen enemy snapshot. Confidence is DERIVED from seenMin +
+// the clock (linear decay over STRAT_CONTACT_TTL) so a save needs no timer.
+export interface StratContact {
+  forceId: number;
+  pos: NetPos;
+  strength: number;
+  seenMin: number;
+}
+
 export const EVENT_LOG_CAP = 64;
 export const MAX_FORCES = 24;
 export const FORD_CROSS_MIN = 45; // CELL_MINUTES river 60 - open 15 — the ford premium
@@ -66,6 +75,9 @@ export interface FrontV2 {
   battles: CoarseBattle[];
   events: TheaterEvent[]; // bounded ring, EVENT_LOG_CAP
   defileQueues: Record<number, number[]>; // bridge nodeId -> FIFO of force ids
+  // S53: per-side contact maps, present when the campaign runs recon:
+  // 'contacts' (lazily initialized by updateIntelMinute, persisted in v4).
+  intel?: Record<Side, StratContact[]>;
 }
 
 export function pushEvent(front: FrontV2, e: TheaterEvent): void {
