@@ -37,14 +37,22 @@ function fingerprint(plan: MapPlan): string {
 // moved from per-tile to per-stand). Each kind paints stands, so each kind's
 // terrain and its tag-13 stream position moved, and nothing else in the change
 // touches the generator. Recapture is `npx vite-node scripts/fp.mjs`.
+//
+// FOUR rows moved again for the sightline pass (sim/sightlines.ts): it thins
+// canopy on the bearing out of an objective that has no lane, so a kind whose
+// objectives sit in woods moves and a kind whose objectives do not, does not.
+// `road` and `bourg` are byte-identical — the pass measured them and wrote
+// nothing — and THAT is the control that makes the other four legitimate.
+// Recaptured by hand from `npx vite-node scripts/fp.mjs`; seeds 4 and 6 of
+// `open` and seed 6 of `woods` held their old values on their own.
 const PRE_RELIEF: Record<MapKind, string[]> = {
-  open: ['21f5ff8d', '95885696', '50ff3fc3', '8a30c59b', 'e0e636a5', 'f773a08c', '9cec67b9', 'edd39507'],
+  open: ['2676e4cb', '38113c32', 'c3219d2f', '8a30c59b', '2d3be83f', 'f773a08c', '6ab36789', '8c8bdc4d'],
   road: ['8de623f', 'e27652b4', 'fcdf5136', '8038d64a', 'baffed95', '69983e22', '3919c58e', 'e8538fa4'],
-  woods: ['3ef904e3', 'b22a05c1', '2fc13413', 'e1c92e82', 'e5ea0548', '4c936ec4', 'd2a5ead4', 'a6ed98e'],
+  woods: ['de83d883', 'd997e029', '90bbc5ad', '2f9e6e2e', '59052980', '4c936ec4', 'c5553d36', '6a9f0334'],
   // The water kinds' rows cover the water stage itself: TAG.WATER's band is
   // carved inside the skeleton, so `relief: 'none'` still has the whole river.
-  river: ['6e11bcf1', '2f27d3ac', 'ae050f22', '7359454d', '92198093', '2814cf23', '4444eacc', '6162d945'],
-  bridge: ['340e0fae', '19efc6f2', 'b616c028', 'a9ffb892', 'd21a6449', '79871389', 'b0a99c37', '23c63a96'],
+  river: ['e0987879', '3702f282', '8c2e19a4', '7359454d', '92198093', '2814cf23', 'dfff05e4', '134e8dd7'],
+  bridge: ['bdb9d4fc', 'ed105b76', 'a80ffcbc', 'eea52390', 'd80e51db', '79871389', 'a8884c17', '86d73598'],
   bourg: ['800dd794', '93844609', '8a2946f3', '2a5a10e4', 'b962b460', 'cf9c6267', '5f874b45', '74835d92'],
 };
 

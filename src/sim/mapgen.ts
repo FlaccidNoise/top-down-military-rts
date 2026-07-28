@@ -8,6 +8,7 @@ import { furnishInteriors } from './interiors/furnish';
 import { EDGE, GameMap } from './map';
 import { applyRelief, laneRuns, NO_RELIEF, planHalt, stampHalt, type FlatZone, type ReliefProfile } from './relief';
 import { mulberry32, type Rng } from './rng';
+import { openSightlines } from './sightlines';
 
 // Normandy map generation. ONE generator — the organic pipeline in
 // src/sim/bourg/* — run against a per-kind parameter set (bourg/profile.ts).
@@ -322,6 +323,13 @@ function tryGenerateV3(
     objectives.push(st.crossing);
     objectiveKinds.push('bridge');
   }
+
+  // §  · sightlines. After EVERYTHING that writes terrain or elevation, and
+  // after the last objective is on the list, because it measures a standing
+  // eye-line and a standing eye-line is blocked by ground as much as by walls.
+  // sightlines.ts says what it does and does not touch; on a bourg or a road
+  // map it measures, finds every objective already covered, and writes nothing.
+  openSightlines(map, objectives, subStream(bourgBase, TAG.SIGHTLINE));
 
   // Interiors: LAST. After the relief block rather than inside it, because V5's
   // halt is APPENDED to `buildings` in there — furnishing before it would leave
