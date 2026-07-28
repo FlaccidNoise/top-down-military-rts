@@ -1,3 +1,20 @@
+# HANDOFF — 2026-07-28 (playtest-feedback wave: orders, audio, armour, mapgen)
+
+## 2026-07-28 (latest): PLAYTEST WAVE LANDED ON MAIN (cfd5988) — NOT YET DEPLOYED
+Owner played and reported six things. All fixed or built; full detail in INDEX.md (Gameplay 2026-07-28 order-truth, Units 2026-07-28 armour, Architecture 2026-07-28 organic stands).
+- **Deployment placed a GRID while previewing cover.** deployPlace ignored the resolver entirely. Both paths now share `resolveDeployment` (spots.ts). Measured on real maps: cover 32%→67% (bourg 4%→63%). Teams hold defend/ambush so stance derives crouch/prone; prone fires on a bank lip OR a 1 m crest toward the enemy (reverse slope), ~5% of teams — deliberately narrow, OWNER MAY WANT IT LOOSER.
+- **Smoke and Fire orders were UNISSUABLE** (MOVE_FAMILY misused as an issuability gate; M4b opened it knowingly and its note was lost). Both now issue as point tools. A smoke throw that cannot happen BALKS with a reason. `tests/move-preview.test.ts` had PINNED the bug as intended behaviour — rewritten.
+- **Multi-squad click clumps** (squadClumpOffsets) instead of a 40 m line; ONE tile-reservation set spans the whole commit, preview mirrored.
+- **sim.threatAxis**: pre-contact cover-seeking faced due east on no evidence; staging now records the attack axis.
+- **Gun audio**: per-WeaponKey voice table replaces 5 buckets (both snipers sounded like a Garand). fireMode on WeaponDef; mg42 5×50 ms rip vs m1919 3×120 ms; bolt clack; sniper tail.
+- **Armour/AT FIELDED AT LAST** — addVehicle's only caller was test-only, so sim.vehicles was empty in every reachable battle and every AT loop was dead code. Now attacker armour section + defender towed gun on road/open/bridge/bourg. RNG proven append-only by probe diff. Follow-up fix: ARMOR_CLEAR keeps hulls off gun pits (was 1.9 m from a mortar).
+- **Forests are not circles** (two harmonics on the stand outline; every mapgen fingerprint re-frozen with fp.mjs) and the **theater map reads as a map** (borders, value ladder, hatch/stipple, label halos, cased roads, node glyphs).
+- **Wells go in walled yards** (render-only) and **a mortar that holds fire says why** (NO EYES ON THE TARGET / OUT OF RANGE — indirect fire is spotter-gated and was silent about it).
+- **NEW GATE: `scripts/ordnance.mjs`** — every fire-type order driven through its real UI path (mortar HE/smoke, barrage, airstrike, bazooka-vs-armour, vehicle command), 24 checks. Written because the smoke bug was a dead UI path in front of a working sim function, which every sim-level suite passed straight through. Traps recorded in-script: indirect fire is spotter-gated, barrage has 20 s ToF (attribute bursts by position), HUD handles go stale, and EVERY world click must centre the camera first (boot framing moves when armour is fielded).
+- Gates at land: tsc clean; 1254 tests (3 fail only under full-suite load, 76/76 isolated); tutorial gate green both legs; ordnance gate 24/24; deployment/armour verified in-browser.
+- **OWNER DECISIONS PENDING**: (1) balance baselines `scripts/.balance-*.json` are STALE for all four armour kinds by construction — re-record is a balance decision; (2) vehicle/gun crews ride ON TOP of chit strength (blue 138→143), so red garrisons attrit slightly faster — budgeting them out moves staging draws; (3) prone rate at deployment (~5%) may be too conservative.
+- **NEXT (deliberately deferred, both need the mapgen pipeline quiet)**: interiors realism per building role (civic uses the HOUSE table — a mairie gets a kitchen dresser; halle/halt unfurnished; every shop identical; no bakery/forge/factory role) and a sightline-carving pass (insertion point: a new stage in tryGenerateV3 after stampBourg, free sub-stream tags 15/17-19). Also open: node `kind` is not the truth for crossings (`n.crossing` is) — other readers have the same latent bug.
+
 # HANDOFF — 2026-07-27 evening (mid balance takeover, designs in flight)
 
 ## 2026-07-28 (wrap-up): realism-wave review fixes DEPLOYED (index-BygLcwDL.js)
