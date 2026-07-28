@@ -30,6 +30,23 @@ describe('armor', () => {
     expect(v.burning).toBe(true);
   });
 
+  // Live dynamics, no forced preconditions: a TO&E bazooka team is dropped on
+  // an empty map with a Panzer IV in view and left alone. Nothing else in the
+  // sim consumes rocket_bazooka, so a spent rocket IS an AT engagement.
+  it('a bazooka team engages an enemy tank on its own', () => {
+    const stage = (withTank: boolean) => {
+      const sim = new Sim(new GameMap(80, 40), 51);
+      sim.addSquadFromDef('blue', 'us_bazooka', 20.5, 20.5);
+      if (withTank) sim.addVehicle('red', 'panzer4', 55.5, 20.5, Math.PI); // 35 m: inside the bazooka's 70 m
+      const gunner = sim.soldiers.find((s) => s.weapon === 'bazooka')!;
+      const rockets = gunner.ammo.rocket_bazooka ?? 0;
+      for (let i = 0; i < 30 * 30; i++) sim.step();
+      return rockets - (gunner.ammo.rocket_bazooka ?? 0);
+    };
+    expect(stage(true)).toBeGreaterThan(0);
+    expect(stage(false)).toBe(0); // no armor on the field: the team holds its rockets
+  });
+
   it('rifles cannot hurt tanks and ignore them', () => {
     const map = new GameMap(60, 60);
     const sim = new Sim(map, 32);

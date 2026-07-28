@@ -1,11 +1,11 @@
 import { applyBattleResults, fitRoster, squadMembers, type BattleRecord, type Campaign, type RosterEntry } from '../campaign/campaign';
 import { RedCommander } from '../sim/ai';
-import { EMPLACEMENTS, SQUADS, TEAMS, WEAPONS, type EmplacementKey, type SquadKey } from '../sim/data';
+import { EMPLACEMENTS, SQUADS, TEAMS, WEAPONS, type EmplacementKey, type SquadKey, type VehicleKey } from '../sim/data';
 import { BREACH_LIP, BREACH_WIDE, EDGE, type GameMap } from '../sim/map';
-import { generateMap, type Building, type Vec } from '../sim/mapgen';
+import { generateMap, type Building, type MapKind, type Vec } from '../sim/mapgen';
 import { mulberry32, type Rng } from '../sim/rng';
-import { wireBonds } from '../sim/scenario';
-import { Sim, type BreachEvent, type MemberInit } from '../sim/sim';
+import { roadSpot, wireBonds } from '../sim/scenario';
+import { Sim, type BreachEvent, type MemberInit, type Side } from '../sim/sim';
 import { lightAt } from '../sim/solar';
 import { COMPANY_TOE, squadHeadcount } from '../sim/toe';
 import { cellIndex, cellXY, type SectorMap } from './sector';
@@ -115,6 +115,20 @@ function stockpileAmmo(sim: Sim, e: { kind: EmplacementKey; crewTeamId: number }
   }
 }
 
+// Armour and anti-tank staging (2026-07). Vehicles only ever reached a Sim
+// through the test-only scenario path, so sim.vehicles was EMPTY in every
+// campaign battle: the bazooka, Schreck and panzerfaust engagement loops had
+// nothing to acquire, and the towed AT guns were data nothing fielded at all.
+// Fields on ground a hull can fight over — woods and river cells stay
+// infantry fights.
+const ARMOR_KINDS = new Set<MapKind>(['road', 'open', 'bridge', 'bourg']);
+const ATTACKER_ARMOR: Record<Side, VehicleKey[]> = {
+  blue: ['sherman', 'm3_halftrack'],
+  red: ['stug3', 'sdkfz251'],
+};
+const DEFENDER_AT: Record<Side, EmplacementKey> = { blue: 'at57', red: 'pak40' };
+const ARMOR_SALT = 0x41726d72; // 'Armr': salts the private staging stream (see makeStrategicBattle)
+
 export const GARRISON_RADIUS = 45; // meters from an objective a garrison post may sit
 export const ATTACK_POST_MARGIN = 32; // attack posts start this far east of the west spawn (see attackObjectives)
 const FORD_SUPPRESSION = 0.45; // crossing under fire: shaken at spawn (fast-decaying)
@@ -168,7 +182,8 @@ export function makeStrategicBattle(
   // I9: the campaign's battles are the shipped configuration, so they are the
   // ones that get furnished interiors. The pinned generator tests all call the
   // <=4-argument form and are unaffected.
-  const plan = generateMap(seed, 320, 240, viaFord ? 'river' : front.sector.cells[e.cell].terrain, { interiors: true });
+  const battleKind: MapKind = viaFord ? 'river' : front.sector.cells[e.cell].terrain;
+  const plan = generateMap(seed, 320, 240, battleKind, { interiors: true });
   const sim = new Sim(plan.map, seed);
   // The campaign clock reaches the battlefield here and nowhere else: the sun,
   // the ambient grade and the night spotting rules all derive from startMin.
@@ -433,6 +448,39 @@ export function makeStrategicBattle(
       defRosters.push(teamRosters.flat());
     });
     wireBonds(sim, defRosters);
+  }
+
+  // --- Field armour and the anti-tank gun ---
+  // RNG DISCIPLINE: this block is the LAST staging step and it draws nothing
+  // from the shared stream — sim.rng is swapped for a private, seed-derived
+  // stream across it. Every draw an existing battle made (names, scatter,
+  // courage, bonds) keeps its exact place, and the stream the tick loop
+  // inherits is byte-identical to the one it inherited before armour existed.
+  if (ARMOR_KINDS.has(battleKind)) {
+    const shared = sim.rng;
+    sim.rng = mulberry32((seed ^ ARMOR_SALT) >>> 0);
+    const defenderSide: Side = attackerSide === 'blue' ? 'red' : 'blue';
+    // The attacker rolls in on the arterial road it entered by, nose east
+    // toward the objectives, in column at hull-length spacing (roadSpot's
+    // `taken` set also forbids two hulls on one tile).
+    const taken = new Set<number>();
+    ATTACKER_ARMOR[attackerSide].forEach((kind, i) => {
+      const spot = roadSpot(sim, west.x + 2 + i * 6, west.y, taken);
+      taken.add(Math.floor(spot.y) * plan.map.w + Math.floor(spot.x));
+      sim.addVehicle(attackerSide, kind, spot.x, spot.y, 0);
+    });
+    // The gun is dug in on the westernmost contested objective — the first one
+    // the attack can legally take — on that garrison's anchor nearest the
+    // approach, laid west like every other prepared position here.
+    const firstObj = attackObjectives.reduce((best, o) => (o.x < best.x ? o : best), attackObjectives[0]);
+    const anchor = sortedSectorAnchors[plan.objectives.indexOf(firstObj)]?.[0] ?? firstObj;
+    const facing = Math.atan2(west.y - anchor.y, west.x - anchor.x);
+    const gun = sim.addEmplacement(defenderSide, DEFENDER_AT[defenderSide], anchor.x, anchor.y, facing, 'deployed');
+    // The post keeps the crew on the gun under the commander's defend logic,
+    // exactly as the emplaced MG and mortar crews above.
+    const crew = sim.squads[sim.teams[gun.crewTeamId].squadId];
+    (defenderSide === 'red' ? commanderPosts : bluePosts)[crew.id] = anchor;
+    sim.rng = shared;
   }
 
   const { x, y } = cellXY(front.sector, e.cell);
