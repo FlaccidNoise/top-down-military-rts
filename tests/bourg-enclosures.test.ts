@@ -3,6 +3,7 @@ import { MIN_REAR_SPAN_Q8, stampEnclosures, WALL_HIGH, WALL_LOW, type Enclosures
 import { buildFootprints, type Footprints } from '../src/sim/bourg/footprints';
 import { reserveLandmarks, RESV, type Landmarks } from '../src/sim/bourg/landmarks';
 import { buildParcels, type Parcels } from '../src/sim/bourg/parcels';
+import { BOURG } from '../src/sim/bourg/profile';
 import { stampStructure } from '../src/sim/bourg/stamp';
 import { buildSkeleton, growMinorStreets, type Skeleton } from '../src/sim/bourg/streets';
 import { EDGE, GameMap } from '../src/sim/map';
@@ -29,9 +30,9 @@ interface Town {
 }
 
 function build(seed: number, w = W, h = H): Town {
-  const sk = buildSkeleton(base(seed), w, h);
+  const sk = buildSkeleton(base(seed), w, h, BOURG);
   const land = reserveLandmarks(sk);
-  growMinorStreets(sk, { resv: land.resv });
+  growMinorStreets(sk, { resv: land.resv, blocked: land.resv });
   const pc = buildParcels(sk, land.resv);
   const fp = buildFootprints(sk, land, pc);
   const map = new GameMap(w, h);

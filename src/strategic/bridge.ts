@@ -625,14 +625,21 @@ export function coarseOdds(atkEff: number, defEff: number, terrainMult: number):
 // wars 1-15 days, both outcomes). One implementation, two callers: the grid
 // resolveCoarse below and the V2 theater battle layer. Draw order is frozen:
 // winner roll, winner losses, loser losses.
+// atkEff/defEff (S50/S51): the WIN SCORE reads effective strength — supply
+// and fatigue enter resolveCoarse through the strength terms and nowhere
+// else (§4.4) — while the LOSS BANDS keep reading raw strength: a starving
+// force loses fights more often, it does not evaporate. Defaults preserve
+// the V1 grid path bit-for-bit.
 export function coarseOutcome(
   atkStrength: number,
   defStrength: number,
   terrainMult: number,
   rng: Rng,
   forcedWinner?: 'attacker' | 'defender' | null,
+  atkEff = atkStrength,
+  defEff = defStrength,
 ): { attackerWins: boolean; atkLosses: number; defLosses: number } {
-  const clampedScore = coarseOdds(atkStrength, defStrength, terrainMult);
+  const clampedScore = coarseOdds(atkEff, defEff, terrainMult);
   // clampedScore still allows a 5% upset either way — a forced outcome (the
   // player accepted an offered "foregone conclusion") must never roll for it.
   // The roll is DRAWN either way: a skipped draw would shift every later draw
@@ -677,11 +684,11 @@ export function resolveCoarse(
   const defCell = front.sector.cells[e.cell];
   const atkCell = front.sector.cells[attacker.cell];
   // Coarse balance knobs (tuned 2026-07 across 16 campaign seeds: wars run
-  // 1-15 days with both 'won' and 'lost' outcomes): a town garrison is a
+  // 1-15 days with both 'won' and 'lost' outcomes): a bourg garrison is a
   // fortress (repeated full-strength assaults to crack), woods give cover,
   // and an assault across a defended river/bridge crossing is costlier.
   let terrainMult = 1.0;
-  if (defCell.terrain === 'town' || defCell.terrain === 'bourg') terrainMult *= 7.0;
+  if (defCell.terrain === 'bourg') terrainMult *= 7.0;
   if (defCell.terrain === 'woods') terrainMult *= 1.5;
   if (atkCell.terrain === 'river' || atkCell.terrain === 'bridge') terrainMult *= 2.0; // assault across a defended crossing
   if (lightAt(front.clockMin) < 0.25) terrainMult *= nightMult;

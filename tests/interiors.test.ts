@@ -30,15 +30,15 @@ const FURN = new Set<string>(FURNITURE_KEYS);
 // generator branches rather than 30 near-copies of the same layout: the
 // invariants are per-BUILDING, so one 45-building bourg is worth thirty
 // 8-building open maps.
-const LEGACY: MapKind[] = ['open', 'town', 'woods', 'river', 'bridge', 'road'];
+const SMALL: MapKind[] = ['open', 'woods', 'river', 'bridge', 'road'];
 const SEEDS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
 
 function sweep(): { name: string; plan: MapPlan }[] {
   const out: { name: string; plan: MapPlan }[] = [];
-  for (const kind of LEGACY)
+  for (const kind of SMALL)
     for (const seed of SEEDS) out.push({ name: `${kind}/${seed}`, plan: generateMap(seed, 160, 120, kind, { interiors: true }) });
   for (const seed of [1, 2, 3]) {
-    out.push({ name: `town320/${seed}`, plan: generateMap(seed, 320, 240, 'town', { interiors: true }) });
+    out.push({ name: `open320/${seed}`, plan: generateMap(seed, 320, 240, 'open', { interiors: true }) });
     out.push({ name: `bourg/${seed}`, plan: generateMap(seed, 320, 240, 'bourg', { interiors: true }) });
   }
   return out;
@@ -355,7 +355,7 @@ describe('interiors integration — furniture is vehicle-proof (§6.3.5, D12)', 
 
   test('findVehicleSpot never lands a vehicle inside a building', () => {
     const bad: string[] = [];
-    for (const { name, plan } of MAPS.filter((m) => m.name.startsWith('bourg') || m.name.endsWith('town/1'))) {
+    for (const { name, plan } of MAPS.filter((m) => m.name.startsWith('bourg') || m.name.endsWith('open/1'))) {
       const map = plan.map;
       const sim = new Sim(map, 7);
       sim.buildings = plan.buildings;
@@ -439,7 +439,7 @@ describe('interiors integration — the pass is purely additive (§6.2)', () => 
   test('flag on vs flag off: only tiles and edges move, and the reject rate is unchanged', () => {
     for (const [seed, w, h, kind] of [
       [1, 160, 120, 'open'],
-      [3, 160, 120, 'town'],
+      [3, 160, 120, 'road'],
       [5, 160, 120, 'bridge'],
       [2, 320, 240, 'bourg'],
       [4, 320, 240, 'bourg'],
@@ -508,7 +508,7 @@ describe('interiors integration — the pass is purely additive (§6.2)', () => 
 
 describe('interiors integration — determinism (§6.4)', () => {
   test('two furnished generations of one seed are byte-identical, on every kind', () => {
-    for (const kind of [...LEGACY, 'bourg'] as MapKind[]) {
+    for (const kind of [...SMALL, 'bourg'] as MapKind[]) {
       const [w, h] = kind === 'bourg' ? [320, 240] : [160, 120];
       const a = generateMap(9, w, h, kind, { interiors: true });
       const b = generateMap(9, w, h, kind, { interiors: true });
@@ -531,7 +531,7 @@ describe('interiors integration — determinism (§6.4)', () => {
 
   // §6.4's third bullet asks for an instrumented `Rng.next` draw count. The
   // pinned fingerprints are the same proof and a stronger one: `mulberry32` is
-  // a pure counter, so ONE extra draw anywhere before the end of `tryGenerate`
+  // a pure counter, so ONE extra draw anywhere before the end of an attempt
   // changes every downstream number and therefore the FNV hash of seven arrays.
   // 8105059f / d2a77805 / 97b5bca / eb9a14e6 all still hold (mapgen.test.ts,
   // bourg.test.ts), which is only possible if the flag-off path draws zero.
@@ -586,7 +586,7 @@ describe('interiors integration — findSpot parity and preference (§5.2, I10)'
     let samples = 0;
     for (const [seed, w, h, kind] of [
       [1, 160, 120, 'open'],
-      [34, 160, 120, 'town'],
+      [34, 160, 120, 'woods'],
       [2, 320, 240, 'bourg'],
     ] as const) {
       const plan = generateMap(seed, w, h, kind);

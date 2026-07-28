@@ -18,13 +18,17 @@ import { join } from 'node:path';
 import { arg, launch, gotoStaged, deriveTargets, place, stageEmplacements, stageVehicles, stagedHour, fmtHour } from './lib/stage.mjs';
 
 const PORT = Number(arg('port', '5198'));
-const SEEDS = arg('seeds', '1,2,3,4,5,6,7,8,9,10').split(',').map(Number);
+const SEEDS = arg('seeds', '1,2,3,4,5,6,7,8,9,10,11,12,13').split(',').map(Number);
 const CAMP = 42; // pinned campaign — fixed chit layout across runs
 // Water art never shows up unless a red chit happens to sit on a river cell,
 // so two sweep slots force the defender's cell terrain before carving. 'bourg'
 // is forced so the art gate covers a KNOWN bourg seed regardless of where the
 // pinned campaign's chits sit (T16 landed: campaign town cells stage bourg).
-const FORCE_KIND = { 3: 'bridge', 8: 'river', 10: 'bourg' };
+// R1: the pinned campaign's cells never naturally resolve to road/open/woods
+// (they stage bourg, or forced bridge/river) — mapgen-v3 P2-P4 rewrote all
+// three, so they get the same one-seed force as bridge/river/bourg, on NEW
+// seeds so no already-committed baseline is reshot by adding them.
+const FORCE_KIND = { 3: 'bridge', 8: 'river', 10: 'bourg', 11: 'road', 12: 'open', 13: 'woods' };
 // `soldiers48` is the close-inspection unit crop: kit, webbing and helmet
 // detail only exist at band 48, so the 32 px/m `units` crop cannot regress it.
 // `vehicles` is ALWAYS last — staging it spawns five hulls into the live sim,
@@ -35,6 +39,11 @@ const ORDER = ['farlod', 'village', 'woods', 'hamlet', 'farm', 'bocage', 'units'
 // valuable crop of the six: a party-wall high street coming out thatched
 // (roofs.ts smallOfPair) is invisible in every other frame.
 const BOURG_ORDER = ['farlod', 'place', 'church', 'terrace', 'street', 'cour', 'bocage', 'units', 'enemy'];
+// R1: kind-specific slots deriveTargets adds on top of ORDER — road's
+// terraced frontage, the river/bridge crossing, woods' carved clearing.
+// Filtered against `targets` rather than gated on `kind` here, so a new
+// optional crop needs no second edit.
+const EXTRA_CROPS = ['bridge', 'terrace', 'clearing'];
 const OUT = '.screenshots/sweep';
 
 mkdirSync(OUT, { recursive: true });
@@ -69,7 +78,8 @@ for (const seed of SEEDS) {
   console.log(`seed ${seed}${FORCE_KIND[seed] ? ` (${FORCE_KIND[seed]})` : ''}`);
   const kind = await gotoStaged(page, { port: PORT, seed, camp: CAMP, forceKind: FORCE_KIND[seed] });
   const targets = await deriveTargets(page, { seed, kind });
-  const order = kind === 'bourg' ? BOURG_ORDER : [...(targets.bridge ? [...ORDER, 'bridge'] : ORDER), 'vehicles'];
+  const order =
+    kind === 'bourg' ? BOURG_ORDER : [...ORDER, ...EXTRA_CROPS.filter((name) => targets[name]), 'vehicles'];
   for (const name of order) {
     const t = name === 'vehicles' ? await stageVehicles(page, targets.units) : targets[name];
     await place(page, t.x, t.y, t.scale);

@@ -8,6 +8,7 @@
 //                                          [--kinds] [--stages]
 import { generateMap, validate } from '../src/sim/mapgen';
 import { planBourg, stampBourg } from '../src/sim/bourg/plan';
+import { BOURG } from '../src/sim/bourg/profile';
 import { buildObjectives } from '../src/sim/bourg/objectives';
 import { GameMap } from '../src/sim/map';
 import { mulberry32 } from '../src/sim/rng';
@@ -36,7 +37,7 @@ function attempt0(seed) {
   const rng = mulberry32((seed ^ 0x51ab3fc7) + 0 * 0x9e3779b9);
   const base = rng.int(0x7fffffff);
   const t0 = performance.now();
-  const plan = planBourg(base, W, H);
+  const plan = planBourg(base, W, H, BOURG);
   const t1 = performance.now();
   const map = new GameMap(W, H);
   const st = stampBourg(map, plan);
@@ -76,8 +77,8 @@ for (const [k, v] of Object.entries(cols)) console.log(`  ${k.padEnd(6)} ${fmt(s
 console.log(`  reject rate (attempt 0): ${rejects}/${N} = ${((100 * rejects) / N).toFixed(2)}%${rejectSeeds.length ? ` seeds=${rejectSeeds.join(',')}` : ''}`);
 
 if (has('kinds')) {
-  console.log('\nlegacy kinds (T1 flood-fill gate regression, §5.5):');
-  for (const kind of ['open', 'woods', 'town', 'river', 'bridge', 'road']) {
+  console.log('\nother kinds (T1 flood-fill gate regression, §5.5):');
+  for (const kind of ['open', 'woods', 'river', 'bridge', 'road']) {
     const v = [];
     for (let s = 1; s <= 20; s++) {
       const t = performance.now();

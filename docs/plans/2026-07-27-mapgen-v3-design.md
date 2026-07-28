@@ -286,6 +286,11 @@ caused it. The bourg seed-10 sweep crops are the same control on the art side.
 
 ## 6. Task breakdown (sequential sim lane)
 
+**Status 2026-07-28: P1-P7 all landed on `lane-v3-mapgen`** (P1 `2700fc6`, P2
+`e7cd63b`, P3 `04d531b`, P4 `a43d03d`, P5 `7e34d90`, P6 `d2054e1`, P7 this
+commit). The addendum tasks R1 and R2 are NOT done — see the P7 note below for
+what that costs the art gate.
+
 **P1 — Profile extraction, bourg byte-identical (M).**
 Files: new `src/sim/bourg/profile.ts`; thread `KindProfile` through streets.ts,
 landmarks.ts, parcels.ts, footprints.ts, rural.ts, plan.ts, mapgen.ts
@@ -342,6 +347,22 @@ Full sweep reshoot (all seeds, contact-sheet review), FORCE_KIND audit,
 `.balance-baseline.json` re-record sequenced with the movement/balance chains,
 HANDOFF + decision-log entry (this doc → INDEX.md). Deps: P6.
 
+*P7 outcome.* 112 shots recaptured; balance re-recorded to
+`scripts/.balance-baseline-v3.json`. The bourg control holds mechanically: a
+fingerprint over tiles/hEdges/vEdges/elev/stories/buildingId/stairs/bridges, plus
+building count and `objectiveKinds`, is identical at `0f5b7bc` and `d2054e1` for
+bourg seeds 1-10, and the branch's only `src/render` change is a comment.
+
+*FORCE_KIND audit — the art gate now covers 3 of 6 kinds.* `sector.ts` maps both
+`t` and `T` to `bourg`, so the pinned campaign stages 8 of the 10 sweep seeds as
+bourg; `FORCE_KIND` supplies only `bridge` (3), `river` (8) and `bourg` (10).
+`road`, `open` and `woods` — the three kinds P2-P4 rewrote — get **no** slot, so
+the reshoot re-shot only the water kinds and the unchanged bourg. Closing this
+needs R1 first: `deriveTargets` still branches on `kind === 'bourg'` and reads
+`[village, woods, hamlet]` off objective INDICES for every other kind, which is
+only sound for the deleted legacy fixed-shape objective list. Do R1, then add
+forced slots on NEW seeds (11-13) so no committed baseline reshoots.
+
 **Render/dressing addendum** (small, may run parallel after P2):
 
 **R1 — sweep crop derivation per kind (S).**
@@ -359,3 +380,20 @@ seams (render/enclos.ts, render/roofs.ts) if any. Deps: R1 + P2 sweep.
 Explicit TUNE backlog (not tasks): sunken lanes for open/woods once lane runs are
 trimmed clear of compound approaches (mapgen.ts:157-163); halt frequency per kind;
 densFalloff values; woods bocage cell.
+
+TUNE items the P7 structural audit added (30 seeds x 6 kinds, all cosmetic — the
+deck stays passable and `validate` passes in every case):
+- **Deck corner raggedness.** On 50 of 60 water seeds the top or bottom deck row
+  stops one or two tiles short of the bank, so open water bites into the road
+  shoulder at the crossing corners. The road corridor and the channel are both
+  stepped rasters and neither is squared off against the other.
+- **A hole in the deck (river seed 6).** One tile inside the deck run stayed
+  water (`y=112`, deck row not contiguous), which draws as a square of river in
+  the bridge surface. 1 of 30 river seeds; no other seed has it.
+- **Channel jog across the crossing.** 7 of 60 water seeds shift the band 2 tiles
+  laterally between the row above the deck and the row below, reading as a kink
+  at the bridge.
+- **The halt platform is a road island.** Every `open` and `bourg` seed puts a
+  20-tile `road` platform beside the railway with no lane joining it to the road
+  network (pre-existing bourg behaviour, inherited by `open` at P3). Infantry and
+  vehicles still reach it over grass.

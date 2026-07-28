@@ -163,10 +163,19 @@ describe('artContexts: party-wall ranges (T17)', () => {
     for (const [, idx] of runs) if (idx.length === 1) expect(ctx[idx[0]].runKey).toBeNull();
   });
 
-  it('leaves a legacy building with no group, no run and no butted side', () => {
-    const town = generateMap(7, W, H, 'town');
-    const legacy = artContexts(town.buildings, town.buildings.map(() => 1));
-    for (const c of legacy) {
+  it('leaves a bare footprint with no group, no run and no butted side', () => {
+    // Read a whole legacy 'town' until the mapgen-v3 P6 retirement. Every kind
+    // the generator still draws carries roles, terrace runs and frontages, so
+    // the input that reaches this path is a plain footprint list — which is
+    // what the optional half of the Building type is for, and stating it as a
+    // literal says what the case IS rather than which generator happened to
+    // produce it.
+    const bare: Building[] = [
+      { x: 10, y: 10, w: 8, h: 6 },
+      { x: 30, y: 12, w: 7, h: 5 },
+      { x: 30, y: 40, w: 6, h: 6 },
+    ];
+    for (const c of artContexts(bare, bare.map(() => 1))) {
       expect(c.runKey).toBeNull();
       expect(c.ridge).toBeNull();
       expect(c.alongX).toBeNull();

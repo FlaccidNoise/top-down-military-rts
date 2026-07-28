@@ -87,6 +87,9 @@ function reserveChurchyard(
   resv: Uint8Array,
 ): { rect: Rect; chamfer: number } | null {
   const { w, h, place } = sk;
+  // The bourg always attempts a church and takes no roll for it, so 100 means
+  // "no draw" — see KindProfile.churchPct. Same rule in reserveForecourt.
+  if (sk.profile.churchPct < 100 && r4.int(100) >= sk.profile.churchPct) return null;
   const side = 24 + r4.int(11);
   const qx = r4.next() < 0.5 ? -1 : 1;
   const qy = r4.next() < 0.5 ? -1 : 1;
@@ -99,12 +102,19 @@ function reserveChurchyard(
   // quadrant tried: an enclosure with a street through it is not an enclosure,
   // and for 'enclos' the cross route is placed 12-20 tiles off the place
   // precisely so one of the four quadrants is always clear of it.
+  //
+  // Water is rejected on the same rule and for the same reason. The churchyard
+  // is the one reservation placed off `place` rather than clipped to R_env: at
+  // side 34 and gap 2 its far corner reaches 36 tiles out, which is past the
+  // west edge of a bridge-head envelope and into the river (§2.5's clearance
+  // is 6-12 tiles, measured, and this square is three times that). Caught on
+  // seed 12 of 'bridge': a church tower standing in eleven tiles of water.
   const fit = (sx: number, sy: number, len: number): Rect | null => {
     const x = sx < 0 ? place.x - gapX - len : place.x + gapX;
     const y = sy < 0 ? place.y - gapY - len : place.y + gapY;
     if (x < 3 || y < 3 || x + len > w - 3 || y + len > h - 3) return null;
     for (let yy = y; yy < y + len; yy++)
-      for (let xx = x; xx < x + len; xx++) if (sk.road[yy * w + xx]) return null;
+      for (let xx = x; xx < x + len; xx++) if (sk.road[yy * w + xx] || sk.water[yy * w + xx]) return null;
     return { x, y, w: len, h: len };
   };
   let rect: Rect | null = null;
@@ -138,7 +148,14 @@ function reserveChurchyard(
 // already requires (terrain.ts:673-681), so G7 cobbles fire for free.
 function widenPlace(sk: Skeleton, r4: Rng, resv: Uint8Array): Rect {
   const { w, h, road, place } = sk;
-  const len = 26 + r4.int(17);
+  // KindProfile.placeLen null — a hamlet has a crossroads, not a place. The
+  // roll-anyway discipline the landmark probabilities keep (see profile.ts)
+  // does NOT apply here: this is a structural switch rather than a tuning
+  // dial, and the two sub-stages downstream of it both need a rect taller than
+  // three rows to place anything at all, so drawing three values to throw them
+  // away would buy nothing. The 3-wide band is what the carrefour already is.
+  if (sk.profile.placeLen === null) return { x: place.x - 1, y: place.y - 1, w: 3, h: 3 };
+  const len = sk.profile.placeLen[0] + r4.int(sk.profile.placeLen[1]);
   const width = 11 + r4.int(7);
   const northShare = 3 + r4.int(width - 5);
 
@@ -184,9 +201,10 @@ function widenPlace(sk: Skeleton, r4: Rng, resv: Uint8Array): Rect {
 
 // ── 3. market infill island ──────────────────────────────────────────────────
 //
-// p 0.6. The highest ratio of recognisability to code in the whole document: a
-// terraced island dropped off-centre in the widened area splits the place into
-// two lanes, which is what every surviving Norman market square looks like.
+// p = KindProfile.marketPct/100, 0.6 for the bourg. The highest ratio of
+// recognisability to code in the whole document: a terraced island dropped
+// off-centre in the widened area splits the place into two lanes, which is what
+// every surviving Norman market square looks like.
 function reserveMarket(
   sk: Skeleton,
   r4: Rng,
@@ -199,7 +217,7 @@ function reserveMarket(
   const ih = 5 + r4.int(4);
   const off = 2 + r4.int(5);
   const sign = r4.next() < 0.5 ? -1 : 1;
-  if (roll >= 0.6) return null;
+  if (roll >= sk.profile.marketPct / 100) return null;
   // >= 3 tiles of lane on both flanks, in both axes
   if (ih + 6 > placeRect.h || iw + 6 > placeRect.w) return null;
   const cx = placeRect.x + ((placeRect.w - iw) >> 1) + sign * off;
@@ -231,6 +249,7 @@ function reserveForecourt(
   churchyard: Rect | null,
 ): Rect | null {
   const { w, h, road } = sk;
+  if (sk.profile.forecourtPct < 100 && r4.int(100) >= sk.profile.forecourtPct) return null;
   const fw = 10;
   const fh = 8;
   const jitter = r4.int(9) - 4;

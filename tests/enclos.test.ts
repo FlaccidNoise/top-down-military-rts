@@ -4,34 +4,39 @@ import { generateMap } from '../src/sim/mapgen';
 import { EnclosureIndex } from '../src/render/enclos';
 import { shopfrontsFor } from '../src/render/shops';
 
-// T18/T20/T21 are additive dressing keyed on data only the bourg emits: edge
-// tops and building roles. The load-bearing property is therefore not what
-// they draw but that they draw NOTHING anywhere else — every 'town' art
-// baseline in scripts/sweep.mjs depends on it, and a re-snapshotted baseline
-// is a regression nothing downstream would ever flag.
+// T18/T20/T21 are additive dressing keyed on edge tops and building roles.
+// Those started as data only the bourg emitted, and the load-bearing property
+// was that the dressing drew NOTHING anywhere else. The cutovers ran the other
+// way instead: 'road' left the legacy pipeline at the mapgen-v3 P2 cutover,
+// 'open' at P3, 'woods' at P4, the water kinds at P5 and P6 retired what was
+// left, so every kind emits the data and every kind is dressed. What survives
+// as the contract is the second half — that the dressing claims exactly the
+// data there is, and no house wall.
 
-const LEGACY = ['town', 'road', 'bridge', 'river', 'open'] as const;
+// [kind, seeds, minimum claimed edges]. The floor is per kind because the wall
+// count is: measured over seeds 1-40 at 320x240, the bourg claims 353-575
+// edges, road 236-437, open 140-293 and woods 86-130 — a hamlet has a dozen
+// gardens where a bourg has fifty, and a forester pocket has two. One shared
+// bound would have to sit under 86 and would then assert nothing about the
+// kinds that carry the masonry. The water kinds run open's rural fabric over
+// a map the band has taken a twentieth of: measured 118-294 on river and
+// 141-334 on bridge over seeds 1-200, the bridge-head's own gardens being the
+// difference between them.
+const V3_KINDS = [
+  ['bourg', [10, 11, 12], 300],
+  ['road', [1, 3, 7, 11], 200],
+  ['open', [1, 3, 7, 11], 120],
+  ['woods', [1, 3, 7, 11], 70],
+  ['river', [1, 3, 7, 11], 100],
+  ['bridge', [1, 3, 7, 11], 120],
+] as const;
 const BOURG_SEEDS = [10, 11, 12];
 const empty = new Uint8Array(320 * 240);
 
 describe('EnclosureIndex', () => {
-  it('is empty on every legacy kind', () => {
-    for (const kind of LEGACY) {
-      for (const seed of [1, 3, 7, 11]) {
-        const { map, buildings } = generateMap(seed, 320, 240, kind);
-        const idx = new EnclosureIndex(map, new Uint8Array(map.w * map.h));
-        expect(idx.runs.length).toBe(0);
-        expect(idx.gates.length).toBe(0);
-        expect(idx.enclosures.length).toBe(0);
-        expect(idx.any).toBe(false);
-        expect(shopfrontsFor(map, buildings).length).toBe(0);
-      }
-    }
-  }, 20_000);
-
   it('claims exactly the free-standing wall and gate edges, and no house wall', () => {
-    for (const seed of BOURG_SEEDS) {
-      const { map } = generateMap(seed, 320, 240, 'bourg');
+    for (const [kind, seeds, minOwned] of V3_KINDS) for (const seed of seeds) {
+      const { map } = generateMap(seed, 320, 240, kind);
       const idx = new EnclosureIndex(map, new Uint8Array(map.w * map.h));
       const built = (x: number, y: number) => map.buildingIdAt(x, y) >= 0;
       let owned = 0;
@@ -61,7 +66,7 @@ describe('EnclosureIndex', () => {
           if (idx.ownsV(x, y)) owned++;
         }
       }
-      expect(owned).toBeGreaterThan(200);
+      expect([kind, seed, owned > minOwned]).toEqual([kind, seed, true]);
       expect(idx.runs.some((r) => r.top === 2)).toBe(true);
       expect(idx.gates.length).toBeGreaterThan(0);
     }

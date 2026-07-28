@@ -82,7 +82,6 @@ export function chitComposition(
 const TERRAIN_SHORT: Record<CellTerrain, string> = {
   open: 'Open',
   woods: 'Woods',
-  town: 'Town',
   bourg: 'Bourg',
   river: 'River',
   bridge: 'Bridge',

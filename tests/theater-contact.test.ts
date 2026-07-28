@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { addForce, CONTACT_M, orderMove, type Force, type FrontV2 } from '../src/strategic/theater/force';
-import { stepMovement } from '../src/strategic/theater/step';
+import { addForce, CONTACT_M, type Force, type FrontV2 } from '../src/strategic/theater/force';
+import { orderMove, stepMovement } from '../src/strategic/theater/step';
 import { detectContacts, graphGap, haltAtContact } from '../src/strategic/theater/contact';
 import { MOVE_MPM, type Theater, type TheaterEdge, type Vec } from '../src/strategic/theater';
 
@@ -70,9 +70,11 @@ describe('detectContacts', () => {
       }
     }
     expect(count).toBe(1);
-    // Closing 100 m/min from 6000m: gap reaches exactly 300 after 57 minutes,
-    // which is loop index 56.
-    expect(fired).toBe(56);
+    // Closing ~100 m/min from 6000m: nominal gap-300 at loop index 56; S51
+    // fatigue drags fresh columns a whisker slower, so the honest window is
+    // the nominal plus a bounded drag, never earlier.
+    expect(fired).toBeGreaterThanOrEqual(56);
+    expect(fired).toBeLessThanOrEqual(62);
   });
 
   it('overtake: a faster-arriving force catches a static one mid-edge', () => {
@@ -93,9 +95,10 @@ describe('detectContacts', () => {
     expect(cs[0].attackerId).toBe(a.id); // the mover attacks
     expect(cs[0].defenderId).toBe(w.id);
     expect(cs[0].site).toEqual(w.pos); // the fight is where the defender stands
-    // 2700m to cover at 50 m/min = 54 minutes; the for-loop increments m
-    // before the check, so the firing iteration reads 54.
-    expect(m).toBe(54);
+    // 2700m to cover at a nominal 50 m/min = 54 minutes (the for-loop
+    // increments m before the check); S51 fatigue drag adds a bounded tail.
+    expect(m).toBeGreaterThanOrEqual(54);
+    expect(m).toBeLessThanOrEqual(58);
   });
 
   it('parallel non-incident roads NEVER fight over 2000 steps', () => {

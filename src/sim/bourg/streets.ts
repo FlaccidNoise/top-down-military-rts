@@ -1,5 +1,6 @@
 import type { Rect, Vec } from '../mapgen';
 import { mulberry32, type Rng } from '../rng';
+import type { KindProfile } from './profile';
 
 // Bourg street skeleton — stages 1, 2, 3 and 5 of
 // docs/plans/2026-07-26-town-gen-design.md (T4). Pure geometry: this module
@@ -31,6 +32,8 @@ export const TAG = {
   ORCHARD: 12,
   WOODS: 13,
   ELEV: 14,
+  WATER: 15,
+  CLEARING: 16,
 } as const;
 
 // mulberry32 is a 32-bit counter (rng.ts:8-22): two streams seeded 1 apart are
@@ -69,11 +72,17 @@ export interface Skeleton {
   w: number;
   h: number;
   base: number;
+  profile: KindProfile; // every later stage reads its own fields off this
   archetype: Archetype;
   env: Rect; // R_env — the town envelope, [x, x+w) x [y, y+h)
   place: Vec; // the carrefour: always a road tile on the Grande Rue
   roadY: Int32Array; // arterial centreline per column (authoritative outside R_env)
   road: Uint8Array; // 1 = carved road
+  // 1 = the N→S water band ('river'/'bridge'). Allocated for every kind and
+  // left all-zero on the dry ones, so the water tests scattered through the
+  // later stages need no `if (hasWater)` in front of them and cannot move a
+  // dry kind by so much as a tile.
+  water: Uint8Array;
   segs: Seg[];
   streets: Street[];
   grandeRue: Seg[]; // rank-0 pieces of the Grande Rue, west→east
@@ -108,17 +117,10 @@ export const DENS_FRINGE = 90;
 
 // §1.1 archetype weights, as integers out of 100 — a float comparator here
 // would be the one place in the pipeline where a rounding difference flips a
-// whole town.
-const ARCHETYPE_W: [Archetype, number][] = [
-  ['carrefour', 35],
-  ['bourgRue', 35],
-  ['enclos', 20],
-  ['faubourg', 10],
-];
-
-function pickArchetype(r: Rng): Archetype {
+// whole town. The weights themselves are per-kind (KindProfile.archetypeW).
+function pickArchetype(r: Rng, weights: [Archetype, number][]): Archetype {
   let k = r.int(100);
-  for (const [name, weight] of ARCHETYPE_W) {
+  for (const [name, weight] of weights) {
     if (k < weight) return name;
     k -= weight;
   }
@@ -214,7 +216,7 @@ function arterialVerts(roadY: Int32Array, x0: number, x1: number): Vec[] {
 
 // ── stages 1-3 ───────────────────────────────────────────────────────────────
 
-export function buildSkeleton(base: number, w: number, h: number): Skeleton {
+export function buildSkeleton(base: number, w: number, h: number, profile: KindProfile): Skeleton {
   const S = (tag: number): Rng => subStream(base, tag);
   const road = new Uint8Array(w * h);
   const segs: Seg[] = [];
@@ -223,10 +225,10 @@ export function buildSkeleton(base: number, w: number, h: number): Skeleton {
   // Stage 1a — archetype and envelope dims. Drawn BEFORE the arterial because
   // placeY reads roadY: the literal order is archetype+dims, arterial, place.
   const r1 = S(TAG.ENVELOPE);
-  const archetype = pickArchetype(r1);
+  const archetype = pickArchetype(r1, profile.archetypeW);
   const placeXRaw = Math.round(w * r1.range(0.42, 0.6));
-  const envW = Math.min(70 + r1.int(41), w - 12);
-  const envH = Math.min(55 + r1.int(31), h - 12);
+  const envW = Math.min(profile.envW[0] + r1.int(profile.envW[1]), w - 12);
+  const envH = Math.min(profile.envH[0] + r1.int(profile.envH[1]), h - 12);
 
   // Stage 2 — the regional arterial, the legacy drifting walk (mapgen.ts:57-63)
   // on its own sub-stream. The drift clamp is tightened from [10, h-11] to the
@@ -257,15 +259,21 @@ export function buildSkeleton(base: number, w: number, h: number): Skeleton {
   const ey0 = env.y;
   const ey1 = env.y + env.h - 1;
   const place: Vec = { x: clamp(placeX, ex0 + 8, ex1 - 8), y: placeY };
+
+  // Stage 2c — the water band (§2.5). Own sub-stream, and not one draw when
+  // the profile carries no water, so P1-P4's four kinds are byte-identical.
+  const water = new Uint8Array(w * h);
+  if (profile.water) carveWater(water, w, h, S(TAG.WATER), profile.water.width, placeX, env);
+
   const densQ8 = (x: number, y: number): number => {
     const d = Math.max(Math.abs(x - place.x), Math.abs(y - place.y));
-    return (65536 / (256 + 12 * d)) | 0;
+    return (65536 / (256 + profile.densFalloff * d)) | 0;
   };
 
-  const addStreet = (tiles: Vec[], width: 1 | 2 | 3, rank: 0 | 1 | 2 | 3, t: number): Street | null => {
+  const addStreet = (tiles: Vec[], width: 1 | 2 | 3, rank: 0 | 1 | 2 | 3, t: number, block?: Uint8Array): Street | null => {
     if (tiles.length < 2) return null;
     const made = segsFromTiles(tiles, width, rank, t);
-    for (const s of made) carveSeg(road, w, h, s);
+    for (const s of made) carveSeg(road, w, h, s, block);
     segs.push(...made);
     const st: Street = { tiles, width, rank, t, cursor: 0, mouths: [] };
     streets.push(st);
@@ -405,7 +413,13 @@ export function buildSkeleton(base: number, w: number, h: number): Skeleton {
         }
         if (stepX === 0 && stepY === 0) break;
       }
-      addStreet(tilesFromVerts(averts), 2, 1, 1);
+      // …and `water` as the carve block, because cutting the CENTRELINE at the
+      // bank is only half of it: carveSeg lays the band centred, so a 2-wide
+      // approach running one tile off the water still puts its outer row in
+      // the river. Clipping a flank never disconnects a street (the centreline
+      // is what carries it), which is the rule the reservation block already
+      // relies on.
+      addStreet(cutAtWater(tilesFromVerts(averts), water, w), 2, 1, 1, water);
     }
   }
 
@@ -448,11 +462,13 @@ export function buildSkeleton(base: number, w: number, h: number): Skeleton {
     w,
     h,
     base,
+    profile,
     archetype,
     env,
     place,
     roadY,
     road,
+    water,
     segs,
     streets,
     grandeRue,
@@ -461,6 +477,62 @@ export function buildSkeleton(base: number, w: number, h: number): Skeleton {
     densQ8,
   };
 }
+
+// §2.5's dry ground between the band and the town, in tiles. One constant for
+// both water kinds rather than a profile field: §2.5 names 6-12 for the
+// bridge-head hamlet, and a river's nucleus wants exactly the same thing said
+// of it ("nucleus east of the band") — a floor, not a target. Where the legacy
+// offset already leaves more room, the band keeps it and the east bank is
+// simply wider.
+const BANK_GAP_MIN = 6;
+const BANK_GAP_SPAN = 7;
+
+// The N→S band, west of the nucleus. The walk is the retired legacy river's
+// verbatim: a seed column, ±1 with p 0.15 per row, clamped to ±3 of the seed,
+// so the band wanders about a line rather than off it.
+//
+// DEVIATION from §2.5, which derives the band from `place` and then places the
+// ENVELOPE clear of it. The envelope IS place, offset by half its width, so
+// that formulation is circular — and place is clamped against the map edge, so
+// on a narrow map the shove east has nowhere to go and the clearance silently
+// fails while the town moves anyway. Inverted here: the envelope keeps the
+// position it would have had on a dry map, and the BAND yields. `want` is the
+// legacy offset (38-45 tiles west of the nucleus), `limit` is the westmost
+// column that still leaves BANK_GAP of dry ground east of the band, and the
+// band takes whichever is further west. Same invariant, no clamp to fight, and
+// the town's distribution over the map is the one every other kind has.
+//
+// The clearance is what makes "only the arterial crosses" true: with the
+// nucleus and its parcel zone east of the band, the only carved road reaching
+// it is the arterial's own west span. It cannot hold at every size — a 60x40
+// map has no room for a 48-wide envelope, a 5-wide river and a bank besides —
+// and there the band runs through the town, which is a village on a river and
+// still a legal map: the Grande Rue IS the arterial, so its crossing is still
+// the bridge.
+function carveWater(water: Uint8Array, w: number, h: number, r: Rng, width: number, placeX: number, env: Rect): void {
+  const want = placeX - 38 - r.int(8);
+  // -3 is the walk's own eastward headroom, -width its span: at `limit` the
+  // easternmost tile the band can ever reach leaves exactly `gap` dry columns
+  // before R_env's west edge.
+  const limit = env.x - (BANK_GAP_MIN + r.int(BANK_GAP_SPAN)) - width - 3;
+  const base = clamp(Math.min(want, limit), 6, w - width - 6);
+  let rx = base;
+  for (let y = 0; y < h; y++) {
+    for (let dx = 0; dx < width; dx++) water[y * w + rx + dx] = 1;
+    if (r.next() < 0.15) rx = clamp(rx + (r.next() < 0.5 ? -1 : 1), base - 3, base + 3);
+  }
+}
+
+// An approach that reached the far bank would carve a SECOND crossing — roads
+// win over water at the stamp, so every road tile on the band becomes bridge
+// deck. The tile list runs outward from the Grande Rue, so cutting at the
+// first water tile always keeps the piece joined to the town and leaves a lane
+// dead-ending at the near bank, which is what a riverside road does.
+function cutAtWater(tiles: Vec[], water: Uint8Array, w: number): Vec[] {
+  for (let i = 0; i < tiles.length; i++) if (water[tiles[i].y * w + tiles[i].x]) return tiles.slice(0, i);
+  return tiles;
+}
+
 
 // y of the Grande Rue at column x, or null when x is off its span. Used by the
 // approach routes (join point) and by T5 (the widening must not straddle a jog).
@@ -484,16 +556,15 @@ export function grandeRueRunAt(grandeRue: Seg[], x: number): Seg | null {
 
 // ── stage 5 — minor streets ──────────────────────────────────────────────────
 
-const MAX_STREETS = 24; // §2.2 stage 5: the growth loop's hard cap
-// …and its floor. The doc caps the loop and says nothing about a minimum, but
-// the branch schedule (one attempt per 18-32 tiles, p 0.55) can legitimately
-// produce a 71x80 'bourgRue' envelope with THREE streets in it — measured on
-// seed 5 — which yields 12 plots and cannot reach §5.2's ">= 40 buildings".
-// So the growth schedule gets a bounded reroll, the same shape as stage 10's
-// gate reroll and stage 12's attempt reroll: up to two extra rounds that
-// re-root the rank-0/1 streets and take every branch offered. Still one
-// sub-stream, still deterministic, still capped.
-const MIN_STREETS = 9;
+// §2.2 stage 5: the growth loop's hard cap is KindProfile.maxStreets, and
+// KindProfile.minStreets is its floor. The doc caps the loop and says nothing
+// about a minimum, but the branch schedule (one attempt per 18-32 tiles, p
+// 0.55) can legitimately produce a 71x80 'bourgRue' envelope with THREE streets
+// in it — measured on seed 5 — which yields 12 plots and cannot reach §5.2's
+// ">= 40 buildings". So the growth schedule gets a bounded reroll, the same
+// shape as stage 10's gate reroll and stage 12's attempt reroll: up to two
+// extra rounds that re-root the rank-0/1 streets and take every branch offered.
+// Still one sub-stream, still deterministic, still capped.
 const GROWTH_ROUNDS = 3;
 const SNAP_RADIUS = 4; // the single most important number in localConstraints
 const PARALLEL_SPACING = 8; // reject a proposal running alongside an existing road
@@ -502,6 +573,10 @@ const MIN_SPUR = 8; // §2.2: every dead-end spur shorter than this is pruned
 
 export interface GrowthInput {
   resv: Uint8Array; // stage-4 reservations; 0 = free
+  // resv ∪ the water band — every tile the carve must leave alone. Separate
+  // from `resv` because only a reservation spawns a tangent street along its
+  // boundary; see plan.ts, which builds it.
+  blocked: Uint8Array;
 }
 
 /**
@@ -521,8 +596,9 @@ export interface GrowthInput {
  * wrong for the next proposal's localConstraints scan.
  */
 export function growMinorStreets(sk: Skeleton, input: GrowthInput): void {
-  const { w, h, road, segs, streets } = sk;
-  const { resv } = input;
+  const { w, h, road, water, segs, streets } = sk;
+  const { minStreets, maxStreets } = sk.profile;
+  const { resv, blocked } = input;
   const r5 = sk.S(TAG.MINOR);
   const ex0 = sk.env.x;
   const ex1 = sk.env.x + sk.env.w - 1;
@@ -553,7 +629,11 @@ export function growMinorStreets(sk: Skeleton, input: GrowthInput): void {
   const accept = (tiles: Vec[], width: 1 | 2 | 3, rank: 0 | 1 | 2 | 3, t: number): Street | null => {
     if (tiles.length < MIN_SPUR) return null;
     const made = segsFromTiles(tiles, width, rank, t);
-    for (const s of made) carveSeg(road, w, h, s, resv);
+    // `blocked`, not `resv`: carveSeg lays the band CENTRED, so a 2-wide
+    // street running one tile off the bank puts its outer row in the river
+    // even though its centreline stopped clear of it. Clipping a flank never
+    // disconnects a street — the rule the reservation block already relies on.
+    for (const s of made) carveSeg(road, w, h, s, blocked);
     segs.push(...made);
     const st: Street = { tiles, width, rank, t, cursor: 0, mouths: [] };
     streets.push(st);
@@ -563,7 +643,7 @@ export function growMinorStreets(sk: Skeleton, input: GrowthInput): void {
 
   for (; round < GROWTH_ROUNDS; round++) {
     if (round > 0) {
-      if (streets.length >= MIN_STREETS) break;
+      if (streets.length >= minStreets) break;
       for (const st of streets) if (st.rank <= 1) {
         st.cursor = 0;
         pq.push({ st, seq: seq++ });
@@ -573,7 +653,7 @@ export function growMinorStreets(sk: Skeleton, input: GrowthInput): void {
   }
 
   function growRound(): void {
-  while (streets.length < MAX_STREETS) {
+  while (streets.length < maxStreets) {
     const e = pop();
     if (!e) break;
     const parent = e.st;
@@ -663,6 +743,14 @@ export function growMinorStreets(sk: Skeleton, input: GrowthInput): void {
         hitRoad = true;
         break;
       }
+      // The river is the edge of the town (§2.5). Tested AFTER `road`, so a
+      // proposal reaching the bridge deck still T-junctions onto it — that is
+      // a bank road meeting the crossing, which is right — while one reaching
+      // open water simply stops at the bank. Neither carves a second ford.
+      if (water[idx]) {
+        cut = i;
+        break;
+      }
     }
     let tiles = raw.slice(0, cut);
 
@@ -677,7 +765,9 @@ export function growMinorStreets(sk: Skeleton, input: GrowthInput): void {
       for (let k = 1; k <= SNAP_RADIUS; k++) {
         const nx = end.x + sxu * k;
         const ny = end.y + syu * k;
-        if (!inPlay(nx, ny) || resv[ny * w + nx]) break;
+        // water breaks the snap too: the road it would reach across the band
+        // is the far bank's, and four tiles of carved river is a second ford
+        if (!inPlay(nx, ny) || resv[ny * w + nx] || water[ny * w + nx]) break;
         if (road[ny * w + nx]) {
           for (let j = 1; j < k; j++) tiles.push({ x: end.x + sxu * j, y: end.y + syu * j });
           hitRoad = true;
@@ -698,7 +788,7 @@ export function growMinorStreets(sk: Skeleton, input: GrowthInput): void {
     // TANGENT street hugging the reservation boundary. That is the mechanism
     // behind the characteristic ring of streets around a churchyard, and for
     // 'enclos' it is the archetype's entire signature — no special case.
-    if (hitResv > 0 && streets.length < MAX_STREETS) {
+    if (hitResv > 0 && streets.length < maxStreets) {
       // the LAST FREE tile, not the reserved one: the tangent has to run along
       // the boundary and share a tile with the street that stopped there, or it
       // is an isolated line of road inside the reservation

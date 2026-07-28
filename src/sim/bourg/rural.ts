@@ -36,7 +36,6 @@ const LANE_D = 5; // space-colonisation step
 const LANE_KILL = 7; // an attractor within this of a node is satisfied
 const LANE_ATTRACT = 45; // …and one further than this influences nothing
 const LANE_MAX_NODES = 140;
-const CELL = 22; // bocage jittered-grid cell
 
 const clamp = (v: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, v));
 
@@ -85,13 +84,13 @@ function placeFarms(
 ): Vec[] {
   const { w, h } = sk;
   const out: Vec[] = [];
-  const want = 2 + r.int(2);
+  const want = sk.profile.farms[0] + r.int(sk.profile.farms[1]);
   const clearOf = (x0: number, y0: number, x1: number, y1: number): boolean => {
     if (x0 < 2 || y0 < 2 || x1 >= w - 2 || y1 >= h - 2) return false;
     for (let y = y0; y <= y1; y++)
       for (let x = x0; x <= x1; x++) {
         const i = y * w + x;
-        if (sk.road[i] || land.resv[i] || pc.claimed[i] || fp.occ[i] || inZone(x, y)) return false;
+        if (sk.road[i] || land.resv[i] || pc.claimed[i] || fp.occ[i] || sk.water[i] || inZone(x, y)) return false;
       }
     return true;
   };
@@ -162,11 +161,17 @@ function growFarmLanes(
   for (let i = 0, n = Math.max(6, ((w * h) / 2200) | 0); i < n; i++) {
     const ax = 6 + r.int(w - 12);
     const ay = 6 + r.int(h - 12);
-    if (!inZone(ax, ay)) attractors.push({ x: ax, y: ay });
+    if (!inZone(ax, ay) && !sk.water[ay * w + ax]) attractors.push({ x: ax, y: ay });
   }
   const alive = new Uint8Array(attractors.length).fill(1);
+  // A cart track stops at the bank: carved into sk.road, it would become a
+  // second bridge deck at the stamp and break the arterial's monopoly on the
+  // crossing (§2.5). The attractor filter above is the same rule said early —
+  // a point in the river can never be reached, so it would pull a node into
+  // the bank for the whole growth budget. Both draws happen either way, so
+  // neither test moves the stream on a dry kind.
   const free = (x: number, y: number): boolean =>
-    x >= 2 && y >= 2 && x < w - 2 && y < h - 2 && !inZone(x, y) && !fp.occ[y * w + x];
+    x >= 2 && y >= 2 && x < w - 2 && y < h - 2 && !inZone(x, y) && !fp.occ[y * w + x] && !sk.water[y * w + x];
 
   let carved = 0;
   const carve = (a: Vec, b: Vec): boolean => {
@@ -264,10 +269,11 @@ function growFarmLanes(
 // ── bocage ───────────────────────────────────────────────────────────────────
 //
 // Jittered-grid Voronoi, replacing mapgen.ts:195-214's parallel drifting lines.
-// One site per 22x22 cell; each fringe tile takes the nearest site among the 9
-// neighbouring cells by SQUARED INTEGER distance with an index tiebreak; a tile
-// is hedge if any 4-neighbour belongs to a different site. One O(9N) integer
-// pass — no Delaunay, no float predicates, no cocircular degeneracy.
+// One site per cell of KindProfile.bocageCell (22 for the bourg); each fringe
+// tile takes the nearest site among the 9 neighbouring cells by SQUARED INTEGER
+// distance with an index tiebreak; a tile is hedge if any 4-neighbour belongs to
+// a different site. One O(9N) integer pass — no Delaunay, no float predicates,
+// no cocircular degeneracy.
 function bocage(
   sk: Skeleton,
   land: Landmarks,
@@ -277,22 +283,26 @@ function bocage(
   inZone: (x: number, y: number) => boolean,
 ): { hedge: Uint8Array; gaps: number } {
   const { w, h } = sk;
-  const cols = Math.ceil(w / CELL);
-  const rows = Math.ceil(h / CELL);
+  const cell = sk.profile.bocageCell;
+  const cols = Math.ceil(w / cell);
+  const rows = Math.ceil(h / cell);
   const sx = new Int32Array(cols * rows);
   const sy = new Int32Array(cols * rows);
   for (let cy = 0; cy < rows; cy++)
     for (let cx = 0; cx < cols; cx++) {
-      sx[cy * cols + cx] = Math.min(w - 1, cx * CELL + 3 + r.int(16));
-      sy[cy * cols + cx] = Math.min(h - 1, cy * CELL + 3 + r.int(16));
+      sx[cy * cols + cx] = Math.min(w - 1, cx * cell + 3 + r.int(16));
+      sy[cy * cols + cx] = Math.min(h - 1, cy * cell + 3 + r.int(16));
     }
 
   const owner = new Int32Array(w * h).fill(-1);
   for (let y = 0; y < h; y++)
     for (let x = 0; x < w; x++) {
-      if (inZone(x, y)) continue;
-      const cx = (x / CELL) | 0;
-      const cy = (y / CELL) | 0;
+      // Water owns no parcel, which does two things at once: no hedge is ever
+      // proposed on the river, and the two banks stop belonging to the same
+      // site — so the bocage grid ends at the water instead of ignoring it.
+      if (inZone(x, y) || sk.water[y * w + x]) continue;
+      const cx = (x / cell) | 0;
+      const cy = (y / cell) | 0;
       let best = -1;
       let bestD2 = Infinity;
       for (let jy = cy - 1; jy <= cy + 1; jy++)
@@ -410,11 +420,12 @@ export function paintRural(
   });
   stand(east.x, east.y, 9 + r13.int(4));
   woodsStands.push(east);
-  for (let i = 0, n = 2 + r13.int(3) + Math.max(0, Math.round((w * h) / 19200) - 1); i < n; i++) {
+  const { stands, standRadius } = sk.profile;
+  for (let i = 0, n = stands[0] + r13.int(stands[1]) + Math.max(0, Math.round((w * h) / 19200) - 1); i < n; i++) {
     const px = 10 + r13.int(w - 20);
     const py = 8 + r13.int(h - 16);
     if (inZone(px, py)) continue;
-    stand(px, py, 6 + r13.int(5));
+    stand(px, py, standRadius[0] + r13.int(standRadius[1]));
     // a stand centred on something impassable is no anchor: downstream
     // consumers order squads to it and an unreachable post is never settled
     if (map.terrainAt(px, py).passable) woodsStands.push({ x: px, y: py });
@@ -439,7 +450,148 @@ export function paintRural(
       for (let x = fx; x < fx + fw; x++) if (plantable(x, y)) map.setTerrain(x, y, 'field');
   }
 
+  // A clearing centre is an anchor like a stand centre is (§2.4), so it joins
+  // the same list — appended, never prepended: woodsStands[0] is objectives[1]
+  // and a red squad's spawn (scenario.ts), and that stays the east stand.
+  woodsStands.push(...carveClearings(map, sk, fp, inZone));
   return woodsStands;
+}
+
+// ── clearings ────────────────────────────────────────────────────────────────
+//
+// §2.4's woods sub-stage (tag 16). Ellipses of open ground carved back OUT of
+// the painted stands, which is the only order that works: a clearing reserved
+// before the stands would just be planted over, and the stands are what makes
+// the kind, so they take the whole map first and this gives some of it back.
+//
+// It runs LAST in paintRural for the same reason one step down — the orchard
+// pass paints 'woods' in rows and the field pass paints over leftover grass, so
+// a clearing opened before them comes back with trees standing in it.
+//
+// The carve only ever converts a 'woods' tile, so there is nothing it can take
+// from another stage: roads are not painted until stampBourg, footprints were
+// never plantable, and a hedge is a different key. It can open ground up and
+// never close it — which is also why validate's vehicle gate cannot be broken
+// here, only helped ('woods' is noVehicle, grass is not).
+//
+// DEVIATION from §2.4, which says "ellipses of grass/field". Grass only. The
+// clearing IS the kill zone the kind is built around, and 'field' carries
+// cover 0.05 against grass's 0 (data.ts) — a coin flip between them would make
+// the tactical claim true of some clearings and not others for no gain.
+function carveClearings(
+  map: GameMap,
+  sk: Skeleton,
+  fp: Footprints,
+  inZone: (x: number, y: number) => boolean,
+): Vec[] {
+  const { w, h } = sk;
+  const [count, countSpan] = sk.profile.clearings;
+  if (count + countSpan === 0) return [];
+  const r16 = sk.S(TAG.CLEARING);
+  const n = count + r16.int(countSpan);
+  const out: Vec[] = [];
+  if (n === 0) return out;
+
+  // How much canopy a candidate centre would actually open: the wood inside the
+  // box a minimum clearing covers. Both placements below maximise it, which is
+  // what makes the sub-stage do anything at all — two fifths of a woods map is
+  // already open ground (measured: canopy 0.58 of a 320x240 map), so a
+  // uniformly-placed clearing lands on a stretch that needed no clearing about
+  // half the time, and a clearing you cannot tell from the country round it is
+  // not a clearing.
+  //
+  // It is also self-avoiding for free: carving one drops the canopy score there
+  // to zero, so the next pick walks away from it without a spacing rule.
+  const canopy = (cx: number, cy: number): number => {
+    let trees = 0;
+    for (let y = Math.max(0, cy - 6); y <= Math.min(h - 1, cy + 6); y++)
+      for (let x = Math.max(0, cx - 6); x <= Math.min(w - 1, cx + 6); x++)
+        if (map.terrainKeyAt(x, y) === 'woods') trees++;
+    return trees;
+  };
+  // Radii 6-9 by 6-8, so every clearing is 12-19 tiles across on BOTH axes:
+  // §2.4's floor exactly, and about a rifle section's frontage. Deliberately no
+  // wider — at 24 across a clearing stops reading as a hole in a wood and
+  // starts reading as a field with trees round it, and the wood at the far
+  // treeline is what makes it a kill zone rather than an approach.
+  const carve = (cx: number, cy: number): void => {
+    const rx = 6 + r16.int(4);
+    const ry = 6 + r16.int(3);
+    for (let y = Math.max(1, cy - ry); y <= Math.min(h - 2, cy + ry); y++)
+      for (let x = Math.max(1, cx - rx); x <= Math.min(w - 2, cx + rx); x++) {
+        const dx = x - cx;
+        const dy = y - cy;
+        if (dx * dx * ry * ry + dy * dy * rx * rx > rx * rx * ry * ry) continue;
+        if (map.terrainKeyAt(x, y) === 'woods') map.setTerrain(x, y, 'grass');
+      }
+    // Same rule the stands keep: an anchor nothing can stand on is no anchor.
+    // The carve leaves grass behind, so this only rejects a centre that was
+    // never woods to begin with — a hedge line, say.
+    if (map.terrainAt(cx, cy).passable) out.push({ x: cx, y: cy });
+  };
+  // Draws its full quota whatever it rejects, so the stream position does not
+  // depend on how the map came out — the same discipline the landmark rolls
+  // keep.
+  const pick = (tries: number, at: () => Vec | null): Vec | null => {
+    let best: Vec | null = null;
+    let bestScore = -1;
+    for (let t = 0; t < tries; t++) {
+      const v = at();
+      if (!v) continue;
+      const s = canopy(v.x, v.y);
+      if (s > bestScore) {
+        bestScore = s;
+        best = v;
+      }
+    }
+    return best;
+  };
+
+  // The guaranteed one, astride the arterial. This is the rule that makes the
+  // sub-stage tactical rather than decorative: the arterial is the only vehicle
+  // route across a woods map (every stand is noVehicle), so a route that never
+  // opens out is 320 tiles of blind lane with no ground to fight over. One
+  // clearing on it is the kill zone the attack has to cross.
+  //
+  // SCANNED, not sampled, and the only placement here that is: the whole point
+  // is a guarantee, and sampling twelve columns for the woodiest left 7 seeds
+  // in 200 with a clearing that had no wood round it to be a clearing IN. The
+  // scan is a per-column canopy count within 6 tiles of the road plus a 13-wide
+  // sliding sum, so it costs one pass over a thirteenth of the map, not a box
+  // read per candidate. Ties take the westmost column — a scan order, not a
+  // rule; the variety is in where the wood is.
+  const colWood = new Int32Array(w);
+  for (let x = 0; x < w; x++) {
+    let trees = 0;
+    for (let y = Math.max(0, sk.roadY[x] - 6), y1 = Math.min(h - 1, sk.roadY[x] + 6); y <= y1; y++)
+      if (map.terrainKeyAt(x, y) === 'woods') trees++;
+    colWood[x] = trees;
+  }
+  let ax = -1;
+  let axScore = -1;
+  for (let x = 18; x < w - 18; x++) {
+    if (inZone(x, sk.roadY[x])) continue;
+    let s = 0;
+    for (let k = x - 6; k <= x + 6; k++) s += colWood[k];
+    if (s > axScore) {
+      axScore = s;
+      ax = x;
+    }
+  }
+  if (ax >= 0) carve(ax, sk.roadY[ax]);
+
+  for (let i = 1; i < n; i++) {
+    const v = pick(16, () => {
+      // 16 in from every edge: the largest ellipse is 9 by 8, and a clearing
+      // the map border has bitten a piece out of is not a clearing — it is the
+      // edge of the map, which is off-limits ground anyway
+      const x = 16 + r16.int(Math.max(1, w - 32));
+      const y = 16 + r16.int(Math.max(1, h - 32));
+      return inZone(x, y) || fp.occ[y * w + x] ? null : { x, y };
+    });
+    if (v) carve(v.x, v.y);
+  }
+  return out;
 }
 
 // Walk Chebyshev rings out to 8 for a tile clear of every footprint and every

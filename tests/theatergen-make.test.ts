@@ -196,6 +196,10 @@ describe('TheaterGenError', () => {
   });
 });
 
-const PIN_1 = 576375049;
-const PIN_2 = 1413468753; // moved 2026-07-27: ford objectives excluded (unholdable war goals stall the planner)
-const PIN_3 = 3881454522;
+// Re-recorded 2026-07-28 with GEN_VERSION 2 (spur-source fix: one supply
+// source per connected component of own-controlled nodes — a fragment
+// severed by red-held crossings gets its own map-edge lifeline, so no force
+// starts the war cut off by generation).
+const PIN_1 = 413659900;
+const PIN_2 = 2784287443;
+const PIN_3 = 1138076689;

@@ -7,3 +7,4 @@ dist/
 *.log
 scripts/.bal-*.json
 scripts/.bal-*.log
+shots-verify/

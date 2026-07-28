@@ -39,6 +39,11 @@ const ADV_CAMPAIGN: [keyof CampaignConfig, string, (number | string | boolean)[]
   ['victory', 'Victory', ['objectives', 'majority']],
   ['blueCompanies', 'US companies', [2, 3, 4]],
   ['redDoctrine', 'Enemy doctrine', ['defensive', 'offensive']],
+  // The OQ5 player-facing realism toggles — each a live system with a
+  // legible off-state (supply S50, recon S53, night tempo S52).
+  ['supply', 'Supply lines', [true, false]],
+  ['recon', 'Enemy intel', ['omniscient', 'contacts']],
+  ['nightTempo', 'Night tempo', [true, false]],
 ];
 
 export class CustomizeScreen {
@@ -144,10 +149,11 @@ export class CustomizeScreen {
 
   private knobRow<T extends object>(cfg: T, key: keyof T, label: string, values: unknown[]): string {
     const current = cfg[key];
+    const shown = (v: unknown): string => (v === true ? 'On' : v === false ? 'Off' : String(v));
     const btns = values
       .map(
         (v) =>
-          `<button class="hbtn cz-knob${String(v) === String(current) ? ' active' : ''}" data-knob="${String(key)}" data-value="${String(v)}">${String(v)}</button>`,
+          `<button class="hbtn cz-knob${String(v) === String(current) ? ' active' : ''}" data-knob="${String(key)}" data-value="${String(v)}">${shown(v)}</button>`,
       )
       .join('');
     return `<div class="cz-row"><span class="cz-label">${label}</span><span class="cz-btns">${btns}</span></div>`;

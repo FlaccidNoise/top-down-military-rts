@@ -9,7 +9,9 @@ import { mulberry32, type Rng } from '../sim/rng';
 // genVersion reject as 'stale-generator' rather than regenerating a different
 // map. This is the number src/strategic/theater.ts THEATER_VERSION takes (S5) —
 // one version, two readers, never two constants.
-export const GEN_VERSION = 1;
+// v2 (2026-07-28): supply sources pick from each side's largest connected
+// component — the spur-source fix (T_OBJECTIVES output moved; no rng change).
+export const GEN_VERSION = 2;
 
 export type TheaterSizeKm = 18 | 24 | 32;
 export type TerrainMix = 'bocage' | 'open' | 'wooded' | 'marshland';

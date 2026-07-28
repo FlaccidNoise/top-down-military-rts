@@ -107,8 +107,8 @@ const SY: Record<ExteriorDoor['side'], number> = { n: -1, s: 1, w: 0, e: 0 };
  * This is the highest-value composition point in the interiors programme: on
  * the bourg it turns T8's rear-garden network from a bypass into an ENTRY
  * network, and it is what "front + back doors give assault entry choice"
- * actually means. Legacy `addBuilding` emits exactly one door, so it fires on
- * every legacy building of any size.
+ * actually means. It fired on every building of the retired legacy pipeline,
+ * whose stamper emitted exactly one door per footprint at any size.
  *
  * On success the door is APPENDED to `it.doors` rather than merged in sorted
  * order. That is deliberate: `it.doors[0]` must stay the stamper's primary

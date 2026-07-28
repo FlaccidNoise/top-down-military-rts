@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { reserveLandmarks, RESV, type Landmarks } from '../src/sim/bourg/landmarks';
 import { buildParcels, plotRect, type Parcels } from '../src/sim/bourg/parcels';
+import { BOURG } from '../src/sim/bourg/profile';
 import { buildSkeleton, growMinorStreets, type Skeleton } from '../src/sim/bourg/streets';
 
 // T6: blocks (CCL), the depth field, back lanes, frontage runs and burgage
@@ -19,9 +20,9 @@ interface Town {
 }
 
 function build(seed: number, w = 320, h = 240): Town {
-  const sk = buildSkeleton(base(seed), w, h);
+  const sk = buildSkeleton(base(seed), w, h, BOURG);
   const land = reserveLandmarks(sk);
-  growMinorStreets(sk, { resv: land.resv });
+  growMinorStreets(sk, { resv: land.resv, blocked: land.resv });
   return { sk, land, pc: buildParcels(sk, land.resv) };
 }
 

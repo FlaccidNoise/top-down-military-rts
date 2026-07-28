@@ -61,8 +61,8 @@ function stagedMap(): GameMap {
       map.setTerrain(x, 120 + dy, 'road');
     }
   for (let y = 60; y < 68; y++) for (let x = 150; x < 160; x++) map.setTerrain(x, y, 'floor');
-  // hedges only on grass, like mapgen's hedgeLine — a hedge across the arterial
-  // would wall the map off for vehicles all by itself
+  // hedges only on grass, like the generator's bocage — a hedge across the
+  // arterial would wall the map off for vehicles all by itself
   const hedge = (x: number, y: number) => {
     if (map.terrainKeyAt(x, y) === 'grass') map.setTerrain(x, y, 'hedge');
   };

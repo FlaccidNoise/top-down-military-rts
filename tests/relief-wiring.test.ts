@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { GameMap } from '../src/sim/map';
 import { generateMap, RELIEF_BY_KIND, type MapKind, type MapPlan, type Vec } from '../src/sim/mapgen';
+import { PROFILES } from '../src/sim/bourg/profile';
 import { astar } from '../src/sim/path';
 
 // V3 (wiring micro-relief into generateMap) and V5 (the bourg halt) of
@@ -8,7 +9,7 @@ import { astar } from '../src/sim/path';
 // geometry against hand-built maps; this file owns the GENERATOR contract:
 // where the stage fires, what it is forbidden to move, and what the halt is.
 
-const KINDS: MapKind[] = ['open', 'road', 'woods', 'town', 'river', 'bridge', 'bourg'];
+const KINDS: MapKind[] = ['open', 'road', 'woods', 'river', 'bridge', 'bourg'];
 const W = 320;
 const H = 240;
 
@@ -31,12 +32,23 @@ function fingerprint(plan: MapPlan): string {
 // relief.ts but no call to it. Plain literals, never inline snapshots: an
 // `-u` run must not be able to launder a regression into a new baseline.
 const PRE_RELIEF: Record<MapKind, string[]> = {
-  open: ['1a0f1a77', '2889751a', '17a7e937', 'e7cf92ca', '32f8c6cc', '7aeb14ca', '3976b433', 'f2c9fe27'],
-  road: ['1a0f1a77', '2889751a', '17a7e937', 'e7cf92ca', '32f8c6cc', '7aeb14ca', '3976b433', 'f2c9fe27'],
-  woods: ['be23a411', '5a98532c', 'c52c9047', '495360ad', '23933a75', 'f357e7dd', 'c08092d3', 'b00bdf46'],
-  town: ['bcd466e9', '6553b8e2', '3a445204', '4c57c79f', 'acdb9db2', 'dd238bd7', 'ace5f889', 'e538b159'],
-  river: ['c9eaae79', '8f53c2f7', '1960e94d', 'a8c59af', '56ad5890', 'bf06b29d', 'ae9aedd1', 'cdf8c519'],
-  bridge: ['f06a37fd', '9372bb3f', '8f86ad51', 'caa32459', '19e12808', '1c7f8003', '8d190660', '63adc289'],
+  // Recaptured at the mapgen-v3 P3 cutover, when 'open' left the legacy
+  // pipeline for the organic one (scripts/fp.mjs --kind open).
+  open: ['4edf4a39', '19f92704', '282359e7', 'dad20c4a', '6acb50d4', '8814cb3e', '509acb34', 'e1066bdf'],
+  // Recaptured at the mapgen-v3 P2 cutover, when 'road' left the legacy
+  // pipeline for the organic one (scripts/fp.mjs --kind road). It shared the
+  // 'open' row above until then, which is the clearest statement of what the
+  // legacy generator did with the kind: nothing.
+  road: ['58ca7432', '22bff2e4', '3d52bdb8', 'e4e97f2f', '3ded323c', 'ed38633c', '4d2e6f16', 'd4ab3dc0'],
+  // Recaptured at the mapgen-v3 P4 cutover, when 'woods' left the legacy
+  // pipeline for the organic one (scripts/fp.mjs --kind woods).
+  woods: ['6bc6def', 'd2a9c9dd', 'a61532f1', 'ecff631b', '48258cb', '72030ab0', '423c2e6c', '87eceaeb'],
+  // Recaptured at the mapgen-v3 P5 cutover, when the two water kinds left the
+  // legacy pipeline for the organic one (scripts/fp.mjs --kind river,bridge).
+  // These cover the water stage itself: TAG.WATER's band is carved inside the
+  // skeleton, so `relief: 'none'` still has the whole river in it.
+  river: ['f2ca41e0', '3330bc', 'e5d5cf7c', '72a47f04', 'aa1757a0', '1903ea07', '16b26262', '295d950d'],
+  bridge: ['e988600b', '439d781f', 'a6be8c60', '543369d', '49b3b5ac', '3fbe1eff', '1194e1c1', '667ef460'],
   bourg: ['cd8c2d19', '98495a59', 'ee37d24f', 'e958b91f', 'f91e2d3a', '3d001667', '2cb58b53', '6201baba'],
 };
 
@@ -121,11 +133,12 @@ describe('V3 additivity', () => {
       }
   });
 
-  it("leaves 'town' byte-identical even with the stage switched on", () => {
-    // H8: the bourg design freezes 'town' and every sweep crop depends on it,
-    // so its profile is the null one and the guard never fires.
-    PRE_RELIEF.town.forEach((want, i) => expect([i + 1, fingerprint(gen(i + 1, W, H, 'town'))]).toEqual([i + 1, want]));
-  });
+  // DELETED at the mapgen-v3 P6 retirement: H8's "leaves 'town' byte-identical
+  // even with the stage switched on". 'town' was the one kind whose relief
+  // profile was NO_RELIEF, so the stage was a no-op on it with the size gate
+  // wide open — a control on the guard. Every surviving kind carries a live
+  // profile, so the control has no subject; the per-kind test below is what
+  // asserts a kind gets its own profile and not one global switch.
 
   it('applies the per-kind profile, not one global switch', () => {
     for (const kind of KINDS) {
@@ -207,29 +220,39 @@ describe('V3 the level crossing and the vehicle route', () => {
   });
 });
 
-describe('V5 the bourg halt', () => {
+describe('V5 the railway halt', () => {
   const SEEDS = [1, 2, 3, 4, 5, 6, 7, 8];
   const haltOf = (p: MapPlan) => p.buildings.filter((b) => b.role === 'halt');
+  // Who gets a halt is not a kind name and never was: it is `rail` on the
+  // relief profile, read by a kind that reaches the v3 pipeline (mapgen.ts
+  // tryGenerateV3 — planHalt hangs off the relief stage's embankment). The
+  // bourg was the only such kind until the mapgen-v3 P3 cutover put 'open'
+  // there, and RELIEF_BY_KIND.open has carried rail: true since V3. §2.3 of
+  // the v3 design accepts it explicitly — a rural halt is a good fight — so
+  // this is derived rather than listed, and P4-P6 need not touch it.
+  const RAIL_KINDS = KINDS.filter((k) => PROFILES[k] !== undefined && RELIEF_BY_KIND[k].rail);
 
-  it('stands exactly one 7x4 halt on every bourg seed, appended after the bourg', () => {
-    for (const seed of SEEDS) {
-      const p = gen(seed, W, H, 'bourg');
-      const halts = haltOf(p);
-      expect([seed, halts.length]).toEqual([seed, 1]);
-      expect([seed, halts[0].w, halts[0].h]).toEqual([seed, 7, 4]);
-      // appended LAST, so every buildingId the bourg pipeline stamped is
-      // exactly the index it had before V5
-      expect([seed, p.buildings[p.buildings.length - 1].role]).toEqual([seed, 'halt']);
-      const off = gen(seed, W, H, 'bourg', true);
-      expect([seed, p.buildings.slice(0, -1)]).toEqual([seed, off.buildings]);
-    }
+  it('stands exactly one 7x4 halt on every rail-kind seed, appended after the village', () => {
+    expect(RAIL_KINDS).toEqual(['open', 'bourg']);
+    for (const kind of RAIL_KINDS)
+      for (const seed of SEEDS) {
+        const p = gen(seed, W, H, kind);
+        const halts = haltOf(p);
+        expect([kind, seed, halts.length]).toEqual([kind, seed, 1]);
+        expect([kind, seed, halts[0].w, halts[0].h]).toEqual([kind, seed, 7, 4]);
+        // appended LAST, so every buildingId the pipeline stamped is exactly
+        // the index it had before V5
+        expect([kind, seed, p.buildings[p.buildings.length - 1].role]).toEqual([kind, seed, 'halt']);
+        const off = gen(seed, W, H, kind, true);
+        expect([kind, seed, p.buildings.slice(0, -1)]).toEqual([kind, seed, off.buildings]);
+      }
   });
 
-  it('only the bourg gets one — never a legacy kind, never with relief off', () => {
+  it('no other kind gets one, and no kind gets one with relief off', () => {
     for (const kind of KINDS)
       for (const seed of [1, 5]) {
         expect([kind, seed, haltOf(gen(seed, W, H, kind, true)).length]).toEqual([kind, seed, 0]);
-        if (kind !== 'bourg') expect([kind, seed, haltOf(gen(seed, W, H, kind)).length]).toEqual([kind, seed, 0]);
+        if (!RAIL_KINDS.includes(kind)) expect([kind, seed, haltOf(gen(seed, W, H, kind)).length]).toEqual([kind, seed, 0]);
       }
   });
 

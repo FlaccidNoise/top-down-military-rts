@@ -22,11 +22,27 @@ import {
 } from './force';
 import { CONTACT_M, detectContacts, graphGap, haltAtContact, type Contact } from './contact';
 import { stepMovement } from './step';
+import { effStrength } from './combat';
+import { updateSupplyMinute } from './supply';
+import { updateIntelMinute } from '../intel';
 
 export const RETREAT_SETBACK_M = 1500;
 export const THREAT_M = 1500;
 export const INFILTRATE_MIN = 120; // = the pinned 8 cells x 15 min
 const TRIVIAL_DURATION_MIN = 15;
+
+// OQ3 (B): a fought battle charges the theater the same bounded time the
+// coarse resolver would have — the debrief return steps this many minutes.
+// endMin - startMin is battleDuration-capped at 240 except when a late join
+// re-floors endMin at now+15, so the cap is re-asserted here.
+export const CATCH_UP_CAP_MIN = 240;
+// S51 combat-fatigue lumps: coarse participants +0.15; a FOUGHT battle
+// (bridge2 applyTheaterOutcome) charges +0.25 — a real fight is worse.
+export const COARSE_BATTLE_FATIGUE = 0.15;
+export const FOUGHT_BATTLE_FATIGUE = 0.25;
+export function battleCatchUpMin(b: CoarseBattle): number {
+  return Math.min(CATCH_UP_CAP_MIN, Math.max(0, b.endMin - b.startMin));
+}
 
 export function forceById(front: FrontV2, id: number): Force {
   const f = front.forces.find((x) => x.id === id);
@@ -63,7 +79,10 @@ export function openBattle(front: FrontV2, c: Contact): CoarseBattle {
     startMin: front.clockMin,
     endMin: front.clockMin + battleDuration(atk.strength, def.strength, forced !== null),
     forced,
-    approachEdgeId: atk.pos.kind === 'edge' ? atk.pos.edgeId : null,
+    // Mid-edge: the edge under the attacker. At a node: the edge it last
+    // WALKED — an assault delivered onto a crossing node classifies
+    // bridge/ford-assault from the bank it actually came from.
+    approachEdgeId: atk.pos.kind === 'edge' ? atk.pos.edgeId : atk.lastEdgeId,
   };
   front.battles.push(battle);
   atk.engagedIn = battle.id;
@@ -98,6 +117,8 @@ interface BattleSides {
   defenders: Force[];
   atkStrength: number;
   defStrength: number;
+  atkEff: number; // strength x combatMult — what the win score reads (§4.4)
+  defEff: number;
 }
 
 export function battleSides(front: FrontV2, battle: CoarseBattle): BattleSides {
@@ -110,6 +131,8 @@ export function battleSides(front: FrontV2, battle: CoarseBattle): BattleSides {
     defenders,
     atkStrength: attackers.reduce((a, f) => a + f.strength, 0),
     defStrength: defenders.reduce((a, f) => a + f.strength, 0),
+    atkEff: attackers.reduce((a, f) => a + effStrength(f), 0),
+    defEff: defenders.reduce((a, f) => a + effStrength(f), 0),
   };
 }
 
@@ -119,7 +142,16 @@ export function battleSides(front: FrontV2, battle: CoarseBattle): BattleSides {
 // then length, tie-break lowest edge id; place PARKED at RETREAT_SETBACK_M.
 // Blue fallback: infiltrate to the nearest friendly enemy-free node within
 // INFILTRATE_MIN graph-minutes, strength kept. Red with no escape: overrun.
-export function retreatForce(front: FrontV2, f: Force, approachEdgeId: number | null): void {
+// opts.trapped: what happens when no candidate edge survives the threat
+// filter. 'overrun' is the beaten-force default; 'stay' serves a voluntary
+// stand-down — a force that CHOSE to break contact and cannot is left in
+// place to fight, never annihilated by its own order.
+export function retreatForce(
+  front: FrontV2,
+  f: Force,
+  approachEdgeId: number | null,
+  opts: { trapped?: 'overrun' | 'stay' } = {},
+): void {
   const t = front.theater;
   // The retreat pivots on the node BEHIND the force: its own node, or the
   // near end of its edge (opposite its direction of travel).
@@ -150,6 +182,8 @@ export function retreatForce(front: FrontV2, f: Force, approachEdgeId: number | 
     pushEvent(front, { min: front.clockMin, kind: 'retreat', text: `${f.name} falls back`, forceIds: [f.id] });
     return;
   }
+
+  if (opts.trapped === 'stay') return; // voluntary break-off, nowhere to go: hold
 
   if (f.side === 'blue') {
     // Infiltrate: nearest friendly, enemy-free node within the graph-minute
@@ -201,6 +235,8 @@ export function resolveBattleV2(
     terrainMult,
     rng,
     battle.forced,
+    sides.atkEff,
+    sides.defEff,
   );
 
   const record: BattleRecord = { day: front.day, won: false, kia: [], wounded: [] };
@@ -217,6 +253,11 @@ export function resolveBattleV2(
   };
   distribute(sides.attackers, atkLosses);
   distribute(sides.defenders, defLosses);
+
+  // S51: a coarse battle is hours under fire — every participant tires.
+  for (const f of [...sides.attackers, ...sides.defenders]) {
+    f.fatigue = Math.min(1, f.fatigue + COARSE_BATTLE_FATIGUE);
+  }
 
   const principalAtk = forceById(front, battle.attackerId);
   record.won = attackerWins === (principalAtk.side === 'blue');
@@ -282,6 +323,9 @@ export interface StepOptions {
   // Return true to open a timed coarse battle for this contact; false to
   // leave it PENDING for the caller (the player's contact flow — pin+queue).
   autoBattle?: (c: Contact) => boolean;
+  supply?: boolean; // S50: run the hourly supply trace (CampaignConfig.supply)
+  recon?: 'omniscient' | 'contacts'; // S53: run the 15-min detection sweep
+  nightTempo?: boolean; // S52: light ramps march pace (CampaignConfig.nightTempo)
 }
 
 export interface StepResult {
@@ -294,6 +338,9 @@ export interface StepResult {
 export function stepWar(front: FrontV2, campaign: Campaign, opts: StepOptions = {}): StepResult {
   front.clockMin++;
   if (front.clockMin >= (front.day + 1) * 1440) front.day++;
+  // 0) Hourly supply trace (S50) — before battles resolve, so a fight ending
+  // on the hour reads the tier of the hour it ends in.
+  if (opts.supply) updateSupplyMinute(front);
   const events: TheaterEvent[] = [];
   const done: StepResult['resolved'] = [];
 
@@ -301,8 +348,8 @@ export function stepWar(front: FrontV2, campaign: Campaign, opts: StepOptions = 
   for (const b of [...front.battles].sort((p, q) => p.id - q.id)) {
     if (b.endMin <= front.clockMin) done.push(resolveBattleV2(front, campaign, b, opts.nightMult ?? 1.0));
   }
-  // 2) Advance all unengaged forces.
-  events.push(...stepMovement(front));
+  // 2) Advance all unengaged forces (fatigue + pace kernel inside).
+  events.push(...stepMovement(front, { nightTempo: opts.nightTempo }));
   // 3) Contacts over final positions.
   const contacts = detectContacts(front);
   const pending: Contact[] = [];
@@ -324,5 +371,7 @@ export function stepWar(front: FrontV2, campaign: Campaign, opts: StepOptions = 
       }
     }
   }
+  // 5) FOW detection sweep (S53) over FINAL positions, 15-min cadence.
+  if (opts.recon === 'contacts') updateIntelMinute(front);
   return { events, resolved: done, pendingContacts: pending };
 }

@@ -9,6 +9,7 @@ import { reserveLandmarks, RESV } from '../src/sim/bourg/landmarks';
 import { buildParcels, plotRect } from '../src/sim/bourg/parcels';
 import { buildFootprints } from '../src/sim/bourg/footprints';
 import { addRuralFabric } from '../src/sim/bourg/rural';
+import { BOURG } from '../src/sim/bourg/profile';
 import { buildObjectives } from '../src/sim/bourg/objectives';
 
 const arg = (name, dflt) => {
@@ -22,7 +23,7 @@ const W = arg('w', 320);
 const H = arg('h', 240);
 
 const base = (seed * 0x9e3779b1) >>> 1;
-const sk = buildSkeleton(base, W, H);
+const sk = buildSkeleton(base, W, H, BOURG);
 const land = reserveLandmarks(sk);
 growMinorStreets(sk, { resv: land.resv });
 const pc = buildParcels(sk, land.resv);

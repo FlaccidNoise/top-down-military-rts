@@ -11,7 +11,7 @@ const SEEDS = [1, 2, 3, 5, 7, 11, 13, 17, 19, 23];
 describe('PatchIndex', () => {
   it('gives every field and woods tile a parcel id', () => {
     for (const seed of SEEDS) {
-      const { map } = generateMap(seed, 320, 240, 'town');
+      const { map } = generateMap(seed, 320, 240, 'open');
       const pi = new PatchIndex(map);
       for (let y = 0; y < map.h; y++) {
         for (let x = 0; x < map.w; x++) {
@@ -31,7 +31,7 @@ describe('PatchIndex', () => {
 
   it('parcels are 4-connected and their bounds/centroids fit their tiles', () => {
     for (const seed of SEEDS) {
-      const { map } = generateMap(seed, 320, 240, 'town');
+      const { map } = generateMap(seed, 320, 240, 'open');
       const pi = new PatchIndex(map);
       const tilesOf = new Map<number, [number, number][]>();
       for (let y = 0; y < map.h; y++) {
@@ -72,7 +72,7 @@ describe('PatchIndex', () => {
 
   it('is byte-identical across two constructions of the same map', () => {
     for (const seed of SEEDS) {
-      const { map } = generateMap(seed, 320, 240, 'town');
+      const { map } = generateMap(seed, 320, 240, 'open');
       const a = new PatchIndex(map);
       const b = new PatchIndex(map);
       expect(a.id).toEqual(b.id);
@@ -82,15 +82,32 @@ describe('PatchIndex', () => {
     }
   });
 
-  it('junctions sit on road tiles and the squares are exactly the built-up ones', () => {
+  it('junctions sit on road tiles, and every built-up one is paved by a square', () => {
+    // This asserted a COUNT equality — one square per built-up junction — while
+    // it read the legacy 'town' generator, which never made a place. It reads
+    // 'open' since the mapgen-v3 P6 retirement, and equality is the wrong
+    // relation for any kind that can: every crossing standing in the same place
+    // collapses onto that place's one rectangle (patches.ts placeNear), so on
+    // seeds 11 and 23 ten qualifying junctions yield seven squares. Measured
+    // over these ten seeds: 'open' forms a place on 2, 'road' and 'bourg' on
+    // all 10, 'woods' on none.
+    //
+    // Coverage is the relation that actually holds and it is the stronger
+    // claim, because it survives the collapse instead of being defeated by it:
+    // no built-up junction goes unpaved, and no square exists without a
+    // junction to justify it.
     for (const seed of SEEDS) {
-      const { map } = generateMap(seed, 320, 240, 'town');
+      const { map } = generateMap(seed, 320, 240, 'open');
       const pi = new PatchIndex(map);
       for (const j of pi.junctions) {
         expect(map.terrainKeyAt(Math.floor(j.x), Math.floor(j.y))).toBe('road');
         expect(map.isBridge(Math.floor(j.x), Math.floor(j.y))).toBe(false);
       }
-      expect(pi.squares.length).toBe(pi.junctions.filter((j) => j.buildings >= 4).length);
+      const built = pi.junctions.filter((j) => j.buildings >= 4);
+      for (const j of built)
+        expect([seed, j.x, j.y, pi.pavedAt(Math.floor(j.x), Math.floor(j.y)) > 0]).toEqual([seed, j.x, j.y, true]);
+      expect([seed, pi.squares.length <= built.length]).toEqual([seed, true]);
+      expect([seed, pi.squares.length > 0]).toEqual([seed, built.length > 0]);
     }
   });
 
@@ -103,7 +120,7 @@ describe('PatchIndex', () => {
     // asserts the common case, not all ten.
     let hit = 0;
     for (const seed of SEEDS) {
-      const plan = generateMap(seed, 320, 240, 'town');
+      const plan = generateMap(seed, 320, 240, 'open');
       const pi = new PatchIndex(plan.map);
       const cross = plan.objectives[0];
       const near = pi.junctions.filter((j) => Math.hypot(j.x - cross.x, j.y - cross.y) <= 5);
@@ -112,27 +129,14 @@ describe('PatchIndex', () => {
     expect(hit).toBeGreaterThanOrEqual(7);
   });
 
-  // T19. The place ramp is a rounded rectangle whose corner radius is
-  // min(rx, ry), so a square square is the disc it always was. That is the
-  // whole legacy-safety argument and it is worth an exact assertion rather
-  // than an art baseline: a re-snapshotted crop is an invisible regression.
-  it('leaves every legacy kind paving exactly the disc it did before T19', () => {
-    const disc = (sq: { cx: number; cy: number; rx: number }[], x: number, y: number) => {
-      let a = 0;
-      for (const s of sq) a = Math.max(a, Math.min(0.88, (s.rx - Math.hypot(x + 0.5 - s.cx, y + 0.5 - s.cy)) / 3.5));
-      return Math.max(0, a);
-    };
-    for (const kind of ['town', 'road', 'bridge', 'river'] as const) {
-      for (const seed of [1, 3, 7, 11]) {
-        const { map } = generateMap(seed, 320, 240, kind);
-        const pi = new PatchIndex(map);
-        for (const s of pi.squares) expect(s.rx).toBe(s.ry);
-        for (let y = 0; y < map.h; y += 3) {
-          for (let x = 0; x < map.w; x += 3) expect(pi.pavedAt(x, y)).toBe(disc(pi.squares, x, y));
-        }
-      }
-    }
-  }, 20_000);
+  // DELETED at the mapgen-v3 P6 retirement: 'leaves every legacy kind paving
+  // exactly the disc it did before T19'. T19's rounded rectangle degenerates to
+  // the pre-T19 disc when rx === ry, and the test held every kind the blob
+  // pipeline drew to that degenerate case, because none of them made a place.
+  // 'road' left it at P2, 'open' at P3, 'woods' at P4, the water kinds at P5 —
+  // each has junction geometry of its own now and is asserted below or in the
+  // enclosure battery — and 'town' was the last one. There is no kind left that
+  // paves only discs, so the assertion has no subject rather than a weaker one.
 
   it('gives the bourg place one elongated square instead of a chain of discs', () => {
     for (const seed of [10, 11, 12]) {
@@ -152,9 +156,28 @@ describe('PatchIndex', () => {
     }
   }, 20_000);
 
+  it('gives the road place one square whose ends are paved', () => {
+    // The T19 property that carries over to the linear village: one widening,
+    // and the paving reaches its ends rather than stopping at the pre-T19 11 m
+    // cap. The bourg's elongation ratio does NOT carry over and is deliberately
+    // absent — a road place is 16-23 columns against 11-17 rows
+    // (KindProfile.placeLen), so it is a bulge in the rue and comes out nearly
+    // square: measured 1.06-1.90 over seeds 1, 3, 7, 11, against paved spans of
+    // 50-78.
+    for (const seed of [1, 3, 7, 11]) {
+      const { map } = generateMap(seed, 320, 240, 'road');
+      const pi = new PatchIndex(map);
+      const wide = pi.squares.filter((s) => s.rx !== s.ry);
+      expect([seed, wide.length]).toEqual([seed, 1]);
+      let span = 0;
+      for (let x = 0; x < map.w; x++) if (pi.pavedAt(x, Math.round(wide[0].cy)) > 0.3) span++;
+      expect([seed, span > 24]).toEqual([seed, true]);
+    }
+  }, 20_000);
+
   it('building boxes match buildingIdAt bounds exactly', () => {
     for (const seed of SEEDS) {
-      const { map } = generateMap(seed, 320, 240, 'town');
+      const { map } = generateMap(seed, 320, 240, 'open');
       const pi = new PatchIndex(map);
       const seen = new Map<number, [number, number, number, number]>();
       for (let y = 0; y < map.h; y++) {

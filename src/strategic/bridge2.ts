@@ -17,6 +17,9 @@ import { pushEvent, type CoarseBattle, type FrontV2 } from './theater/force';
 import { forceById, retreatForce, RETREAT_SETBACK_M } from './theater/war';
 import { edgeById } from './theater/force';
 import { syncStrengthsV2 } from './theater/sync';
+import { SUPPLY_AMMO_MULT, supplyTierOf } from './theater/supply';
+import { FATIGUE_STAMINA_SLOPE } from './theater/step';
+import { FOUGHT_BATTLE_FATIGUE } from './theater/war';
 
 export interface TheaterBattle {
   sim: Sim;
@@ -66,6 +69,34 @@ export function makeTheaterBattle(c: Campaign, front: FrontV2, battle: CoarseBat
   } as unknown as Front;
 
   const staged = makeStrategicBattle(c, adapter, { attackerId: 0, defenderId: 1, cell: 1 }, seed);
+  // S50 supply: staging ammo scales 100/50/25 by each side's OWN tier, ammo
+  // AND ammoStart together — ammoStart is areaFire's discipline denominator,
+  // and scaling only the pool would silently kill MG suppression (hazard R1).
+  // Zero rng, post-staging, full tier returns untouched — the pinned staging
+  // path stays byte-identical when nobody is cut off.
+  for (const f of [atk, def]) {
+    const mult = SUPPLY_AMMO_MULT[supplyTierOf(f.untracedMin)];
+    if (mult >= 1) continue;
+    for (const s of staged.sim.soldiers) {
+      if (s.side !== f.side) continue;
+      let start = 0;
+      for (const k of Object.keys(s.ammo) as (keyof typeof s.ammo)[]) {
+        if (s.ammo[k]) s.ammo[k] = Math.max(1, Math.floor(s.ammo[k]! * mult));
+        start += s.ammo[k] ?? 0;
+      }
+      s.ammoStart = start;
+    }
+  }
+  // S51 fatigue: a worn force fields tired men — stamina capped at
+  // 1 - 0.5 x fatigue, the exact FORD_STAMINA shape (min, never set), zero
+  // rng, fresh forces untouched.
+  for (const f of [atk, def]) {
+    const cap = 1 - FATIGUE_STAMINA_SLOPE * f.fatigue;
+    if (cap >= 1) continue;
+    for (const s of staged.sim.soldiers) {
+      if (s.side === f.side) s.stamina = Math.min(s.stamina, cap);
+    }
+  }
   const siteName =
     battle.site.kind === 'node'
       ? front.theater.nodes[battle.site.nodeId].name
@@ -95,6 +126,10 @@ export function applyTheaterOutcome(
   const redLosses = sim.soldiers.filter((s) => s.side === 'red' && (!s.alive || s.downed)).length;
   const redForce = atk.side === 'red' ? atk : def;
   redForce.strength = Math.max(0, redForce.strength - redLosses);
+
+  // S51: a fought battle wears harder than a coarse one.
+  atk.fatigue = Math.min(1, atk.fatigue + FOUGHT_BATTLE_FATIGUE);
+  def.fatigue = Math.min(1, def.fatigue + FOUGHT_BATTLE_FATIGUE);
 
   atk.engagedIn = null;
   def.engagedIn = null;
