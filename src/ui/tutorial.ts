@@ -134,7 +134,10 @@ export const STEPS: readonly Step[] = [
     showOn: ['deploy-commit'],
     doneOn: null,
     requires: 'deploy',
-    anchor: { desktop: '#squads', touch: '#touchbar' },
+    // The desktop anchor is the key-hint bar, not the roster panel: #squads is
+    // full-viewport-height chrome, so a bubble hung off it has nowhere to sit,
+    // and #hint is where the ⇧1–⇧8 bindings this step names are already listed.
+    anchor: { desktop: '#hint', touch: '#touchbar' },
     text: {
       desktop: `Your orders arm with ${ORDER_KEY_RANGE}. The menu holds the Field Manual — it explains when each order is right.`,
       touch: 'Tap a squad, then an order chip. The ⚙ menu holds the Field Manual — it explains when each order is right.',

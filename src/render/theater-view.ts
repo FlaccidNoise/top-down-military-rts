@@ -275,10 +275,13 @@ export class TheaterView {
     void paused;
     void speed;
     if (this.flashText && performance.now() < this.flashUntil) {
+      // Under the top bar is unreadable, and that bar wraps to two rows on a
+      // phone — so its height is measured, never assumed.
+      const bar = typeof document === 'undefined' ? null : document.querySelector('#theater-hud .th-top')?.getBoundingClientRect();
       ctx.textAlign = 'center';
       ctx.fillStyle = '#e8dcc4';
       ctx.font = '13px ui-monospace, monospace';
-      ctx.fillText(this.flashText, w / 2, 24);
+      ctx.fillText(this.flashText, w / 2, bar && bar.height > 0 ? bar.bottom + 20 : 24);
     }
   }
 

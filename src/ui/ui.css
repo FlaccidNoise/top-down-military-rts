@@ -1463,7 +1463,22 @@ html.mobile #floormenu .fm-row { padding: 12px 16px; }
     padding: 6px 8px;
     font-size: 11px;
   }
-  #theater-hud .th-log { max-height: 22vh; }
+  /* The company card and the event log take a bottom corner each on a desktop,
+     and at 390px the two corners are the same place. Stack them: the layer
+     becomes a bottom-aligned column and both panels rejoin the flow. */
+  #theater-hud {
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    gap: 6px;
+  }
+  #theater-hud .th-force,
+  #theater-hud .th-log {
+    position: static;
+    width: auto;
+    margin: 0 4px;
+  }
+  #theater-hud .th-log { max-height: 22vh; margin-bottom: 4px; }
 }
 
 /* ---- customize campaign ---- */

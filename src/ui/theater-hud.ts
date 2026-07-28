@@ -2,14 +2,22 @@
 // keyboard is a shortcut, never the only path), day/clock, objective count,
 // the selected force card, and the §3.9 event scrollback. DOM overlay per
 // the hybrid doctrine; rebuilds are signature-throttled like StratHud.
+import { MOBILE } from '../render/view';
+
 import type { WarGoals } from '../strategic/goals';
 import type { Force, FrontV2 } from '../strategic/theater/force';
 
 const SPEED_LABELS = ['1×', '10×', '60×'];
+// The first line a new player reads, and it must name the input they have.
+const EMPTY_LOG = MOBILE
+  ? 'No contact yet — tap a company, then press and hold a town to advance.'
+  : 'No contact yet — select a company and right-click a town to advance.';
 
 export interface TheaterHudCallbacks {
   togglePause(): void;
   setSpeed(idx: number): void;
+  /** Save, keybinds and the Field Manual, from the strategic phase. */
+  openMenu(): void;
 }
 
 export class TheaterHud {
@@ -22,6 +30,7 @@ export class TheaterHud {
     this.root.style.display = 'none';
     document.body.appendChild(this.root);
     this.root.addEventListener('click', (e) => {
+      if ((e.target as HTMLElement).closest('[data-th="menu"]')) { this.cb.openMenu(); return; }
       const btn = (e.target as HTMLElement).closest('[data-clock]');
       if (!btn) return;
       const v = btn.getAttribute('data-clock')!;
@@ -80,9 +89,10 @@ export class TheaterHud {
         <span class="th-controls">
           <button class="hbtn st-pause${paused ? ' active' : ''}" data-clock="pause">${paused ? '▶ Resume' : '⏸ Pause'}</button>
           ${speeds}
+          <button class="hbtn th-menu" data-th="menu" title="Menu, keybinds and the Field Manual">⚙</button>
         </span>
       </div>
       ${selCard}
-      <div class="panel th-log">${log || '<div class="th-ev">No contact yet — select a company and right-click a town to advance.</div>'}</div>`;
+      <div class="panel th-log">${log || `<div class="th-ev">${EMPTY_LOG}</div>`}</div>`;
   }
 }

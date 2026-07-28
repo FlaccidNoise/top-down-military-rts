@@ -69,20 +69,29 @@ export class Coach {
     el.style.transform = 'translateX(-50%)';
     el.style.zIndex = '20';
     document.body.appendChild(el);
-    // clamp horizontally, and flip above the target when anchoring below would
-    // push the bubble off the bottom — which is every coachmark on a phone,
-    // where the thing being explained is the bottom touch bar.
-    requestAnimationFrame(() => {
-      const cr = el.getBoundingClientRect();
-      const vw = window.innerWidth;
-      const l = parseFloat(el.style.left);
-      if (cr.left < 8) el.style.left = `${l + 8 - cr.left}px`;
-      if (cr.right > vw - 8) el.style.left = `${l - (cr.right - (vw - 8))}px`;
-      if (cr.bottom > window.innerHeight - 8) {
-        el.classList.add('above');
-        el.style.top = `${r.top + window.scrollY - cr.height - 8}px`;
-      }
-    });
+    // Measured and placed in the same task as the append: a bubble corrected one
+    // frame later renders once in the wrong place, and anything reading its rect
+    // before that frame reads a lie.
+    const cr = el.getBoundingClientRect();
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const l = parseFloat(el.style.left);
+    if (cr.left < 8) el.style.left = `${l + 8 - cr.left}px`;
+    else if (cr.right > vw - 8) el.style.left = `${l - (cr.right - (vw - 8))}px`;
+    // Below the target by default. Flip above only when below runs off the
+    // bottom AND the bubble fits up there: anchoring to full-height chrome
+    // (#squads) leaves no room either way, and a bubble flipped off the TOP
+    // loses the first line — the one the player has not read yet. When neither
+    // side fits whole, clamp so the text starts on screen.
+    const below = r.bottom + 8;
+    const above = r.top - cr.height - 8;
+    const fitsBelow = below + cr.height <= vh - 8;
+    if (!fitsBelow && above >= 8) {
+      el.classList.add('above');
+      el.style.top = `${above + window.scrollY}px`;
+    } else if (!fitsBelow) {
+      el.style.top = `${Math.max(8, vh - 8 - cr.height) + window.scrollY}px`;
+    }
     this.currentEl = el;
   }
 

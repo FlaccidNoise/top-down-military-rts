@@ -380,14 +380,7 @@ const hud = new Hud({
   },
   cancel: () => { escapeLadder(); },
   cycleFloor: () => { cycleFloorFocus(); },
-  openMenu: () => {
-    if (menu.isOpen) { menu.close(); return; }
-    pauseBeforeMenu = mode === 'strategic' ? stratPaused : paused;
-    if (mode === 'strategic') stratPaused = true;
-    else paused = true;
-    menu.setKeymap(loadKeymap(localStorage));
-    menu.open();
-  },
+  openMenu: () => { openPauseMenu(); },
 });
 // Two stacked fixed bottom layers (touch bar + roster sheet) have to agree on
 // one height, and the bar's own height changes when the order-chip row comes
@@ -406,6 +399,7 @@ const stratHud = new StratHud({
 const theaterHud = new TheaterHud({
   togglePause: () => { stratPaused = !stratPaused; tutorial?.notify('speed-changed'); },
   setSpeed: (i) => { speedIdx = i; tutorial?.notify('speed-changed'); },
+  openMenu: () => { openPauseMenu(); },
 });
 const tooltip = new Tooltip(hud.root);
 const healthPanel = new HealthPanel(hud.root, () => { inspectedSoldier = -1; });
@@ -424,6 +418,21 @@ const menu = new PauseMenu({
   onFieldManual: () => { manual.open(); },
 });
 menu.setKeymap(loadKeymap(localStorage));
+
+/**
+ * The one door to the pause menu. The battle ⚙, the theater ⚙ and Esc with
+ * nothing left to cancel all come through here, and each stops the clock it
+ * found running — the theater's, or the battle's.
+ */
+function openPauseMenu(): void {
+  if (menu.isOpen) { menu.close(); return; }
+  pauseBeforeMenu = mode === 'strategic' ? stratPaused : paused;
+  if (mode === 'strategic') stratPaused = true;
+  else paused = true;
+  menu.setKeymap(loadKeymap(localStorage));
+  menu.open();
+}
+
 // The tutorial driver teaches over the live game. It does not exist at all on
 // the pinned art path: ?camp= must render byte-identical frames forever.
 const tutorial = campPinned
@@ -1531,13 +1540,7 @@ window.addEventListener('keydown', (e) => {
   }
   if (action === 'mute') { audio.toggleMute(); return; }
   if (action === 'menu' || action === 'cancel') {
-    if (!escapeLadder()) {
-      pauseBeforeMenu = mode === 'strategic' ? stratPaused : paused;
-      if (mode === 'strategic') stratPaused = true;
-      else paused = true;
-      menu.setKeymap(km);
-      menu.open();
-    }
+    if (!escapeLadder()) openPauseMenu();
     return;
   }
   
@@ -1814,19 +1817,30 @@ function frame(now: number): void {
       ctx.lineWidth = 2;
       ctx.strokeRect(zx0, zy0, zx1 - zx0, zy1 - zy0);
       ctx.setLineDash([]);
-      // Below the battle HUD's top chrome, never under it.
-      const strip = document.getElementById('obj-strip')?.getBoundingClientRect();
-      const by = strip && strip.height > 0 ? strip.bottom + 6 : 40;
-      ctx.fillStyle = 'rgba(20, 18, 12, 0.85)';
-      const bw = Math.min(680, view.w - 20);
-      ctx.fillRect((view.w - bw) / 2, by, bw, deployMsg && performance.now() < deployMsgUntil ? 46 : 30);
-      ctx.fillStyle = '#e8dcc4';
+      // Centred on the CLEAR viewport, not the canvas. The roster panel owns
+      // the left ~270px and a one-time coachmark can own the top-right corner,
+      // so a banner centred on the canvas reads clipped at both ends — the same
+      // measured-inset rule the boot framing follows.
+      const inset = viewportInset();
+      const by = inset.top > 0 ? inset.top + 6 : 40;
+      const showMsg = deployMsg !== '' && performance.now() < deployMsgUntil;
+      const bh = showMsg ? 46 : 30;
+      const bubble = document.querySelector('.coach')?.getBoundingClientRect();
+      const right = bubble && bubble.height > 0 && bubble.top < by + bh ? bubble.left - 8 : view.w;
+      const text = MOBILE
+        ? 'DEPLOYMENT — tap a squad, press and hold to reposition inside your zone · Resume to begin'
+        : 'DEPLOYMENT — select squads, right-click to reposition inside your zone · Resume to begin';
       ctx.font = '12px ui-monospace, monospace';
       ctx.textAlign = 'center';
-      ctx.fillText('DEPLOYMENT — select squads, right-click (press-hold on touch) to reposition inside your zone · Resume to begin', view.w / 2, by + 19);
-      if (deployMsg && performance.now() < deployMsgUntil) {
+      const bw = Math.min(right - inset.left - 20, ctx.measureText(text).width + 20);
+      const bx = (inset.left + right) / 2;
+      ctx.fillStyle = 'rgba(20, 18, 12, 0.85)';
+      ctx.fillRect(bx - bw / 2, by, bw, bh);
+      ctx.fillStyle = '#e8dcc4';
+      ctx.fillText(text, bx, by + 19);
+      if (showMsg) {
         ctx.fillStyle = '#d8a878';
-        ctx.fillText(deployMsg, view.w / 2, by + 37);
+        ctx.fillText(deployMsg, bx, by + 37);
       }
     }
     drawOverlays(ctx, cam, sim, {
