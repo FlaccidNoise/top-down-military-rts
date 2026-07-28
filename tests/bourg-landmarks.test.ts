@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { RESV, reserveLandmarks, type Landmarks } from '../src/sim/bourg/landmarks';
+import { BOURG } from '../src/sim/bourg/profile';
 import { buildSkeleton, growMinorStreets, type Skeleton } from '../src/sim/bourg/streets';
 
 // T5: stage-4 landmark reservation. Runs between the skeleton and the growth
@@ -10,7 +11,7 @@ const base = (seed: number): number => (seed * 0x9e3779b1) >>> 1;
 const SEEDS = Array.from({ length: 20 }, (_, i) => i + 1);
 
 function reserve(seed: number, w = 320, h = 240): { sk: Skeleton; land: Landmarks } {
-  const sk = buildSkeleton(base(seed), w, h);
+  const sk = buildSkeleton(base(seed), w, h, BOURG);
   const land = reserveLandmarks(sk);
   return { sk, land };
 }

@@ -8,6 +8,7 @@
 //                                          [--kinds] [--stages]
 import { generateMap, validate } from '../src/sim/mapgen';
 import { planBourg, stampBourg } from '../src/sim/bourg/plan';
+import { BOURG } from '../src/sim/bourg/profile';
 import { buildObjectives } from '../src/sim/bourg/objectives';
 import { GameMap } from '../src/sim/map';
 import { mulberry32 } from '../src/sim/rng';
@@ -36,7 +37,7 @@ function attempt0(seed) {
   const rng = mulberry32((seed ^ 0x51ab3fc7) + 0 * 0x9e3779b9);
   const base = rng.int(0x7fffffff);
   const t0 = performance.now();
-  const plan = planBourg(base, W, H);
+  const plan = planBourg(base, W, H, BOURG);
   const t1 = performance.now();
   const map = new GameMap(W, H);
   const st = stampBourg(map, plan);

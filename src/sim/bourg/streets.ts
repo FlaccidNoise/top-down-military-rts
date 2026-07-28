@@ -1,5 +1,6 @@
 import type { Rect, Vec } from '../mapgen';
 import { mulberry32, type Rng } from '../rng';
+import type { KindProfile } from './profile';
 
 // Bourg street skeleton — stages 1, 2, 3 and 5 of
 // docs/plans/2026-07-26-town-gen-design.md (T4). Pure geometry: this module
@@ -69,6 +70,7 @@ export interface Skeleton {
   w: number;
   h: number;
   base: number;
+  profile: KindProfile; // every later stage reads its own fields off this
   archetype: Archetype;
   env: Rect; // R_env — the town envelope, [x, x+w) x [y, y+h)
   place: Vec; // the carrefour: always a road tile on the Grande Rue
@@ -108,17 +110,10 @@ export const DENS_FRINGE = 90;
 
 // §1.1 archetype weights, as integers out of 100 — a float comparator here
 // would be the one place in the pipeline where a rounding difference flips a
-// whole town.
-const ARCHETYPE_W: [Archetype, number][] = [
-  ['carrefour', 35],
-  ['bourgRue', 35],
-  ['enclos', 20],
-  ['faubourg', 10],
-];
-
-function pickArchetype(r: Rng): Archetype {
+// whole town. The weights themselves are per-kind (KindProfile.archetypeW).
+function pickArchetype(r: Rng, weights: [Archetype, number][]): Archetype {
   let k = r.int(100);
-  for (const [name, weight] of ARCHETYPE_W) {
+  for (const [name, weight] of weights) {
     if (k < weight) return name;
     k -= weight;
   }
@@ -214,7 +209,7 @@ function arterialVerts(roadY: Int32Array, x0: number, x1: number): Vec[] {
 
 // ── stages 1-3 ───────────────────────────────────────────────────────────────
 
-export function buildSkeleton(base: number, w: number, h: number): Skeleton {
+export function buildSkeleton(base: number, w: number, h: number, profile: KindProfile): Skeleton {
   const S = (tag: number): Rng => subStream(base, tag);
   const road = new Uint8Array(w * h);
   const segs: Seg[] = [];
@@ -223,10 +218,10 @@ export function buildSkeleton(base: number, w: number, h: number): Skeleton {
   // Stage 1a — archetype and envelope dims. Drawn BEFORE the arterial because
   // placeY reads roadY: the literal order is archetype+dims, arterial, place.
   const r1 = S(TAG.ENVELOPE);
-  const archetype = pickArchetype(r1);
+  const archetype = pickArchetype(r1, profile.archetypeW);
   const placeXRaw = Math.round(w * r1.range(0.42, 0.6));
-  const envW = Math.min(70 + r1.int(41), w - 12);
-  const envH = Math.min(55 + r1.int(31), h - 12);
+  const envW = Math.min(profile.envW[0] + r1.int(profile.envW[1]), w - 12);
+  const envH = Math.min(profile.envH[0] + r1.int(profile.envH[1]), h - 12);
 
   // Stage 2 — the regional arterial, the legacy drifting walk (mapgen.ts:57-63)
   // on its own sub-stream. The drift clamp is tightened from [10, h-11] to the
@@ -259,7 +254,7 @@ export function buildSkeleton(base: number, w: number, h: number): Skeleton {
   const place: Vec = { x: clamp(placeX, ex0 + 8, ex1 - 8), y: placeY };
   const densQ8 = (x: number, y: number): number => {
     const d = Math.max(Math.abs(x - place.x), Math.abs(y - place.y));
-    return (65536 / (256 + 12 * d)) | 0;
+    return (65536 / (256 + profile.densFalloff * d)) | 0;
   };
 
   const addStreet = (tiles: Vec[], width: 1 | 2 | 3, rank: 0 | 1 | 2 | 3, t: number): Street | null => {
@@ -448,6 +443,7 @@ export function buildSkeleton(base: number, w: number, h: number): Skeleton {
     w,
     h,
     base,
+    profile,
     archetype,
     env,
     place,
@@ -484,16 +480,15 @@ export function grandeRueRunAt(grandeRue: Seg[], x: number): Seg | null {
 
 // ── stage 5 — minor streets ──────────────────────────────────────────────────
 
-const MAX_STREETS = 24; // §2.2 stage 5: the growth loop's hard cap
-// …and its floor. The doc caps the loop and says nothing about a minimum, but
-// the branch schedule (one attempt per 18-32 tiles, p 0.55) can legitimately
-// produce a 71x80 'bourgRue' envelope with THREE streets in it — measured on
-// seed 5 — which yields 12 plots and cannot reach §5.2's ">= 40 buildings".
-// So the growth schedule gets a bounded reroll, the same shape as stage 10's
-// gate reroll and stage 12's attempt reroll: up to two extra rounds that
-// re-root the rank-0/1 streets and take every branch offered. Still one
-// sub-stream, still deterministic, still capped.
-const MIN_STREETS = 9;
+// §2.2 stage 5: the growth loop's hard cap is KindProfile.maxStreets, and
+// KindProfile.minStreets is its floor. The doc caps the loop and says nothing
+// about a minimum, but the branch schedule (one attempt per 18-32 tiles, p
+// 0.55) can legitimately produce a 71x80 'bourgRue' envelope with THREE streets
+// in it — measured on seed 5 — which yields 12 plots and cannot reach §5.2's
+// ">= 40 buildings". So the growth schedule gets a bounded reroll, the same
+// shape as stage 10's gate reroll and stage 12's attempt reroll: up to two
+// extra rounds that re-root the rank-0/1 streets and take every branch offered.
+// Still one sub-stream, still deterministic, still capped.
 const GROWTH_ROUNDS = 3;
 const SNAP_RADIUS = 4; // the single most important number in localConstraints
 const PARALLEL_SPACING = 8; // reject a proposal running alongside an existing road
@@ -522,6 +517,7 @@ export interface GrowthInput {
  */
 export function growMinorStreets(sk: Skeleton, input: GrowthInput): void {
   const { w, h, road, segs, streets } = sk;
+  const { minStreets, maxStreets } = sk.profile;
   const { resv } = input;
   const r5 = sk.S(TAG.MINOR);
   const ex0 = sk.env.x;
@@ -563,7 +559,7 @@ export function growMinorStreets(sk: Skeleton, input: GrowthInput): void {
 
   for (; round < GROWTH_ROUNDS; round++) {
     if (round > 0) {
-      if (streets.length >= MIN_STREETS) break;
+      if (streets.length >= minStreets) break;
       for (const st of streets) if (st.rank <= 1) {
         st.cursor = 0;
         pq.push({ st, seq: seq++ });
@@ -573,7 +569,7 @@ export function growMinorStreets(sk: Skeleton, input: GrowthInput): void {
   }
 
   function growRound(): void {
-  while (streets.length < MAX_STREETS) {
+  while (streets.length < maxStreets) {
     const e = pop();
     if (!e) break;
     const parent = e.st;
@@ -698,7 +694,7 @@ export function growMinorStreets(sk: Skeleton, input: GrowthInput): void {
     // TANGENT street hugging the reservation boundary. That is the mechanism
     // behind the characteristic ring of streets around a churchyard, and for
     // 'enclos' it is the archetype's entire signature — no special case.
-    if (hitResv > 0 && streets.length < MAX_STREETS) {
+    if (hitResv > 0 && streets.length < maxStreets) {
       // the LAST FREE tile, not the reserved one: the tangent has to run along
       // the boundary and share a tile with the street that stopped there, or it
       // is an isolated line of road inside the reservation

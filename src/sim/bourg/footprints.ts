@@ -65,11 +65,12 @@ const MIN_AVAIL = 4;
 const MIN_BODY = 3;
 const MIN_WIDTH = 4;
 // §5.2's "<= 90 buildings — the bound catches a runaway parcelizer", enforced
-// where it belongs rather than asserted after the fact. Measured yield over
-// seeds 1-20 at 320x240 is 40-83 before T9's outlying farms add up to six more,
-// so the cap binds on the densest seeds only, and it sheds block-interior sheds
-// before it sheds frontage.
-const MAX_BUILDINGS = 80;
+// where it belongs rather than asserted after the fact, and per-kind
+// (KindProfile.maxBuildings). Measured bourg yield over seeds 1-20 at 320x240
+// is 40-83 before T9's outlying farms add up to six more, so the cap binds on
+// the densest seeds only, and it sheds block-interior sheds before it sheds
+// frontage.
+//
 // A rank-0 frontage stays terraced well past the 0.35 density line: the Grande
 // Rue IS the village in a 'bourgRue', and a high street that dissolves into
 // detached cottages 39 tiles from the church is not one. 64 in Q8 is ~62 tiles
@@ -191,6 +192,7 @@ function anyDoor(
 
 export function buildFootprints(sk: Skeleton, land: Landmarks, pc: Parcels): Footprints {
   const { w, h } = sk;
+  const { maxBuildings } = sk.profile;
   const r9 = sk.S(TAG.FOOTPRINT);
   const occ = new Uint8Array(w * h);
   const buildings: Building[] = [];
@@ -234,7 +236,7 @@ export function buildFootprints(sk: Skeleton, land: Landmarks, pc: Parcels): Foo
   let chainIdx = -2;
 
   pc.plots.forEach((p, plotIndex) => {
-    if (buildings.length >= MAX_BUILDINGS) return;
+    if (buildings.length >= maxBuildings) return;
     const avail = p.d - p.setback;
     if (avail < MIN_AVAIL || p.w < MIN_WIDTH) return;
     const core = p.densQ8 > DENS_CORE;
@@ -377,7 +379,7 @@ export function buildFootprints(sk: Skeleton, land: Landmarks, pc: Parcels): Foo
   // built on the outermost ring — setHEdge/setVEdge do no bounds test
   // (map.ts:77-83) and a wall one tile off the grid lands on the far side of it.
   for (const it of pc.interiors) {
-    if (buildings.length >= MAX_BUILDINGS) break;
+    if (buildings.length >= maxBuildings) break;
     // Interiors get the same continuity roll as frontage. Without it the
     // recursive AABB split of a big block hands back a dozen 9x9 parcels and
     // each one grows a two-mass yard: a grid of identical sheds, which is

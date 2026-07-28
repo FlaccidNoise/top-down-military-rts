@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { buildFootprints, type Footprints } from '../src/sim/bourg/footprints';
 import { reserveLandmarks, RESV, type Landmarks } from '../src/sim/bourg/landmarks';
 import { buildParcels, plotRect, type Parcels } from '../src/sim/bourg/parcels';
+import { BOURG } from '../src/sim/bourg/profile';
 import { partsOf, stampStructure } from '../src/sim/bourg/stamp';
 import { buildSkeleton, growMinorStreets, type Skeleton } from '../src/sim/bourg/streets';
 import { GameMap } from '../src/sim/map';
@@ -25,7 +26,7 @@ interface Town {
 }
 
 function build(seed: number, w = W, h = H): Town {
-  const sk = buildSkeleton(base(seed), w, h);
+  const sk = buildSkeleton(base(seed), w, h, BOURG);
   const land = reserveLandmarks(sk);
   growMinorStreets(sk, { resv: land.resv });
   const pc = buildParcels(sk, land.resv);
@@ -163,7 +164,7 @@ describe('bourg footprints (T7)', () => {
   it('yields a town, not a hamlet and not a runaway', () => {
     // T7's own yield, before T9's outlying farms add two to six more. §5.2's
     // ">= 40, <= 90" is asserted post-rural in tests/bourg-rural.test.ts;
-    // measured here over 40 seeds the range is 38-77 with MAX_BUILDINGS at 80.
+    // measured here over 40 seeds the range is 38-77 with maxBuildings at 80.
     const counts = SEEDS.map((seed) => town(seed).fp.buildings.length);
     expect(Math.min(...counts)).toBeGreaterThanOrEqual(36);
     expect(Math.max(...counts)).toBeLessThanOrEqual(80);

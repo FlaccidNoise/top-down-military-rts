@@ -87,6 +87,9 @@ function reserveChurchyard(
   resv: Uint8Array,
 ): { rect: Rect; chamfer: number } | null {
   const { w, h, place } = sk;
+  // The bourg always attempts a church and takes no roll for it, so 100 means
+  // "no draw" — see KindProfile.churchPct. Same rule in reserveForecourt.
+  if (sk.profile.churchPct < 100 && r4.int(100) >= sk.profile.churchPct) return null;
   const side = 24 + r4.int(11);
   const qx = r4.next() < 0.5 ? -1 : 1;
   const qy = r4.next() < 0.5 ? -1 : 1;
@@ -184,9 +187,10 @@ function widenPlace(sk: Skeleton, r4: Rng, resv: Uint8Array): Rect {
 
 // ── 3. market infill island ──────────────────────────────────────────────────
 //
-// p 0.6. The highest ratio of recognisability to code in the whole document: a
-// terraced island dropped off-centre in the widened area splits the place into
-// two lanes, which is what every surviving Norman market square looks like.
+// p = KindProfile.marketPct/100, 0.6 for the bourg. The highest ratio of
+// recognisability to code in the whole document: a terraced island dropped
+// off-centre in the widened area splits the place into two lanes, which is what
+// every surviving Norman market square looks like.
 function reserveMarket(
   sk: Skeleton,
   r4: Rng,
@@ -199,7 +203,7 @@ function reserveMarket(
   const ih = 5 + r4.int(4);
   const off = 2 + r4.int(5);
   const sign = r4.next() < 0.5 ? -1 : 1;
-  if (roll >= 0.6) return null;
+  if (roll >= sk.profile.marketPct / 100) return null;
   // >= 3 tiles of lane on both flanks, in both axes
   if (ih + 6 > placeRect.h || iw + 6 > placeRect.w) return null;
   const cx = placeRect.x + ((placeRect.w - iw) >> 1) + sign * off;
@@ -231,6 +235,7 @@ function reserveForecourt(
   churchyard: Rect | null,
 ): Rect | null {
   const { w, h, road } = sk;
+  if (sk.profile.forecourtPct < 100 && r4.int(100) >= sk.profile.forecourtPct) return null;
   const fw = 10;
   const fh = 8;
   const jitter = r4.int(9) - 4;

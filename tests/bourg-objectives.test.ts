@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { bourgSpawns, buildObjectives, GARRISON_RADIUS } from '../src/sim/bourg/objectives';
 import { planBourg, stampBourg, type BourgPlan, type BourgStamp } from '../src/sim/bourg/plan';
+import { BOURG } from '../src/sim/bourg/profile';
 import { GameMap } from '../src/sim/map';
 import type { ObjectiveKind, Vec } from '../src/sim/mapgen';
 
@@ -22,7 +23,7 @@ interface Town {
 }
 
 function build(seed: number, w = W, h = H): Town {
-  const plan = planBourg(base(seed), w, h);
+  const plan = planBourg(base(seed), w, h, BOURG);
   const map = new GameMap(w, h);
   const stamp = stampBourg(map, plan);
   map.maxStories = stamp.maxStories;

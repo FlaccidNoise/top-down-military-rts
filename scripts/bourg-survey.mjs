@@ -2,6 +2,7 @@
 // for the numbers §5.2/§5.5 assert against. Run with:
 //   npx vite-node scripts/bourg-survey.mjs -- [--seeds 20] [--w 320] [--h 240]
 import { planBourg, stampBourg } from '../src/sim/bourg/plan';
+import { BOURG } from '../src/sim/bourg/profile';
 import { buildObjectives } from '../src/sim/bourg/objectives';
 import { GameMap } from '../src/sim/map';
 
@@ -17,7 +18,7 @@ const base = (s) => (s * 0x9e3779b1) >>> 1;
 const cols = { bld: [], terrace: [], obj: [], walls: [], gates: [], span: [], lanes: [], hedge: [], stands: [], ms: [] };
 for (let s = 1; s <= N; s++) {
   const t0 = performance.now();
-  const plan = planBourg(base(s), W, H);
+  const plan = planBourg(base(s), W, H, BOURG);
   const map = new GameMap(W, H);
   const st = stampBourg(map, plan);
   map.maxStories = st.maxStories;

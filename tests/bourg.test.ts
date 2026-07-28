@@ -7,6 +7,7 @@ import { partsOf } from '../src/sim/bourg/stamp';
 import { buildFootprints } from '../src/sim/bourg/footprints';
 import { reserveLandmarks } from '../src/sim/bourg/landmarks';
 import { buildParcels } from '../src/sim/bourg/parcels';
+import { BOURG } from '../src/sim/bourg/profile';
 import { addRuralFabric, paintRural } from '../src/sim/bourg/rural';
 import { stampEnclosures } from '../src/sim/bourg/enclosures';
 import { stampStructure } from '../src/sim/bourg/stamp';
@@ -113,7 +114,7 @@ function longest3WideRoadRun(map: GameMap): number {
 describe('bourg structure (§5.2)', () => {
   it('emits 40-90 buildings', () => {
     // The floor is what makes it a town rather than a hamlet; the ceiling is
-    // the runaway-parcelizer tripwire (footprints.ts MAX_BUILDINGS caps the
+    // the runaway-parcelizer tripwire (KindProfile.maxBuildings caps the
     // plots at 80, T9's outlying farms add up to six more). Measured 40-86
     // over seeds 1-60.
     for (const seed of SEEDS) {
@@ -463,7 +464,7 @@ describe('bourg determinism (§5.4)', () => {
     // D2 is only real if S(tag) restarts. If it returned a memoised generator,
     // a stage that took one extra draw would shift every LATER consumer of the
     // same tag — which is exactly the coupling the sub-streams exist to remove.
-    const sk = buildSkeleton(mulberry32(7).int(0x7fffffff), W, H);
+    const sk = buildSkeleton(mulberry32(7).int(0x7fffffff), W, H, BOURG);
     for (const tag of Object.values(TAG)) {
       const a = sk.S(tag);
       const first = [a.next(), a.next(), a.next()];
@@ -508,7 +509,7 @@ function countKey(map: GameMap, key: string): number {
 // and tests/bourg-objectives.test.ts already asserts plan.ts's own ordering.
 function pipeline(seed: number, perturb?: number): { map: GameMap; buildings: Building[]; stands: Vec[] } {
   const base = mulberry32((seed ^ 0x51ab3fc7) >>> 0).int(0x7fffffff);
-  const sk = buildSkeleton(base, W, H);
+  const sk = buildSkeleton(base, W, H, BOURG);
   if (perturb !== undefined) {
     const alt = (base ^ 0x5bf03635) >>> 0;
     (sk as { S: (tag: number) => Rng }).S = (tag: number) => subStream(tag === perturb ? alt : base, tag);

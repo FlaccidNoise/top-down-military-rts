@@ -3,6 +3,7 @@ import { stampEnclosures, type Enclosures } from '../src/sim/bourg/enclosures';
 import { buildFootprints, type Footprints } from '../src/sim/bourg/footprints';
 import { reserveLandmarks, type Landmarks } from '../src/sim/bourg/landmarks';
 import { buildParcels, type Parcels } from '../src/sim/bourg/parcels';
+import { BOURG } from '../src/sim/bourg/profile';
 import { addRuralFabric, paintRural, type Rural } from '../src/sim/bourg/rural';
 import { stampStructure } from '../src/sim/bourg/stamp';
 import { buildSkeleton, growMinorStreets, type Skeleton } from '../src/sim/bourg/streets';
@@ -31,7 +32,7 @@ interface Town {
 }
 
 function build(seed: number, w = W, h = H): Town {
-  const sk = buildSkeleton(base(seed), w, h);
+  const sk = buildSkeleton(base(seed), w, h, BOURG);
   const land = reserveLandmarks(sk);
   growMinorStreets(sk, { resv: land.resv });
   const pc = buildParcels(sk, land.resv);

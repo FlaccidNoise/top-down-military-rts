@@ -4,6 +4,7 @@ import { GameMap, los } from '../src/sim/map';
 import { generateMap, validate, type MapPlan, type Vec } from '../src/sim/mapgen';
 import { buildObjectives } from '../src/sim/bourg/objectives';
 import { planBourg, stampBourg } from '../src/sim/bourg/plan';
+import { BOURG } from '../src/sim/bourg/profile';
 import { furnishInteriors } from '../src/sim/interiors/furnish';
 import { mulberry32 } from '../src/sim/rng';
 import { PatchIndex } from '../src/render/patches';
@@ -273,7 +274,7 @@ describe('perf: bourg generation (§5.5)', () => {
     // fails loudly instead of the rate quietly becoming meaningless.
     const attempt0 = (seed: number): MapPlan => {
       const base = mulberry32((seed ^ 0x51ab3fc7) >>> 0).int(0x7fffffff);
-      const plan = planBourg(base, MAP_W, MAP_H);
+      const plan = planBourg(base, MAP_W, MAP_H, BOURG);
       const map = new GameMap(MAP_W, MAP_H);
       const st = stampBourg(map, plan);
       map.maxStories = st.maxStories;

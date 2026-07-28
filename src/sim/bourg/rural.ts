@@ -36,7 +36,6 @@ const LANE_D = 5; // space-colonisation step
 const LANE_KILL = 7; // an attractor within this of a node is satisfied
 const LANE_ATTRACT = 45; // …and one further than this influences nothing
 const LANE_MAX_NODES = 140;
-const CELL = 22; // bocage jittered-grid cell
 
 const clamp = (v: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, v));
 
@@ -85,7 +84,7 @@ function placeFarms(
 ): Vec[] {
   const { w, h } = sk;
   const out: Vec[] = [];
-  const want = 2 + r.int(2);
+  const want = sk.profile.farms[0] + r.int(sk.profile.farms[1]);
   const clearOf = (x0: number, y0: number, x1: number, y1: number): boolean => {
     if (x0 < 2 || y0 < 2 || x1 >= w - 2 || y1 >= h - 2) return false;
     for (let y = y0; y <= y1; y++)
@@ -264,10 +263,11 @@ function growFarmLanes(
 // ── bocage ───────────────────────────────────────────────────────────────────
 //
 // Jittered-grid Voronoi, replacing mapgen.ts:195-214's parallel drifting lines.
-// One site per 22x22 cell; each fringe tile takes the nearest site among the 9
-// neighbouring cells by SQUARED INTEGER distance with an index tiebreak; a tile
-// is hedge if any 4-neighbour belongs to a different site. One O(9N) integer
-// pass — no Delaunay, no float predicates, no cocircular degeneracy.
+// One site per cell of KindProfile.bocageCell (22 for the bourg); each fringe
+// tile takes the nearest site among the 9 neighbouring cells by SQUARED INTEGER
+// distance with an index tiebreak; a tile is hedge if any 4-neighbour belongs to
+// a different site. One O(9N) integer pass — no Delaunay, no float predicates,
+// no cocircular degeneracy.
 function bocage(
   sk: Skeleton,
   land: Landmarks,
@@ -277,22 +277,23 @@ function bocage(
   inZone: (x: number, y: number) => boolean,
 ): { hedge: Uint8Array; gaps: number } {
   const { w, h } = sk;
-  const cols = Math.ceil(w / CELL);
-  const rows = Math.ceil(h / CELL);
+  const cell = sk.profile.bocageCell;
+  const cols = Math.ceil(w / cell);
+  const rows = Math.ceil(h / cell);
   const sx = new Int32Array(cols * rows);
   const sy = new Int32Array(cols * rows);
   for (let cy = 0; cy < rows; cy++)
     for (let cx = 0; cx < cols; cx++) {
-      sx[cy * cols + cx] = Math.min(w - 1, cx * CELL + 3 + r.int(16));
-      sy[cy * cols + cx] = Math.min(h - 1, cy * CELL + 3 + r.int(16));
+      sx[cy * cols + cx] = Math.min(w - 1, cx * cell + 3 + r.int(16));
+      sy[cy * cols + cx] = Math.min(h - 1, cy * cell + 3 + r.int(16));
     }
 
   const owner = new Int32Array(w * h).fill(-1);
   for (let y = 0; y < h; y++)
     for (let x = 0; x < w; x++) {
       if (inZone(x, y)) continue;
-      const cx = (x / CELL) | 0;
-      const cy = (y / CELL) | 0;
+      const cx = (x / cell) | 0;
+      const cy = (y / cell) | 0;
       let best = -1;
       let bestD2 = Infinity;
       for (let jy = cy - 1; jy <= cy + 1; jy++)
@@ -410,11 +411,12 @@ export function paintRural(
   });
   stand(east.x, east.y, 9 + r13.int(4));
   woodsStands.push(east);
-  for (let i = 0, n = 2 + r13.int(3) + Math.max(0, Math.round((w * h) / 19200) - 1); i < n; i++) {
+  const { stands, standRadius } = sk.profile;
+  for (let i = 0, n = stands[0] + r13.int(stands[1]) + Math.max(0, Math.round((w * h) / 19200) - 1); i < n; i++) {
     const px = 10 + r13.int(w - 20);
     const py = 8 + r13.int(h - 16);
     if (inZone(px, py)) continue;
-    stand(px, py, 6 + r13.int(5));
+    stand(px, py, standRadius[0] + r13.int(standRadius[1]));
     // a stand centred on something impassable is no anchor: downstream
     // consumers order squads to it and an unreachable post is never settled
     if (map.terrainAt(px, py).passable) woodsStands.push({ x: px, y: py });

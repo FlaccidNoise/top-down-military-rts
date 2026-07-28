@@ -1,5 +1,6 @@
 import { buildObjectives } from './bourg/objectives';
 import { planBourg, stampBourg, type BourgPlan } from './bourg/plan';
+import { PROFILES, type KindProfile } from './bourg/profile';
 import { zoneOf } from './bourg/rural';
 import { stampStructure } from './bourg/stamp';
 import { subStream, TAG } from './bourg/streets';
@@ -216,8 +217,11 @@ export function generateMap(seed: number, w = 160, h = 120, kind: MapKind = 'ope
 
 function tryGenerate(rng: Rng, w: number, h: number, kind: MapKind, relief: ReliefProfile, interiors: boolean): MapPlan | null {
   // The guard sits before the first draw, so every legacy kind's draw sequence
-  // is bit-for-bit what it was before the bourg existed (D1).
-  if (kind === 'bourg') return tryGenerateBourg(rng, w, h, relief, interiors);
+  // is bit-for-bit what it was before the bourg existed (D1). A kind reaches
+  // the v3 pipeline exactly when profile.ts carries a record for it, so a
+  // cutover is a profile entry rather than another branch here.
+  const profile = PROFILES[kind];
+  if (profile) return tryGenerateV3(rng, w, h, profile, relief, interiors);
   const map = new GameMap(w, h);
   const road = new Uint8Array(w * h);
 
@@ -523,7 +527,7 @@ function furnishHere(on: boolean, rng: Rng, map: GameMap, buildings: readonly Bu
   furnishInteriors(map, buildings, furnBase, objective);
 }
 
-// ── the bourg branch ────────────────────────────────────────────────────────
+// ── the v3 branch (the bourg pipeline, per-kind profiles) ───────────────────
 //
 // D2: exactly ONE draw on the shared stream, taken inside the guard. Every
 // stage below runs on a sub-stream derived from it (streets.ts subStream), so
@@ -534,9 +538,16 @@ function furnishHere(on: boolean, rng: Rng, map: GameMap, buildings: readonly Bu
 // documents why. What lives here is only what needs the shared rng, the
 // GameMap, or the MapPlan: the base draw, maxStories, the objectives (which
 // need stampBourg's woods stands) and elevation.
-function tryGenerateBourg(rng: Rng, w: number, h: number, relief: ReliefProfile, interiors: boolean): MapPlan | null {
+function tryGenerateV3(
+  rng: Rng,
+  w: number,
+  h: number,
+  profile: KindProfile,
+  relief: ReliefProfile,
+  interiors: boolean,
+): MapPlan | null {
   const bourgBase = rng.int(0x7fffffff);
-  const plan = planBourg(bourgBase, w, h); // stages 1-11a, pure — no GameMap yet
+  const plan = planBourg(bourgBase, w, h, profile); // stages 1-11a, pure — no GameMap yet
   const map = new GameMap(w, h);
   const st = stampBourg(map, plan); // terrain → roads → buildings → enclosures
   // stampBourg RETURNS the story count rather than writing it. map.ts:156 gates

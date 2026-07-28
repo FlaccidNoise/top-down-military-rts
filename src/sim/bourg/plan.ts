@@ -4,6 +4,7 @@ import { stampEnclosures, type Enclosures } from './enclosures';
 import { buildFootprints, type Footprints } from './footprints';
 import { reserveLandmarks, type Landmarks } from './landmarks';
 import { buildParcels, type Parcels } from './parcels';
+import type { KindProfile } from './profile';
 import { bourgSpawns } from './objectives';
 import { addRuralFabric, paintRural, type Rural } from './rural';
 import { stampStructure } from './stamp';
@@ -12,8 +13,10 @@ import { buildSkeleton, growMinorStreets, type Skeleton } from './streets';
 // The bourg pipeline, assembled. Two phases, because the stage order is not
 // negotiable and getting it wrong is silent:
 //
-//   planBourg(base, w, h)   stages 1-11, PURE. No GameMap exists yet; the
-//                           output is geometry plus a carved `road` bitmap.
+//   planBourg(base, w, h, profile)  stages 1-11, PURE. No GameMap exists yet;
+//                           the output is geometry plus a carved `road` bitmap.
+//                           `profile` rides on the Skeleton from here on, so
+//                           every later stage reads its own constants off it.
 //   stampBourg(map, plan)   stage 12's write half, in mapgen's own order —
 //                           terrain first, roads over it, buildings over that,
 //                           enclosures last so every wall lands on a free edge.
@@ -37,8 +40,8 @@ export interface BourgStamp {
   enclosures: Enclosures;
 }
 
-export function planBourg(base: number, w: number, h: number): BourgPlan {
-  const sk = buildSkeleton(base, w, h); // stages 1, 2, 3
+export function planBourg(base: number, w: number, h: number, profile: KindProfile): BourgPlan {
+  const sk = buildSkeleton(base, w, h, profile); // stages 1, 2, 3
   const land = reserveLandmarks(sk); // stage 4 — mutates sk.road (the place widening)
   growMinorStreets(sk, { resv: land.resv }); // stage 5 — mutates sk.road and sk.segs
   const pc = buildParcels(sk, land.resv); // stages 6, 7, 8
