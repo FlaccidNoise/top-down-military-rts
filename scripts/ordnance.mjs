@@ -13,12 +13,10 @@ import { arg, launch, gotoStaged } from './lib/stage.mjs';
 const port = Number(arg('port', '5317'));
 const seed = Number(arg('seed', '5'));
 const fails = [];
-const notes = [];
 const check = (ok, what) => {
   console.log(`  ${ok ? 'ok  ' : 'FAIL'} ${what}`);
   if (!ok) fails.push(what);
 };
-const note = (what) => { console.log(`  note ${what}`); notes.push(what); };
 
 const { browser, page } = await launch({ device: 'desktop' });
 page.on('pageerror', (e) => fails.push(`page error: ${e.message}`));
@@ -47,6 +45,24 @@ const clearFx = () => page.evaluate(() => { window.__booms.length = 0; window.__
 const boomsNear = (x, y, r = 30) =>
   page.evaluate(({ x, y, r }) => (window.__booms ?? []).filter((b) => Math.hypot(b.x - x, b.y - y) < r).length, { x, y, r });
 
+// EVERY world click goes through here: centre the camera on the point, then
+// click the middle of the canvas. Two things this defends against, both of
+// which produced false failures first — a point can be off screen entirely
+// (boot framing fits whatever is fielded, and armour at the west entry moves
+// it), and a point near the left edge can sit UNDER the opaque roster panel,
+// where the click never reaches the canvas at all.
+async function clickWorld(x, y, button = 'left') {
+  const at = await page.evaluate(({ x, y }) => {
+    const cam = window.__game.cam;
+    cam.x = x;
+    cam.y = y;
+    cam.scale = Math.max(cam.minScale, Math.min(cam.maxScale, 12));
+    const [sx, sy] = cam.worldToScreen(x, y, innerWidth, innerHeight);
+    return { sx: Math.round(sx), sy: Math.round(sy) };
+  }, { x, y });
+  await page.mouse.click(at.sx, at.sy, button === 'right' ? { button: 'right' } : {});
+}
+
 // A point some blue soldier can actually SEE: indirect fire is gated on
 // friendlyHasLos (the shared-vision rule), so calling a mission onto unobserved
 // ground is correctly refused and proves nothing about the path.
@@ -54,8 +70,7 @@ const observedPoint = (minD, maxD) =>
   page.evaluate(async ({ minD, maxD }) => {
     const { sightBetween } = await import('/src/sim/sim.ts');
     const s = window.__game.sim;
-    const eyes = s.soldiers.filter((m) => m.alive && m.side === 'blue' && m.inVehicle < 0);
-    for (const m of eyes) {
+    for (const m of s.soldiers.filter((k) => k.alive && k.side === 'blue' && k.inVehicle < 0)) {
       for (let a = 0; a < 12; a++) {
         const ang = (a / 12) * Math.PI * 2;
         for (let d = minD; d <= maxD; d += 8) {
@@ -63,7 +78,7 @@ const observedPoint = (minD, maxD) =>
           const y = m.y + Math.sin(ang) * d;
           if (x < 4 || y < 4 || x > s.map.w - 4 || y > s.map.h - 4) continue;
           if (!s.map.terrainAt(Math.floor(x), Math.floor(y)).passable) continue;
-          if (sightBetween(s, m.x, m.y, x, y, m.level, 0).visible) return { x, y, from: m.id, d };
+          if (sightBetween(s, m.x, m.y, x, y, m.level, 0).visible) return { x, y, d };
         }
       }
     }
@@ -72,23 +87,19 @@ const observedPoint = (minD, maxD) =>
 
 // ── 1-2. Mortar HE mission and smoke mission ────────────────────────────────
 const mortar = await page.evaluate(() => {
-  const sim = window.__game.sim;
-  const e = sim.emplacements.find((m) => m.side === 'blue' && m.state === 'deployed' && ['mortar60', 'mortar81'].includes(m.kind));
-  if (!e) return null;
-  const [sx, sy] = window.__game.cam.worldToScreen(e.x, e.y, innerWidth, innerHeight);
-  return { id: e.id, kind: e.kind, x: e.x, y: e.y, sx: Math.round(sx), sy: Math.round(sy) };
+  const s = window.__game.sim;
+  const e = s.emplacements.find((m) => m.side === 'blue' && m.state === 'deployed' && ['mortar60', 'mortar81'].includes(m.kind));
+  return e ? { id: e.id, kind: e.kind, x: e.x, y: e.y } : null;
 });
 check(!!mortar, `a blue mortar is fielded in a campaign battle${mortar ? ` (${mortar.kind})` : ''}`);
 
 if (mortar) {
-  await page.mouse.click(mortar.sx, mortar.sy);
+  await clickWorld(mortar.x, mortar.y);
   const sel = await page.evaluate((id) => {
     const g = window.__game, s = g.sim, pick = g.getSelection();
-    const emp = s.emplacements[id];
-    const crewSquad = s.teams[emp.crewTeamId]?.squadId;
-    return { squads: pick.squads, crewSquad, isCrew: pick.squads.includes(crewSquad) };
+    return { squads: pick.squads, crewSquad: s.teams[s.emplacements[id].crewTeamId]?.squadId };
   }, mortar.id);
-  check(sel.isCrew, `clicking the mortar selects its crew squad (${sel.squads.join(',')} vs crew ${sel.crewSquad})`);
+  check(sel.squads.includes(sel.crewSquad), `clicking the mortar selects its crew squad (${sel.squads.join(',')} vs crew ${sel.crewSquad})`);
 
   // HE mission
   const hasFire = (await page.$('button[data-ctx="fire"]')) !== null;
@@ -100,12 +111,8 @@ if (mortar) {
     check((await page.evaluate(() => window.__game.getSelection().targetMode)) === 'empfire', 'Fire arms the empfire target mode');
     const obs = await observedPoint(35, 90);
     check(!!obs, 'a mortar target the company can observe exists (indirect fire is spotter-gated)');
-    const tgt = await page.evaluate(({ x, y }) => {
-      const [sx, sy] = window.__game.cam.worldToScreen(x, y, innerWidth, innerHeight);
-      return { sx: Math.round(sx), sy: Math.round(sy) };
-    }, obs);
     await clearFx();
-    await page.mouse.click(tgt.sx, tgt.sy);
+    await clickWorld(obs.x, obs.y);
     const armed = await page.evaluate((id) => {
       const e = window.__game.sim.emplacements[id];
       return { hasTarget: e.hasTarget, tx: e.targetX, ty: e.targetY, mode: window.__game.getSelection().targetMode };
@@ -113,11 +120,11 @@ if (mortar) {
     check(armed.hasTarget, `the click sets the mortar's fire mission (target ${armed.tx?.toFixed(0)},${armed.ty?.toFixed(0)}, observed from ${obs.d.toFixed(0)} m)`);
     check(armed.mode === '', 'the target cursor clears after the call');
     await run(14000); // cooldown + the shell's 3 s time of flight
-    const n = await boomsNear(obs.x, obs.y);
-    check(n > 0, `the mortar actually fires: ${n} HE bursts on the called point`);
+    check((await boomsNear(obs.x, obs.y)) > 0, `the mortar actually fires: ${await boomsNear(obs.x, obs.y)} HE bursts on the called point`);
   }
 
-  // Smoke mission
+  // Smoke mission — re-select: the fire mission may have shifted the panel.
+  await clickWorld(mortar.x, mortar.y);
   const hasSmoke = (await page.$('button[data-ctx="smoke"]')) !== null;
   check(hasSmoke, 'the mortar crew panel offers a Smoke mission button');
   if (hasSmoke) {
@@ -125,11 +132,7 @@ if (mortar) {
     await page.click('button[data-ctx="smoke"]');
     check((await page.evaluate(() => window.__game.getSelection().targetMode)) === 'empsmoke', 'Smoke mission arms the empsmoke target mode');
     const obs2 = await observedPoint(30, 80);
-    const tgt = await page.evaluate(({ x, y }) => {
-      const [sx, sy] = window.__game.cam.worldToScreen(x, y, innerWidth, innerHeight);
-      return { sx: Math.round(sx), sy: Math.round(sy) };
-    }, obs2);
-    await page.mouse.click(tgt.sx, tgt.sy);
+    await clickWorld(obs2.x, obs2.y);
     const rounds = await page.evaluate((id) => window.__game.sim.emplacements[id].smokeRoundsLeft, mortar.id);
     check(rounds > 0, `the call loads a smoke mission (${rounds} rounds queued)`);
     await run(16000);
@@ -146,19 +149,17 @@ if (hasBarrage) {
   await page.click('button[data-act="barrage"]');
   check((await page.evaluate(() => window.__game.getSelection().targetMode)) === 'barrage', 'the barrage button arms the target cursor');
   const t = await page.evaluate(() => {
-    const g = window.__game, s = g.sim;
+    const s = window.__game.sim;
     const red = s.soldiers.find((m) => m.alive && m.side === 'red') ?? { x: s.map.w * 0.7, y: s.map.h / 2 };
-    const [sx, sy] = g.cam.worldToScreen(red.x, red.y, innerWidth, innerHeight);
-    return { sx: Math.round(sx), sy: Math.round(sy), x: red.x, y: red.y };
+    return { x: red.x, y: red.y };
   });
   await clearFx();
-  await page.mouse.click(t.sx, t.sy);
+  await clickWorld(t.x, t.y);
   const left1 = await page.evaluate(() => window.__game.sim.barragesLeft.blue);
   check(left1 === left0 - 1, `calling a barrage spends one (${left0} → ${left1})`);
   // BARRAGE_DELAY_TICKS is 20 s of sim time before the first round arrives.
   await run(30000);
-  const n = await boomsNear(t.x, t.y, 40);
-  check(n > 0, `the barrage lands on the called point: ${n} bursts`);
+  check((await boomsNear(t.x, t.y, 40)) > 0, `the barrage lands on the called point: ${await boomsNear(t.x, t.y, 40)} bursts`);
 }
 
 // ── 4. Airstrike ────────────────────────────────────────────────────────────
@@ -169,42 +170,40 @@ if (hasAir) {
   await page.click('button[data-act="air"]');
   check((await page.evaluate(() => window.__game.getSelection().targetMode)) === 'air', 'the airstrike button arms the target cursor');
   const t = await page.evaluate(() => {
-    const g = window.__game, s = g.sim;
+    const s = window.__game.sim;
     // Well clear of the barrage point so the two cannot borrow each other's hits.
     const red = s.soldiers.find((m) => m.alive && m.side === 'red') ?? { x: s.map.w * 0.7, y: s.map.h / 2 };
-    const y = Math.max(10, Math.min(s.map.h - 10, red.y - 70));
-    const [sx, sy] = g.cam.worldToScreen(red.x, y, innerWidth, innerHeight);
-    return { sx: Math.round(sx), sy: Math.round(sy), x: red.x, y };
+    return { x: red.x, y: Math.max(10, Math.min(s.map.h - 10, red.y - 70)) };
   });
   await clearFx();
-  await page.mouse.click(t.sx, t.sy);
+  await clickWorld(t.x, t.y);
   const left1 = await page.evaluate(() => window.__game.sim.airstrikesLeft.blue);
   check(left1 === left0 - 1, `calling an airstrike spends one (${left0} → ${left1})`);
   await run(32000); // the run starts 25 s out
-  const n = await boomsNear(t.x, t.y, 45);
-  check(n > 0, `the airstrike strafes the called point: ${n} impacts`);
+  check((await boomsNear(t.x, t.y, 45)) > 0, `the airstrike strafes the called point: ${await boomsNear(t.x, t.y, 45)} impacts`);
 }
 
-// ── 5. Bazooka vs armour (the AT mechanism, under natural dynamics) ─────────
-// Vehicles do not field in campaign battles yet (that is the vehicle lane's
-// job); staging one proves whether the AT fire path works the moment they do.
+// ── 5. Bazooka vs armour, under natural dynamics ───────────────────────────
+// Campaign battles now field armour, so the enemy hull is the game's own, not
+// one staged by this script — the AT loops finally have something to acquire.
 const at = await page.evaluate(async () => {
   const { WEAPONS } = await import('/src/sim/data.ts');
-  const sim = window.__game.sim;
-  const man = sim.soldiers.find((m) => m.alive && m.side === 'blue' && WEAPONS[m.weapon]?.pen !== undefined);
+  const s = window.__game.sim;
+  const man = s.soldiers.find((m) => m.alive && m.side === 'blue' && WEAPONS[m.weapon]?.pen !== undefined);
   if (!man) return null;
   const w = WEAPONS[man.weapon];
-  // Park a red tank in the open, well inside his reach, on a passable tile.
-  let vx = man.x + Math.min(25, w.range * 0.5);
-  let vy = man.y;
-  const p = sim.nudgeSpawn(vx, vy);
-  const v = sim.addVehicle('red', 'panzer4', p.x, p.y, Math.PI);
-  return { sid: man.id, weapon: man.weapon, range: w.range, vid: v?.id ?? sim.vehicles[sim.vehicles.length - 1].id, vx: p.x, vy: p.y, mx: man.x, my: man.y };
+  let v = s.vehicles.find((k) => k.alive && k.side === 'red');
+  if (!v) {
+    // No red armour on this seed (kind-gated): stage one so the path is still
+    // exercised, and say so in the label.
+    const p = s.nudgeSpawn(man.x + Math.min(25, w.range * 0.5), man.y);
+    v = s.addVehicle('red', 'panzer4', p.x, p.y, Math.PI) ?? s.vehicles[s.vehicles.length - 1];
+    return { vid: v.id, staged: true, weapon: man.weapon, range: w.range };
+  }
+  return { vid: v.id, staged: false, weapon: man.weapon, range: w.range, kind: v.kind };
 });
 check(!!at, `a blue AT man is fielded${at ? ` (${at.weapon}, range ${at.range})` : ''}`);
 if (at) {
-  // A vehicle has no hp: an AP round surfaces as a ShotEvent AT the hull, then
-  // as crew wounds or a brew-up. Count rounds arriving on the tank.
   const wounds0 = await page.evaluate((vid) => {
     const s = window.__game.sim, v = s.vehicles.find((x) => x.id === vid);
     return v.crewIds.reduce((a, id) => a + s.soldiers[id].wounds.length, 0);
@@ -213,52 +212,42 @@ if (at) {
   await run(20000);
   const res = await page.evaluate((vid) => {
     const s = window.__game.sim, v = s.vehicles.find((x) => x.id === vid);
-    const onHull = (window.__shots ?? []).filter((sh) => Math.hypot(sh.tx - v.x, sh.ty - v.y) < 3).length;
     return {
       alive: v.alive,
-      burning: v.burning,
-      onHull,
+      onHull: (window.__shots ?? []).filter((sh) => Math.hypot(sh.tx - v.x, sh.ty - v.y) < 3).length,
       wounds: v.crewIds.reduce((a, id) => a + s.soldiers[id].wounds.length, 0),
     };
   }, at.vid);
   const engaged = res.onHull > 0 || !res.alive || res.wounds > wounds0;
-  check(engaged, `the bazooka engages armour under natural dynamics (${res.onHull} rounds on the hull, crew wounds ${wounds0} → ${res.wounds}, alive ${res.alive})`);
-  if (!engaged) note(`AT liveness: nothing reached the tank in 20 s at ${Math.hypot(at.vx - at.mx, at.vy - at.my).toFixed(0)} m — check LOS/ammo/cooldown before calling the path good`);
+  check(engaged, `the bazooka engages ${at.staged ? 'staged' : 'FIELDED'} armour (${res.onHull} rounds on the hull, crew wounds ${wounds0} → ${res.wounds}, alive ${res.alive})`);
 }
 
 // ── 6. Vehicle orders (player-driven) ───────────────────────────────────────
+// Use the battle's OWN blue armour — the fielding lane put it there.
 const veh = await page.evaluate(() => {
-  const g = window.__game, sim = g.sim;
-  const man = sim.soldiers.find((m) => m.alive && m.side === 'blue');
-  const p = sim.nudgeSpawn(man.x + 4, man.y + 4);
-  const v = sim.addVehicle('blue', 'sherman', p.x, p.y, 0);
-  const id = v?.id ?? sim.vehicles[sim.vehicles.length - 1].id;
-  const vv = sim.vehicles.find((x) => x.id === id);
-  const [sx, sy] = g.cam.worldToScreen(vv.x, vv.y, innerWidth, innerHeight);
-  return { id, x: vv.x, y: vv.y, sx: Math.round(sx), sy: Math.round(sy) };
+  const s = window.__game.sim;
+  const v = s.vehicles.find((k) => k.alive && k.side === 'blue');
+  return v ? { id: v.id, kind: v.kind, x: v.x, y: v.y } : null;
 });
-await page.mouse.click(veh.sx, veh.sy);
-const vsel = await page.evaluate(() => window.__game.getSelection().vehicle);
-check(vsel === veh.id, `clicking a vehicle selects it (${vsel} vs ${veh.id})`);
-if (vsel === veh.id) {
-  const t = await page.evaluate(({ x, y }) => {
-    const g = window.__game;
-    const p = g.sim.nudgeSpawn(x + 25, y);
-    const [sx, sy] = g.cam.worldToScreen(p.x, p.y, innerWidth, innerHeight);
-    return { sx: Math.round(sx), sy: Math.round(sy), tx: p.x, ty: p.y };
-  }, veh);
-  await page.mouse.click(t.sx, t.sy, { button: 'right' });
-  await run(9000);
-  const moved = await page.evaluate(({ id, x, y }) => {
-    const v = window.__game.sim.vehicles.find((k) => k.id === id);
-    return { d: Math.hypot(v.x - x, v.y - y), x: v.x, y: v.y };
-  }, veh);
-  check(moved.d > 3, `a right-click drives the vehicle (${moved.d.toFixed(1)} m travelled)`);
+check(!!veh, `blue armour is on the field to command${veh ? ` (${veh.kind})` : ''}`);
+if (veh) {
+  await clickWorld(veh.x, veh.y);
+  const vsel = await page.evaluate(() => window.__game.getSelection().vehicle);
+  check(vsel === veh.id, `clicking the hull selects it (${vsel} vs ${veh.id})`);
+  if (vsel === veh.id) {
+    const dest = await page.evaluate(({ x, y }) => window.__game.sim.nudgeSpawn(x + 25, y), veh);
+    await clickWorld(dest.x, dest.y, 'right');
+    await run(9000);
+    const moved = await page.evaluate(({ id, x, y }) => {
+      const v = window.__game.sim.vehicles.find((k) => k.id === id);
+      return Math.hypot(v.x - x, v.y - y);
+    }, veh);
+    check(moved > 3, `a right-click drives it (${moved.toFixed(1)} m travelled)`);
+  }
 }
 
 await browser.close();
 console.log('');
-if (notes.length) console.log(`${notes.length} note(s) above`);
 if (fails.length) {
   console.error(`${fails.length} FAILED:\n${fails.map((f) => `  - ${f}`).join('\n')}`);
   process.exit(1);

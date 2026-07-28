@@ -128,6 +128,10 @@ const ATTACKER_ARMOR: Record<Side, VehicleKey[]> = {
 };
 const DEFENDER_AT: Record<Side, EmplacementKey> = { blue: 'at57', red: 'pak40' };
 const ARMOR_SALT = 0x41726d72; // 'Armr': salts the private staging stream (see makeStrategicBattle)
+// Tiles round a deployed emplacement a hull may not take. 3 clears the pit,
+// its crew and the click-pick radius (tapSelect resolves a vehicle within
+// 3.5 m before it looks at emplacement glyphs).
+const ARMOR_CLEAR = 3;
 
 export const GARRISON_RADIUS = 45; // meters from an objective a garrison post may sit
 export const ATTACK_POST_MARGIN = 32; // attack posts start this far east of the west spawn (see attackObjectives)
@@ -464,6 +468,20 @@ export function makeStrategicBattle(
     // toward the objectives, in column at hull-length spacing (roadSpot's
     // `taken` set also forbids two hulls on one tile).
     const taken = new Set<number>();
+    // A hull must not park on a gun pit. The attacker's own mortars deploy in
+    // this same west strip, and the column was landing 1.9 m from a mortar —
+    // on top of the crew, and close enough that a click on the pit picked the
+    // tank instead. Every tile within ARMOR_CLEAR of a deployed emplacement is
+    // spoken for before the column sites itself.
+    for (const emp of sim.emplacements) {
+      for (let dy = -ARMOR_CLEAR; dy <= ARMOR_CLEAR; dy++) {
+        for (let dx = -ARMOR_CLEAR; dx <= ARMOR_CLEAR; dx++) {
+          const tx = Math.floor(emp.x) + dx;
+          const ty = Math.floor(emp.y) + dy;
+          if (plan.map.inBounds(tx, ty)) taken.add(ty * plan.map.w + tx);
+        }
+      }
+    }
     ATTACKER_ARMOR[attackerSide].forEach((kind, i) => {
       const spot = roadSpot(sim, west.x + 2 + i * 6, west.y, taken);
       taken.add(Math.floor(spot.y) * plan.map.w + Math.floor(spot.x));
