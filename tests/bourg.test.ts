@@ -7,9 +7,10 @@ import { partsOf } from '../src/sim/bourg/stamp';
 import { buildFootprints } from '../src/sim/bourg/footprints';
 import { reserveLandmarks } from '../src/sim/bourg/landmarks';
 import { buildParcels } from '../src/sim/bourg/parcels';
-import { BOURG } from '../src/sim/bourg/profile';
+import { planBourg, stampBourg, type BourgPlan, type BourgStamp } from '../src/sim/bourg/plan';
+import { BOURG, ROAD } from '../src/sim/bourg/profile';
 import { addRuralFabric, paintRural } from '../src/sim/bourg/rural';
-import { stampEnclosures } from '../src/sim/bourg/enclosures';
+import { MIN_REAR_SPAN_Q8, stampEnclosures } from '../src/sim/bourg/enclosures';
 import { stampStructure } from '../src/sim/bourg/stamp';
 import { buildSkeleton, growMinorStreets, subStream, TAG, type Skeleton } from '../src/sim/bourg/streets';
 import { mulberry32, type Rng } from '../src/sim/rng';
@@ -20,6 +21,11 @@ import { mulberry32, type Rng } from '../src/sim/rng';
 // objectives|stamp.test.ts) test each stage against its own inputs and use a
 // synthetic base; this file tests the thing the game actually calls, on the
 // seeds the game actually uses, and is the only place the two are the same.
+//
+// It covers every kind that reaches the v3 pipeline, not just the bourg — the
+// 'road' battery below is docs/plans/2026-07-27-mapgen-v3-design.md §2.2/§4,
+// and its bounds differ from the bourg's wherever a measurement said they had
+// to. mapgen-v3 P6 folds the two into one table over kinds.
 
 const W = 320;
 const H = 240;
@@ -347,6 +353,181 @@ describe('bourg connectivity (§5.3)', () => {
   });
 });
 
+// ── road: the linear village (mapgen-v3 §2.2, battery §4) ───────────────────
+//
+// The same black-box treatment, on the second kind to reach the v3 pipeline.
+// Everything below reuses the helpers above unchanged, which is the point of
+// the profile: `road` is the bourg's machinery at different numbers, so it is
+// the bourg's assertions at different bounds — and where a bound had to move,
+// the comment says what was measured.
+//
+// The enclosure counters are not on MapPlan, so the two tests that need them
+// replay attempt 0 through planBourg/stampBourg exactly as tryGenerateV3 does.
+// Attempt 0 validated on 200/200 seeds, so the replay is the shipped map; the
+// self-check below fails loudly rather than quietly if that ever stops holding.
+const roadCache = new Map<string, MapPlan>();
+function village(seed: number, w = W, h = H): MapPlan {
+  const key = `${seed}:${w}:${h}`;
+  let p = roadCache.get(key);
+  if (!p) {
+    p = generateMap(seed, w, h, 'road');
+    roadCache.set(key, p);
+  }
+  return p;
+}
+
+function roadStamp(seed: number): { plan: BourgPlan; stamp: BourgStamp } {
+  const base = mulberry32((seed ^ 0x51ab3fc7) >>> 0).int(0x7fffffff);
+  const plan = planBourg(base, W, H, ROAD);
+  const map = new GameMap(W, H);
+  return { plan, stamp: stampBourg(map, plan) };
+}
+
+describe('road structure (mapgen-v3 §2.2)', () => {
+  it('emits 18-62 buildings', () => {
+    // A village, not a town: KindProfile.maxBuildings caps the plots at 55 and
+    // the outlying farms add up to six more, so 61 is the hard ceiling and 62
+    // is the runaway-parcelizer tripwire. Measured 20-59 over seeds 1-200
+    // (median 42), 31-55 over the twenty asserted here.
+    for (const seed of SEEDS) {
+      const n = village(seed).buildings.length;
+      expect([seed, n >= 18, n <= 62]).toEqual([seed, true, true]);
+    }
+  });
+
+  it('terraces the frontage: the rue is party-walled, not a row of cottages', () => {
+    // §2.2's headline claim, and the reason densFalloff is 9 rather than the
+    // bourg's 12. Stated as two bounds because the bourg's "one run of >= 4"
+    // is NOT true here: measured over seeds 1-200 the longest run is 3-8
+    // (median 5) and four seeds top out at three units, while the share of
+    // buildings sitting in a run of two or more never drops below 0.42
+    // (median 0.68). A rue that broke into pairs would still pass the first
+    // bound and fail the second, which is the failure worth catching.
+    for (const seed of SEEDS) {
+      const { buildings } = village(seed);
+      const chains = new Map<number, number>();
+      for (const b of buildings) if (b.terraceRun !== undefined && b.terraceRun >= 0) chains.set(b.terraceRun, (chains.get(b.terraceRun) ?? 0) + 1);
+      const longest = Math.max(0, ...chains.values());
+      const terraced = [...chains.values()].filter((n) => n >= 2).reduce((a, n) => a + n, 0);
+      expect([seed, longest >= 3, terraced / buildings.length >= 0.3]).toEqual([seed, true, true]);
+    }
+  });
+
+  it('keeps the MG lane short enough that no gun owns the whole rue', () => {
+    // The kind's defining tactical constraint. A 'bourgRue' envelope is 90-119
+    // tiles wide and the rue runs its whole length, so the failure this catches
+    // is concrete: one gun on the place covering the village end to end, which
+    // would read as a run of 90+. Measured 27-67 over seeds 1-200 (median 38,
+    // p95 47) — the jog schedule breaks the band every 24-45 tiles and the
+    // short place widening (KindProfile.placeLen 16-23 against the bourg's
+    // 26-42) is what stops the widening splicing two arms across a jog.
+    for (const seed of SEEDS) expect([seed, longest3WideRoadRun(village(seed).map) <= 80]).toEqual([seed, true]);
+  });
+
+  it('garrisons every building: no centre outside 45 m of an objective', () => {
+    for (const seed of SEEDS) {
+      const { buildings, objectives } = village(seed);
+      const r2 = GARRISON_RADIUS * GARRISON_RADIUS;
+      const uncovered = buildings
+        .filter((b) => {
+          const c = centreOf(b);
+          return !objectives.some((o) => (c.x - o.x) * (c.x - o.x) + (c.y - o.y) * (c.y - o.y) <= r2);
+        })
+        .map((b) => `${b.role}@${b.x},${b.y}`);
+      expect([seed, uncovered]).toEqual([seed, []]);
+    }
+  });
+
+  it('pins the objective prefix, keeps the arrays parallel, and puts the MG42 on road', () => {
+    // Same contract as the bourg's, with the w >= 240 slot pinned too: the
+    // archetype is forced to 'bourgRue', which never has a faubourg, so slot 2
+    // is always the far end of the Grande Rue tagged 'street'. A church appears
+    // on about half the seeds (churchPct 50) and is therefore NOT in the prefix.
+    for (const seed of SEEDS) {
+      const { map, objectives, objectiveKinds } = village(seed);
+      expect([seed, objectiveKinds?.length]).toEqual([seed, objectives.length]);
+      expect([seed, objectiveKinds?.slice(0, 3)]).toEqual([seed, ['place', 'woods', 'street']]);
+      expect([seed, map.terrainKeyAt(objectives[0].x, objectives[0].y)]).toEqual([seed, 'road']);
+      for (const o of objectives) expect([seed, o, map.terrainAt(o.x, o.y).passable]).toEqual([seed, o, true]);
+    }
+  });
+
+  it('keeps every woods stand passable', () => {
+    for (const seed of SEEDS) {
+      const { map, woodsStands } = village(seed);
+      expect([seed, woodsStands.length > 0]).toEqual([seed, true]);
+      for (const s of woodsStands) expect([seed, s, map.terrainAt(s.x, s.y).passable]).toEqual([seed, s, true]);
+    }
+  });
+
+  it('generates at every size generateMap accepts', () => {
+    // The 60x40 floor clamps the ribbon envelope to 48x28, which is the one
+    // size where a 90-wide profile cannot have what it asks for.
+    for (const [w, h] of [
+      [60, 40],
+      [160, 120],
+      [240, 180],
+    ] as [number, number][])
+      for (const seed of [1, 2, 3]) {
+        const p = village(seed, w, h);
+        expect(p.objectiveKinds?.[0]).toBe('place');
+        expect(p.buildings.length).toBeGreaterThan(0);
+        expect(p.map.terrainKeyAt(p.objectives[0].x, p.objectives[0].y)).toBe('road');
+      }
+  });
+});
+
+describe('road connectivity (mapgen-v3 §2.2)', () => {
+  it('reaches every objective from both spawns on foot, every door and stair from the west, and east by vehicle', () => {
+    for (const seed of SEEDS) {
+      const { map, spawns, objectives, buildings } = village(seed);
+      const west = reachField(map, spawns.west.x, spawns.west.y, 'foot');
+      const east = reachField(map, spawns.east.x, spawns.east.y, 'foot');
+      const veh = reachField(map, spawns.west.x, spawns.west.y, 'vehicle');
+      const at = (f: Uint8Array, v: Vec): number => f[Math.round(v.y) * W + Math.round(v.x)];
+      for (const o of objectives) expect([seed, o, at(west, o), at(east, o)]).toEqual([seed, o, 1, 1]);
+      expect([seed, at(veh, spawns.east)]).toEqual([seed, 1]);
+      let strandedDoors = 0;
+      for (const b of buildings) for (const d of b.doors ?? []) if (!west[d.y * W + d.x]) strandedDoors++;
+      let strandedStairs = 0;
+      for (let i = 0; i < map.stairs.length; i++) if (map.stairs[i] && !west[i]) strandedStairs++;
+      expect([seed, strandedDoors, strandedStairs]).toEqual([seed, 0, 0]);
+    }
+  });
+
+  it('makes every gate in a free-standing wall infantry-permeable and vehicle-proof', () => {
+    for (const seed of SEEDS) {
+      const { map } = village(seed);
+      let gates = 0;
+      const bad: string[] = [];
+      eachFreeStandingGate(village(seed), (ax, ay, bx, by) => {
+        gates++;
+        if (!map.canStep(ax, ay, bx, by, 'foot')) bad.push(`foot blocked at ${bx},${by}`);
+        if (map.canStep(ax, ay, bx, by, 'vehicle')) bad.push(`vehicle passes at ${bx},${by}`);
+      });
+      // measured 16-46 a seed over 1-200: these are the venelle mouths and the
+      // gaps between rear plots, i.e. the only way off the street
+      expect([seed, gates > 10, bad]).toEqual([seed, true, []]);
+    }
+  });
+
+  it('connects the rear-garden band end to end and strands no garden', () => {
+    // §2.2 names rearConnected the load-bearing gate for this kind: the fight
+    // is the street, so the flanking route behind the frontage is the ONLY
+    // alternative to walking up the rue into the guns. Measured rearSpanQ8
+    // 185-256 over seeds 1-200 against a gate of 96 — a ribbon envelope puts
+    // the whole band in one component, so a collapse here is unmissable.
+    for (const seed of SEEDS) {
+      const { plan, stamp } = roadStamp(seed);
+      // the replay is the shipped map only while attempt 0 validates; assert
+      // it rather than assume it
+      expect([seed, plan.fp.buildings]).toEqual([seed, generateMap(seed, W, H, 'road', { relief: 'none' }).buildings]);
+      expect([seed, stamp.enclosures.orphans]).toEqual([seed, 0]);
+      expect([seed, stamp.enclosures.rearConnected, stamp.enclosures.rearSpanQ8 >= MIN_REAR_SPAN_Q8]).toEqual([seed, true, true]);
+    }
+  });
+});
+
 // ── §5.4 determinism ────────────────────────────────────────────────────────
 
 describe('bourg determinism (§5.4)', () => {
@@ -387,6 +568,18 @@ describe('bourg determinism (§5.4)', () => {
     expect(fingerprint(town(2))).toMatchInlineSnapshot(`"eb9a14e6"`);
   });
 
+  // The road kind's counterpart, frozen at the P2 cutover. At 320x240 the
+  // relief stage is live and rail is off for this kind, so these cover the
+  // whole pipeline INCLUDING relief and exclude the halt — and their
+  // relief-off control is the PRE_RELIEF.road row in
+  // tests/relief-wiring.test.ts, which is plain literals and cannot be
+  // laundered by `-u`. Moving these is legitimate only when the road layout
+  // was meant to change; the four bourg values above must not move with them.
+  it('pins the road fingerprints', () => {
+    expect(fingerprint(generateMap(1, W, H, 'road'))).toMatchInlineSnapshot(`"904e649d"`);
+    expect(fingerprint(generateMap(2, W, H, 'road'))).toMatchInlineSnapshot(`"4da60d82"`);
+  });
+
   it('reproduces T14 exactly with relief off — the stage is purely additive', () => {
     // Relief writes elev, the two new terrain keys and crossings, and nothing
     // else: no street, plot, wall, door, storey or objective of the bourg
@@ -400,10 +593,14 @@ describe('bourg determinism (§5.4)', () => {
   // §5.1's one-draw guard. The MECHANISM is D1 (the guard sits before
   // tryGenerate's first draw) plus D2 (one shared-stream draw, inside it), but
   // the mechanism is not the test. tests/mapgen.test.ts:36-39 pins 'open';
-  // these pin the other five, and all six were verified byte-identical to
-  // `main` over 6 kinds x 3 sizes x 12 seeds at the commit that added them.
+  // these pin the rest, and all six were verified byte-identical to `main`
+  // over 6 kinds x 3 sizes x 12 seeds at the commit that added them.
+  //
+  // 'road' left this list at the mapgen-v3 P2 cutover — it is a v3 kind now and
+  // has its own pin above. The four that remain are the leak controls for every
+  // task after P2: a profile change that moves one of them has escaped its kind.
   it('leaves every legacy kind byte-identical', () => {
-    const fp = (kind: 'woods' | 'town' | 'river' | 'bridge' | 'road', seed: number): string =>
+    const fp = (kind: 'woods' | 'town' | 'river' | 'bridge', seed: number): string =>
       fingerprint(generateMap(seed, 160, 120, kind));
     expect([fp('woods', 1), fp('woods', 2)]).toMatchInlineSnapshot(`
       [
@@ -427,12 +624,6 @@ describe('bourg determinism (§5.4)', () => {
       [
         "f4c971ab",
         "c4340672",
-      ]
-    `);
-    expect([fp('road', 1), fp('road', 2)]).toMatchInlineSnapshot(`
-      [
-        "8105059f",
-        "d2a77805",
       ]
     `);
   });

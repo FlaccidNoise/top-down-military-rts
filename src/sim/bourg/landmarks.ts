@@ -141,7 +141,7 @@ function reserveChurchyard(
 // already requires (terrain.ts:673-681), so G7 cobbles fire for free.
 function widenPlace(sk: Skeleton, r4: Rng, resv: Uint8Array): Rect {
   const { w, h, road, place } = sk;
-  const len = 26 + r4.int(17);
+  const len = sk.profile.placeLen[0] + r4.int(sk.profile.placeLen[1]);
   const width = 11 + r4.int(7);
   const northShare = 3 + r4.int(width - 5);
 

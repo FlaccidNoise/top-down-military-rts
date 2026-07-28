@@ -32,7 +32,11 @@ function fingerprint(plan: MapPlan): string {
 // `-u` run must not be able to launder a regression into a new baseline.
 const PRE_RELIEF: Record<MapKind, string[]> = {
   open: ['1a0f1a77', '2889751a', '17a7e937', 'e7cf92ca', '32f8c6cc', '7aeb14ca', '3976b433', 'f2c9fe27'],
-  road: ['1a0f1a77', '2889751a', '17a7e937', 'e7cf92ca', '32f8c6cc', '7aeb14ca', '3976b433', 'f2c9fe27'],
+  // Recaptured at the mapgen-v3 P2 cutover, when 'road' left the legacy
+  // pipeline for the organic one (scripts/fp.mjs --kind road). It shared the
+  // 'open' row above until then, which is the clearest statement of what the
+  // legacy generator did with the kind: nothing.
+  road: ['58ca7432', '22bff2e4', '3d52bdb8', 'e4e97f2f', '3ded323c', 'ed38633c', '4d2e6f16', 'd4ab3dc0'],
   woods: ['be23a411', '5a98532c', 'c52c9047', '495360ad', '23933a75', 'f357e7dd', 'c08092d3', 'b00bdf46'],
   town: ['bcd466e9', '6553b8e2', '3a445204', '4c57c79f', 'acdb9db2', 'dd238bd7', 'ace5f889', 'e538b159'],
   river: ['c9eaae79', '8f53c2f7', '1960e94d', 'a8c59af', '56ad5890', 'bf06b29d', 'ae9aedd1', 'cdf8c519'],

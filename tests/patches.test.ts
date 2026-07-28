@@ -122,7 +122,9 @@ describe('PatchIndex', () => {
       for (const s of sq) a = Math.max(a, Math.min(0.88, (s.rx - Math.hypot(x + 0.5 - s.cx, y + 0.5 - s.cy)) / 3.5));
       return Math.max(0, a);
     };
-    for (const kind of ['town', 'road', 'bridge', 'river'] as const) {
+    // 'road' left this list at the mapgen-v3 P2 cutover — it has a place
+    // widening of its own now, and is asserted with the bourg below.
+    for (const kind of ['town', 'bridge', 'river'] as const) {
       for (const seed of [1, 3, 7, 11]) {
         const { map } = generateMap(seed, 320, 240, kind);
         const pi = new PatchIndex(map);
@@ -149,6 +151,25 @@ describe('PatchIndex', () => {
       let span = 0;
       for (let x = 0; x < map.w; x++) if (pi.pavedAt(x, Math.round(s.cy)) > 0.3) span++;
       expect(span).toBeGreaterThan(24);
+    }
+  }, 20_000);
+
+  it('gives the road place one square whose ends are paved', () => {
+    // The T19 property that carries over to the linear village: one widening,
+    // and the paving reaches its ends rather than stopping at the pre-T19 11 m
+    // cap. The bourg's elongation ratio does NOT carry over and is deliberately
+    // absent — a road place is 16-23 columns against 11-17 rows
+    // (KindProfile.placeLen), so it is a bulge in the rue and comes out nearly
+    // square: measured 1.06-1.90 over seeds 1, 3, 7, 11, against paved spans of
+    // 50-78.
+    for (const seed of [1, 3, 7, 11]) {
+      const { map } = generateMap(seed, 320, 240, 'road');
+      const pi = new PatchIndex(map);
+      const wide = pi.squares.filter((s) => s.rx !== s.ry);
+      expect([seed, wide.length]).toEqual([seed, 1]);
+      let span = 0;
+      for (let x = 0; x < map.w; x++) if (pi.pavedAt(x, Math.round(wide[0].cy)) > 0.3) span++;
+      expect([seed, span > 24]).toEqual([seed, true]);
     }
   }, 20_000);
 

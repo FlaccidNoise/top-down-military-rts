@@ -4,7 +4,7 @@ import { GameMap, los } from '../src/sim/map';
 import { generateMap, validate, type MapPlan, type Vec } from '../src/sim/mapgen';
 import { buildObjectives } from '../src/sim/bourg/objectives';
 import { planBourg, stampBourg } from '../src/sim/bourg/plan';
-import { BOURG } from '../src/sim/bourg/profile';
+import { BOURG, ROAD } from '../src/sim/bourg/profile';
 import { furnishInteriors } from '../src/sim/interiors/furnish';
 import { mulberry32 } from '../src/sim/rng';
 import { PatchIndex } from '../src/render/patches';
@@ -266,6 +266,54 @@ describe('perf: bourg generation (§5.5)', () => {
     expect(mean(ts)).toBeLessThan(BOURG_MEAN_MS);
     expect(max(ts)).toBeLessThan(BOURG_MAX_MS);
   }, 60_000);
+
+  // mapgen-v3 §4's budget for the road kind, unmodified at 30/70. Measured the
+  // same way as the bourg above and over the same 200 seeds: mean 19.1 / max
+  // 20.6. The design's estimate that road would come out CHEAPER than the bourg
+  // is wrong and worth writing down — it runs every stage the bourg runs, and
+  // what it saves on a smaller nucleus (fewer plots, fewer footprints) it pays
+  // back painting rural fabric over the country the nucleus no longer covers.
+  // The two kinds cost the same because they are the same pipeline.
+  const ROAD_MEAN_MS = 30;
+  const ROAD_MAX_MS = 70;
+
+  it('road-gen: 320x240 stays inside the 30 ms mean / 70 ms max budget', () => {
+    generateMap(1, MAP_W, MAP_H, 'road'); // JIT warmup
+    const ts: number[] = [];
+    for (let seed = 1; seed <= 20; seed++) {
+      let best = Infinity;
+      for (let rep = 0; rep < BOURG_REPS; rep++) {
+        const t0 = performance.now();
+        generateMap(seed, MAP_W, MAP_H, 'road');
+        best = Math.min(best, performance.now() - t0);
+      }
+      ts.push(best);
+    }
+    console.log(`[perf] road-gen ${JSON.stringify({ mean: round(mean(ts)), p95: round(p95(ts)), max: round(max(ts)) })}`);
+    expect(mean(ts)).toBeLessThan(ROAD_MEAN_MS);
+    expect(max(ts)).toBeLessThan(ROAD_MAX_MS);
+  }, 60_000);
+
+  it('road-reject: the first attempt validates on essentially every seed', () => {
+    // The bourg's gate, on the road profile. Measured 0/200 — the ribbon
+    // envelope never strands a spawn, because the arterial IS the rue.
+    let rejects = 0;
+    const rejected: number[] = [];
+    for (let seed = 1; seed <= REJECT_SEEDS; seed++) {
+      const base = mulberry32((seed ^ 0x51ab3fc7) >>> 0).int(0x7fffffff);
+      const plan = planBourg(base, MAP_W, MAP_H, ROAD);
+      const map = new GameMap(MAP_W, MAP_H);
+      const st = stampBourg(map, plan);
+      map.maxStories = st.maxStories;
+      const { objectives, objectiveKinds } = buildObjectives(plan.sk, plan.land, plan.fp, st.woodsStands);
+      if (!validate({ map, buildings: plan.fp.buildings, spawns: plan.spawns, objectives, objectiveKinds, woodsStands: st.woodsStands })) {
+        rejects++;
+        rejected.push(seed);
+      }
+    }
+    console.log(`[perf] road-reject ${JSON.stringify({ rejects, seeds: REJECT_SEEDS, rate: round(rejects / REJECT_SEEDS), rejected })}`);
+    expect(rejects / REJECT_SEEDS).toBeLessThan(REJECT_HARD_LIMIT);
+  }, 120_000);
 
   it('bourg-reject: the first attempt validates on essentially every seed', () => {
     // generateMap's attempt-0 rng, reproduced (mapgen.ts:131) so the verdict of

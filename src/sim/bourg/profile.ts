@@ -33,6 +33,7 @@ export interface KindProfile {
   churchPct: number;
   marketPct: number;
   forecourtPct: number;
+  placeLen: [number, number]; // columns of Grande Rue the widening spans
   // stage 9 — the cap that sheds block-interior sheds before frontage
   maxBuildings: number;
   // stage 11 — the rural fabric
@@ -59,10 +60,51 @@ export const BOURG: KindProfile = {
   churchPct: 100,
   marketPct: 60,
   forecourtPct: 100,
+  placeLen: [26, 17],
   maxBuildings: 80,
   farms: [2, 2],
   bocageCell: 22,
   stands: [2, 3],
+  standRadius: [6, 5],
+};
+
+// §2.2 — the linear roadside village. Everything about it follows from one
+// decision: the fight IS the street. 'bourgRue' is forced rather than weighted,
+// because a carrefour on a 26-tile-tall envelope is a bourg that has been sat
+// on, and the archetype is the only thing that suppresses the cross route
+// (streets.ts stage 3b) and grows spurs off the rue instead (3d).
+//
+// The envelope is a ribbon: 90-119 wide against 26-37 tall, so the rue runs
+// most of the map and everything else hangs off it. densFalloff 9 against the
+// bourg's 12 is what keeps the frontage terraced along that whole length —
+// density falls off from the place by Chebyshev distance, and at 12 a plot 50
+// tiles down the rue is fringe-grade and comes out as a detached cottage.
+//
+// Landmarks turn probabilistic here. A village of this size has a church about
+// half the time and a market rarely; the forecourt is the mairie, which is
+// commoner than a market and rarer than a church. placeLen 16-23 against the
+// bourg's 26-42 is the difference between a square and a bulge — and it is
+// also the MG-lane control, since the widening is the one thing that can
+// splice two straight runs of the rue into one lane (landmarks.ts widenPlace).
+//
+// The rural fabric is `open`'s, not the bourg's: a ribbon leaves most of the
+// map as country, and the rear-garden band behind the frontage is the flanking
+// route (enclosures.ts rearConnected), with the bocage beyond it.
+export const ROAD: KindProfile = {
+  archetypeW: [['bourgRue', 100]],
+  envW: [90, 30],
+  envH: [26, 12],
+  densFalloff: 9,
+  minStreets: 4,
+  maxStreets: 12,
+  churchPct: 50,
+  marketPct: 15,
+  forecourtPct: 40,
+  placeLen: [16, 8],
+  maxBuildings: 55,
+  farms: [2, 2],
+  bocageCell: 22,
+  stands: [3, 3],
   standRadius: [6, 5],
 };
 
@@ -71,4 +113,5 @@ export const BOURG: KindProfile = {
 // owns the other kinds — a cutover is an entry added here, not a new branch.
 export const PROFILES: Partial<Record<MapKind, KindProfile>> = {
   bourg: BOURG,
+  road: ROAD,
 };
