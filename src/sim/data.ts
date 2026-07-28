@@ -68,6 +68,7 @@ export interface WeaponDef {
   accuracy: number; // base hit chance at point blank
   damage: [number, number];
   cooldown: number; // seconds between attacks
+  fireMode?: 'bolt' | 'semi' | 'burst' | 'auto'; // small arms only — audio character (render/audio.ts); one attack = one report for bolt/semi, a burst of taps otherwise
   suppression: number; // suppression applied near each shot's impact
   suppRadius?: number; // suppression footprint radius (m); default sim.ts SUPPRESS_RADIUS (5). Belt MGs beat a wider zone: massed targets eat more of each burst (density tax, balance 2026-07)
   pen?: number; // armor penetration (mm-ish); presence marks an AT weapon
@@ -78,16 +79,16 @@ export interface WeaponDef {
 }
 
 export const WEAPONS = {
-  garand:     { name: 'M1 Garand', class: 'rifle', range: 100, accuracy: 0.35, damage: [35, 80], cooldown: 1.6, suppression: 0.05, ammo: { type: 'clip_3006', perUnit: 8, reload: 2.5 } },
-  carbine:    { name: 'M1 Carbine', class: 'rifle', range: 70, accuracy: 0.35, damage: [28, 65], cooldown: 1.4, suppression: 0.04, ammo: { type: 'mag_carbine', perUnit: 15, reload: 3 } },
-  thompson:   { name: 'Thompson', class: 'smg', range: 50, accuracy: 0.5, damage: [25, 60], cooldown: 1.8, suppression: 0.05, ammo: { type: 'mag_thompson', perUnit: 30, reload: 3.5 } },
-  bar:        { name: 'BAR', class: 'rifle', range: 110, accuracy: 0.38, damage: [30, 70], cooldown: 1.2, suppression: 0.1, ammo: { type: 'mag_bar', perUnit: 20, reload: 4 } },
-  m1919:      { name: 'M1919A4', class: 'mg', range: 150, accuracy: 0.4, damage: [30, 70], cooldown: 2.4, suppression: 0.16, suppRadius: 8, ammo: { type: 'belt_3006', perUnit: 250, reload: 8 }, heat: { perShot: 0.02, swapTime: 10 } },
-  springfield:{ name: 'M1903A4', class: 'rifle', range: 200, accuracy: 0.55, damage: [40, 85], cooldown: 4, suppression: 0.04, ammo: { type: 'clip_springfield', perUnit: 5, reload: 4 } },
-  kar98k:     { name: 'Kar98k', class: 'rifle', range: 110, accuracy: 0.38, damage: [40, 85], cooldown: 2.6, suppression: 0.05, ammo: { type: 'clip_792', perUnit: 5, reload: 3 } },
-  kar98k_scoped:{ name: 'Kar98k (scoped)', class: 'rifle', range: 200, accuracy: 0.55, damage: [40, 85], cooldown: 4, suppression: 0.04, ammo: { type: 'clip_792', perUnit: 5, reload: 4 } },
-  mp40:       { name: 'MP40', class: 'smg', range: 50, accuracy: 0.5, damage: [25, 60], cooldown: 1.8, suppression: 0.05, ammo: { type: 'mag_mp40', perUnit: 32, reload: 3.5 } },
-  mg42:       { name: 'MG42', class: 'mg', range: 150, accuracy: 0.4, damage: [30, 70], cooldown: 1.8, suppression: 0.22, suppRadius: 10, ammo: { type: 'belt_792', perUnit: 250, reload: 7 }, heat: { perShot: 0.04, swapTime: 8 } },
+  garand:     { name: 'M1 Garand', class: 'rifle', range: 100, accuracy: 0.35, damage: [35, 80], cooldown: 1.6, fireMode: 'semi', suppression: 0.05, ammo: { type: 'clip_3006', perUnit: 8, reload: 2.5 } },
+  carbine:    { name: 'M1 Carbine', class: 'rifle', range: 70, accuracy: 0.35, damage: [28, 65], cooldown: 1.4, fireMode: 'semi', suppression: 0.04, ammo: { type: 'mag_carbine', perUnit: 15, reload: 3 } },
+  thompson:   { name: 'Thompson', class: 'smg', range: 50, accuracy: 0.5, damage: [25, 60], cooldown: 1.8, fireMode: 'burst', suppression: 0.05, ammo: { type: 'mag_thompson', perUnit: 30, reload: 3.5 } },
+  bar:        { name: 'BAR', class: 'rifle', range: 110, accuracy: 0.38, damage: [30, 70], cooldown: 1.2, fireMode: 'auto', suppression: 0.1, ammo: { type: 'mag_bar', perUnit: 20, reload: 4 } },
+  m1919:      { name: 'M1919A4', class: 'mg', range: 150, accuracy: 0.4, damage: [30, 70], cooldown: 2.4, fireMode: 'auto', suppression: 0.16, suppRadius: 8, ammo: { type: 'belt_3006', perUnit: 250, reload: 8 }, heat: { perShot: 0.02, swapTime: 10 } },
+  springfield:{ name: 'M1903A4', class: 'rifle', range: 200, accuracy: 0.55, damage: [40, 85], cooldown: 4, fireMode: 'bolt', suppression: 0.04, ammo: { type: 'clip_springfield', perUnit: 5, reload: 4 } },
+  kar98k:     { name: 'Kar98k', class: 'rifle', range: 110, accuracy: 0.38, damage: [40, 85], cooldown: 2.6, fireMode: 'bolt', suppression: 0.05, ammo: { type: 'clip_792', perUnit: 5, reload: 3 } },
+  kar98k_scoped:{ name: 'Kar98k (scoped)', class: 'rifle', range: 200, accuracy: 0.55, damage: [40, 85], cooldown: 4, fireMode: 'bolt', suppression: 0.04, ammo: { type: 'clip_792', perUnit: 5, reload: 4 } },
+  mp40:       { name: 'MP40', class: 'smg', range: 50, accuracy: 0.5, damage: [25, 60], cooldown: 1.8, fireMode: 'burst', suppression: 0.05, ammo: { type: 'mag_mp40', perUnit: 32, reload: 3.5 } },
+  mg42:       { name: 'MG42', class: 'mg', range: 150, accuracy: 0.4, damage: [30, 70], cooldown: 1.8, fireMode: 'auto', suppression: 0.22, suppRadius: 10, ammo: { type: 'belt_792', perUnit: 250, reload: 7 }, heat: { perShot: 0.04, swapTime: 8 } },
   bazooka:    { name: 'Bazooka', class: 'rifle', range: 70, accuracy: 0.35, damage: [30, 70], cooldown: 7, suppression: 0.1, pen: 100, ammo: { type: 'rocket_bazooka', perUnit: 1, reload: 7 } },
   schreck:    { name: 'Panzerschreck', class: 'rifle', range: 90, accuracy: 0.4, damage: [30, 70], cooldown: 8, suppression: 0.1, pen: 160, ammo: { type: 'rocket_schreck', perUnit: 1, reload: 8 } },
   panzerfaust:{ name: 'Panzerfaust', class: 'rifle', range: 35, accuracy: 0.5, damage: [30, 70], cooldown: 9, suppression: 0.1, pen: 150, ammo: { type: 'faust', perUnit: 1, reload: 0 }, oneShot: true },
