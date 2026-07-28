@@ -37,7 +37,7 @@ import { makeWarGoals, warStatus, type WarGoals } from './strategic/goals';
 import { OmniscientIntel } from './strategic/intel';
 import { Commander2, RED_V2 } from './strategic/planner';
 import { addForce, orderMove, type CoarseBattle, type FrontV2, type MoveReject } from './strategic/theater/force';
-import { resolveBattleV2, openBattle, stepWar } from './strategic/theater/war';
+import { battleCatchUpMin, openBattle, retreatForce, stepWar } from './strategic/theater/war';
 import { syncStrengthsV2 } from './strategic/theater/sync';
 import type { Contact } from './strategic/theater/contact';
 import { BATTLE_CLASS_TO_MAPKIND } from './strategic/theater';
@@ -722,6 +722,33 @@ function deployPlace(wx: number, wy: number): void {
 
 // V2 contact modal (OQ2 pin+queue: the theater is paused by the caller; the
 // defender path NEVER offers Stand down — an AI attack cannot be vetoed).
+// One strategic minute of the V2 war — the SAME body the frame loop and the
+// OQ3 debrief catch-up run, so a fought battle and a coarse battle cost the
+// theater identically and every event lands in the ring either way. Sets
+// v2.pending + pauses on a player contact; the CALLER decides when the modal
+// is safe to show (the debrief queues it behind its own overlay).
+function stepTheaterMinuteV2(v2: SessionV2): void {
+  v2.red.evaluate(v2.front, v2.redIntel);
+  const r = stepWar(v2.front, S().campaign, { autoBattle: () => false });
+  if (v2.front.day > prevDay) {
+    advanceDays(S().campaign, v2.front.day - prevDay);
+    if (v2.front.day % REINFORCE_CYCLE_DAYS === 0) {
+      const arrived = fillReplacements(S().campaign, v2.front.day * 31 + 7, REINFORCE_PER_COMPANY);
+      if (arrived > 0) v2.view.flash(`+${arrived} replacements arrived`);
+    }
+    syncStrengthsV2(S().campaign, v2.front);
+    prevDay = v2.front.day;
+    save();
+  }
+  for (const c of r.pendingContacts) {
+    // OQ2 pin+queue: contact pauses the theater; the modal owns the
+    // player's answer. One at a time — the rest re-detect next minute.
+    v2.pending = c;
+    stratPaused = true;
+    break;
+  }
+}
+
 function showContactModalV2(c: Contact): void {
   const v2 = S().v2!;
   const atk = v2.front.forces.find((f) => f.id === c.attackerId)!;
@@ -750,9 +777,13 @@ function showContactModalV2(c: Contact): void {
   };
   if (trivial) {
     document.getElementById('autoresolve')!.onclick = () => {
-      const b = openBattle(v2.front, c);
-      const r = resolveBattleV2(v2.front, S().campaign, b);
-      v2.view.flash(`${atk.name} vs ${def.name}: ${r.attackerWon ? 'attacker wins' : 'defender holds'}`);
+      // OQ3 honesty: an accepted walkover is a TIMED battle like any other —
+      // openBattle pins both forces and the war clock resolves it (trivial =
+      // 15 min) with the forced winner. Resolving it here instantly would
+      // make Auto-resolve FREE while fighting costs catch-up time — the
+      // exact dominance OQ3 exists to kill, mirrored.
+      openBattle(v2.front, c);
+      v2.view.flash(`${atk.name} engages ${def.name} — outcome shortly`);
       debriefEl.style.display = 'none';
       v2.pending = null;
       save();
@@ -761,7 +792,13 @@ function showContactModalV2(c: Contact): void {
   if (playerAttacks) {
     document.getElementById('standdown')!.onclick = () => {
       debriefEl.style.display = 'none';
-      v2.pending = null; // the force stays halted where contact stopped it
+      // Breaking contact is a MOVE, not a wish: a force left halted inside
+      // CONTACT_M re-contacts every minute and the modal never stops. The
+      // §3.6 retreat parks it beyond threat range; trapped = hold (a
+      // voluntary order never annihilates its own force).
+      retreatForce(v2.front, atk, null, { trapped: 'stay' });
+      v2.pending = null;
+      save();
     };
   }
 }
@@ -811,6 +848,13 @@ function showDebrief(): void {
     v2.battle = null;
     v2.pending = null;
     pendingEngagement = null;
+    // OQ3 (B): the fight cost theater time. Step the same bounded duration
+    // the coarse resolver would have charged (≤ 240 min) through the SAME
+    // per-minute body the live tick runs — the rest of the front marches,
+    // battles resolve, and every event reaches the ring. A new player
+    // contact stops the catch-up; its modal queues behind the debrief.
+    const catchUp = battleCatchUpMin(b);
+    for (let i = 0; i < catchUp && !v2.pending && !opEnded; i++) stepTheaterMinuteV2(v2);
     save();
     const groundLine = out.nodeTaken !== null
       ? blueAttacked ? 'The ground is ours.' : 'The position is lost.'
@@ -821,6 +865,7 @@ function showDebrief(): void {
       stratPaused = true;
       inspectedSoldier = -1;
       tooltip.clear();
+      if (v2.pending) showContactModalV2(v2.pending);
     });
     return;
   }
@@ -1617,26 +1662,8 @@ function frame(now: number): void {
       stratAcc += (dtReal / 1000) * SPEEDS[speedIdx];
       while (stratAcc >= 1 && !v2.pending) {
         stratAcc -= 1;
-        v2.red.evaluate(v2.front, v2.redIntel);
-        const r = stepWar(v2.front, S().campaign, { autoBattle: () => false });
-        if (v2.front.day > prevDay) {
-          advanceDays(S().campaign, v2.front.day - prevDay);
-          if (v2.front.day % REINFORCE_CYCLE_DAYS === 0) {
-            const arrived = fillReplacements(S().campaign, v2.front.day * 31 + 7, REINFORCE_PER_COMPANY);
-            if (arrived > 0) v2.view.flash(`+${arrived} replacements arrived`);
-          }
-          syncStrengthsV2(S().campaign, v2.front);
-          prevDay = v2.front.day;
-          save();
-        }
-        for (const c of r.pendingContacts) {
-          // OQ2 pin+queue: contact pauses the theater; the modal owns the
-          // player's answer. One at a time — the rest re-detect next minute.
-          v2.pending = c;
-          stratPaused = true;
-          showContactModalV2(c);
-          break;
-        }
+        stepTheaterMinuteV2(v2);
+        if (v2.pending) showContactModalV2(v2.pending);
       }
       const st = warStatus(v2.front, v2.goals);
       if (st.state === 'decided') showOperationEnd(st.winner === 'blue' ? 'won' : 'lost');

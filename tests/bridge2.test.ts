@@ -5,7 +5,8 @@ import { SPEC_TAG, specStream } from '../src/campaign/spec';
 import { makeTheater } from '../src/strategic/theatergen';
 import { makeDisposition } from '../src/strategic/theatergen/disposition';
 import { addForce, type FrontV2 } from '../src/strategic/theater/force';
-import { openBattle } from '../src/strategic/theater/war';
+import { battleCatchUpMin, openBattle, stepWar } from '../src/strategic/theater/war';
+import { orderMove } from '../src/strategic/theater/force';
 import { applyTheaterOutcome, makeTheaterBattle } from '../src/strategic/bridge2';
 
 const CFG = DEFAULT_PRESET.theater;
@@ -73,5 +74,47 @@ describe('makeTheaterBattle', () => {
     expect(front.battles).toHaveLength(0);
     expect(campaign.log.length).toBeGreaterThan(0);
     expect(front.events.some((e) => e.kind === 'battle-resolved')).toBe(true);
+  });
+
+  // OQ3 (B): fine and coarse battles cost the theater the SAME bounded time,
+  // and the catch-up minutes are real war minutes — other forces march and
+  // their events reach the log, never swallowed by the mode switch.
+  it('OQ3: a fought battle + catch-up advances the clock exactly as the coarse timer would', () => {
+    const stageContact = (w: ReturnType<typeof build>) => {
+      const blue = w.front.forces.find((f) => f.side === 'blue')!;
+      const g = w.front.forces.find((f) => f.role === 'garrison')!;
+      blue.pos = g.pos;
+      return openBattle(w.front, { attackerId: blue.id, defenderId: g.id, site: g.pos, gapM: 0 });
+    };
+    // World 1: the battle resolves on the war clock (coarse path).
+    const w1 = build(4);
+    const b1 = stageContact(w1);
+    const t0 = w1.front.clockMin;
+    while (w1.front.battles.length > 0) stepWar(w1.front, w1.campaign, { autoBattle: () => false });
+    expect(w1.front.clockMin).toBe(b1.endMin);
+
+    // World 2: the SAME battle is fought, then the debrief catch-up steps
+    // battleCatchUpMin — with a second force marching a short final leg so
+    // its arrival event provably lands INSIDE the catch-up window.
+    const w2 = build(4);
+    const b2 = stageContact(w2);
+    expect(b2.endMin).toBe(b1.endMin);
+    const other = w2.front.forces.find((f) => f.side === 'blue' && f.engagedIn === null && f.pos.kind === 'node')!;
+    const nid = (other.pos as { nodeId: number }).nodeId;
+    const e0 = w2.front.theater.edges.find((e) => e.moveClass !== 'rail' && (e.a === nid || e.b === nid))!;
+    other.pos = e0.a === nid
+      ? { kind: 'edge', edgeId: e0.id, s: 500, dir: -1 }
+      : { kind: 'edge', edgeId: e0.id, s: e0.lengthM - 500, dir: 1 };
+    expect(orderMove(w2.front, other.id, nid).ok).toBe(true);
+    const tb = makeTheaterBattle(w2.campaign, w2.front, b2);
+    tb.sim.winner = 'blue';
+    applyTheaterOutcome(w2.campaign, w2.front, b2, tb.battleClass, tb.sim);
+    const catchUp = battleCatchUpMin(b2);
+    expect(catchUp).toBe(b2.endMin - b2.startMin);
+    expect(catchUp).toBeLessThanOrEqual(240);
+    for (let i = 0; i < catchUp; i++) stepWar(w2.front, w2.campaign, { autoBattle: () => false });
+    expect(w2.front.clockMin).toBe(w1.front.clockMin);
+    // The marching force's catch-up events reached the ring.
+    expect(w2.front.events.some((e) => e.min > t0 && e.forceIds.includes(other.id))).toBe(true);
   });
 });

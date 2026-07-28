@@ -28,6 +28,15 @@ export const THREAT_M = 1500;
 export const INFILTRATE_MIN = 120; // = the pinned 8 cells x 15 min
 const TRIVIAL_DURATION_MIN = 15;
 
+// OQ3 (B): a fought battle charges the theater the same bounded time the
+// coarse resolver would have — the debrief return steps this many minutes.
+// endMin - startMin is battleDuration-capped at 240 except when a late join
+// re-floors endMin at now+15, so the cap is re-asserted here.
+export const CATCH_UP_CAP_MIN = 240;
+export function battleCatchUpMin(b: CoarseBattle): number {
+  return Math.min(CATCH_UP_CAP_MIN, Math.max(0, b.endMin - b.startMin));
+}
+
 export function forceById(front: FrontV2, id: number): Force {
   const f = front.forces.find((x) => x.id === id);
   if (!f) throw new Error(`forceById: unknown force ${id}`);
@@ -119,7 +128,16 @@ export function battleSides(front: FrontV2, battle: CoarseBattle): BattleSides {
 // then length, tie-break lowest edge id; place PARKED at RETREAT_SETBACK_M.
 // Blue fallback: infiltrate to the nearest friendly enemy-free node within
 // INFILTRATE_MIN graph-minutes, strength kept. Red with no escape: overrun.
-export function retreatForce(front: FrontV2, f: Force, approachEdgeId: number | null): void {
+// opts.trapped: what happens when no candidate edge survives the threat
+// filter. 'overrun' is the beaten-force default; 'stay' serves a voluntary
+// stand-down — a force that CHOSE to break contact and cannot is left in
+// place to fight, never annihilated by its own order.
+export function retreatForce(
+  front: FrontV2,
+  f: Force,
+  approachEdgeId: number | null,
+  opts: { trapped?: 'overrun' | 'stay' } = {},
+): void {
   const t = front.theater;
   // The retreat pivots on the node BEHIND the force: its own node, or the
   // near end of its edge (opposite its direction of travel).
@@ -150,6 +168,8 @@ export function retreatForce(front: FrontV2, f: Force, approachEdgeId: number | 
     pushEvent(front, { min: front.clockMin, kind: 'retreat', text: `${f.name} falls back`, forceIds: [f.id] });
     return;
   }
+
+  if (opts.trapped === 'stay') return; // voluntary break-off, nowhere to go: hold
 
   if (f.side === 'blue') {
     // Infiltrate: nearest friendly, enemy-free node within the graph-minute
