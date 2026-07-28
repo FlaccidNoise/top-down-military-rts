@@ -44,7 +44,10 @@ const URL = arg('url', `http://[::1]:${PORT}`);
 const SHOTS = arg('shots', '/private/tmp/lane-t-shots/gate');
 const LEG = arg('leg', 'all');
 const SEED = arg('seed', null); // pin the campaign to replay a failure
-const WIN_BUDGET_MS = Number(arg('win-budget', '360000'));
+// 600s: organic maps (mapgen-v3) garrison every floor, and on some seeds the
+// last defenders sit just above the 25% break-off floor for minutes — a 360s
+// leash flaked on trajectory-healthy fights (blue 88 alive, red at 30%).
+const WIN_BUDGET_MS = Number(arg('win-budget', '600000'));
 const HOLD_MS = 420; // must match src/ui/touch.ts
 
 const fails = [];
@@ -209,7 +212,7 @@ async function newOperation(page, { tap = false } = {}) {
 
 const theaterTargets = (page) =>
   page.evaluate(async () => {
-    const { orderMove } = await import('/src/strategic/theater/force.ts');
+    const { orderMove } = await import('/src/strategic/theater/step.ts');
     const W = innerWidth, H = innerHeight;
     // The coachmark is DOM too: a click that lands on the bubble teaching the
     // move never reaches the map underneath it.
@@ -694,7 +697,7 @@ async function stagedModalRun(which) {
 
     const staged = await page.evaluate(async (which) => {
       const { TRIVIAL_RATIO } = await import('/src/strategic/bridge.ts');
-      const { orderMove } = await import('/src/strategic/theater/force.ts');
+      const { orderMove } = await import('/src/strategic/theater/step.ts');
       const v2 = window.__game.getV2();
       const live = (side) => v2.front.forces.filter((f) => f.side === side && f.strength > 0 && f.engagedIn === null);
       if (which === 'defender') {
