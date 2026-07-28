@@ -125,16 +125,21 @@ describe('advance', () => {
       'battle-orders',
       'debrief',
     ]);
-    expect(new Set(state.done)).toEqual(new Set(STEPS.map((s) => s.id)));
+    // Every event-completed step retires through advance; battle-orders (the
+    // one doneOn: null step) retires in the PRESENTER once its bubble truly
+    // shows — advance leaves it live so a failed anchor query re-arms it.
+    const eventDone = STEPS.filter((s) => s.doneOn !== null).map((s) => s.id);
+    expect(new Set(state.done)).toEqual(new Set(eventDone));
   });
 
-  it('never shows a step twice', () => {
+  it('never shows a step twice once the presenter marks the null-doneOn step', () => {
     const events: TutorialEvent[] = [
       'campaign-start', 'briefing-begun', 'force-selected', 'move-ordered', 'speed-changed',
       'contact-open', 'contact-closed', 'deploy-start', 'deploy-commit', 'debrief-open', 'debrief-closed',
     ];
     const first = run(fresh(), events);
-    const second = run(first.state, events);
+    const presented = { ...first.state, done: [...first.state.done, 'battle-orders' as const] };
+    const second = run(presented, events);
     expect(second.shown).toEqual([]);
   });
 
@@ -161,10 +166,17 @@ describe('advance', () => {
     expect(r.show).toBe('speed');
   });
 
-  it('battle-orders retires the moment it shows', () => {
+  it('battle-orders is NOT retired at selection — a failed anchor re-arms it', () => {
+    // The presenter retires it (markDone after the bubble shows). If advance
+    // retired it here, one missing anchor would bury the step forever — the
+    // bug the 2026-07-28 wrap-up review caught.
     const r = advance({ skipped: false, done: ['deploy'] }, 'deploy-commit');
     expect(r.show).toBe('battle-orders');
-    expect(r.state.done).toContain('battle-orders');
+    expect(r.state.done).not.toContain('battle-orders');
+    const again = advance(r.state, 'deploy-commit');
+    expect(again.show).toBe('battle-orders');
+    const done = advance({ ...r.state, done: [...r.state.done, 'battle-orders'] }, 'deploy-commit');
+    expect(done.show).toBeNull();
   });
 });
 

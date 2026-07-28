@@ -183,7 +183,14 @@ export function retreatForce(
     return;
   }
 
-  if (opts.trapped === 'stay') return; // voluntary break-off, nowhere to go: hold
+  if (opts.trapped === 'stay') {
+    // Voluntary break-off with nowhere to go: HOLD — and hold means stand
+    // still whatever the caller left in the path, not resume the march
+    // that caused the contact.
+    f.path = [];
+    f.dwellMin = 0;
+    return;
+  }
 
   if (f.side === 'blue') {
     // Infiltrate: nearest friendly, enemy-free node within the graph-minute

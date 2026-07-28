@@ -197,7 +197,6 @@ export function advance(state: TutorialState, event: TutorialEvent): { state: Tu
     if (!s.showOn.includes(event) || done.has(s.id)) continue;
     if (s.requires && !done.has(s.requires)) continue;
     show = s.id;
-    if (s.doneOn === null) done.add(s.id);
     break;
   }
   return { state: { skipped: false, done: [...done] }, show };
@@ -265,6 +264,9 @@ export class Tutorial {
       () => this.skip(),
     );
     this.shown = id;
+    // A step no event completes retires when it actually SHOWS — retiring it
+    // at selection would bury it forever behind one failed anchor query.
+    if (step.doneOn === null) this.markDone(id);
   }
 
   private markDone(id: StepId): void {
@@ -291,12 +293,23 @@ export class Tutorial {
     el.querySelector('#bf-manual')!.addEventListener('click', () => this.openManual('goal'));
     el.querySelector('#bf-skip')!.addEventListener('click', () => this.skip());
     this.card = el;
+    // Esc dismisses the card (= Begin). Without this it falls through to the
+    // game and opens the pause menu INVISIBLY under the card (z 11 over 10).
+    window.addEventListener('keydown', this.onCardKey, true);
   }
+
+  private onCardKey = (e: KeyboardEvent): void => {
+    if (e.key !== 'Escape') return;
+    e.stopPropagation();
+    e.preventDefault();
+    this.begin();
+  };
 
   private closeCard(): void {
     if (this.card) {
       this.card.remove();
       this.card = null;
+      window.removeEventListener('keydown', this.onCardKey, true);
     }
   }
 }

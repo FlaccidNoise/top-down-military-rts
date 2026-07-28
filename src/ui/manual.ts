@@ -1,6 +1,7 @@
 // The Field Manual screen. Renders src/ui/manual-data.ts and nothing else —
 // no copy lives here. Opened only on demand (main menu, pause menu, tutorial),
 // never on its own: the art sweep must never see it.
+import { coach } from './coach';
 import { esc } from './mainmenu';
 import { MANUAL, type ManualChapter } from './manual-data';
 
@@ -65,6 +66,7 @@ export class ManualScreen {
     this._open = true;
     this.term = '';
     this.active = chapterId ?? '';
+    coach.hide(); // a live coachmark (z 20) would float over the manual (z 12)
     this.render();
     this.el.style.display = 'flex';
     window.addEventListener('keydown', this.onKey, true);

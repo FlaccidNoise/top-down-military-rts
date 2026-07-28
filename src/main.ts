@@ -896,7 +896,14 @@ function showDebrief(): void {
     // battles resolve, and every event reaches the ring. A new player
     // contact stops the catch-up; its modal queues behind the debrief.
     const catchUp = battleCatchUpMin(b);
-    for (let i = 0; i < catchUp && !v2.pending && !opEnded; i++) stepTheaterMinuteV2(v2);
+    for (let i = 0; i < catchUp && !v2.pending && !opEnded; i++) {
+      stepTheaterMinuteV2(v2);
+      // A war decided mid-catch-up ENDS there. Stepping on could ERASE the
+      // decision — control goals re-evaluate, so red retaking one objective
+      // at minute 200 would silently undo the win the player just fought
+      // for at minute 10.
+      if (warStatus(v2.front, v2.goals).state === 'decided') break;
+    }
     save();
     const groundLine = out.nodeTaken !== null
       ? blueAttacked ? 'The ground is ours.' : 'The position is lost.'
@@ -908,6 +915,13 @@ function showDebrief(): void {
       inspectedSoldier = -1;
       tooltip.clear();
       tutorial?.notify('debrief-closed');
+      // The frame loop's warStatus check only runs UNPAUSED — a war the
+      // battle (or its catch-up) decided must not hide behind the pause.
+      const st = warStatus(v2.front, v2.goals);
+      if (st.state === 'decided') {
+        showOperationEnd(st.winner === 'blue' ? 'won' : 'lost');
+        return;
+      }
       if (v2.pending) showContactModalV2(v2.pending);
     });
     tutorial?.notify('debrief-open');

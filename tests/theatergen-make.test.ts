@@ -59,8 +59,10 @@ describe('makeTheater', () => {
   });
 
   it('pins three full-structure hashes', () => {
-    // Regenerate with scripts/theater-fp.mjs discipline once S12 lands; any
-    // move without a THEATER_VERSION bump is the tripwire firing.
+    // These pins use THIS FILE's structureHash recipe — scripts/theater-fp.mjs
+    // hashes a different (nested per-field) form and its rows do NOT paste
+    // here. Re-record by printing structureHash for seeds 1-3; any move
+    // without a THEATER_VERSION bump is the tripwire firing.
     expect(structureHash(makeTheater(1, CFG).theater)).toBe(PIN_1);
     expect(structureHash(makeTheater(2, CFG).theater)).toBe(PIN_2);
     expect(structureHash(makeTheater(3, CFG).theater)).toBe(PIN_3);

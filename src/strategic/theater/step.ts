@@ -226,7 +226,13 @@ export function forceEtaMinutes(front: FrontV2, f: Force, destNodeId: number, op
     const clock = front.clockMin + min;
     fatigueMinute(front, clone, clock);
     advanceForce(front, clone, 1, [], paceMult(clone.fatigue, clock, opts), true);
-    if (clone.path.length === 0 && clone.pos.kind === 'node' && clone.pos.nodeId === destNodeId) return min;
+    if (clone.path.length === 0) {
+      if (clone.pos.kind === 'node' && clone.pos.nodeId === destNodeId) return min;
+      // Path exhausted short of the destination: a routing bug, and the old
+      // closed-form mirror THREW here. The shadow must too — spinning the
+      // 30-day cap over a no-op march turned a bug detector into a hang.
+      throw new Error(`forceEtaMinutes: path ends short of node ${destNodeId}`);
+    }
   }
   return cap;
 }

@@ -98,6 +98,13 @@ describe('routing + the crossing economy', () => {
     expect(steps).toBe(eta);
   });
 
+  it('a path that ends short of the destination THROWS instead of spinning the 30-day cap', () => {
+    const fr = front();
+    const f = blue(fr);
+    orderMove(fr, f.id, 1); // path ends at node 1
+    expect(() => forceEtaMinutes(fr, f, 4)).toThrow(/ends short/);
+  });
+
   it('the ETA mirror holds at 0/25/50/100% of the march', () => {
     const fr = front();
     const f = blue(fr);

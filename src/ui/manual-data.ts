@@ -47,7 +47,7 @@ const HOLD_INSTEAD = `On touch, ${HOLD} instead.`;
 // The defence line differs by map kind. Render the table rather than naming
 // today's two kinds, so a new kind appears in the manual on its own.
 const DEF_LINES = Object.entries(DEPLOY_DEF_LINE)
-  .map(([kind, x]) => `${kind} ${x}`)
+  .map(([kind, x]) => `${kind} ${x} m`)
   .join(', ');
 
 const PRESET_LIST = PRESETS.map((p) => `${p.name} (${p.campaign.warDays} days)`).join(', ');
@@ -290,13 +290,13 @@ export const MANUAL: ManualChapter[] = [
       {
         heading: 'Your zone when attacking',
         body:
-          `An attacker owns the western strip of the map, ${DEPLOY_ATK_DEPTH} tiles deep. ` +
+          `An attacker owns the western strip of the map, ${DEPLOY_ATK_DEPTH} m deep. ` +
           'Reposition inside it to pick your approach. Weight the flank with cover, not the open middle.',
       },
       {
         heading: 'Your zone when defending',
         body:
-          `A defender owns everything behind the line. The line sits by map kind: ${DEF_LINES}. Every other map uses ${DEPLOY_DEF_DEFAULT}. ` +
+          `A defender owns everything behind the line, usually ${DEPLOY_DEF_DEFAULT} m from the west edge (${DEF_LINES}). ` +
           'Depth is yours to spend. Put a squad where it can see the road, and one where it cannot be seen.',
       },
       {

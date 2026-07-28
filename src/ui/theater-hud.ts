@@ -8,8 +8,8 @@ import type { WarGoals } from '../strategic/goals';
 import { pathDestination, type Force, type FrontV2 } from '../strategic/theater/force';
 import { forceEtaMinutes } from '../strategic/theater/step';
 import { supplyTierOf } from '../strategic/theater/supply';
+import { SPEED_LABELS } from './strat-hud';
 
-const SPEED_LABELS = ['1×', '10×', '60×'];
 // The first line a new player reads, and it must name the input they have.
 const EMPTY_LOG = MOBILE
   ? 'No contact yet — tap a company, then press and hold a town to advance.'
