@@ -1448,7 +1448,10 @@ html.mobile #floormenu .fm-row { padding: 12px 16px; }
 #theater-hud .th-ev-overrun { color: #b06a5a; }
 @media (max-width: 720px) {
   #theater-hud .th-top { gap: 8px; padding: 6px 8px; font-size: 11px; }
-  #theater-hud .th-log { max-height: 22vh; }
+  /* A phone has no width for side-by-side panels: the log stacks ABOVE the
+     full-width force card instead of burying its ETA line. */
+  #theater-hud .th-log { left: 10px; right: 10px; width: auto; bottom: 84px; max-height: 18vh; }
+  #theater-hud .th-force { left: 10px; right: 10px; bottom: 10px; }
 }
 
 /* ---- customize campaign ---- */
