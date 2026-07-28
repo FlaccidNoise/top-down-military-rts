@@ -1410,6 +1410,10 @@ html.mobile #floormenu .fm-row { padding: 12px 16px; }
 #theater-hud .th-eng { color: #c9803c; margin-left: 8px; }
 #theater-hud .th-mov { color: #9ab27d; margin-left: 8px; }
 #theater-hud .th-hold { color: var(--muted); margin-left: 8px; }
+#theater-hud .th-sup { display: block; margin-top: 2px; font-size: 11px; }
+#theater-hud .th-sup-full { color: var(--muted); }
+#theater-hud .th-sup-low { color: #c9803c; }
+#theater-hud .th-sup-out { color: #b5533c; }
 #theater-hud .th-log {
   position: absolute;
   right: 10px;

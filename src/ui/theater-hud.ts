@@ -4,6 +4,7 @@
 // the hybrid doctrine; rebuilds are signature-throttled like StratHud.
 import type { WarGoals } from '../strategic/goals';
 import type { Force, FrontV2 } from '../strategic/theater/force';
+import { supplyTierOf } from '../strategic/theater/supply';
 
 const SPEED_LABELS = ['1×', '10×', '60×'];
 
@@ -30,7 +31,7 @@ export class TheaterHud {
     });
   }
 
-  update(front: FrontV2, goals: WarGoals, selectedForce: number, paused: boolean, speedIdx: number): void {
+  update(front: FrontV2, goals: WarGoals, selectedForce: number, paused: boolean, speedIdx: number, supplyOn = false): void {
     const control = goals.blue.find((c) => c.kind === 'control');
     const objectives = control && control.kind === 'control' ? control.nodeIds : [];
     const held = objectives.filter((n) => front.controlByNode[n] === 'blue').length;
@@ -40,8 +41,8 @@ export class TheaterHud {
     const lastEvent = front.events.length > 0 ? front.events[front.events.length - 1] : null;
     const sig = [
       front.day, hh, mm, held, paused, speedIdx, selectedForce,
-      sel ? `${sel.strength}:${sel.path.length}:${sel.engagedIn}` : '',
-      front.events.length, lastEvent?.text ?? '',
+      sel ? `${sel.strength}:${sel.path.length}:${sel.engagedIn}:${sel.untracedMin}` : '',
+      front.events.length, lastEvent?.text ?? '', supplyOn,
     ].join('|');
     if (sig === this.lastSig) return;
     this.lastSig = sig;
@@ -49,10 +50,18 @@ export class TheaterHud {
     const speeds = SPEED_LABELS.map(
       (label, i) => `<button class="hbtn st-speed${i === speedIdx ? ' active' : ''}" data-clock="${i}">${label}</button>`,
     ).join('');
+    const supplyLine = (f: Force): string => {
+      if (!supplyOn) return '';
+      const tier = supplyTierOf(f.untracedMin);
+      if (tier === 'full') return '<span class="th-sup th-sup-full">supplied</span>';
+      const hrs = Math.floor(f.untracedMin / 60);
+      return `<span class="th-sup th-sup-${tier}">${tier === 'low' ? 'SUPPLY LOW' : 'OUT OF SUPPLY'} · cut ${hrs}h</span>`;
+    };
     const selCard = sel
       ? `<div class="panel th-force">
           <b>${sel.name}</b> · ${sel.strength} men · ${sel.role}
           ${sel.engagedIn !== null ? '<span class="th-eng">ENGAGED</span>' : sel.path.length > 0 ? '<span class="th-mov">moving</span>' : '<span class="th-hold">holding</span>'}
+          ${supplyLine(sel)}
         </div>`
       : '';
     const log = front.events

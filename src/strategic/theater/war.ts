@@ -22,6 +22,8 @@ import {
 } from './force';
 import { detectContacts, graphGap, haltAtContact, type Contact } from './contact';
 import { stepMovement } from './step';
+import { effStrength } from './combat';
+import { updateSupplyMinute } from './supply';
 
 export const RETREAT_SETBACK_M = 1500;
 export const THREAT_M = 1500;
@@ -107,6 +109,8 @@ interface BattleSides {
   defenders: Force[];
   atkStrength: number;
   defStrength: number;
+  atkEff: number; // strength x combatMult — what the win score reads (§4.4)
+  defEff: number;
 }
 
 export function battleSides(front: FrontV2, battle: CoarseBattle): BattleSides {
@@ -119,6 +123,8 @@ export function battleSides(front: FrontV2, battle: CoarseBattle): BattleSides {
     defenders,
     atkStrength: attackers.reduce((a, f) => a + f.strength, 0),
     defStrength: defenders.reduce((a, f) => a + f.strength, 0),
+    atkEff: attackers.reduce((a, f) => a + effStrength(f), 0),
+    defEff: defenders.reduce((a, f) => a + effStrength(f), 0),
   };
 }
 
@@ -221,6 +227,8 @@ export function resolveBattleV2(
     terrainMult,
     rng,
     battle.forced,
+    sides.atkEff,
+    sides.defEff,
   );
 
   const record: BattleRecord = { day: front.day, won: false, kia: [], wounded: [] };
@@ -302,6 +310,7 @@ export interface StepOptions {
   // Return true to open a timed coarse battle for this contact; false to
   // leave it PENDING for the caller (the player's contact flow — pin+queue).
   autoBattle?: (c: Contact) => boolean;
+  supply?: boolean; // S50: run the hourly supply trace (CampaignConfig.supply)
 }
 
 export interface StepResult {
@@ -314,6 +323,9 @@ export interface StepResult {
 export function stepWar(front: FrontV2, campaign: Campaign, opts: StepOptions = {}): StepResult {
   front.clockMin++;
   if (front.clockMin >= (front.day + 1) * 1440) front.day++;
+  // 0) Hourly supply trace (S50) — before battles resolve, so a fight ending
+  // on the hour reads the tier of the hour it ends in.
+  if (opts.supply) updateSupplyMinute(front);
   const events: TheaterEvent[] = [];
   const done: StepResult['resolved'] = [];
 

@@ -99,7 +99,13 @@ export function loadGameV2(): LoadV2 {
   } catch (e) {
     return { status: 'corrupt', detail: `theater regeneration failed: ${e instanceof Error ? e.message : e}` };
   }
-  const front: FrontV2 = { theater, ...p.front };
+  const front: FrontV2 = {
+    theater,
+    ...p.front,
+    // Saves written before the realism wave carry no supply/fatigue fields:
+    // normalize to fresh, exactly what addForce defaults a new force to.
+    forces: p.front.forces.map((f) => ({ ...f, untracedMin: f.untracedMin ?? 0, fatigue: f.fatigue ?? 0 })),
+  };
   return { status: 'ok', seed: p.seed, cfg: p.theaterCfg, campaignCfg: p.campaignCfg, campaign: p.campaign, front };
 }
 

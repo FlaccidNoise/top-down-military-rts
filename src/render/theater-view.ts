@@ -6,6 +6,7 @@
 // register with the grid view it replaces.
 import { pointAlong, type Region, type TerrainClass, type Theater } from '../strategic/theater';
 import { forceEtaMinutes, type Force, type FrontV2 } from '../strategic/theater/force';
+import { supplyTierOf, type SupplyTier } from '../strategic/theater/supply';
 
 import type { Side } from '../sim/sim';
 import { MOBILE } from './view';
@@ -28,10 +29,17 @@ const RAIL = '#3c3830';
 const SIDE_COLOR: Record<Side, string> = { blue: '#3a5a9a', red: '#9a3a3a' };
 const OWNER_TINT: Record<Side, string> = { blue: 'rgba(70, 110, 180, 0.55)', red: 'rgba(180, 70, 70, 0.55)' };
 
+const SUPPLY_TAG: Record<SupplyTier, { text: string; color: string } | null> = {
+  full: null,
+  low: { text: 'LOW', color: '#c9803c' },
+  out: { text: 'OUT', color: '#b5533c' },
+};
+
 export class TheaterView {
   zoomMul = 1;
   panX = 0;
   panY = 0;
+  supplyOn = false; // S50: gates cut hatching + tier tags (set from CampaignConfig)
   private flashText = '';
   private flashUntil = 0;
 
@@ -161,6 +169,28 @@ export class TheaterView {
       }
     }
 
+    // Supply cut lines (S50): a live enemy force standing ON a road cuts the
+    // trace under it — hatch the edge so the interdiction reads at a glance.
+    // Drawn from the player's (blue) perspective; the FOW lane gates this on
+    // contact visibility when recon: 'contacts' ships.
+    if (this.supplyOn) {
+      for (const f of front.forces) {
+        if (f.side !== 'red' || f.strength <= 0 || f.pos.kind !== 'edge') continue;
+        const e = this.theater.edges[f.pos.edgeId];
+        ctx.strokeStyle = 'rgba(181, 83, 60, 0.85)';
+        ctx.lineWidth = 3;
+        ctx.setLineDash([3, 5]);
+        ctx.beginPath();
+        e.polyline.forEach((p, i) => {
+          const [sx, sy] = this.toScreen(p.x, p.y, w, h);
+          if (i === 0) ctx.moveTo(sx, sy);
+          else ctx.lineTo(sx, sy);
+        });
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+    }
+
     // Nodes: control tint ring, kind glyph, names at label-worthy ranks.
     for (const n of this.theater.nodes) {
       const [sx, sy] = this.toScreen(n.pos.x, n.pos.y, w, h);
@@ -223,6 +253,14 @@ export class TheaterView {
       ctx.font = '9px ui-monospace, monospace';
       ctx.textAlign = 'center';
       ctx.fillText(`${f.strength}`, sx, sy + 15);
+      if (this.supplyOn) {
+        const tag = SUPPLY_TAG[supplyTierOf(f.untracedMin)];
+        if (tag) {
+          ctx.fillStyle = tag.color;
+          ctx.font = 'bold 8px ui-monospace, monospace';
+          ctx.fillText(tag.text, sx, sy + 24);
+        }
+      }
     }
 
     // Path preview for the selection.

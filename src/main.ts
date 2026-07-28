@@ -729,7 +729,7 @@ function deployPlace(wx: number, wy: number): void {
 // is safe to show (the debrief queues it behind its own overlay).
 function stepTheaterMinuteV2(v2: SessionV2): void {
   v2.red.evaluate(v2.front, v2.redIntel);
-  const r = stepWar(v2.front, S().campaign, { autoBattle: () => false });
+  const r = stepWar(v2.front, S().campaign, { autoBattle: () => false, supply: v2.campaignCfg.supply });
   if (v2.front.day > prevDay) {
     advanceDays(S().campaign, v2.front.day - prevDay);
     if (v2.front.day % REINFORCE_CYCLE_DAYS === 0) {
@@ -978,7 +978,7 @@ function startCampaignV2(
         goals,
         red: new Commander2('red', RED_V2, goals, camp.warDays),
         redIntel: new OmniscientIntel(front, 'red'),
-        view: new TheaterView(front.theater),
+        view: Object.assign(new TheaterView(front.theater), { supplyOn: camp.supply }),
         battle: null,
         pending: null,
         selectedForce: -1,
@@ -1670,7 +1670,7 @@ function frame(now: number): void {
     }
     v2.view.clampPan(view.w, view.h);
     v2.view.draw(ctx, v2.front, v2.selectedForce, stratPaused, SPEEDS[speedIdx], view.w, view.h);
-    theaterHud.update(v2.front, v2.goals, v2.selectedForce, stratPaused, speedIdx);
+    theaterHud.update(v2.front, v2.goals, v2.selectedForce, stratPaused, speedIdx, v2.campaignCfg.supply);
     if (touchHold) drawHoldRing(ctx, touchHold, now);
   } else if (mode === 'strategic') {
     hud.updateIdle('strategic', selectedChit >= 0 || stratPaused);

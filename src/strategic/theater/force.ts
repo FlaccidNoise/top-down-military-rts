@@ -20,7 +20,14 @@ export interface Force {
   role: ForceRole;
   engagedIn: number | null; // CoarseBattle id
   queuedAt: number | null; // bridge node id while waiting at the defile
+  untracedMin: number; // S50 supply: minutes since a road last traced to a friendly source
+  fatigue: number; // S51: 0..1 march/combat fatigue
 }
+
+// Creation shape: the realism fields default to fresh at the ONE chokepoint
+// (addForce), so disposition and test literals never carry boilerplate zeros.
+export type ForceInit = Omit<Force, 'id' | 'untracedMin' | 'fatigue'> &
+  Partial<Pick<Force, 'untracedMin' | 'fatigue'>>;
 
 export interface CoarseBattle {
   id: number;
@@ -66,11 +73,11 @@ export function pushEvent(front: FrontV2, e: TheaterEvent): void {
   if (front.events.length > EVENT_LOG_CAP) front.events.splice(0, front.events.length - EVENT_LOG_CAP);
 }
 
-export function addForce(front: FrontV2, f: Omit<Force, 'id'>): Force {
+export function addForce(front: FrontV2, f: ForceInit): Force {
   if (front.forces.length >= MAX_FORCES) {
     throw new Error(`addForce: MAX_FORCES (${MAX_FORCES}) reached — the force cap is asserted here and in makeDisposition, never at generation`);
   }
-  const force: Force = { ...f, id: front.nextForceId++ };
+  const force: Force = { untracedMin: 0, fatigue: 0, ...f, id: front.nextForceId++ };
   front.forces.push(force);
   return force;
 }

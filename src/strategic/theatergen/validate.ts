@@ -17,7 +17,8 @@ export type RejectReason =
   | 'orphan-node'
   | 'spacing'
   | 'name-collision'
-  | 'short-edge';
+  | 'short-edge'
+  | 'no-supply-source'; // S50: supply ships, so an unsourceable side rejects
 
 export const REGION_SLIVER_M2 = 250_000;
 const FRONT_MIN_SHARE = 0.25;
@@ -36,6 +37,7 @@ export const REJECT_KNOB: Record<RejectReason, string | null> = {
   spacing: 'townSpacingMinKm',
   'name-collision': null,
   'short-edge': 'townDensity',
+  'no-supply-source': 'riverDensity', // sources derive from the river-anchored partition
 };
 
 const dist = (a: Vec, b: Vec): number => Math.hypot(a.x - b.x, a.y - b.y);
@@ -106,6 +108,11 @@ export function validateTheater(t: Theater, controlByNode: ('blue' | 'red')[]): 
   const blue = controlByNode.filter((s) => s === 'blue').length;
   const share = blue / Math.max(1, t.nodes.length);
   if (share < FRONT_MIN_SHARE || share > 1 - FRONT_MIN_SHARE) return 'front-degenerate';
+
+  // no-supply-source (S50): supply is a live system — a side with no source
+  // node starts the war cut off by construction. Subsumed by front-degenerate
+  // on generated seeds; named so a doctored theater rejects by its real cause.
+  if (t.sources.blue.length === 0 || t.sources.red.length === 0) return 'no-supply-source';
 
   // region-sliver.
   if (t.regions.some((r) => r.areaM2 < REGION_SLIVER_M2)) return 'region-sliver';
