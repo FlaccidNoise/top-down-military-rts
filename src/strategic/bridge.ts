@@ -116,7 +116,7 @@ function stockpileAmmo(sim: Sim, e: { kind: EmplacementKey; crewTeamId: number }
 }
 
 export const GARRISON_RADIUS = 45; // meters from an objective a garrison post may sit
-const ATTACK_POST_MARGIN = 32; // attack posts start this far east of the west spawn (see attackObjectives)
+export const ATTACK_POST_MARGIN = 32; // attack posts start this far east of the west spawn (see attackObjectives)
 const FORD_SUPPRESSION = 0.45; // crossing under fire: shaken at spawn (fast-decaying)
 const FORD_STAMINA = 0.65; // an hour wading: no sprinting off the far bank
 
