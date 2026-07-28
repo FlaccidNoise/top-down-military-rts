@@ -41,6 +41,8 @@ const ROLE_CODE: Record<BuildingRole, number> = {
   house: ROLE.OTHER,
   townhouse: ROLE.TOWNHOUSE,
   shop: ROLE.SHOP,
+  bakery: ROLE.SHOP, // a trade's floor is a shop floor; the oven is what differs
+  forge: ROLE.SHOP,
   farmhouse: ROLE.FARMHOUSE,
   barn: ROLE.BARN,
   civic: ROLE.CIVIC,

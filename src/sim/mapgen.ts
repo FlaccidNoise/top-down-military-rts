@@ -31,6 +31,8 @@ export type BuildingRole =
   | 'house'
   | 'townhouse'
   | 'shop'
+  | 'bakery' // a shop with an oven — a terrace trade, footprints.ts tradeRole
+  | 'forge' // a shop with an anvil and a fire
   | 'farmhouse'
   | 'barn'
   | 'civic'

@@ -138,12 +138,18 @@ describe('interiors furnish — the invariants that hold for every role (§4.2)'
     expect(furnitureIn(map, it).length).toBeGreaterThan(0);
     expect(map.hasFurniture).toBe(true);
 
-    // a halle is 'none': no plan, no furniture, no flag
-    const halle: Building = { x: 30, y: 30, w: 7, h: 5, role: 'halle' };
-    const m2 = new GameMap(MAP, MAP);
-    stampStructure(m2, halle, 0);
-    furnishInteriors(m2, [halle], 1);
-    expect(m2.hasFurniture).toBe(false);
+    // a halle IS furnished — stall rows — and every tile of them is passable,
+    // which is what lets a market hall with no doors and twenty open edges take
+    // furniture at all.
+    const halle = furnishedBuilding({ x: 30, y: 30, w: 9, h: 7, role: 'halle' });
+    expect(halle.map.hasFurniture).toBe(true);
+    expect(furnitureIn(halle.map, halle.it).length).toBeGreaterThan(0);
+    expect([...keysIn(halle.map, halle.it)]).toEqual(['furn_light']);
+
+    // a halt is the one role that is still 'none': no plan, no furniture
+    const halt = furnishedBuilding({ x: 44, y: 30, w: 7, h: 4, role: 'halt', doors: [{ x: 47, y: 33, side: 's', width: 1 }] });
+    expect(halt.map.hasFurniture).toBe(false);
+    expect(furnitureIn(halt.map, halt.it)).toEqual([]);
   });
 });
 

@@ -105,8 +105,10 @@ export function structuresOf(map: GameMap, buildings: readonly Building[]): Stru
 }
 
 // The mass, read off the map. Returns null when there is nothing to work with:
-// no buildingId at the leader's centre (a `halle` stamps no interior the pass
-// could own, and an unstamped Building has none at all), or an empty mass.
+// no buildingId at the leader's centre (an unstamped Building has none at all),
+// or an empty mass. A `halle` IS a mass — stampStructure floors it and ids it
+// exactly like any other building and only then returns early, having walled
+// four corner posts instead of an envelope — so the market gets furnished.
 export function interiorOf(map: GameMap, struct: Structure): Interior | null {
   if (struct.id < 0 || struct.rects.length === 0) return null;
   let x0 = Infinity;

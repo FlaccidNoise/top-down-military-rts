@@ -361,7 +361,10 @@ export function pickMat(key: number, stories: number, smallOfPair: boolean, role
   // both are mineral. A barn is the other way round and leans agricultural.
   if (role === 'civic' || role === 'halle') return r < 0.55 ? 'slate' : 'tile';
   if (role === 'barn') return r < 0.4 ? 'iron' : r < 0.74 ? 'thatch' : 'tile';
-  if (role === 'townhouse' || role === 'shop') return r < 0.52 ? 'tile' : 'slate';
+  // A bakery and a forge are shops with a trade in them: same street, same
+  // mason, same roof — thatch on one unit of a slated terrace reads as a bug.
+  if (role === 'townhouse' || role === 'shop' || role === 'bakery' || role === 'forge')
+    return r < 0.52 ? 'tile' : 'slate';
   if (stories >= 2) return r < 0.62 ? 'tile' : 'slate';
   if (smallOfPair) {
     if (r < 0.42) return 'thatch';

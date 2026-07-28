@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import { FURNITURE_KEYS } from '../src/sim/interiors/types';
 import { EDGE, type GameMap } from '../src/sim/map';
-import { generateMap, validate, type MapKind, type MapPlan } from '../src/sim/mapgen';
+import { generateMap, validate, type BuildingRole, type MapKind, type MapPlan } from '../src/sim/mapgen';
 import { astar } from '../src/sim/path';
 import { Sim } from '../src/sim/sim';
 
@@ -430,6 +430,115 @@ describe('interiors integration — the church is a room-clearing problem (§6.3
       expect(widest, `seed ${seed} clear central lane width`).toBeGreaterThanOrEqual(2);
     }
     expect(churches).toBeGreaterThanOrEqual(4);
+  });
+});
+
+// ── the fit-out matches the building ────────────────────────────────────────
+//
+// Exhaustive over `BuildingRole` BY TYPE, not by a list someone has to remember
+// to extend: `Record<BuildingRole, FitOut>` fails `tsc` the day mapgen gains a
+// role with no answer here, and the sweep below then fails if the answer is
+// wrong. It is the test half of PLAN_BY_ROLE — that table says which fit-out a
+// role gets, this one says what the fit-out must and must not contain.
+//
+// Claims are made per MASS and are the weakest true statement: the counter is
+// not here because five of 83 bakeries have a storefront too shallow to stand
+// one in, which is the counter table refusing correctly, not a defect.
+
+interface FitOut {
+  bare?: true; // not furnished at all — the honest answer for PLAN_BY_ROLE 'none'
+  must?: string[];
+  never?: string[];
+}
+
+const FIT_OUT: Record<BuildingRole, FitOut> = {
+  house: { must: ['hearth'] },
+  farmhouse: { must: ['hearth'] },
+  townhouse: { must: ['hearth'] },
+  // The mairie. It used to take the HOUSE table and came out as somebody's
+  // kitchen — this row is the regression that change is guarding.
+  civic: { must: ['furn_heavy'], never: ['hearth', 'altar'] },
+  shop: { must: ['furn_heavy'], never: ['hearth', 'altar'] },
+  bakery: { must: ['hearth'] }, // the oven mass, which is what makes it a bakery
+  forge: { must: ['hearth', 'furn_heavy'] }, // the fire and the anvil, both
+  barn: { must: ['furn_light'], never: ['hearth', 'altar'] },
+  church: { must: ['furn_heavy', 'altar'], never: ['hearth'] },
+  church_tower: {}, // shares the nave's buildingId: never a mass of its own
+  church_apse: {},
+  // A covered market is stalls you push past, never furniture you cannot walk
+  // through: `furn_light` only, so the most permeable building on the map
+  // cannot be turned into a wall by this pass.
+  halle: { must: ['furn_light'], never: ['furn_heavy', 'hearth', 'altar'] },
+  halt: { bare: true },
+};
+
+// The role of a mass: the role of the FIRST building of the plan whose centre
+// tile carries that id. For a church group that is the nave, which is the
+// leader interiors itself plans the group as.
+function roleOf(map: GameMap, plan: MapPlan): Map<number, BuildingRole> {
+  const out = new Map<number, BuildingRole>();
+  for (const b of plan.buildings) {
+    const id = map.buildingIdAt(b.x + (b.w >> 1), b.y + (b.h >> 1));
+    if (id >= 0 && !out.has(id)) out.set(id, b.role ?? 'house');
+  }
+  return out;
+}
+
+const keysIn = (map: GameMap, m: Mass): Set<string> =>
+  new Set(m.tiles.map((t) => map.terrainKeyAt(t % map.w, (t / map.w) | 0)).filter((k) => FURN.has(k)));
+
+describe('interiors integration — the fit-out matches the building', () => {
+  test('every role furnishes as its table says, over the whole sweep', () => {
+    const bad: string[] = [];
+    const seen = new Map<BuildingRole, number>();
+    for (const { name, plan } of MAPS) {
+      const map = plan.map;
+      const roles = roleOf(map, plan);
+      for (const m of massesOf(map)) {
+        const role = roles.get(m.id);
+        if (role === undefined) continue;
+        seen.set(role, (seen.get(role) ?? 0) + 1);
+        const got = keysIn(map, m);
+        const fit = FIT_OUT[role];
+        if (fit.bare && got.size > 0) bad.push(`${name} #${m.id} ${role} is furnished (${[...got]})`);
+        for (const k of fit.must ?? []) if (!got.has(k)) bad.push(`${name} #${m.id} ${role} has no ${k} (${[...got]})`);
+        for (const k of fit.never ?? []) if (got.has(k)) bad.push(`${name} #${m.id} ${role} has a ${k}`);
+      }
+    }
+    expect(bad).toEqual([]);
+    // The rows that would otherwise be dead: a bakery, a forge, a mairie and a
+    // market hall have to actually occur in the sweep for any of this to mean
+    // anything. ('house' does not — since the P3 cutover every kind runs the
+    // organic pipeline and every mass carries a generator role.)
+    for (const role of ['bakery', 'forge', 'civic', 'halle', 'halt', 'church', 'barn'] as BuildingRole[])
+      expect(seen.get(role) ?? 0, `${role} masses in the sweep`).toBeGreaterThan(0);
+  });
+
+  test('a halle is aisles first: every tile crossable, and a clear lane each way', () => {
+    let halles = 0;
+    for (const { name, plan } of MAPS) {
+      const map = plan.map;
+      const roles = roleOf(map, plan);
+      for (const m of massesOf(map)) {
+        if (roles.get(m.id) !== 'halle') continue;
+        halles++;
+        // Stalls are passable by construction, so a market can never be sealed
+        // — including for the twenty open envelope edges that are its doors.
+        expect(passableSet(map, m).size, `${name} #${m.id} crossable tiles`).toBe(m.tiles.length);
+        // …and it is a MARKET, not a floor: bare aisles run the full width and
+        // the full height of the mass, with stall rows between them.
+        const xs = [...new Set(m.tiles.map((t) => t % map.w))];
+        const ys = [...new Set(m.tiles.map((t) => (t / map.w) | 0))];
+        const clear = (line: number[], along: number[], vertical: boolean): number =>
+          line.filter((a) => along.every((b) => !FURN.has(map.terrainKeyAt(vertical ? a : b, vertical ? b : a)))).length;
+        expect(clear(xs, ys, true), `${name} #${m.id} clear columns`).toBeGreaterThan(0);
+        expect(clear(ys, xs, false), `${name} #${m.id} clear rows`).toBeGreaterThan(0);
+        expect(m.tiles.filter((t) => FURN.has(map.terrainKeyAt(t % map.w, (t / map.w) | 0))).length, `${name} #${m.id} stalls`).toBeGreaterThan(
+          0,
+        );
+      }
+    }
+    expect(halles).toBeGreaterThan(0);
   });
 });
 

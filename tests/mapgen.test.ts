@@ -73,11 +73,19 @@ describe('mapgen', () => {
   it('pins the furnished configuration (interiors: true)', () => {
     // The two open lines re-froze at the P3 cutover with the geometry under
     // them (8ab735cc/d6cff694 were the legacy blob village); the two bourg
-    // lines did not move, and are P3's leak control on the interiors side.
+    // lines did not move there, and were P3's leak control on the interiors
+    // side.
+    //
+    // Three of the four moved again with the per-role fit-out: the mairie left
+    // the house table, the halle gained stall rows and the bakery/forge trades
+    // split off the shop role (cde4019b → 47cd132f, 7028d0b1 → 816ddf75,
+    // 25b60a5b → cc8117a7). open/1 did NOT move, which is the leak control
+    // working — that seed's 160x120 map carries none of the four roles, so a
+    // change that had reached the shared pipeline would have moved it too.
     expect(furnishedFingerprint(1, 160, 120, 'open')).toMatchInlineSnapshot(`"ac8b9a3f"`);
-    expect(furnishedFingerprint(2, 160, 120, 'open')).toMatchInlineSnapshot(`"cde4019b"`);
-    expect(furnishedFingerprint(1, 320, 240, 'bourg')).toMatchInlineSnapshot(`"7028d0b1"`);
-    expect(furnishedFingerprint(2, 320, 240, 'bourg')).toMatchInlineSnapshot(`"25b60a5b"`);
+    expect(furnishedFingerprint(2, 160, 120, 'open')).toMatchInlineSnapshot(`"47cd132f"`);
+    expect(furnishedFingerprint(1, 320, 240, 'bourg')).toMatchInlineSnapshot(`"816ddf75"`);
+    expect(furnishedFingerprint(2, 320, 240, 'bourg')).toMatchInlineSnapshot(`"cc8117a7"`);
   });
 
   // The validation gate inlines canStep (mapgen.ts reachField) for speed, so it

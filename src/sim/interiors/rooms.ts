@@ -417,11 +417,29 @@ function tackRoom(map: GameMap, it: Interior, f: Frame, p: Plan): Room | null {
   return room;
 }
 
+// ═══ I5 · halle ═════════════════════════════════════════════════════════════
+
+/**
+ * A halle is a roof on four corner posts, so there is nothing to partition: no
+ * envelope, no doors, no windows, twenty open edges.
+ *
+ * The whole mass is ONE volume, and the aisles that make it a covered market
+ * rather than a floor are a FURNISHING decision (I7's stall rows), not a wall.
+ * Drawing no rng is the point — a plan with no choices in it has none to make.
+ */
+export function planHalle(it: Interior): RoomPlan {
+  return { rooms: [{ kind: 'bay', tiles: it.tiles.slice() }], spine: [] };
+}
+
 // ═══ dispatch ═══════════════════════════════════════════════════════════════
 
 /**
- * Partition one structure by its role. Returns null only for 'none' (halle,
- * halt), which is never partitioned and never furnished.
+ * Partition one structure by its role. Returns null only for 'none' (halt),
+ * which is never partitioned and never furnished.
+ *
+ * The four trade roles share §3.4's partitioner: a mairie, a baker, a smith and
+ * a grocer are one shell — frontage room, back room, store — furnished four
+ * different ways by I7.
  *
  * The caller must have run `resetInterior` first — every plan here assumes it
  * owns a clean interior. `role` follows the Building contract, where absent
@@ -430,8 +448,9 @@ function tackRoom(map: GameMap, it: Interior, f: Frame, p: Plan): Room | null {
 export function planRooms(map: GameMap, it: Interior, role: BuildingRole | undefined, s1: Rng): RoomPlan | null {
   const kind = PLAN_BY_ROLE[role ?? 'house'];
   if (kind === 'house') return planHouse(map, it, s1, role === 'townhouse');
-  if (kind === 'shop') return planShop(map, it, s1);
+  if (kind === 'shop' || kind === 'civic' || kind === 'bakery' || kind === 'forge') return planShop(map, it, s1);
   if (kind === 'barn') return planBarn(map, it, s1);
   if (kind === 'church') return planChurch(map, it, s1);
+  if (kind === 'halle') return planHalle(it);
   return null;
 }
