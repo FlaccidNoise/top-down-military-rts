@@ -12,32 +12,44 @@ import { MOBILE } from './view';
 // reads. Distant / off-screen fire stays audible but quiet — atmosphere, not a
 // fog-of-war leak (tracers already render ungated; audio mirrors them).
 
-type SoundClass = 'rifle' | 'smg' | 'lmg' | 'rocket' | 'cannon';
-
-// Weapon → report character. Bolt-actions read heavier/sharper than the M1;
-// the MG42's buzzsaw is brighter and snappier than US LMGs.
-const CLASS: Record<WeaponKey, SoundClass> = {
-  garand: 'rifle', carbine: 'rifle', springfield: 'rifle', kar98k: 'rifle', kar98k_scoped: 'rifle',
-  thompson: 'smg', mp40: 'smg',
-  bar: 'lmg', m1919: 'lmg', mg42: 'lmg',
-  bazooka: 'rocket', schreck: 'rocket', panzerfaust: 'rocket',
-  mortar60: 'cannon', mortar81: 'cannon', at57_gun: 'cannon', pak40_gun: 'cannon',
-};
-
-interface Voiced {
-  freq: number; // bandpass centre
+// One weapon's report recipe. A ShotEvent is one ABSTRACTED attack, so an
+// automatic weapon voices `taps` rounds at its real cyclic spacing — an MG42
+// attack has to read as the MG42's rrrip, not as a single click.
+export interface Gun {
+  freq: number; // bandpass centre of the report
   q: number;
-  decay: number; // seconds
-  gain: number; // per-class base
+  decay: number; // seconds, per tap
+  gain: number;
   body: number; // low thump frequency, 0 = none
+  taps?: number; // rounds voiced per event, default 1
+  spacing?: number; // seconds between taps (60 / cyclic rpm)
+  bolt?: boolean; // delayed 2-tap bolt-cycle clack, close shots only
+  tail?: number; // whip-crack tail gain — the long report of a sniper rifle
 }
-const VOICE: Record<SoundClass, Voiced> = {
-  rifle: { freq: 1250, q: 0.9, decay: 0.14, gain: 0.9, body: 90 },
-  smg: { freq: 820, q: 0.7, decay: 0.09, gain: 0.6, body: 70 },
-  lmg: { freq: 1550, q: 1.1, decay: 0.08, gain: 0.7, body: 80 },
-  rocket: { freq: 500, q: 0.5, decay: 0.5, gain: 1.0, body: 55 },
-  cannon: { freq: 320, q: 0.6, decay: 0.4, gain: 1.0, body: 60 },
+
+const ROCKET: Gun = { freq: 500, q: 0.5, decay: 0.5, gain: 1.0, body: 55 };
+const CANNON: Gun = { freq: 320, q: 0.6, decay: 0.4, gain: 1.0, body: 60 };
+
+// Per weapon, not per class: the point is that a player can name the gun by
+// ear. Bolt-actions crack once and cycle; the two scoped rifles sit lower and
+// ring longer; the SMGs and MGs differ by cyclic rate as much as by timbre.
+export const GUN: Record<WeaponKey, Gun> = {
+  garand: { freq: 1350, q: 1.0, decay: 0.15, gain: 0.95, body: 95 },
+  carbine: { freq: 1750, q: 1.3, decay: 0.10, gain: 0.65, body: 125 },
+  kar98k: { freq: 1150, q: 0.9, decay: 0.17, gain: 0.95, body: 85, bolt: true },
+  springfield: { freq: 880, q: 0.8, decay: 0.28, gain: 1.15, body: 68, bolt: true, tail: 0.3 },
+  kar98k_scoped: { freq: 980, q: 0.8, decay: 0.26, gain: 1.1, body: 74, bolt: true, tail: 0.26 },
+  thompson: { freq: 700, q: 0.7, decay: 0.08, gain: 0.7, body: 65, taps: 4, spacing: 0.086 },
+  mp40: { freq: 950, q: 0.8, decay: 0.07, gain: 0.6, body: 80, taps: 3, spacing: 0.111 },
+  bar: { freq: 1250, q: 1.0, decay: 0.09, gain: 0.8, body: 90, taps: 3, spacing: 0.109 },
+  m1919: { freq: 1450, q: 1.1, decay: 0.08, gain: 0.75, body: 85, taps: 3, spacing: 0.120 },
+  mg42: { freq: 1900, q: 1.3, decay: 0.05, gain: 0.62, body: 70, taps: 5, spacing: 0.050 },
+  bazooka: ROCKET, schreck: ROCKET, panzerfaust: ROCKET,
+  mortar60: CANNON, mortar81: CANNON, at57_gun: CANNON, pak40_gun: CANNON,
 };
+
+const MAX_TAPS = MOBILE ? 3 : 6;
+const TAP_FALL = 0.85; // gain drop across a burst — the first round is the loudest
 
 // Hard concurrent cap — a firefight is hundreds of events/frame. Each voice is
 // a BufferSource plus two BiquadFilters; mobile WebAudio clips and drops out
@@ -170,26 +182,100 @@ export class AudioEngine {
     osc.stop(now + decay + 0.02);
   }
 
+  // One shot = one logical voice: a single Gain→Panner chain, counted once
+  // against MAX_VOICES, fed by however many short sources the weapon needs
+  // (burst taps, bolt clack, body thump). `near` gates the mechanical detail
+  // that only carries when the camera is on top of the shooter.
+  private gunshot(w: Gun, level: number, pan: number, near: boolean): void {
+    const ctx = this.ctx;
+    if (!ctx || this.voices >= MAX_VOICES) return;
+    const out = ctx.createGain();
+    out.gain.value = level;
+    const p = ctx.createStereoPanner();
+    p.pan.value = pan;
+    out.connect(p);
+    p.connect(this.master);
+    this.voices++;
+    let open = 0;
+    const close = (): void => {
+      if (--open === 0) {
+        this.voices--;
+        out.disconnect();
+        p.disconnect();
+      }
+    };
+    const now = ctx.currentTime;
+    const tap = (at: number, freq: number, q: number, decay: number, gain: number): void => {
+      const src = ctx.createBufferSource();
+      src.buffer = this.noise;
+      src.playbackRate.value = 0.7 + Math.random() * 0.6; // per-tap variety, no two identical
+      const filt = ctx.createBiquadFilter();
+      filt.type = 'bandpass';
+      filt.frequency.value = freq;
+      filt.Q.value = q;
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(gain, at);
+      g.gain.exponentialRampToValueAtTime(0.0008, at + decay);
+      src.connect(filt);
+      filt.connect(g);
+      g.connect(out);
+      open++;
+      src.onended = () => {
+        src.disconnect();
+        filt.disconnect();
+        g.disconnect();
+        close();
+      };
+      src.start(at);
+      src.stop(at + decay + 0.02);
+    };
+    const taps = Math.min(w.taps ?? 1, MAX_TAPS);
+    for (let i = 0; i < taps; i++) tap(now + i * (w.spacing ?? 0), w.freq, w.q, w.decay, w.gain * TAP_FALL ** i);
+    if (w.tail) tap(now + 0.02, 2600, 5, w.decay * 1.6, w.tail); // whip-crack over the report
+    if (w.bolt && near) {
+      tap(now + 0.25, 3200, 9, 0.03, 0.09); // bolt back
+      tap(now + 0.4, 2400, 9, 0.04, 0.08); // bolt home
+    }
+    if (w.body) {
+      const osc = ctx.createOscillator();
+      osc.type = 'triangle';
+      const decay = w.decay * 1.4;
+      osc.frequency.setValueAtTime(w.body, now);
+      osc.frequency.exponentialRampToValueAtTime(w.body * 0.6, now + decay);
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(0.5 * w.gain, now);
+      g.gain.exponentialRampToValueAtTime(0.0008, now + decay);
+      osc.connect(g);
+      g.connect(out);
+      open++;
+      osc.onended = () => {
+        osc.disconnect();
+        g.disconnect();
+        close();
+      };
+      osc.start(now);
+      osc.stop(now + decay + 0.02);
+    }
+  }
+
   // Gunfire batch: place each shot, keep the loudest NEW_PER_BATCH, synth them.
   // Near-miss cracks only for incoming rounds landing near the viewport centre.
   addShots(shots: ShotEvent[], cam: Camera, cw: number, ch: number): void {
     if (!this.live() || shots.length === 0) return;
-    const scored: { g: number; pan: number; cls: SoundClass; miss: boolean; nd: number }[] = [];
+    const scored: { g: number; pan: number; gun: Gun; near: boolean; miss: boolean; nd: number }[] = [];
     for (const s of shots) {
       const placed = this.place(s.fx, s.fy, cam, cw, ch);
       if (!placed) continue;
-      const cls = s.weapon ? CLASS[s.weapon] : 'cannon';
+      const gun = s.weapon ? GUN[s.weapon] : CANNON; // vehicle main guns carry no weapon key
       // near-miss crack gates on the impact point (where the round snaps past),
       // not the muzzle; 9 = far off-screen (place culled it), so no crack
       const impact = this.place(s.tx, s.ty, cam, cw, ch);
-      scored.push({ g: placed[0], pan: placed[1], cls, miss: !s.hit, nd: impact ? impact[2] : 9 });
+      scored.push({ g: placed[0], pan: placed[1], gun, near: placed[2] < 0.6, miss: !s.hit, nd: impact ? impact[2] : 9 });
     }
     scored.sort((a, b) => b.g - a.g);
     for (let i = 0; i < Math.min(scored.length, NEW_PER_BATCH); i++) {
       const s = scored[i];
-      const v = VOICE[s.cls];
-      this.burst(v.freq, v.q, v.decay, v.gain * s.g, s.pan);
-      if (v.body) this.tone(v.body, v.decay * 1.4, 0.5 * v.gain * s.g, s.pan, v.body * 0.6, 'triangle');
+      this.gunshot(s.gun, s.g, s.pan, s.near);
       // whip-crack for a round snapping past where the player is looking
       if (s.miss && s.nd < 0.4) this.burst(3000, 6, 0.03, 0.5 * s.g, s.pan, 'bandpass');
     }
