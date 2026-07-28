@@ -417,8 +417,16 @@ async function fightToWin(page) {
 // ── desktop leg ───────────────────────────────────────────────────────────
 
 async function desktopLeg() {
-  console.log('\n=== desktop 1280x800 · fresh profile · full tutorial → first victory ===');
+  // --viewport WxH shrinks the window AFTER launch — for narrow-window checks
+  // (the deploy banner wrap). The default stays the stage.mjs desktop profile.
+  const vp = arg('viewport', null);
+  console.log(`\n=== desktop ${vp ?? '1280x800'} · fresh profile · full tutorial → first victory ===`);
   const { browser, page } = await launch({ device: 'desktop' });
+  if (vp) {
+    const [w, h] = vp.split('x').map(Number);
+    if (!w || !h) throw new Error(`--viewport wants WxH, got "${vp}"`);
+    await page.setViewportSize({ width: w, height: h });
+  }
   const errors = [];
   page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
   page.on('console', (m) => m.type() === 'error' && errors.push(`console: ${m.text()}`));

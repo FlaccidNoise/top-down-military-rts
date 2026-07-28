@@ -1824,23 +1824,36 @@ function frame(now: number): void {
       const inset = viewportInset();
       const by = inset.top > 0 ? inset.top + 6 : 40;
       const showMsg = deployMsg !== '' && performance.now() < deployMsgUntil;
-      const bh = showMsg ? 46 : 30;
       const bubble = document.querySelector('.coach')?.getBoundingClientRect();
-      const right = bubble && bubble.height > 0 && bubble.top < by + bh ? bubble.left - 8 : view.w;
+      const right = bubble && bubble.height > 0 && bubble.top < by + 46 ? bubble.left - 8 : view.w;
       const text = MOBILE
         ? 'DEPLOYMENT — tap a squad, press and hold to reposition inside your zone · Resume to begin'
         : 'DEPLOYMENT — select squads, right-click to reposition inside your zone · Resume to begin';
       ctx.font = '12px ui-monospace, monospace';
       ctx.textAlign = 'center';
-      const bw = Math.min(right - inset.left - 20, ctx.measureText(text).width + 20);
+      // A phone cannot hold the sentence on one line — wrap at word breaks
+      // instead of clipping at the screen edges.
+      const avail = right - inset.left - 20;
+      const lines: string[] = [];
+      let acc = '';
+      for (const word of text.split(' ')) {
+        const cand = acc === '' ? word : `${acc} ${word}`;
+        if (acc !== '' && ctx.measureText(cand).width > avail - 20) {
+          lines.push(acc);
+          acc = word;
+        } else acc = cand;
+      }
+      if (acc !== '') lines.push(acc);
+      const bh = lines.length * 18 + (showMsg ? 28 : 12);
+      const bw = Math.min(avail, Math.max(...lines.map((l) => ctx.measureText(l).width)) + 20);
       const bx = (inset.left + right) / 2;
       ctx.fillStyle = 'rgba(20, 18, 12, 0.85)';
       ctx.fillRect(bx - bw / 2, by, bw, bh);
       ctx.fillStyle = '#e8dcc4';
-      ctx.fillText(text, bx, by + 19);
+      lines.forEach((l, i) => ctx.fillText(l, bx, by + 19 + i * 18));
       if (showMsg) {
         ctx.fillStyle = '#d8a878';
-        ctx.fillText(deployMsg, bx, by + 37);
+        ctx.fillText(deployMsg, bx, by + 19 + lines.length * 18);
       }
     }
     drawOverlays(ctx, cam, sim, {
