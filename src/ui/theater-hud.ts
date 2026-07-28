@@ -34,12 +34,17 @@ export class TheaterHud {
     const control = goals.blue.find((c) => c.kind === 'control');
     const objectives = control && control.kind === 'control' ? control.nodeIds : [];
     const held = objectives.filter((n) => front.controlByNode[n] === 'blue').length;
+    // Both halves of the win condition come from the goals object — the war
+    // length is config, so a hand-typed day would lie the moment it changes.
+    const need = control && control.kind === 'control' ? control.need : objectives.length;
+    const deadline = goals.red.find((c) => c.kind === 'deadline');
+    const lastDay = deadline && deadline.kind === 'deadline' ? deadline.day : null;
     const sel: Force | undefined = front.forces.find((f) => f.id === selectedForce);
     const hh = Math.floor((front.clockMin % 1440) / 60).toString().padStart(2, '0');
     const mm = (front.clockMin % 60).toString().padStart(2, '0');
     const lastEvent = front.events.length > 0 ? front.events[front.events.length - 1] : null;
     const sig = [
-      front.day, hh, mm, held, paused, speedIdx, selectedForce,
+      front.day, hh, mm, held, need, objectives.length, lastDay, paused, speedIdx, selectedForce,
       sel ? `${sel.strength}:${sel.path.length}:${sel.engagedIn}` : '',
       front.events.length, lastEvent?.text ?? '',
     ].join('|');
@@ -65,10 +70,13 @@ export class TheaterHud {
       .reverse()
       .join('');
 
+    const objHelp = lastDay === null
+      ? `Hold ${need} of ${objectives.length} objectives to win. You lose if your force is destroyed.`
+      : `Hold ${need} of ${objectives.length} objectives before Day ${lastDay} to win. You lose if the deadline passes or your force is destroyed.`;
     this.root.innerHTML = `
       <div class="panel th-top">
-        <span class="th-obj">Objectives ${held}/${objectives.length}</span>
-        <span class="th-clock">Day ${front.day} · ${hh}${mm}</span>
+        <span class="th-obj" title="${objHelp}">Objectives ${held}/${objectives.length}${need < objectives.length ? ` (need ${need})` : ''}</span>
+        <span class="th-clock">Day ${front.day}${lastDay === null ? '' : ` of ${lastDay}`} · ${hh}${mm}</span>
         <span class="th-controls">
           <button class="hbtn st-pause${paused ? ' active' : ''}" data-clock="pause">${paused ? '▶ Resume' : '⏸ Pause'}</button>
           ${speeds}

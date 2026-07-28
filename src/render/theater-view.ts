@@ -26,6 +26,10 @@ const ROAD: Record<0 | 1 | 2, { color: string; width: number }> = {
 };
 const RAIL = '#3c3830';
 const SIDE_COLOR: Record<Side, string> = { blue: '#3a5a9a', red: '#9a3a3a' };
+// Objective designation: gold means take it, cool blue means we hold it.
+const OBJ_TAKE = '#d8b25c';
+const OBJ_HELD = '#7da0d8';
+const OBJ_TICKS: readonly (readonly [number, number])[] = [[0, -1], [1, 0], [0, 1], [-1, 0]];
 const OWNER_TINT: Record<Side, string> = { blue: 'rgba(70, 110, 180, 0.55)', red: 'rgba(180, 70, 70, 0.55)' };
 
 export class TheaterView {
@@ -162,6 +166,9 @@ export class TheaterView {
     }
 
     // Nodes: control tint ring, kind glyph, names at label-worthy ranks.
+    // Objectives always carry a ticked designation ring and a starred name —
+    // the win condition has to read off the map itself.
+    const objectives = new Set(this.theater.objectiveNodes);
     for (const n of this.theater.nodes) {
       const [sx, sy] = this.toScreen(n.pos.x, n.pos.y, w, h);
       const owner = front.controlByNode[n.id];
@@ -176,18 +183,26 @@ export class TheaterView {
       ctx.beginPath();
       ctx.arc(sx, sy, r, 0, Math.PI * 2);
       ctx.fill();
-      if (this.theater.objectiveNodes.includes(n.id)) {
-        ctx.strokeStyle = '#c2a67c';
-        ctx.lineWidth = 1.5;
+      const objective = objectives.has(n.id);
+      if (objective) {
+        ctx.strokeStyle = owner === 'blue' ? OBJ_HELD : OBJ_TAKE;
+        ctx.lineWidth = 2.5;
         ctx.beginPath();
         ctx.arc(sx, sy, r + 7, 0, Math.PI * 2);
         ctx.stroke();
+        ctx.beginPath();
+        for (const [dx, dy] of OBJ_TICKS) {
+          ctx.moveTo(sx + dx * (r + 7), sy + dy * (r + 7));
+          ctx.lineTo(sx + dx * (r + 11), sy + dy * (r + 11));
+        }
+        ctx.stroke();
       }
-      if (n.rank <= 1 || n.crossing || this.zoomMul > 1.8) {
+      if (objective || n.rank <= 1 || n.crossing || this.zoomMul > 1.8) {
         ctx.fillStyle = 'rgba(230, 220, 200, 0.85)';
         ctx.font = `${n.rank === 0 ? 12 : 10}px ui-monospace, monospace`;
         ctx.textAlign = 'center';
-        ctx.fillText(n.name, sx, sy - r - 5);
+        // Objective names clear the north tick.
+        ctx.fillText(objective ? `★ ${n.name}` : n.name, sx, sy - r - (objective ? 14 : 5));
       }
     }
 

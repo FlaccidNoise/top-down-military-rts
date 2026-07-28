@@ -729,12 +729,22 @@ function showContactModalV2(c: Contact): void {
     atk.strength > 0 && def.strength > 0 &&
     (atk.strength >= def.strength * TRIVIAL_RATIO || def.strength >= atk.strength * TRIVIAL_RATIO);
   const siteName = c.site.kind === 'node' ? v2.front.theater.nodes[c.site.nodeId].name : 'the road';
+  // Odds in plain words: the man reading this should not have to divide.
+  const own = playerAttacks ? atk : def;
+  const foe = playerAttacks ? def : atk;
+  const ratio = Math.max(own.strength, foe.strength) / Math.max(1, Math.min(own.strength, foe.strength));
+  const rtxt = ratio < 2 ? ratio.toFixed(1) : Math.round(ratio).toString();
+  const odds =
+    ratio < 1.1 ? 'Even match.' : own.strength > foe.strength ? `You outnumber them ${rtxt}:1.` : `They outnumber you ${rtxt}:1.`;
+  const oddsLine = trivial ? `${odds} Auto-resolve is available at ${TRIVIAL_RATIO}:1.` : odds;
   const col = (f: typeof atk): string =>
     `<div class="fc-col ${f.side === 'blue' ? 'us' : 'ge'}"><h4>${f.name}</h4><p class="fc-str">${f.strength} men</p></div>`;
   debriefEl.innerHTML = `<div class="db-scroll"><div class="db">
     <h1>CONTACT</h1>
     <p class="sub">${atk.name} has met ${def.name} at ${siteName}.</p>
     <div class="fc">${col(atk)}<div class="fc-vs">VS</div>${col(def)}</div>
+    <p class="fc-odds">${oddsLine}</p>
+    ${playerAttacks ? '' : '<p class="fc-odds fc-forced">They chose this fight. A defender cannot stand down.</p>'}
     </div></div>
     <div class="db-actions">
       <button id="fight" class="primary">${playerAttacks ? 'Attack' : 'Defend'}</button>
