@@ -8,7 +8,7 @@ import { GEN_VERSION, SPEC_TAG, specStream, type CampaignConfig, type CampaignSp
 import { REINFORCE_CYCLE_DAYS, REINFORCE_PER_COMPANY } from './front';
 import { makeWarGoals, warStatus, type WarGoals, type WarState } from './goals';
 import { ContactIntel, OmniscientIntel, type IntelView } from './intel';
-import { BLUE_V2, Commander2, RED_V2, type OperationalPlan } from './planner';
+import { BLUE_V2, Commander2, RED_V2, type DoctrineV2, type OperationalPlan, type PlannerReport } from './planner';
 import { makeTheater } from './theatergen';
 import { makeDisposition } from './theatergen/disposition';
 import { addForce, type FrontV2 } from './theater/force';
@@ -32,6 +32,10 @@ export interface HeadlessWorld {
   redIntel: IntelView;
   blueIntel: IntelView;
   prevDay: number;
+  // The most recent evaluate() results — null between cadence ticks. The
+  // sweep reads stall codes and order streams from here (§4.6).
+  lastRedReport: PlannerReport | null;
+  lastBlueReport: PlannerReport | null;
 }
 
 const intelFor = (front: FrontV2, side: 'blue' | 'red', cfg: CampaignConfig): IntelView =>
@@ -48,6 +52,7 @@ export function makeHeadlessWorld(
     front: FrontV2;
     ai?: Partial<Record<'blue' | 'red', CommanderRestore>>;
   },
+  doctrines?: Partial<Record<'blue' | 'red', DoctrineV2>>,
 ): HeadlessWorld {
   let campaign: Campaign;
   let front: FrontV2;
@@ -74,8 +79,8 @@ export function makeHeadlessWorld(
   }
   const goals = makeWarGoals(front.theater, campaignCfg);
   const kernel = { nightTempo: campaignCfg.nightTempo };
-  const red = new Commander2('red', RED_V2, goals, campaignCfg.warDays, kernel);
-  const blue = new Commander2('blue', BLUE_V2, goals, campaignCfg.warDays, kernel);
+  const red = new Commander2('red', doctrines?.red ?? RED_V2, goals, campaignCfg.warDays, kernel);
+  const blue = new Commander2('blue', doctrines?.blue ?? BLUE_V2, goals, campaignCfg.warDays, kernel);
   for (const [cmd, side] of [
     [red, 'red'],
     [blue, 'blue'],
@@ -98,14 +103,16 @@ export function makeHeadlessWorld(
     redIntel: intelFor(front, 'red', campaignCfg),
     blueIntel: intelFor(front, 'blue', campaignCfg),
     prevDay: front.day,
+    lastRedReport: null,
+    lastBlueReport: null,
   };
 }
 
 // One strategic minute, main-loop order: red evaluates, blue evaluates,
 // the war steps (auto-battle — nobody answers a modal here), the day rolls.
 export function stepWorldMinute(w: HeadlessWorld): StepResult {
-  w.red.evaluate(w.front, w.redIntel);
-  w.blue.evaluate(w.front, w.blueIntel);
+  w.lastRedReport = w.red.evaluate(w.front, w.redIntel);
+  w.lastBlueReport = w.blue.evaluate(w.front, w.blueIntel);
   const r = stepWar(w.front, w.campaign, {
     autoBattle: () => true,
     supply: w.campaignCfg.supply,
