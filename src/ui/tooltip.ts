@@ -2,7 +2,7 @@ import type { Camera } from '../render/camera';
 import { woundLabel } from '../sim/body';
 import { TERRAIN, VEHICLES, WEAPONS, type TerrainDef, type TerrainKey, type WeaponDef } from '../sim/data';
 import { EYE_VEHICLE, HULL_VEHICLE, eyeOf, sightBetween, sightToSoldier, type Sim, type Soldier, type Vehicle } from '../sim/sim';
-import { floorName, STATE_COLOR } from './hud';
+import { floorName, reserveAmmo, STATE_COLOR } from './hud';
 import { formatCoverBreakdown, formatCoverBreakdownForFloor } from './tooltip-format';
 import { MOBILE } from '../render/view';
 
@@ -55,7 +55,7 @@ export interface ShotSolution {
   reason?: 'no-los' | 'concealed' | 'out-of-range' | 'mixed' | 'floor-blocked'; // set when !ok — overlays branch on this, never on prose
 }
 
-const pct = (v: number) => `${Math.round(v * 100)}%`;
+export const pct = (v: number) => `${Math.round(v * 100)}%`;
 
 // The firing solution the current selection has against what's hovered —
 // straight from the sim's own preview math, never re-derived.
@@ -216,7 +216,7 @@ export class Tooltip {
   }
 }
 
-function barRow(label: string, v: number, color: string): string {
+export function barRow(label: string, v: number, color: string): string {
   return `<span class="lb">${label}</span><span class="bar"><i style="width:${Math.round(Math.min(1, v) * 100)}%;background:${color}"></i></span><span class="pc">${pct(Math.min(1, v))}</span>`;
 }
 
@@ -235,6 +235,12 @@ function shotSection(shot: ShotSolution): string {
   );
 }
 
+export const xpStars = (s: Soldier): string => (s.xp > 0 ? ' · ' + '★'.repeat(Math.min(s.xp, 5)) : '');
+export const downedCond = (s: Soldier): string =>
+  s.stabilized ? 'stabilized' : s.bleedRate > 0.0005 ? 'bleeding out' : 'incapacitated';
+export const rescuePhase = (r: Soldier): string =>
+  r.task?.phase === 'drag' ? 'dragging him to cover' : r.task?.phase === 'aid' ? 'applying first aid' : 'moving to him';
+
 function squadAmmoChip(sim: Sim, s: Soldier): string {
   const sq = sim.squads[s.squadId];
   if (!sq) return '';
@@ -242,7 +248,7 @@ function squadAmmoChip(sim: Sim, s: Soldier): string {
   let max = 0;
   for (const id of sq.soldierIds) {
     const m = sim.soldiers[id];
-    total += Object.values(m.ammo).reduce((a, n) => a + (n ?? 0), 0);
+    total += reserveAmmo(m);
     max += m.ammoStart;
   }
   if (max <= 0) return '';
@@ -250,20 +256,18 @@ function squadAmmoChip(sim: Sim, s: Soldier): string {
 }
 
 function soldierCard(sim: Sim, s: Soldier, shot: ShotSolution | null): string {
-  const stars = s.xp > 0 ? ' · ' + '★'.repeat(Math.min(s.xp, 5)) : '';
-  const reserve = Object.values(s.ammo).reduce((a, n) => a + (n ?? 0), 0);
+  const stars = xpStars(s);
+  const reserve = reserveAmmo(s);
   const ammoChip = squadAmmoChip(sim, s);
   let html = `<div class="tt-head ${s.side}"><b>${s.name}</b><span>${WEAPONS[s.weapon].name} ${s.magLeft}+${reserve}${stars}${ammoChip ? ' ' + ammoChip : ''}</span></div>`;
   const stories = sim.map.storiesAt(Math.floor(s.x), Math.floor(s.y));
   if (stories >= 2) html += `<div class="tt-note">${floorName(s.level)} of ${stories}</div>`;
   if (!s.alive) return html + `<div class="tt-kia">KIA</div>` + (s.wounds.length ? woundList(s) : '');
   if (s.downed) {
-    const cond = s.stabilized ? 'stabilized' : s.bleedRate > 0.0005 ? 'bleeding out' : 'incapacitated';
-    html += `<div class="tt-state"><span class="mchip" style="background:#d05c50">DOWN</span><span>${cond}</span></div>`;
+    html += `<div class="tt-state"><span class="mchip" style="background:#d05c50">DOWN</span><span>${downedCond(s)}</span></div>`;
     if (s.rescuerId >= 0) {
       const r = sim.soldiers[s.rescuerId];
-      const phase = r.task?.phase === 'drag' ? 'dragging him to cover' : r.task?.phase === 'aid' ? 'applying first aid' : 'moving to him';
-      html += `<div class="tt-note">${r.name} is ${phase}</div>`;
+      html += `<div class="tt-note">${r.name} is ${rescuePhase(r)}</div>`;
     }
   } else {
     html += `<div class="tt-state"><span class="mchip" style="background:${STATE_COLOR[s.mental]}">${s.mental.toUpperCase()}</span>${s.fleeing ? '<span class="tt-note">fleeing</span>' : ''}</div>`;

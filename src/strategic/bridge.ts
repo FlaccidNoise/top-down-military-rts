@@ -602,20 +602,6 @@ export function applyEngagementOutcome(
   return { record, redLosses, cellTaken, breaches: sim.breachLog };
 }
 
-// Coarse night multiplier (day/night design §6): the fine resolver's night
-// rules — spot cap, cheap concealment — favour whoever is already hidden and
-// dug in, i.e. the defender, and a coarse resolver that ignored night would
-// make "let the AI fight the night ones" weakly optimal. The hook lands at
-// EXACTLY 1.0: terrainMult is a calibrated chain (tuned 2026-07 across 16
-// campaign seeds, wars 1-15 days, both outcomes) and its calibration is the
-// asset. scripts/warsweep.mjs re-measures the distribution under a candidate;
-// pick a number from that sweep, never from a guess. The setter exists for
-// that script and the tests — production never calls it.
-let coarseNightMult = 1.0;
-export function setCoarseNightMult(m: number): void {
-  coarseNightMult = m;
-}
-
 // Trivial-mismatch auto-resolve (owner-decided): once one side outnumbers the
 // other by this much, staging a full battle is ceremony for a foregone
 // conclusion — offer the player resolveCoarse's forced outcome instead.
@@ -628,14 +614,60 @@ export function trivialMismatchWinner(attacker: Chit, defender: Chit): 'attacker
   return null;
 }
 
+// The planner's belief and the resolver's truth are ONE formula (§4.4):
+// coarseOdds is what the AI weighs an attack with and exactly what the
+// resolver rolls against — they cannot drift.
+export function coarseOdds(atkEff: number, defEff: number, terrainMult: number): number {
+  return Math.max(0.05, Math.min(0.95, atkEff / (atkEff + defEff * terrainMult)));
+}
+
+// The tuned Lanchester core — THE asset (2026-07 calibration, 16 seeds,
+// wars 1-15 days, both outcomes). One implementation, two callers: the grid
+// resolveCoarse below and the V2 theater battle layer. Draw order is frozen:
+// winner roll, winner losses, loser losses.
+export function coarseOutcome(
+  atkStrength: number,
+  defStrength: number,
+  terrainMult: number,
+  rng: Rng,
+  forcedWinner?: 'attacker' | 'defender' | null,
+): { attackerWins: boolean; atkLosses: number; defLosses: number } {
+  const clampedScore = coarseOdds(atkStrength, defStrength, terrainMult);
+  // clampedScore still allows a 5% upset either way — a forced outcome (the
+  // player accepted an offered "foregone conclusion") must never roll for it.
+  // The roll is DRAWN either way: a skipped draw would shift every later draw
+  // one place, and accepting the walkover vs fighting out the same result
+  // would fork the war from the first loss number onward.
+  const winnerRoll = rng.next();
+  const attackerWins = forcedWinner ? forcedWinner === 'attacker' : winnerRoll < clampedScore;
+  const winnerStrength = attackerWins ? atkStrength : defStrength;
+  const loserStrength = attackerWins ? defStrength : atkStrength;
+  // Each side bleeds in proportion to its OWN strength: a small garrison
+  // that repels a big assault isn't mauled by the effort of winning (2-6%),
+  // but losing a battle is a rout (50-80%).
+  const winnerLosses = Math.max(0, Math.floor(winnerStrength * (0.02 + rng.next() * 0.04)));
+  const loserLosses = Math.max(1, Math.floor(loserStrength * (0.5 + rng.next() * 0.3)));
+  return {
+    attackerWins,
+    atkLosses: attackerWins ? winnerLosses : loserLosses,
+    defLosses: attackerWins ? loserLosses : winnerLosses,
+  };
+}
+
 // Resolve an engagement without running a Sim — coarse Lanchester-style
 // resolution for AI-vs-AI battles, and for the player's offered trivial-
 // mismatch auto-resolve (forcedWinner).
+// nightMult (day/night design §6): below civil-dusk light the defender
+// multiplier scales by it — the fine resolver's night rules favour whoever is
+// dug in. A PARAMETER, not module state (S6): production callers take the 1.0
+// default (bit-identical to the tuned build) until scripts/warsweep.mjs picks
+// a value from evidence (OQ7); the sweep threads candidates through here.
 export function resolveCoarse(
   c: Campaign,
   front: Front,
   e: Engagement,
   forcedWinner?: 'attacker' | 'defender',
+  nightMult = 1.0,
 ): { record: BattleRecord; attackerWon: boolean } {
   const attacker = front.chits.find((ch) => ch.id === e.attackerId)!;
   const defender = front.chits.find((ch) => ch.id === e.defenderId)!;
@@ -652,27 +684,9 @@ export function resolveCoarse(
   if (defCell.terrain === 'town' || defCell.terrain === 'bourg') terrainMult *= 7.0;
   if (defCell.terrain === 'woods') terrainMult *= 1.5;
   if (atkCell.terrain === 'river' || atkCell.terrain === 'bridge') terrainMult *= 2.0; // assault across a defended crossing
-  // Below civil-dusk light (the same band the sim's night rules bite in) the
-  // defender multiplier scales by the night hook — exactly 1.0 today, so this
-  // line is bit-identical to the tuned build until warsweep.mjs picks a value.
-  if (lightAt(front.clockMin) < 0.25) terrainMult *= coarseNightMult;
+  if (lightAt(front.clockMin) < 0.25) terrainMult *= nightMult;
 
-  const score = attacker.strength / (attacker.strength + defender.strength * terrainMult);
-  const clampedScore = Math.max(0.05, Math.min(0.95, score));
-  // clampedScore still allows a 5% upset either way — a forced outcome (the
-  // player accepted an offered "foregone conclusion") must never roll for it.
-  const attackerWins = forcedWinner ? forcedWinner === 'attacker' : rng.next() < clampedScore;
-
-  const winnerStrength = attackerWins ? attacker.strength : defender.strength;
-  const loserStrength = attackerWins ? defender.strength : attacker.strength;
-  // Each side bleeds in proportion to its OWN strength: a small garrison
-  // that repels a big assault isn't mauled by the effort of winning (2-6%),
-  // but losing a battle is a rout (50-80%).
-  const winnerLosses = Math.max(0, Math.floor(winnerStrength * (0.02 + rng.next() * 0.04)));
-  const loserLosses = Math.max(1, Math.floor(loserStrength * (0.5 + rng.next() * 0.3)));
-
-  const atkLosses = attackerWins ? winnerLosses : loserLosses;
-  const defLosses = attackerWins ? loserLosses : winnerLosses;
+  const { attackerWins, atkLosses, defLosses } = coarseOutcome(attacker.strength, defender.strength, terrainMult, rng, forcedWinner);
   attacker.strength = Math.max(0, attacker.strength - atkLosses);
   defender.strength = Math.max(0, defender.strength - defLosses);
 
@@ -697,8 +711,9 @@ export function resolveCoarse(
   return { record, attackerWon: attackerWins };
 }
 
-function applyCoarseBlueLosses(c: Campaign, chit: Chit, lossCount: number, rng: Rng, record: BattleRecord): void {
-  if (chit.side !== 'blue' || lossCount <= 0) return;
+export function applyCoarseBlueLosses(c: Campaign, chit: { companyIndex: number }, lossCount: number, rng: Rng, record: BattleRecord): void {
+  // companyIndex < 0 = a red attrition counter — no roster to bleed.
+  if (chit.companyIndex < 0 || lossCount <= 0) return;
   const company = c.companies[chit.companyIndex];
   const fitPids: number[] = [];
   for (const si of company.squads) {

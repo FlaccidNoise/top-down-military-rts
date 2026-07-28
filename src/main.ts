@@ -1,5 +1,5 @@
 import { cellXY } from './strategic/sector';
-import { advanceDays, fillReplacements, newCampaign, squadMembers, type Campaign } from './campaign/campaign';
+import { advanceDays, fillReplacements, newCampaign, squadMembers, type BattleRecord, type Campaign } from './campaign/campaign';
 import { AudioEngine } from './render/audio';
 import { Camera } from './render/camera';
 import { Renderer } from './render/renderer';
@@ -20,10 +20,30 @@ import { emplacementOf, Hud, infantrySquads, type HudState } from './ui/hud';
 import { StratHud } from './ui/strat-hud';
 import { drawOverlays, EventPings } from './ui/overlays';
 import { computeShot, pickAt, Tooltip } from './ui/tooltip';
+import { HealthPanel } from './ui/health-panel';
 import { actionForEvent, loadKeymap, type Keymap } from './ui/keymap';
 import { PauseMenu } from './ui/menu';
 import { coach } from './ui/coach';
 import { showFloorMenu } from './ui/floormenu';
+import { MainMenu, type SaveProbe } from './ui/mainmenu';
+import { TheaterView } from './render/theater-view';
+import { TheaterHud } from './ui/theater-hud';
+import { CustomizeScreen } from './ui/customize';
+import { DEFAULT_PRESET, presetSpec } from './campaign/presets';
+import { SPEC_TAG, specStream, type CampaignConfig, type TheaterConfig } from './campaign/spec';
+import { makeTheater, TheaterGenError } from './strategic/theatergen';
+import { DispositionError, makeDisposition } from './strategic/theatergen/disposition';
+import { makeWarGoals, warStatus, type WarGoals } from './strategic/goals';
+import { OmniscientIntel } from './strategic/intel';
+import { Commander2, RED_V2 } from './strategic/planner';
+import { addForce, orderMove, type CoarseBattle, type FrontV2, type MoveReject } from './strategic/theater/force';
+import { resolveBattleV2, openBattle, stepWar } from './strategic/theater/war';
+import { syncStrengthsV2 } from './strategic/theater/sync';
+import type { Contact } from './strategic/theater/contact';
+import { BATTLE_CLASS_TO_MAPKIND } from './strategic/theater';
+import { applyTheaterOutcome, makeTheaterBattle, type TheaterBattle } from './strategic/bridge2';
+import { adoptLegacyRoster, discardSaves, loadGameV2, saveGameV2 } from './strategic/save2';
+import { TRIVIAL_RATIO } from './strategic/bridge';
 import { bindTouch, classify as classifyGesture, drawHoldRing, type TouchHandlers } from './ui/touch';
 import './ui/ui.css';
 
@@ -97,20 +117,53 @@ const urlCamp = new URLSearchParams(location.search).get('camp');
 const campPinned = urlCamp !== null && Number.isFinite(Number(urlCamp));
 const campSeed = (): number => (campPinned ? Number(urlCamp) : Date.now() % 100000);
 
-let campaign: Campaign;
-let front: Front;
-const save = () => {
-  if (!campPinned) saveGame(campaign, front);
-};
-const loaded = campPinned ? null : loadGame();
-if (loaded) {
-  campaign = loaded.campaign;
-  front = loaded.front;
-} else {
-  campaign = newCampaign(campSeed());
-  front = newFront(campaign, makeDefaultSector());
-  save();
+// §9.1: the module-level campaign/front lets collapse into Session behind S().
+// Pre-session access is a NAMED error, never an unassigned-binding TypeError.
+interface SessionV2 {
+  seed: number;
+  theaterCfg: TheaterConfig;
+  campaignCfg: CampaignConfig;
+  front: FrontV2;
+  goals: WarGoals;
+  red: Commander2;
+  redIntel: OmniscientIntel;
+  view: TheaterView;
+  battle: { b: CoarseBattle; tb: TheaterBattle } | null;
+  pending: Contact | null;
+  selectedForce: number;
 }
+interface Session {
+  campaign: Campaign;
+  front: Front;
+  stratView: StrategicView;
+  v2: SessionV2 | null;
+}
+
+// A V2 campaign has no grid front: any legacy read is a leaked V1 code path
+// and must fail LOUDLY, not silently operate on stale state.
+function v1Trap<T extends object>(what: string): T {
+  return new Proxy({} as T, {
+    get(_t, prop) {
+      throw new Error(`${what}.${String(prop)} read during a V2 campaign — a V1 code path leaked`);
+    },
+  });
+}
+let session: Session | null = null;
+function S(): Session {
+  if (!session) throw new Error('S(): no active session — the menu is up and startCampaign() has not run');
+  return session;
+}
+const save = () => {
+  if (campPinned) return;
+  const s = S();
+  if (s.v2) {
+    if (!saveGameV2(s.v2.seed, s.v2.theaterCfg, s.v2.campaignCfg, s.campaign, s.v2.front)) {
+      mainMenu.setStorageWritable(false);
+    }
+  } else {
+    saveGame(s.campaign, s.front);
+  }
+};
 
 const aiParam = new URLSearchParams(location.search).get('ai'); // ?ai=red|blue|both
 const aiSides = new Set<Side>();
@@ -128,14 +181,13 @@ buildCommanders();
 
 const ORDER_KINDS: OrderKind[] = ['move', 'fast', 'sneak', 'fire', 'smoke', 'defend', 'ambush', 'assault'];
 
-let mode: 'strategic' | 'battle' = 'strategic';
-let stratView = new StrategicView(front.sector);
+let mode: 'menu' | 'strategic' | 'battle' = 'menu';
 let selectedChit = -1;
 const SPEEDS = [1, 10, 60]; // strategic minutes per real second
 let speedIdx = 1;
 let stratPaused = true;
 let stratAcc = 0;
-let prevDay = front.day;
+let prevDay = 0;
 let pendingEngagement: Engagement | null = null;
 let opEnded = false;
 
@@ -158,6 +210,7 @@ let selectedSquads: number[] = [];
 // Primary = last element of selectedSquads. Kept for existing call sites.
 function getPrimary(): number { return selectedSquads.length > 0 ? selectedSquads[selectedSquads.length - 1] : -1; }
 let selectedTeam = -1; // -1 = whole squad; narrowed to one team within selectedSquad
+let inspectedSoldier = -1; // health panel target; independent of selection, never affects orders
 let selectedVehicle = -1;
 let lastTeamId = -1; // most recently selected team, survives a later vehicle selection (Mount reads this)
 let armedOrder: OrderKind | null = null; // order kind armed via ⇧1-7 / order bar, issued by right-click
@@ -167,6 +220,16 @@ let floorFocus = -1; // -1 = all floors; 0..maxStories-1 = only that floor, othe
 // off the canvas, on the menu), and `level` is the row under the pointer — so
 // hovering "Floor 2" moves the ghost dots upstairs before anything is issued.
 let floorMenu: { wx: number; wy: number; level: number | null } | null = null;
+// Deployment phase (V2 campaign battles only — the pinned harness never sees
+// it): battle boots paused in DEPLOY; select + right-click REPOSITIONS inside
+// your zone instead of ordering; the first unpause commits and begins.
+let deployPhase = false;
+let deployMsg = '';
+let deployMsgUntil = 0;
+const DEPLOY_ATK_DEPTH = 32; // = ATTACK_POST_MARGIN
+const DEPLOY_DEF_LINE: Record<string, number> = { bourg: 60, woods: 80 };
+const DEPLOY_DEF_DEFAULT = 70;
+const deployOverride = new URLSearchParams(location.search).get('deploy'); // ?deploy=atk,defLine — OQ19 tuning
 let winnerAt = -1; // ms timestamp when winner appeared
 let debriefShown = false;
 let needsBootFrame = false; // re-run bootCamera once the battle HUD is laid out
@@ -247,11 +310,13 @@ const hazeOff = new URLSearchParams(location.search).get('haze') === '0'; // deb
 // staged at any sun. Same contract as ?fow: a boot-time staging switch, never
 // read by step() — the clock it sets flows through the normal startMin path.
 const urlHour = new URLSearchParams(location.search).get('hour');
-if (urlHour !== null) {
+const urlHourMin = ((): number | null => {
+  if (urlHour === null) return null;
   const m = /^(\d{1,2}):?(\d{2})$/.exec(urlHour);
-  if (m && Number(m[1]) < 24 && Number(m[2]) < 60) front.clockMin = Number(m[1]) * 60 + Number(m[2]);
-  else console.warn(`?hour=${urlHour} is not HHMM; ignoring`);
-}
+  if (m && Number(m[1]) < 24 && Number(m[2]) < 60) return Number(m[1]) * 60 + Number(m[2]);
+  console.warn(`?hour=${urlHour} is not HHMM; ignoring`);
+  return null;
+})();
 const hud = new Hud({
   selectSquad,
   selectVehicle,
@@ -259,6 +324,9 @@ const hud = new Hud({
     const s = sim.soldiers[id];
     cam.x = s.x;
     cam.y = s.y;
+  },
+  inspectSoldier: (id) => {
+    inspectedSoldier = id;
   },
   callBarrage: () => {
     if (!aiControl && sim.barragesLeft.blue > 0) setTargetMode(targetMode === 'barrage' ? '' : 'barrage');
@@ -335,7 +403,12 @@ const stratHud = new StratHud({
   togglePause: () => { stratPaused = !stratPaused; },
   setSpeed: (i) => { speedIdx = i; },
 });
+const theaterHud = new TheaterHud({
+  togglePause: () => { stratPaused = !stratPaused; },
+  setSpeed: (i) => { speedIdx = i; },
+});
 const tooltip = new Tooltip(hud.root);
+const healthPanel = new HealthPanel(hud.root, () => { inspectedSoldier = -1; });
 let pauseBeforeMenu: boolean | null = null;
 const menu = new PauseMenu({
   onResume: () => {
@@ -348,18 +421,64 @@ const menu = new PauseMenu({
 });
 menu.setKeymap(loadKeymap(localStorage));
 
+function probeSave(): SaveProbe {
+  if (campPinned) return { status: 'none' };
+  const g = loadGameV2();
+  if (g.status !== 'ok') {
+    if (g.status === 'corrupt') return { status: 'corrupt', detail: g.detail };
+    return { status: g.status };
+  }
+  const fit = Object.values(g.campaign.soldiers).filter((s) => s.status === 'fit').length;
+  const hh = Math.floor((g.front.clockMin % 1440) / 60);
+  const mm = (g.front.clockMin % 60).toString().padStart(2, '0');
+  return { status: 'ok', day: g.front.day, clock: `${hh.toString().padStart(2, '0')}${mm}`, theaterName: g.front.theater.name, menFit: fit };
+}
+const customize = new CustomizeScreen({
+  onGenerate: (seed, theaterCfg, campaignCfg) => {
+    customize.close();
+    startCampaignV2({ kind: 'fresh', seed, theaterCfg, campaignCfg });
+  },
+  onBack: () => {
+    customize.close();
+    mainMenu.setSaveProbe(probeSave());
+    mainMenu.open();
+  },
+});
+const mainMenu = new MainMenu({
+  onNewOperation: () => {
+    mainMenu.close();
+    customize.open();
+  },
+  onContinue: () => {
+    const g = loadGameV2();
+    if (g.status !== 'ok') throw new Error(`Continue: probe said ok but load returned '${g.status}'`);
+    startCampaignV2({ kind: 'loaded', seed: g.seed, theaterCfg: g.cfg, campaignCfg: g.campaignCfg ?? DEFAULT_PRESET.campaign, campaign: g.campaign, front: g.front });
+  },
+  // OQ1 roster carry-over: the v3 grid save cannot migrate, the named men can.
+  onContinueLegacy: () => {
+    const roster = adoptLegacyRoster();
+    if (!roster) throw new Error('onContinueLegacy: probe said legacy but no v3 roster was readable');
+    discardSaves();
+    startCampaignV2({ kind: 'fresh', seed: campSeed(), roster });
+  },
+  onDiscardSave: () => {
+    discardSaves();
+    mainMenu.setSaveProbe(probeSave());
+  },
+});
+
 function showContactModal(e: Engagement): void {
-  const attacker = front.chits.find((c) => c.id === e.attackerId)!;
-  const defender = front.chits.find((c) => c.id === e.defenderId)!;
-  const cell = front.sector.cells[e.cell];
+  const attacker = S().front.chits.find((c) => c.id === e.attackerId)!;
+  const defender = S().front.chits.find((c) => c.id === e.defenderId)!;
+  const cell = S().front.sector.cells[e.cell];
   const terrain = TERRAIN_LABELS[cell.terrain].toLowerCase();
   const forceCol = (c: Chit): string => {
     const cls = c.side === 'blue' ? 'us' : 'ge';
     let str = `~${c.strength} men`;
     let comp = 'enemy — composition unknown';
     if (c.companyIndex >= 0) {
-      const squads = campaign.companies[c.companyIndex].squads.map((si) => campaign.squads[si]);
-      const fit = squads.flatMap(squadMembers).map((pid) => campaign.soldiers[pid]).filter((s) => s.status !== 'kia');
+      const squads = S().campaign.companies[c.companyIndex].squads.map((si) => S().campaign.squads[si]);
+      const fit = squads.flatMap(squadMembers).map((pid) => S().campaign.soldiers[pid]).filter((s) => s.status !== 'kia');
       const tally = new Map<string, number>();
       for (const s of fit) tally.set(s.weapon, (tally.get(s.weapon) ?? 0) + 1);
       const weapons = [...tally].map(([w, n]) => `${n} ${WEAPONS[w as keyof typeof WEAPONS].name}`).join(' · ');
@@ -368,7 +487,7 @@ function showContactModal(e: Engagement): void {
     }
     return `<div class="fc-col ${cls}"><h4>${c.name}</h4><p class="fc-str">${str}</p><p class="fc-comp">${comp}</p></div>`;
   };
-  const objectives = front.sector.cells.filter((c) => c.objective);
+  const objectives = S().front.sector.cells.filter((c) => c.objective);
   const held = objectives.filter((c) => c.owner === 'blue').length;
   const stakes = cell.objective
     ? `Objective — ${held}/${objectives.length} held toward victory`
@@ -400,8 +519,8 @@ function showContactModal(e: Engagement): void {
   document.getElementById('fight')!.onclick = () => startEngagementBattle(e);
   if (forced) {
     document.getElementById('autoresolve')!.onclick = () => {
-      const result = resolveCoarse(campaign, front, e, forced);
-      stratView.flash(`${attacker.name} vs ${defender.name}: ${result.attackerWon ? 'attacker wins' : 'defender holds'}`);
+      const result = resolveCoarse(S().campaign, S().front, e, forced);
+      S().stratView.flash(`${attacker.name} vs ${defender.name}: ${result.attackerWon ? 'attacker wins' : 'defender holds'}`);
       debriefEl.style.display = 'none';
       pendingEngagement = null;
       stratPaused = !(aiSides.has('red') && aiSides.has('blue'));
@@ -467,19 +586,16 @@ function bootCamera(s: Sim, cw: number, ch: number): { x: number; y: number; sca
   });
 }
 
-function startEngagementBattle(e: Engagement): void {
-  pendingEngagement = e;
-  const seed = urlSeed !== null && Number.isFinite(Number(urlSeed)) ? Number(urlSeed) : front.clockMin * 7919 + e.cell;
-  const battle = makeStrategicBattle(campaign, front, e, seed);
-  sim = battle.sim;
+function bootBattle(staged: { sim: Sim; commander: RedCommander; blueCommander: RedCommander; companyIndex: number }, title: string): void {
+  sim = staged.sim;
   sim.fowDisabled = fowOff;
-  commander = battle.commander;
-  blueCommander = battle.blueCommander;
+  commander = staged.commander;
+  blueCommander = staged.blueCommander;
   aiControl = false;
-  battleCompany = battle.companyIndex;
+  battleCompany = staged.companyIndex;
   renderer = new Renderer(sim);
   renderer.hazeOn = !hazeOff;
-  battleTitle = `Day ${front.day} ${front.hhmm} — ${battle.name}`;
+  battleTitle = title;
   if (MOBILE) {
     // Pinching out to the whole 320m map needs ~1.2 px/m, which the desktop
     // floor of 2 forbids; clampCenter (touch pan/pinch only) keeps the map
@@ -497,6 +613,7 @@ function startEngagementBattle(e: Engagement): void {
   floorFocus = -1;
   selectedSquads = [];
   selectedVehicle = -1;
+  inspectedSoldier = -1;
   setTargetMode('');
   winnerAt = -1;
   debriefShown = false;
@@ -508,21 +625,154 @@ function startEngagementBattle(e: Engagement): void {
   tooltip.clear();
 }
 
-function showDebrief(): void {
-  debriefShown = true;
-  const e = pendingEngagement;
-  if (!e) throw new Error('showDebrief: pendingEngagement is null — startEngagementBattle must set it');
-  const blueAttacked = front.chits.find((ch) => ch.id === e.attackerId)!.side === 'blue';
-  const out = applyEngagementOutcome(campaign, front, e, sim);
-  pendingEngagement = null;
-  save();
+function startEngagementBattle(e: Engagement): void {
+  pendingEngagement = e;
+  const seed = urlSeed !== null && Number.isFinite(Number(urlSeed)) ? Number(urlSeed) : S().front.clockMin * 7919 + e.cell;
+  const battle = makeStrategicBattle(S().campaign, S().front, e, seed);
+  bootBattle(battle, `Day ${S().front.day} ${S().front.hhmm} — ${battle.name}`);
+}
 
+// V2: a pending theater contact becomes a fought battle.
+function startTheaterBattle(c: Contact): void {
+  const v2 = S().v2!;
+  const b = openBattle(v2.front, c);
+  const tb = makeTheaterBattle(S().campaign, v2.front, b);
+  v2.battle = { b, tb };
+  v2.pending = null;
+  bootBattle(tb, tb.name);
+  deployPhase = true;
+  deployMsg = '';
+}
+
+const MOVE_REJECT_TEXT: Record<MoveReject, string> = {
+  'unknown-force': 'No such force',
+  engaged: 'Engaged — they fight where they stand',
+  'queued-at-defile': 'Queued at the bridge — wait for the crossing',
+  'already-there': 'Already holding that ground',
+  'no-route': 'No road reaches there',
+  'destination-unholdable': "Can't hold open water — take the bridge or the bank",
+};
+
+// The player's deploy zone in map-x: attackers own the western entry strip,
+// defenders own everything past the line (kind-adjusted). AUTO-PLACED units
+// are legal wherever staging put them — the zone constrains REPOSITIONING.
+function deployZone(): { x0: number; x1: number } {
+  const v2 = S().v2;
+  const b = v2?.battle;
+  if (!b) return { x0: 0, x1: sim.map.w };
+  const atkF = v2!.front.forces.find((f) => f.id === b.b.attackerId)!;
+  const kind = BATTLE_CLASS_TO_MAPKIND[b.tb.battleClass];
+  let atkDepth = DEPLOY_ATK_DEPTH;
+  let defLine = DEPLOY_DEF_LINE[kind] ?? DEPLOY_DEF_DEFAULT;
+  if (deployOverride) {
+    const [a, d] = deployOverride.split(',').map(Number);
+    if (Number.isFinite(a)) atkDepth = a;
+    if (Number.isFinite(d)) defLine = d;
+  }
+  return atkF.side === 'blue' ? { x0: 0, x1: atkDepth } : { x0: defLine, x1: sim.map.w };
+}
+
+function deployFlash(text: string): void {
+  deployMsg = text;
+  deployMsgUntil = performance.now() + 3000;
+}
+
+// Reposition the selected squads around (wx, wy): deterministic compact fan,
+// every man through nudgeSpawn (no rng), zone- and bounds-checked. Guns and
+// mounted men refuse — emplacements deploy where they stand.
+function deployPlace(wx: number, wy: number): void {
+  const zone = deployZone();
+  if (wx < zone.x0 || wx > zone.x1) {
+    deployFlash(`Outside your deployment zone (x ${zone.x0}–${Math.round(zone.x1)})`);
+    return;
+  }
+  const K = selectedSquads.length;
+  if (K === 0) {
+    deployFlash('Select a squad first — tap it, then right-click the ground');
+    return;
+  }
+  const offs = fanOffsets(K, SQUAD_FAN);
+  selectedSquads.forEach((id, qi) => {
+    const squad = sim.squads[id];
+    if (!squad) return;
+    if (emplacementOf(sim, id)) {
+      deployFlash(`${squad.name}: guns deploy where they stand`);
+      return;
+    }
+    const ax = wx;
+    const ay = wy + offs[qi];
+    let i = 0;
+    for (const sid of squad.soldierIds) {
+      const s = sim.soldiers[sid];
+      if (!s.alive || s.inVehicle >= 0) continue;
+      const gx = ax + ((i % 4) - 1.5) * 2;
+      const gy = ay + Math.floor(i / 4) * 2 - 2;
+      const p = sim.nudgeSpawn(
+        Math.max(zone.x0 + 0.5, Math.min(zone.x1 - 0.5, gx)),
+        Math.max(1, Math.min(sim.map.h - 2, gy)),
+      );
+      s.x = p.x;
+      s.y = p.y;
+      s.level = 0;
+      s.path = null;
+      i++;
+    }
+  });
+}
+
+// V2 contact modal (OQ2 pin+queue: the theater is paused by the caller; the
+// defender path NEVER offers Stand down — an AI attack cannot be vetoed).
+function showContactModalV2(c: Contact): void {
+  const v2 = S().v2!;
+  const atk = v2.front.forces.find((f) => f.id === c.attackerId)!;
+  const def = v2.front.forces.find((f) => f.id === c.defenderId)!;
+  const playerAttacks = atk.side === 'blue';
+  const trivial =
+    atk.strength > 0 && def.strength > 0 &&
+    (atk.strength >= def.strength * TRIVIAL_RATIO || def.strength >= atk.strength * TRIVIAL_RATIO);
+  const siteName = c.site.kind === 'node' ? v2.front.theater.nodes[c.site.nodeId].name : 'the road';
+  const col = (f: typeof atk): string =>
+    `<div class="fc-col ${f.side === 'blue' ? 'us' : 'ge'}"><h4>${f.name}</h4><p class="fc-str">${f.strength} men</p></div>`;
+  debriefEl.innerHTML = `<div class="db-scroll"><div class="db">
+    <h1>CONTACT</h1>
+    <p class="sub">${atk.name} has met ${def.name} at ${siteName}.</p>
+    <div class="fc">${col(atk)}<div class="fc-vs">VS</div>${col(def)}</div>
+    </div></div>
+    <div class="db-actions">
+      <button id="fight" class="primary">${playerAttacks ? 'Attack' : 'Defend'}</button>
+      ${trivial ? '<button id="autoresolve">Auto-resolve</button>' : ''}
+      ${playerAttacks ? '<button id="standdown">Stand down</button>' : ''}
+    </div>`;
+  debriefEl.style.display = 'flex';
+  document.getElementById('fight')!.onclick = () => {
+    debriefEl.style.display = 'none';
+    startTheaterBattle(c);
+  };
+  if (trivial) {
+    document.getElementById('autoresolve')!.onclick = () => {
+      const b = openBattle(v2.front, c);
+      const r = resolveBattleV2(v2.front, S().campaign, b);
+      v2.view.flash(`${atk.name} vs ${def.name}: ${r.attackerWon ? 'attacker wins' : 'defender holds'}`);
+      debriefEl.style.display = 'none';
+      v2.pending = null;
+      save();
+    };
+  }
+  if (playerAttacks) {
+    document.getElementById('standdown')!.onclick = () => {
+      debriefEl.style.display = 'none';
+      v2.pending = null; // the force stays halted where contact stopped it
+    };
+  }
+}
+
+function debriefRows(): string {
   const deployedPids = new Set(sim.soldiers.filter((s) => s.side === 'blue').map((s) => s.pid));
-  const rows = campaign.companies[battleCompany].squads
-    .map((si) => campaign.squads[si])
+  return S().campaign.companies[battleCompany].squads
+    .map((si) => S().campaign.squads[si])
     .map((sq) => {
       const men = squadMembers(sq)
-        .map((pid) => campaign.soldiers[pid])
+        .map((pid) => S().campaign.soldiers[pid])
         .map((cs) => {
           const scars = cs.bodyDamage.some((d) => d > 0) && cs.status === 'fit' ? ' <span class="scar">permanent injury</span>' : '';
           const deployed = deployedPids.has(cs.pid);
@@ -534,62 +784,204 @@ function showDebrief(): void {
       return `<h3>${sq.name}</h3><table><tr><th>NAME</th><th>WEAPON</th><th>BATTLES</th><th>STATUS</th></tr>${men}</table>`;
     })
     .join('');
+}
+
+function renderDebrief(record: BattleRecord, redLosses: number, groundLine: string, onNext: () => void): void {
+  const enemyLosses = redLosses > 0 ? `~${redLosses} enemy losses` : 'no enemy losses';
+  debriefEl.innerHTML = `<div class="db-scroll"><div class="db">
+    <h1 class="${record.won ? 'win' : 'loss'}">${record.won ? 'VICTORY' : 'DEFEAT'}</h1>
+    <p class="sub">${record.kia.length} KIA · ${record.wounded.length} wounded · ${enemyLosses}</p>
+    <p class="fallen">${record.kia.length > 0 ? 'Fallen: ' + record.kia.join(', ') : 'No one died today.'}</p>
+    <p class="sub">${groundLine}</p>
+    ${debriefRows()}
+    </div></div>
+    <div class="db-actions"><button id="next" class="primary">Return to the front</button></div>`;
+  debriefEl.style.display = 'flex';
+  document.getElementById('next')!.onclick = onNext;
+}
+
+function showDebrief(): void {
+  debriefShown = true;
+  const v2 = S().v2;
+  if (v2?.battle) {
+    const { b, tb } = v2.battle;
+    const atk = v2.front.forces.find((f) => f.id === b.attackerId)!;
+    const blueAttacked = atk.side === 'blue';
+    const out = applyTheaterOutcome(S().campaign, v2.front, b, tb.battleClass, sim);
+    v2.battle = null;
+    v2.pending = null;
+    pendingEngagement = null;
+    save();
+    const groundLine = out.nodeTaken !== null
+      ? blueAttacked ? 'The ground is ours.' : 'The position is lost.'
+      : blueAttacked ? 'The attack failed; the line is unchanged.' : 'The line held.';
+    renderDebrief(out.record, out.redLosses, groundLine, () => {
+      debriefEl.style.display = 'none';
+      mode = 'strategic';
+      stratPaused = true;
+      inspectedSoldier = -1;
+      tooltip.clear();
+    });
+    return;
+  }
+  const e = pendingEngagement;
+  if (!e) throw new Error('showDebrief: pendingEngagement is null — startEngagementBattle must set it');
+  const blueAttacked = S().front.chits.find((ch) => ch.id === e.attackerId)!.side === 'blue';
+  const out = applyEngagementOutcome(S().campaign, S().front, e, sim);
+  pendingEngagement = null;
+  save();
 
   const groundLine = out.cellTaken
     ? blueAttacked ? 'The ground is ours.' : 'The position is lost.'
     : blueAttacked ? 'The attack failed; the line is unchanged.' : 'The line held.';
-  const enemyLosses = out.redLosses > 0 ? `~${out.redLosses} enemy losses` : 'no enemy losses';
-  debriefEl.innerHTML = `<div class="db-scroll"><div class="db">
-    <h1 class="${out.record.won ? 'win' : 'loss'}">${out.record.won ? 'VICTORY' : 'DEFEAT'}</h1>
-    <p class="sub">${out.record.kia.length} KIA · ${out.record.wounded.length} wounded · ${enemyLosses}</p>
-    <p class="fallen">${out.record.kia.length > 0 ? 'Fallen: ' + out.record.kia.join(', ') : 'No one died today.'}</p>
-    <p class="sub">${groundLine}</p>
-    ${rows}
-    </div></div>
-    <div class="db-actions"><button id="next" class="primary">Return to the front</button></div>`;
-  debriefEl.style.display = 'flex';
-  document.getElementById('next')!.onclick = () => {
+  renderDebrief(out.record, out.redLosses, groundLine, () => {
     debriefEl.style.display = 'none';
     mode = 'strategic';
     stratPaused = !(aiSides.has('red') && aiSides.has('blue'));
+    inspectedSoldier = -1;
     tooltip.clear();
-  };
+  });
 }
 
 // On a phone the fit-only sector layout solves to ~9px cells — unreadable and
 // untappable. Zoom until a chit is a real target and centre on the friendly
 // chits; desktop keeps the fit-only defaults.
 function frameStrategic(): void {
+  if (S().v2) return; // the theater view fits itself
   if (!MOBILE) return;
-  stratView.frameFor(view.w, view.h, front.chits.filter((c) => c.side === 'blue' && c.strength > 0).map((c) => c.cell));
+  S().stratView.frameFor(view.w, view.h, S().front.chits.filter((c) => c.side === 'blue' && c.strength > 0).map((c) => c.cell));
 }
 
-function freshCampaign(): void {
-  campaign = newCampaign(campSeed());
-  front = newFront(campaign, makeDefaultSector());
-  stratView = new StrategicView(front.sector);
+function startCampaign(load: { campaign: Campaign; front: Front } | null, seedOverride?: number): void {
+  // The PINNED path stays the V1 grid war — the entire art/battle harness
+  // stages through it (?camp=42, stage.mjs). Menu campaigns are V2.
+  const cg = load ? load.campaign : newCampaign(seedOverride ?? campSeed());
+  const fr = load ? load.front : newFront(cg, makeDefaultSector());
+  if (urlHourMin !== null) fr.clockMin = urlHourMin;
+  session = { campaign: cg, front: fr, stratView: new StrategicView(fr.sector), v2: null };
+  mode = 'strategic';
+  mainMenu.close();
   frameStrategic();
   selectedChit = -1;
   pendingEngagement = null;
   opEnded = false;
-  prevDay = front.day;
+  prevDay = fr.day;
   stratPaused = true;
-  save();
+  stratAcc = 0;
+  if (!load) save();
   buildCommanders();
+}
+
+function bootError(message: string): void {
+  console.error(message);
+  let el = document.getElementById('boot-error');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'boot-error';
+    document.body.appendChild(el);
+  }
+  el.textContent = message;
+  el.style.display = 'block';
+}
+
+// The V2 campaign: procedural theater, disposition, goal-driven red.
+function startCampaignV2(
+  source:
+    | { kind: 'fresh'; seed: number; theaterCfg?: TheaterConfig; campaignCfg?: CampaignConfig; roster?: Campaign }
+    | { kind: 'loaded'; seed: number; theaterCfg: TheaterConfig; campaignCfg: CampaignConfig; campaign: Campaign; front: FrontV2 },
+): void {
+  const theaterCfg = source.kind === 'fresh' ? source.theaterCfg ?? DEFAULT_PRESET.theater : source.theaterCfg;
+  const camp = source.kind === 'fresh' ? source.campaignCfg ?? DEFAULT_PRESET.campaign : source.campaignCfg;
+  try {
+    let campaign: Campaign;
+    let front: FrontV2;
+    let seed: number;
+    if (source.kind === 'loaded') {
+      ({ seed, campaign, front } = source);
+    } else {
+      seed = source.seed;
+      const { theater, initialControlByNode } = makeTheater(seed, theaterCfg);
+      campaign = source.roster ?? newCampaign(seed, camp.blueCompanies);
+      const spec = presetSpec(DEFAULT_PRESET, seed);
+      spec.theater = { ...theaterCfg };
+      spec.campaign = { ...camp };
+      const d = makeDisposition(theater, camp, campaign, initialControlByNode, specStream(spec, SPEC_TAG.DISPOSITION));
+      front = {
+        theater,
+        clockMin: 360,
+        day: 1,
+        nextForceId: 0,
+        nextBattleId: 0,
+        forces: [],
+        controlByNode: [...initialControlByNode],
+        battles: [],
+        events: [],
+        defileQueues: {},
+      };
+      for (const f of d.forces) addForce(front, f);
+    }
+    const goals = makeWarGoals(front.theater, camp);
+    session = {
+      campaign,
+      front: v1Trap<Front>('front'),
+      stratView: v1Trap<StrategicView>('stratView'),
+      v2: {
+        seed,
+        theaterCfg,
+        campaignCfg: camp,
+        front,
+        goals,
+        red: new Commander2('red', RED_V2, goals, camp.warDays),
+        redIntel: new OmniscientIntel(front, 'red'),
+        view: new TheaterView(front.theater),
+        battle: null,
+        pending: null,
+        selectedForce: -1,
+      },
+    };
+    mode = 'strategic';
+    mainMenu.close();
+    selectedChit = -1;
+    pendingEngagement = null;
+    opEnded = false;
+    prevDay = front.day;
+    stratPaused = true;
+    stratAcc = 0;
+    if (source.kind === 'fresh') save();
+  } catch (e) {
+    // Generation and disposition rejects surface VISIBLY and leave the menu
+    // up — never a silent fallback theater.
+    if (e instanceof TheaterGenError || e instanceof DispositionError) {
+      bootError(`Campaign generation failed: ${e.message}`);
+      mainMenu.open();
+      return;
+    }
+    throw e;
+  }
 }
 
 function showOperationEnd(status: 'won' | 'lost'): void {
   opEnded = true;
-  const kia = Object.values(campaign.soldiers).filter((s) => s.status === 'kia').length;
+  const sess = S();
+  const day = sess.v2 ? sess.v2.front.day : sess.front.day;
+  const kia = Object.values(S().campaign.soldiers).filter((s) => s.status === 'kia').length;
   debriefEl.innerHTML = `<div class="db-scroll"><div class="db">
     <h1 class="${status === 'won' ? 'win' : 'loss'}">OPERATION ${status === 'won' ? 'ACCOMPLISHED' : 'FAILED'}</h1>
-    <p class="sub">${campaign.log.length} battles fought over ${front.day} days · ${kia} men killed.</p>
+    <p class="sub">${S().campaign.log.length} battles fought over ${day} days · ${kia} men killed.</p>
     </div></div>
-    <div class="db-actions"><button id="next" class="primary">New operation</button></div>`;
+    <div class="db-actions"><button id="next" class="primary">New operation</button><button id="same">Same theater again</button></div>`;
   debriefEl.style.display = 'flex';
   document.getElementById('next')!.onclick = () => {
     debriefEl.style.display = 'none';
-    freshCampaign();
+    mode = 'menu';
+    mainMenu.setSaveProbe(probeSave());
+    mainMenu.open();
+  };
+  document.getElementById('same')!.onclick = () => {
+    debriefEl.style.display = 'none';
+    const v2 = S().v2;
+    if (v2) startCampaignV2({ kind: 'fresh', seed: v2.seed });
+    else startCampaign(null, S().campaign.seed);
   };
 }
 
@@ -702,8 +1094,14 @@ function tapSelect(sx: number, sy: number, additive: boolean): void {
           }
         }
         if (best && best.squadId === getPrimary() && selectedSquads.length === 1) {
-          selectedTeam = best.teamId;
-          lastTeamId = best.teamId;
+          // Third rung: his team is already the narrowed one, so the click can
+          // only mean "show me this man".
+          if (selectedTeam === best.teamId) {
+            inspectedSoldier = best.id;
+          } else {
+            selectedTeam = best.teamId;
+            lastTeamId = best.teamId;
+          }
         } else if (best) {
           if (additive) toggleSquadSelection(best.squadId);
           else selectSquad(best.squadId);
@@ -772,6 +1170,11 @@ function commitOrder(sx: number, sy: number, opts: { squadForce: boolean; floors
   if (targetMode !== '') { rmbAnchor = null; return; }
   if (aiControl) { rmbAnchor = null; return; }
   const [wx, wy] = cam.screenToWorld(sx, sy, view.w, view.h);
+  if (deployPhase) {
+    deployPlace(wx, wy);
+    rmbAnchor = null;
+    return;
+  }
   if (opts.floors && selectedSquads.length > 0 && sim.map.storiesAt(Math.floor(wx), Math.floor(wy)) >= 2) {
     floorMenu = { wx, wy, level: null };
     showFloorMenu(document.body, sim, wx, wy, sx, sy, {
@@ -827,8 +1230,13 @@ function commitOrder(sx: number, sy: number, opts: { squadForce: boolean; floors
 }
 
 function stratTapSelect(sx: number, sy: number): void {
-  const cell = stratView.cellAtScreen(sx, sy, view.w, view.h);
-  const chit = cell >= 0 ? front.chitAt(cell, 'blue') : undefined;
+  const v2 = S().v2;
+  if (v2) {
+    v2.selectedForce = v2.view.forceAtScreen(v2.front, 'blue', sx, sy, view.w, view.h);
+    return;
+  }
+  const cell = S().stratView.cellAtScreen(sx, sy, view.w, view.h);
+  const chit = cell >= 0 ? S().front.chitAt(cell, 'blue') : undefined;
   selectedChit = chit ? chit.id : -1;
   if (chit) {
     const t = document.getElementById('strat-hud');
@@ -837,19 +1245,37 @@ function stratTapSelect(sx: number, sy: number): void {
 }
 
 function stratOrderMove(sx: number, sy: number): void {
+  const v2 = S().v2;
+  if (v2) {
+    if (v2.selectedForce < 0) return;
+    const n = v2.view.nodeAtScreen(sx, sy, view.w, view.h);
+    if (n < 0) return;
+    const r = orderMove(v2.front, v2.selectedForce, n);
+    if (!r.ok) v2.view.flash(MOVE_REJECT_TEXT[r.reason]);
+    else v2.view.flash(`${v2.front.forces.find((f) => f.id === v2.selectedForce)!.name} moving — ETA ${Math.round(r.etaMin / 60)}h${Math.round(r.etaMin % 60)}m`);
+    return;
+  }
   if (selectedChit < 0) return;
-  const cell = stratView.cellAtScreen(sx, sy, view.w, view.h);
-  if (cell >= 0 && !front.orderMove(selectedChit, cell) && front.sector.cells[cell].terrain === 'river')
-    stratView.flash("Can't hold open water — ford across to the far bank");
+  const cell = S().stratView.cellAtScreen(sx, sy, view.w, view.h);
+  if (cell >= 0 && !S().front.orderMove(selectedChit, cell) && S().front.sector.cells[cell].terrain === 'river')
+    S().stratView.flash("Can't hold open water — ford across to the far bank");
 }
 
-/** Esc's cancel ladder: targetMode → armedOrder → team → selection. */
+/** Esc's cancel ladder: targetMode → inspect → armedOrder → team → selection. */
 function escapeLadder(): boolean {
   if (mode === 'strategic') {
+    const v2 = S().v2;
+    if (v2) {
+      if (v2.selectedForce >= 0) { v2.selectedForce = -1; return true; }
+      return false;
+    }
     if (selectedChit >= 0) { selectedChit = -1; return true; }
     return false;
   }
+  // targetMode first: an armed barrage/airstrike cursor is the hazardous
+  // state — Esc must never leave it live while merely closing a panel.
   if (targetMode) { setTargetMode(''); return true; }
+  if (inspectedSoldier >= 0) { inspectedSoldier = -1; return true; }
   if (armedOrder) { armedOrder = null; return true; }
   if (boxMode || addMode) { boxMode = false; addMode = false; boxRect = null; return true; }
   if (selectedTeam >= 0) { selectedTeam = -1; return true; }
@@ -858,6 +1284,7 @@ function escapeLadder(): boolean {
 }
 
 canvas.addEventListener('mousedown', (e) => {
+  if (mode === 'menu') return;
   if (e.button === 0) beginBox(e.clientX, e.clientY);
   if (e.button === 2) beginOrderAnchor(e.clientX, e.clientY);
 });
@@ -875,7 +1302,7 @@ canvas.addEventListener('mouseleave', () => {
   mouse.onCanvas = false;
 });
 canvas.addEventListener('mouseup', (e) => {
-  if (e.button !== 0) return;
+  if (e.button !== 0 || mode === 'menu') return;
 
   if (mode === 'strategic') {
     stratTapSelect(e.clientX, e.clientY);
@@ -895,6 +1322,7 @@ canvas.addEventListener('mouseup', (e) => {
 });
 canvas.addEventListener('contextmenu', (e) => {
   e.preventDefault();
+  if (mode === 'menu') return;
   if (mode === 'strategic') {
     stratOrderMove(e.clientX, e.clientY);
     return;
@@ -986,33 +1414,45 @@ const battleTouch: TouchHandlers = {
 };
 
 const STRAT_ZOOM = [1, 4] as const;
+// Both strat cameras (grid V1, theater V2) expose the same pan/zoom fields —
+// the touch grammar drives whichever is live.
+function stratCam(): { panX: number; panY: number; zoomMul: number; clampPan(w: number, h: number): void } {
+  const s = S();
+  return s.v2 ? s.v2.view : s.stratView;
+}
+
 const stratTouch: TouchHandlers = {
   press: (x, y) => { touchHold = { x, y, t0: performance.now() }; },
   release: () => { touchHold = null; },
   tap: (x, y) => stratTapSelect(x, y),
   pan: (dx, dy) => {
-    stratView.panX += dx;
-    stratView.panY += dy;
-    stratView.clampPan(view.w, view.h);
+    const cam2 = stratCam();
+    cam2.panX += dx;
+    cam2.panY += dy;
+    cam2.clampPan(view.w, view.h);
   },
   holdStart: () => {},
   holdMove: () => {},
   holdEnd: (x, y) => stratOrderMove(x, y),
   holdCancel: () => {},
   pinch: (factor, mx, my, dmx, dmy) => {
-    const before = stratView.zoomMul;
-    stratView.zoomMul = Math.max(STRAT_ZOOM[0], Math.min(STRAT_ZOOM[1], before * factor));
-    // keep the grid point under the pinch midpoint fixed
-    const k = stratView.zoomMul / before;
-    stratView.panX = mx - k * (mx - stratView.panX) + dmx;
-    stratView.panY = my - k * (my - stratView.panY) + dmy;
-    stratView.clampPan(view.w, view.h);
+    const cam2 = stratCam();
+    const before = cam2.zoomMul;
+    cam2.zoomMul = Math.max(STRAT_ZOOM[0], Math.min(STRAT_ZOOM[1] * (S().v2 ? 2 : 1), before * factor));
+    // keep the map point under the pinch midpoint fixed
+    const k = cam2.zoomMul / before;
+    cam2.panX = mx - k * (mx - cam2.panX) + dmx;
+    cam2.panY = my - k * (my - cam2.panY) + dmy;
+    cam2.clampPan(view.w, view.h);
   },
-  twoTap: () => { selectedChit = -1; },
+  twoTap: () => {
+    const v2 = S().v2;
+    if (v2) v2.selectedForce = -1;
+    else selectedChit = -1;
+  },
 };
 
 bindTouch(canvas, () => (mode === 'battle' ? battleTouch : stratTouch));
-frameStrategic();
 canvas.addEventListener('wheel', (e) => {
   e.preventDefault();
   if (mode !== 'battle') return;
@@ -1036,7 +1476,8 @@ window.addEventListener('keydown', (e) => {
     if (action === 'menu' || action === 'cancel') { e.preventDefault(); menu.close(); }
     return;
   }
-  
+  if (mode === 'menu') return;
+
   const km = loadKeymap(localStorage);
   const action = actionForEvent(e, km);
   if (!action) return;
@@ -1114,7 +1555,7 @@ window.addEventListener('keydown', (e) => {
     return sim;
   },
   get front() {
-    return front;
+    return S().front;
   },
   get renderer() {
     return renderer;
@@ -1127,7 +1568,7 @@ window.addEventListener('keydown', (e) => {
   // The gesture classifier is pure; exposing it lets scripts/mobile.mjs assert
   // classification without synthesising timing-sensitive touch sequences.
   classify: classifyGesture,
-  stratView: () => stratView,
+  stratView: () => S().stratView,
   getSelection: () => ({ mode, squads: [...selectedSquads], team: selectedTeam, vehicle: selectedVehicle, chit: selectedChit, targetMode, armedOrder }),
   setPaused: (p: boolean) => {
     stratPaused = p;
@@ -1135,7 +1576,8 @@ window.addEventListener('keydown', (e) => {
   },
   selectSquad: (i: number) => selectSquad(i),
   selectVehicle: (i: number) => selectVehicle(i),
-  getCampaign: () => campaign,
+  getCampaign: () => S().campaign,
+  getV2: () => S().v2,
   startEngagementBattle,
   showDebrief,
   setFow: (on: boolean) => {
@@ -1162,34 +1604,74 @@ function frame(now: number): void {
     }
   }
   hud.root.style.display = mode === 'battle' ? '' : 'none';
-  stratHud.root.style.display = mode === 'strategic' ? '' : 'none';
-  if (mode === 'strategic') {
+  stratHud.root.style.display = mode === 'strategic' && !S().v2 ? '' : 'none';
+  theaterHud.root.style.display = mode === 'strategic' && S().v2 ? '' : 'none';
+  if (mode === 'menu') {
+    requestAnimationFrame(frame);
+    return;
+  }
+  if (mode === 'strategic' && S().v2) {
+    const v2 = S().v2!;
+    hud.updateIdle('strategic', v2.selectedForce >= 0 || stratPaused);
+    if (!stratPaused && !v2.pending && !opEnded) {
+      stratAcc += (dtReal / 1000) * SPEEDS[speedIdx];
+      while (stratAcc >= 1 && !v2.pending) {
+        stratAcc -= 1;
+        v2.red.evaluate(v2.front, v2.redIntel);
+        const r = stepWar(v2.front, S().campaign, { autoBattle: () => false });
+        if (v2.front.day > prevDay) {
+          advanceDays(S().campaign, v2.front.day - prevDay);
+          if (v2.front.day % REINFORCE_CYCLE_DAYS === 0) {
+            const arrived = fillReplacements(S().campaign, v2.front.day * 31 + 7, REINFORCE_PER_COMPANY);
+            if (arrived > 0) v2.view.flash(`+${arrived} replacements arrived`);
+          }
+          syncStrengthsV2(S().campaign, v2.front);
+          prevDay = v2.front.day;
+          save();
+        }
+        for (const c of r.pendingContacts) {
+          // OQ2 pin+queue: contact pauses the theater; the modal owns the
+          // player's answer. One at a time — the rest re-detect next minute.
+          v2.pending = c;
+          stratPaused = true;
+          showContactModalV2(c);
+          break;
+        }
+      }
+      const st = warStatus(v2.front, v2.goals);
+      if (st.state === 'decided') showOperationEnd(st.winner === 'blue' ? 'won' : 'lost');
+    }
+    v2.view.clampPan(view.w, view.h);
+    v2.view.draw(ctx, v2.front, v2.selectedForce, stratPaused, SPEEDS[speedIdx], view.w, view.h);
+    theaterHud.update(v2.front, v2.goals, v2.selectedForce, stratPaused, speedIdx);
+    if (touchHold) drawHoldRing(ctx, touchHold, now);
+  } else if (mode === 'strategic') {
     hud.updateIdle('strategic', selectedChit >= 0 || stratPaused);
     if (!stratPaused && !pendingEngagement && !opEnded) {
       stratAcc += (dtReal / 1000) * SPEEDS[speedIdx];
       while (stratAcc >= 1 && !pendingEngagement) {
         stratAcc -= 1;
-        for (const cmd of commanders) cmd.evaluate(front);
-        const e = front.step();
-        if (front.day > prevDay) {
-          advanceDays(campaign, front.day - prevDay);
-          if (front.day % REINFORCE_CYCLE_DAYS === 0) {
-            const arrived = fillReplacements(campaign, front.day * 31 + 7, REINFORCE_PER_COMPANY);
-            if (arrived > 0) stratView.flash(`+${arrived} replacements arrived`);
+        for (const cmd of commanders) cmd.evaluate(S().front);
+        const e = S().front.step();
+        if (S().front.day > prevDay) {
+          advanceDays(S().campaign, S().front.day - prevDay);
+          if (S().front.day % REINFORCE_CYCLE_DAYS === 0) {
+            const arrived = fillReplacements(S().campaign, S().front.day * 31 + 7, REINFORCE_PER_COMPANY);
+            if (arrived > 0) S().stratView.flash(`+${arrived} replacements arrived`);
           }
-          syncStrengths(campaign, front);
-          prevDay = front.day;
+          syncStrengths(S().campaign, S().front);
+          prevDay = S().front.day;
           save();
         }
         if (e) {
-          const attacker = front.chits.find((c) => c.id === e.attackerId)!;
-          const defender = front.chits.find((c) => c.id === e.defenderId)!;
+          const attacker = S().front.chits.find((c) => c.id === e.attackerId)!;
+          const defender = S().front.chits.find((c) => c.id === e.defenderId)!;
           const attackerIsAI = aiSides.has(attacker.side);
           const defenderIsAI = aiSides.has(defender.side);
           
           if (attackerIsAI && defenderIsAI) {
-            const result = resolveCoarse(campaign, front, e);
-            stratView.flash(`${attacker.name} vs ${defender.name}: ${result.attackerWon ? 'attacker wins' : 'defender holds'}`);
+            const result = resolveCoarse(S().campaign, S().front, e);
+            S().stratView.flash(`${attacker.name} vs ${defender.name}: ${result.attackerWon ? 'attacker wins' : 'defender holds'}`);
             save();
           } else if (attackerIsAI && !defenderIsAI) {
             pendingEngagement = e;
@@ -1203,13 +1685,13 @@ function frame(now: number): void {
           }
         }
       }
-      const status = operationStatus(front);
+      const status = operationStatus(S().front);
       if (status !== 'ongoing') showOperationEnd(status);
     }
-    stratHud.update(front, campaign, selectedChit, stratPaused, speedIdx);
-    stratView.clampPan(view.w, view.h); // absorbs orientation changes; a no-op at zoomMul 1
-    stratView.stagedCell = pendingEngagement ? pendingEngagement.cell : -1;
-    stratView.draw(ctx, front, selectedChit, stratPaused, SPEEDS[speedIdx], view.w, view.h);
+    stratHud.update(S().front, S().campaign, selectedChit, stratPaused, speedIdx);
+    S().stratView.clampPan(view.w, view.h); // absorbs orientation changes; a no-op at zoomMul 1
+    S().stratView.stagedCell = pendingEngagement ? pendingEngagement.cell : -1;
+    S().stratView.draw(ctx, S().front, selectedChit, stratPaused, SPEEDS[speedIdx], view.w, view.h);
     if (touchHold) drawHoldRing(ctx, touchHold, now);
   } else {
     acc += dtReal;
@@ -1279,7 +1761,38 @@ function frame(now: number): void {
       }
     }
 
+    // Deployment: the first unpause commits and begins the battle.
+    if (deployPhase && !paused) {
+      deployPhase = false;
+      deployMsg = '';
+    }
     renderer.draw(ctx, cam, selectedSquads, now, floorFocus);
+    if (deployPhase) {
+      const zone = deployZone();
+      const [zx0, zy0] = cam.worldToScreen(zone.x0, 0, view.w, view.h);
+      const [zx1, zy1] = cam.worldToScreen(zone.x1, sim.map.h, view.w, view.h);
+      ctx.fillStyle = 'rgba(90, 140, 90, 0.12)';
+      ctx.fillRect(zx0, zy0, zx1 - zx0, zy1 - zy0);
+      ctx.strokeStyle = 'rgba(150, 200, 150, 0.5)';
+      ctx.setLineDash([8, 6]);
+      ctx.lineWidth = 2;
+      ctx.strokeRect(zx0, zy0, zx1 - zx0, zy1 - zy0);
+      ctx.setLineDash([]);
+      // Below the battle HUD's top chrome, never under it.
+      const strip = document.getElementById('obj-strip')?.getBoundingClientRect();
+      const by = strip && strip.height > 0 ? strip.bottom + 6 : 40;
+      ctx.fillStyle = 'rgba(20, 18, 12, 0.85)';
+      const bw = Math.min(680, view.w - 20);
+      ctx.fillRect((view.w - bw) / 2, by, bw, deployMsg && performance.now() < deployMsgUntil ? 46 : 30);
+      ctx.fillStyle = '#e8dcc4';
+      ctx.font = '12px ui-monospace, monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText('DEPLOYMENT — select squads, right-click (press-hold on touch) to reposition inside your zone · Resume to begin', view.w / 2, by + 19);
+      if (deployMsg && performance.now() < deployMsgUntil) {
+        ctx.fillStyle = '#d8a878';
+        ctx.fillText(deployMsg, view.w / 2, by + 37);
+      }
+    }
     drawOverlays(ctx, cam, sim, {
       shot,
       selectedSquad: primary,
@@ -1299,11 +1812,11 @@ function frame(now: number): void {
     const km = loadKeymap(localStorage);
     let objective: HudState['objective'] = null;
     if (pendingEngagement) {
-      const attacker = front.chits.find((c) => c.id === pendingEngagement!.attackerId);
-      const defender = front.chits.find((c) => c.id === pendingEngagement!.defenderId);
+      const attacker = S().front.chits.find((c) => c.id === pendingEngagement!.attackerId);
+      const defender = S().front.chits.find((c) => c.id === pendingEngagement!.defenderId);
       if (attacker && defender) {
-        const cell = front.sector.cells[pendingEngagement!.cell];
-        const xy = cellXY(front.sector, pendingEngagement!.cell);
+        const cell = S().front.sector.cells[pendingEngagement!.cell];
+        const xy = cellXY(S().front.sector, pendingEngagement!.cell);
         const cellLabel = `${String.fromCharCode(65 + (xy.x % 26))}${xy.y + 1}`;
         objective = {
           kind: attacker.side === 'blue' ? 'attack' : 'defend',
@@ -1318,6 +1831,9 @@ function frame(now: number): void {
     }
     hud.update(sim, { selectedSquad: primary, selectedSquads, selectedTeam, selectedVehicle, paused, aiControl, targetMode, armedOrder, title: battleTitle, keymap: km, objective, floorFocus, boxMode, addMode });
     hud.updateIdle('battle', targetMode !== '' || selectedSquads.length > 0 || selectedVehicle >= 0 || selectedTeam >= 0 || paused);
+    // A new battle re-indexes sim.soldiers, so an id held across one closes the panel.
+    if (inspectedSoldier >= 0 && !sim.soldiers[inspectedSoldier]) inspectedSoldier = -1;
+    healthPanel.update(sim, inspectedSoldier);
 
     // The boot framing has to measure the battle HUD, which does not exist
     // until the update above has run once. Re-frame on that first frame —
@@ -1341,5 +1857,16 @@ function frame(now: number): void {
     if (winnerAt >= 0 && !debriefShown && now - winnerAt > 4000) showDebrief();
   }
   requestAnimationFrame(frame);
+}
+// Boot: a campaign-defining URL param (?camp=N) bypasses the menu
+// synchronously, so the harness scripts see a live session at module-eval end;
+// ?menu=1 forces the menu even then. Bare boot lands on the menu — the save,
+// if any, sits behind Continue instead of auto-loading.
+const menuForced = new URLSearchParams(location.search).get('menu') === '1';
+if (campPinned && !menuForced) {
+  startCampaign(null);
+} else {
+  mainMenu.setSaveProbe(probeSave());
+  mainMenu.open();
 }
 requestAnimationFrame(frame);

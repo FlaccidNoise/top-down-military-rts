@@ -250,6 +250,41 @@ button.hbtn.active { background: var(--chip-active-bg); border-color: var(--ambe
 .tt-kia { color: var(--red); font-weight: var(--fw-head); letter-spacing: 2px; margin: 2px 0; }
 .wound { color: #c9906a; margin: 2px 0; }
 
+/* ---- health panel ----
+   Transient inspect chrome, not layout: deliberately absent from
+   viewportInset() in main.ts, so opening it never re-frames the camera. */
+#healthpanel {
+  position: absolute;
+  right: var(--sp-2);
+  top: 48px;
+  width: 300px;
+  padding: 7px 10px var(--sp-2);
+  display: none;
+  z-index: 6;
+  max-height: calc(100% - 110px);
+  overflow-y: auto;
+  pointer-events: auto;
+}
+.hp-head { display: flex; align-items: center; gap: var(--sp-2); }
+.hp-head b { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; letter-spacing: 0.5px; color: var(--blue); }
+.hp-x {
+  font: inherit;
+  flex: none;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0 6px;
+  cursor: pointer;
+}
+.hp-x:hover { border-color: var(--amber); color: var(--amber-bright); }
+.hp-body { display: flex; gap: var(--sp-2); align-items: flex-start; margin-top: var(--sp-1); }
+.hp-fig { width: 66px; flex: none; }
+.hp-parts { flex: 1; min-width: 0; }
+.hp-row { display: flex; gap: var(--sp-1); align-items: baseline; }
+.hp-nm { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hp-hp { flex: none; font-size: var(--fs-sm); opacity: 0.7; }
+
 /* ---- banners & hint ---- */
 #banner {
   position: absolute;
@@ -1242,7 +1277,24 @@ html.mobile #tip {
   max-height: 34vh;
   max-height: 34dvh;
   overflow-y: auto;
+  /* Both bottom sheets dock here. The probe card lasts as long as the finger
+     does, so it reads over the health panel rather than under it. */
+  z-index: 7;
 }
+
+/* ---- health panel: bottom sheet, same dock as the probe card ---- */
+html.mobile #healthpanel {
+  position: fixed;
+  left: var(--sp-2);
+  right: var(--sp-2);
+  top: auto;
+  bottom: calc(var(--touchbar-h, 0px) + 8px);
+  width: auto;
+  max-height: 40vh;
+  max-height: 40dvh;
+  overflow-y: auto;
+}
+html.mobile .hp-x { min-width: 44px; min-height: 44px; }
 
 /* ---- portrait guidance ----
    Shown by CSS alone, so there is no resize plumbing to get wrong. The copy
@@ -1312,3 +1364,110 @@ html.mobile #tip {
 }
 html.mobile #floormenu { min-width: 160px; }
 html.mobile #floormenu .fm-row { padding: 12px 16px; }
+
+/* ---- boot error (generation reject card) ---- */
+#boot-error {
+  position: fixed;
+  left: 50%;
+  bottom: 16%;
+  transform: translateX(-50%);
+  max-width: 520px;
+  z-index: 12;
+  display: none;
+  background: #2a1c16;
+  border: 1px solid #8a4a3a;
+  color: #e0c8b8;
+  padding: 10px 14px;
+  font: 12px ui-monospace, monospace;
+}
+
+/* ---- theater HUD (V2 strategic chrome) ---- */
+#theater-hud {
+  position: fixed;
+  inset: 0;
+  z-index: 5;
+  pointer-events: none;
+  font: var(--fs-md, 12px) ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  color: var(--paper);
+  user-select: none;
+  -webkit-user-select: none;
+}
+#theater-hud .panel { background: var(--ink); border: 1px solid var(--border); border-radius: 3px; pointer-events: auto; }
+#theater-hud .th-top {
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  padding: 6px 12px;
+  white-space: nowrap;
+}
+#theater-hud .th-controls { display: flex; gap: 6px; }
+#theater-hud .hbtn { min-width: 44px; min-height: 32px; }
+#theater-hud .th-force { position: absolute; left: 10px; bottom: 10px; padding: 8px 12px; }
+#theater-hud .th-eng { color: #c9803c; margin-left: 8px; }
+#theater-hud .th-mov { color: #9ab27d; margin-left: 8px; }
+#theater-hud .th-hold { color: var(--muted); margin-left: 8px; }
+#theater-hud .th-log {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  width: min(320px, 42vw);
+  max-height: 30vh;
+  overflow-y: auto;
+  padding: 6px 10px;
+  font-size: 11px;
+}
+#theater-hud .th-ev { color: var(--muted); padding: 1px 0; }
+#theater-hud .th-ev-contact, #theater-hud .th-ev-battle-resolved { color: #c9a06c; }
+#theater-hud .th-ev-capture { color: #9ab27d; }
+#theater-hud .th-ev-overrun { color: #b06a5a; }
+@media (max-width: 720px) {
+  #theater-hud .th-top { gap: 8px; padding: 6px 8px; font-size: 11px; }
+  #theater-hud .th-log { max-height: 22vh; }
+}
+
+/* ---- customize campaign ---- */
+#customize {
+  position: fixed;
+  inset: 0;
+  display: none;
+  z-index: 11;
+  background: #0d0f0b;
+  color: var(--paper);
+  font: 12px ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  gap: 18px;
+  padding: 24px;
+  overflow-y: auto;
+  flex-wrap: wrap;
+  align-content: flex-start;
+  justify-content: center;
+}
+#customize .cz-panel { max-width: 460px; min-width: 300px; flex: 1 1 320px; }
+#customize h1 { letter-spacing: 4px; font-size: 20px; margin: 0 0 14px; }
+#customize .cz-row { display: flex; align-items: center; gap: 8px; margin: 7px 0; flex-wrap: wrap; }
+#customize .cz-label { width: 130px; color: var(--muted); flex-shrink: 0; }
+#customize .cz-btns { display: flex; gap: 4px; flex-wrap: wrap; align-items: center; }
+#customize .hbtn { min-height: 30px; min-width: 34px; }
+#customize #cz-seed { background: var(--ink); border: 1px solid var(--border); color: var(--paper); padding: 5px 8px; width: 130px; font: inherit; }
+#customize .cz-presetname { color: var(--amber, #c2a67c); margin: 2px 0 8px 138px; font-size: 11px; }
+#customize .cz-adv-toggle { margin: 10px 0 4px; }
+#customize .cz-actions { display: flex; gap: 10px; margin-top: 16px; }
+#customize .cz-actions .primary { background: var(--chip-bg); color: var(--amber-bright, #e8dcc4); border-color: var(--amber, #c2a67c); }
+#customize .cz-actions .primary[disabled] { opacity: 0.4; }
+#customize #cz-reject { margin-top: 12px; padding: 8px 10px; background: #2a1c16; border: 1px solid #8a4a3a; color: #e0c8b8; }
+#customize .cz-side { flex: 0 1 580px; }
+#customize #cz-preview {
+  position: static; /* index.html fixes ALL canvases for the game surface — the preview is document flow */
+  display: block;
+  border: 1px solid var(--border);
+  max-width: 100%;
+  height: auto;
+}
+#customize #cz-meta { color: var(--muted); margin-top: 6px; font-size: 11px; }
+@media (max-width: 720px) {
+  #customize { padding: 12px; gap: 10px; }
+  #customize .cz-label { width: 105px; }
+}

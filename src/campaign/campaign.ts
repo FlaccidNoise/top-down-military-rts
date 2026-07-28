@@ -83,7 +83,8 @@ function newSoldier(c: Campaign, rng: { next(): number; int(n: number): number }
   return s;
 }
 
-export const COMPANY_NAMES = ['Able', 'Baker', 'Charlie'];
+// Frozen four-name list (§2.5): newCampaign takes the first blueCompanies.
+export const COMPANY_NAMES = ['Able', 'Baker', 'Charlie', 'Dog'];
 
 // us_rifle_co TO&E is 9 rifle, 3 mortar60, 2 m1919, 3 bazooka, 1 sniper (18
 // squads, in that order); names are derived positionally from that shape.
@@ -103,10 +104,21 @@ function companySquadNames(coName: string): string[] {
   ];
 }
 
-export function newCampaign(seed: number): Campaign {
+// Fit men of one company — the strength mirror syncStrengths and the
+// disposition both read.
+export function fitStrength(c: Campaign, companyIndex: number): number {
+  const company = c.companies[companyIndex];
+  if (!company) return 0;
+  return company.squads.reduce(
+    (n, si) => n + squadMembers(c.squads[si]).filter((pid) => c.soldiers[pid].status === 'fit').length,
+    0,
+  );
+}
+
+export function newCampaign(seed: number, blueCompanies = 3): Campaign {
   const rng = mulberry32(seed);
   const c: Campaign = { seed, day: 1, nextPid: 1, companies: [], squads: [], soldiers: {}, log: [] };
-  for (const coName of COMPANY_NAMES) {
+  for (const coName of COMPANY_NAMES.slice(0, blueCompanies)) {
     const squadIndexes: number[] = [];
     const names = companySquadNames(coName);
     COMPANY_TOE.us_rifle_co.forEach((squadKey, i) => {
