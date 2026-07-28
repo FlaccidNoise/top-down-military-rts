@@ -4,8 +4,12 @@
 // control tint. Camera mirrors StrategicView's pan/zoom interface so the
 // existing touch grammar ports unchanged. Muted-Normandy palette shared in
 // register with the grid view it replaces.
-import { pointAlong, type Region, type TerrainClass, type Theater } from '../strategic/theater';
-import { forceEtaMinutes, type Force, type FrontV2 } from '../strategic/theater/force';
+import { pointAlong, type Region, type TerrainClass, type Theater, type Vec } from '../strategic/theater';
+import type { Force, FrontV2 } from '../strategic/theater/force';
+import { forceEtaMinutes, type MoveKernelOpts } from '../strategic/theater/step';
+import { supplyTierOf, type SupplyTier } from '../strategic/theater/supply';
+import { contactConf } from '../strategic/intel';
+import type { ReconMode } from '../campaign/spec';
 
 import type { Side } from '../sim/sim';
 import { MOBILE } from './view';
@@ -28,12 +32,22 @@ const RAIL = '#3c3830';
 const SIDE_COLOR: Record<Side, string> = { blue: '#3a5a9a', red: '#9a3a3a' };
 const OWNER_TINT: Record<Side, string> = { blue: 'rgba(70, 110, 180, 0.55)', red: 'rgba(180, 70, 70, 0.55)' };
 
+const SUPPLY_TAG: Record<SupplyTier, { text: string; color: string } | null> = {
+  full: null,
+  low: { text: 'LOW', color: '#c9803c' },
+  out: { text: 'OUT', color: '#b5533c' },
+};
+
 export class TheaterView {
   zoomMul = 1;
   panX = 0;
   panY = 0;
+  supplyOn = false; // S50: gates cut hatching + tier tags (set from CampaignConfig)
+  recon: ReconMode = 'omniscient'; // S53: 'contacts' fogs every enemy-derived mark
   private flashText = '';
   private flashUntil = 0;
+  private readonly smoothed = new Map<number, Vec[]>();
+  private readonly labelW = new Map<string, number>();
 
   constructor(private readonly theater: Theater) {}
 
@@ -161,7 +175,38 @@ export class TheaterView {
       }
     }
 
-    // Nodes: control tint ring, kind glyph, names at label-worthy ranks.
+    // Supply cut lines (S50): a live enemy force standing ON a road cuts the
+    // trace under it — hatch the edge so the interdiction reads at a glance.
+    // Drawn from the player's (blue) perspective; the FOW lane gates this on
+    // contact visibility when recon: 'contacts' ships.
+    if (this.supplyOn) {
+      // Under fog the hatch derives from KNOWN contacts, never truth — a cut
+      // you have not seen is a cut you have not seen.
+      const interdictors: { pos: Force['pos'] }[] =
+        this.recon === 'contacts'
+          ? (front.intel?.blue ?? [])
+          : front.forces.filter((f) => f.side === 'red' && f.strength > 0);
+      for (const f of interdictors) {
+        if (f.pos.kind !== 'edge') continue;
+        const e = this.theater.edges[f.pos.edgeId];
+        ctx.strokeStyle = 'rgba(181, 83, 60, 0.85)';
+        ctx.lineWidth = 3;
+        ctx.setLineDash([3, 5]);
+        ctx.beginPath();
+        e.polyline.forEach((p, i) => {
+          const [sx, sy] = this.toScreen(p.x, p.y, w, h);
+          if (i === 0) ctx.moveTo(sx, sy);
+          else ctx.lineTo(sx, sy);
+        });
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+    }
+
+    // Nodes: control tint ring, kind glyph; labels collected for a
+    // declutter pass — towns first, then villages/crossings, greedy cull on
+    // screen-space overlap so a dense cluster reads as its principal name.
+    const labels: { sx: number; sy: number; text: string; rank: number; id: number; px: number }[] = [];
     for (const n of this.theater.nodes) {
       const [sx, sy] = this.toScreen(n.pos.x, n.pos.y, w, h);
       const owner = front.controlByNode[n.id];
@@ -184,15 +229,34 @@ export class TheaterView {
         ctx.stroke();
       }
       if (n.rank <= 1 || n.crossing || this.zoomMul > 1.8) {
-        ctx.fillStyle = 'rgba(230, 220, 200, 0.85)';
-        ctx.font = `${n.rank === 0 ? 12 : 10}px ui-monospace, monospace`;
-        ctx.textAlign = 'center';
-        ctx.fillText(n.name, sx, sy - r - 5);
+        labels.push({ sx, sy: sy - r - 5, text: n.name, rank: n.rank, id: n.id, px: n.rank === 0 ? 12 : 10 });
       }
+    }
+    const placed: { x0: number; y0: number; x1: number; y1: number }[] = [];
+    ctx.textAlign = 'center';
+    for (const l of labels.sort((a, b) => a.rank - b.rank || a.id - b.id)) {
+      ctx.font = `${l.px}px ui-monospace, monospace`;
+      const key = `${l.px}:${l.text}`;
+      let tw = this.labelW.get(key);
+      if (tw === undefined) {
+        tw = ctx.measureText(l.text).width;
+        this.labelW.set(key, tw);
+      }
+      const rect = { x0: l.sx - tw / 2 - 2, y0: l.sy - l.px, x1: l.sx + tw / 2 + 2, y1: l.sy + 2 };
+      if (placed.some((p) => rect.x0 < p.x1 && rect.x1 > p.x0 && rect.y0 < p.y1 && rect.y1 > p.y0)) continue;
+      placed.push(rect);
+      ctx.fillStyle = 'rgba(230, 220, 200, 0.85)';
+      ctx.fillText(l.text, l.sx, l.sy);
     }
 
     // Battles: a pulsing ring at the site (deterministic phase from clock).
+    // Under fog only battles with an OWN participant ring — an AI-vs-AI
+    // fight behind the line would leak positions the sweep never earned.
     for (const b of front.battles) {
+      if (this.recon === 'contacts') {
+        const ids = [b.attackerId, b.defenderId, ...b.joined];
+        if (!front.forces.some((f) => ids.includes(f.id) && f.side === 'blue')) continue;
+      }
       const p = b.site.kind === 'node' ? this.theater.nodes[b.site.nodeId].pos : pointAlong(this.theater.edges[b.site.edgeId], b.site.s);
       const [sx, sy] = this.toScreen(p.x, p.y, w, h);
       const pulse = 8 + 3 * Math.sin((front.clockMin % 8) / 8 * Math.PI * 2);
@@ -203,9 +267,30 @@ export class TheaterView {
       ctx.stroke();
     }
 
+    // FOW ghosts (S53): the enemy is drawn from the contact map, aged — a
+    // hollow outline that fades as confidence decays. Rendered BEFORE own
+    // forces so live friendly markers always read on top.
+    if (this.recon === 'contacts') {
+      for (const c of front.intel?.blue ?? []) {
+        const conf = contactConf(c, front.clockMin);
+        const p = c.pos.kind === 'node' ? this.theater.nodes[c.pos.nodeId].pos : pointAlong(this.theater.edges[c.pos.edgeId], c.pos.s);
+        const [sx, sy] = this.toScreen(p.x, p.y, w, h);
+        ctx.globalAlpha = 0.3 + 0.7 * conf;
+        ctx.strokeStyle = SIDE_COLOR.red;
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(sx - 7, sy - 5, 14, 10);
+        ctx.fillStyle = 'rgba(230, 200, 190, 0.9)';
+        ctx.font = '9px ui-monospace, monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText(`~${c.strength}`, sx, sy + 15);
+        ctx.globalAlpha = 1;
+      }
+    }
+
     // Forces: rectangles at continuous positions, strength bar underneath.
     for (const f of [...front.forces].sort((a, b) => a.id - b.id)) {
       if (f.strength <= 0) continue;
+      if (this.recon === 'contacts' && f.side === 'red') continue; // ghosts own the enemy picture
       const p = this.forceXY(f);
       const [sx, sy] = this.toScreen(p.x, p.y, w, h);
       const sel = f.id === selectedForce;
@@ -223,6 +308,14 @@ export class TheaterView {
       ctx.font = '9px ui-monospace, monospace';
       ctx.textAlign = 'center';
       ctx.fillText(`${f.strength}`, sx, sy + 15);
+      if (this.supplyOn) {
+        const tag = SUPPLY_TAG[supplyTierOf(f.untracedMin)];
+        if (tag) {
+          ctx.fillStyle = tag.color;
+          ctx.font = 'bold 8px ui-monospace, monospace';
+          ctx.fillText(tag.text, sx, sy + 24);
+        }
+      }
     }
 
     // Path preview for the selection.
@@ -267,20 +360,42 @@ export class TheaterView {
     }
   }
 
-  // ETA readout for the HUD: mirrors step arithmetic (S13).
-  etaFor(front: FrontV2, forceId: number, dest: number): number | null {
+  // ETA readout for the HUD: the S13 mirror, kernel opts threaded (S52).
+  etaFor(front: FrontV2, forceId: number, dest: number, opts: MoveKernelOpts = {}): number | null {
     const f = front.forces.find((x) => x.id === forceId);
     if (!f) return null;
     try {
-      return forceEtaMinutes(front, f, dest);
+      return forceEtaMinutes(front, f, dest, opts);
     } catch {
       return null;
     }
   }
 
+  // Two rounds of Chaikin corner-cutting, cached per region — RENDER ONLY:
+  // regionAt and every classifier still read the raw lattice polygon, so a
+  // battle classifies identically while the map loses its stair-steps.
+  private smoothPoly(r: Region): Vec[] {
+    let pts = this.smoothed.get(r.id);
+    if (!pts) {
+      pts = r.polygon;
+      for (let round = 0; round < 2; round++) {
+        const out: Vec[] = [];
+        for (let i = 0; i < pts.length; i++) {
+          const a = pts[i];
+          const b = pts[(i + 1) % pts.length];
+          out.push({ x: 0.75 * a.x + 0.25 * b.x, y: 0.75 * a.y + 0.25 * b.y });
+          out.push({ x: 0.25 * a.x + 0.75 * b.x, y: 0.25 * a.y + 0.75 * b.y });
+        }
+        pts = out;
+      }
+      this.smoothed.set(r.id, pts);
+    }
+    return pts;
+  }
+
   private tracePoly(ctx: CanvasRenderingContext2D, r: Region, w: number, h: number): void {
     ctx.beginPath();
-    r.polygon.forEach((p, i) => {
+    this.smoothPoly(r).forEach((p, i) => {
       const [sx, sy] = this.toScreen(p.x, p.y, w, h);
       if (i === 0) ctx.moveTo(sx, sy);
       else ctx.lineTo(sx, sy);

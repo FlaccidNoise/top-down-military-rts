@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { newCampaign } from '../src/campaign/campaign';
 import { makeTheater } from '../src/strategic/theatergen';
-import { addForce, orderMove, type Force, type FrontV2 } from '../src/strategic/theater/force';
+import { orderMove, stepMovement } from '../src/strategic/theater/step';
+import { addForce, type Force, type FrontV2 } from '../src/strategic/theater/force';
 import { battleDuration, joinBattle, openBattle, resolveBattleV2, retreatForce, stepWar } from '../src/strategic/theater/war';
-import { MOVE_MPM, type Theater, type TheaterEdge, type Vec } from '../src/strategic/theater';
+import { battleSiteOf, MOVE_MPM, type Theater, type TheaterEdge, type Vec } from '../src/strategic/theater';
 
 // Corridor fixture with a bridge site for crossing-assault mechanics.
 //   0 --e0(3000m)-- 1(bridge) --e1(3000m)-- 2 --e2(3000m)-- 3
@@ -196,5 +197,27 @@ describe('stepWar composition', () => {
       return JSON.stringify([fr.forces.map((f) => [f.id, f.strength, f.pos]), fr.controlByNode, fr.clockMin]);
     };
     expect(run()).toBe(run());
+  });
+});
+
+// Polish: the battle-site classifier takes the attacker's approach from the
+// edge it last WALKED — an assault delivered standing ON a crossing node
+// still classifies bridge-assault from the bank it came over.
+describe('approach-edge classification', () => {
+  it('a node-standing attacker who walked onto the bridge opens a crossing assault', () => {
+    const fr = front();
+    const atk = mk(fr, 'blue', 0, 'Able', 100, 0);
+    const def = mk(fr, 'red', 1, 'Wache', 100);
+    orderMove(fr, atk.id, 1); // 3000 m up e0 onto the bridge node
+    for (let m = 0; m < 400 && !(atk.pos.kind === 'node' && atk.pos.nodeId === 1); m++) {
+      fr.clockMin++;
+      stepMovement(fr);
+    }
+    expect(atk.pos).toEqual({ kind: 'node', nodeId: 1 });
+    expect(atk.lastEdgeId).toBe(0);
+    atk.path = [];
+    const battle = openBattle(fr, { attackerId: atk.id, defenderId: def.id, site: def.pos, gapM: 0 });
+    expect(battle.approachEdgeId).toBe(0);
+    expect(battleSiteOf(fr.theater, { kind: 'node', nodeId: 1 }, battle.approachEdgeId ?? undefined).battleClass).toBe('bridge-assault');
   });
 });

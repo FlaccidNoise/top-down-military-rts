@@ -34,15 +34,16 @@ import { SPEC_TAG, specStream, type CampaignConfig, type TheaterConfig } from '.
 import { makeTheater, TheaterGenError } from './strategic/theatergen';
 import { DispositionError, makeDisposition } from './strategic/theatergen/disposition';
 import { makeWarGoals, warStatus, type WarGoals } from './strategic/goals';
-import { OmniscientIntel } from './strategic/intel';
+import { ContactIntel, OmniscientIntel, type IntelView } from './strategic/intel';
 import { Commander2, RED_V2 } from './strategic/planner';
-import { addForce, orderMove, type CoarseBattle, type FrontV2, type MoveReject } from './strategic/theater/force';
-import { resolveBattleV2, openBattle, stepWar } from './strategic/theater/war';
+import { addForce, type CoarseBattle, type FrontV2, type MoveReject } from './strategic/theater/force';
+import { orderMove } from './strategic/theater/step';
+import { battleCatchUpMin, openBattle, retreatForce, stepWar } from './strategic/theater/war';
 import { syncStrengthsV2 } from './strategic/theater/sync';
 import type { Contact } from './strategic/theater/contact';
 import { BATTLE_CLASS_TO_MAPKIND } from './strategic/theater';
 import { applyTheaterOutcome, makeTheaterBattle, type TheaterBattle } from './strategic/bridge2';
-import { adoptLegacyRoster, discardSaves, loadGameV2, saveGameV2 } from './strategic/save2';
+import { adoptLegacyRoster, discardSaves, loadGameV2, saveGameV2, type AiSave } from './strategic/save2';
 import { TRIVIAL_RATIO } from './strategic/bridge';
 import { bindTouch, classify as classifyGesture, drawHoldRing, type TouchHandlers } from './ui/touch';
 import './ui/ui.css';
@@ -126,7 +127,7 @@ interface SessionV2 {
   front: FrontV2;
   goals: WarGoals;
   red: Commander2;
-  redIntel: OmniscientIntel;
+  redIntel: IntelView; // OQ6: the AI plays under the campaign's OWN fog
   view: TheaterView;
   battle: { b: CoarseBattle; tb: TheaterBattle } | null;
   pending: Contact | null;
@@ -157,7 +158,9 @@ const save = () => {
   if (campPinned) return;
   const s = S();
   if (s.v2) {
-    if (!saveGameV2(s.v2.seed, s.v2.theaterCfg, s.v2.campaignCfg, s.campaign, s.v2.front)) {
+    // §4.8: the red plan rides the save — a reloaded commander keeps its axes.
+    const ai = { red: { lastEvalMin: s.v2.red.lastEvalMin, plan: s.v2.red.plan } };
+    if (!saveGameV2(s.v2.seed, s.v2.theaterCfg, s.v2.campaignCfg, s.campaign, s.v2.front, ai)) {
       mainMenu.setStorageWritable(false);
     }
   } else {
@@ -452,7 +455,7 @@ const mainMenu = new MainMenu({
   onContinue: () => {
     const g = loadGameV2();
     if (g.status !== 'ok') throw new Error(`Continue: probe said ok but load returned '${g.status}'`);
-    startCampaignV2({ kind: 'loaded', seed: g.seed, theaterCfg: g.cfg, campaignCfg: g.campaignCfg ?? DEFAULT_PRESET.campaign, campaign: g.campaign, front: g.front });
+    startCampaignV2({ kind: 'loaded', seed: g.seed, theaterCfg: g.cfg, campaignCfg: g.campaignCfg ?? DEFAULT_PRESET.campaign, campaign: g.campaign, front: g.front, ai: g.ai });
   },
   // OQ1 roster carry-over: the v3 grid save cannot migrate, the named men can.
   onContinueLegacy: () => {
@@ -722,6 +725,38 @@ function deployPlace(wx: number, wy: number): void {
 
 // V2 contact modal (OQ2 pin+queue: the theater is paused by the caller; the
 // defender path NEVER offers Stand down — an AI attack cannot be vetoed).
+// One strategic minute of the V2 war — the SAME body the frame loop and the
+// OQ3 debrief catch-up run, so a fought battle and a coarse battle cost the
+// theater identically and every event lands in the ring either way. Sets
+// v2.pending + pauses on a player contact; the CALLER decides when the modal
+// is safe to show (the debrief queues it behind its own overlay).
+function stepTheaterMinuteV2(v2: SessionV2): void {
+  v2.red.evaluate(v2.front, v2.redIntel);
+  const r = stepWar(v2.front, S().campaign, {
+    autoBattle: () => false,
+    supply: v2.campaignCfg.supply,
+    recon: v2.campaignCfg.recon,
+    nightTempo: v2.campaignCfg.nightTempo,
+  });
+  if (v2.front.day > prevDay) {
+    advanceDays(S().campaign, v2.front.day - prevDay);
+    if (v2.front.day % REINFORCE_CYCLE_DAYS === 0) {
+      const arrived = fillReplacements(S().campaign, v2.front.day * 31 + 7, REINFORCE_PER_COMPANY);
+      if (arrived > 0) v2.view.flash(`+${arrived} replacements arrived`);
+    }
+    syncStrengthsV2(S().campaign, v2.front);
+    prevDay = v2.front.day;
+    save();
+  }
+  for (const c of r.pendingContacts) {
+    // OQ2 pin+queue: contact pauses the theater; the modal owns the
+    // player's answer. One at a time — the rest re-detect next minute.
+    v2.pending = c;
+    stratPaused = true;
+    break;
+  }
+}
+
 function showContactModalV2(c: Contact): void {
   const v2 = S().v2!;
   const atk = v2.front.forces.find((f) => f.id === c.attackerId)!;
@@ -750,9 +785,13 @@ function showContactModalV2(c: Contact): void {
   };
   if (trivial) {
     document.getElementById('autoresolve')!.onclick = () => {
-      const b = openBattle(v2.front, c);
-      const r = resolveBattleV2(v2.front, S().campaign, b);
-      v2.view.flash(`${atk.name} vs ${def.name}: ${r.attackerWon ? 'attacker wins' : 'defender holds'}`);
+      // OQ3 honesty: an accepted walkover is a TIMED battle like any other —
+      // openBattle pins both forces and the war clock resolves it (trivial =
+      // 15 min) with the forced winner. Resolving it here instantly would
+      // make Auto-resolve FREE while fighting costs catch-up time — the
+      // exact dominance OQ3 exists to kill, mirrored.
+      openBattle(v2.front, c);
+      v2.view.flash(`${atk.name} engages ${def.name} — outcome shortly`);
       debriefEl.style.display = 'none';
       v2.pending = null;
       save();
@@ -761,7 +800,13 @@ function showContactModalV2(c: Contact): void {
   if (playerAttacks) {
     document.getElementById('standdown')!.onclick = () => {
       debriefEl.style.display = 'none';
-      v2.pending = null; // the force stays halted where contact stopped it
+      // Breaking contact is a MOVE, not a wish: a force left halted inside
+      // CONTACT_M re-contacts every minute and the modal never stops. The
+      // §3.6 retreat parks it beyond threat range; trapped = hold (a
+      // voluntary order never annihilates its own force).
+      retreatForce(v2.front, atk, null, { trapped: 'stay' });
+      v2.pending = null;
+      save();
     };
   }
 }
@@ -811,6 +856,13 @@ function showDebrief(): void {
     v2.battle = null;
     v2.pending = null;
     pendingEngagement = null;
+    // OQ3 (B): the fight cost theater time. Step the same bounded duration
+    // the coarse resolver would have charged (≤ 240 min) through the SAME
+    // per-minute body the live tick runs — the rest of the front marches,
+    // battles resolve, and every event reaches the ring. A new player
+    // contact stops the catch-up; its modal queues behind the debrief.
+    const catchUp = battleCatchUpMin(b);
+    for (let i = 0; i < catchUp && !v2.pending && !opEnded; i++) stepTheaterMinuteV2(v2);
     save();
     const groundLine = out.nodeTaken !== null
       ? blueAttacked ? 'The ground is ours.' : 'The position is lost.'
@@ -821,6 +873,7 @@ function showDebrief(): void {
       stratPaused = true;
       inspectedSoldier = -1;
       tooltip.clear();
+      if (v2.pending) showContactModalV2(v2.pending);
     });
     return;
   }
@@ -888,7 +941,7 @@ function bootError(message: string): void {
 function startCampaignV2(
   source:
     | { kind: 'fresh'; seed: number; theaterCfg?: TheaterConfig; campaignCfg?: CampaignConfig; roster?: Campaign }
-    | { kind: 'loaded'; seed: number; theaterCfg: TheaterConfig; campaignCfg: CampaignConfig; campaign: Campaign; front: FrontV2 },
+    | { kind: 'loaded'; seed: number; theaterCfg: TheaterConfig; campaignCfg: CampaignConfig; campaign: Campaign; front: FrontV2; ai?: AiSave },
 ): void {
   const theaterCfg = source.kind === 'fresh' ? source.theaterCfg ?? DEFAULT_PRESET.theater : source.theaterCfg;
   const camp = source.kind === 'fresh' ? source.campaignCfg ?? DEFAULT_PRESET.campaign : source.campaignCfg;
@@ -931,14 +984,23 @@ function startCampaignV2(
         campaignCfg: camp,
         front,
         goals,
-        red: new Commander2('red', RED_V2, goals, camp.warDays),
-        redIntel: new OmniscientIntel(front, 'red'),
-        view: new TheaterView(front.theater),
+        red: new Commander2('red', RED_V2, goals, camp.warDays, { nightTempo: camp.nightTempo }),
+        // OQ6 (A): identical fog and detection — red reads ghosts when the
+        // campaign runs contacts, exactly as the player's map does.
+        redIntel: camp.recon === 'contacts' ? new ContactIntel(front, 'red') : new OmniscientIntel(front, 'red'),
+        view: Object.assign(new TheaterView(front.theater), { supplyOn: camp.supply, recon: camp.recon }),
         battle: null,
         pending: null,
         selectedForce: -1,
       },
     };
+    // §4.8: a reloaded red keeps its axes — restore the persisted plan.
+    // Missing field (a save written before persistence) = fresh commander,
+    // which replans on its next eval exactly as before.
+    if (source.kind === 'loaded' && source.ai?.red) {
+      session.v2!.red.plan = source.ai.red.plan;
+      session.v2!.red.lastEvalMin = source.ai.red.lastEvalMin ?? -Infinity;
+    }
     mode = 'strategic';
     mainMenu.close();
     selectedChit = -1;
@@ -1250,7 +1312,7 @@ function stratOrderMove(sx: number, sy: number): void {
     if (v2.selectedForce < 0) return;
     const n = v2.view.nodeAtScreen(sx, sy, view.w, view.h);
     if (n < 0) return;
-    const r = orderMove(v2.front, v2.selectedForce, n);
+    const r = orderMove(v2.front, v2.selectedForce, n, { nightTempo: v2.campaignCfg.nightTempo });
     if (!r.ok) v2.view.flash(MOVE_REJECT_TEXT[r.reason]);
     else v2.view.flash(`${v2.front.forces.find((f) => f.id === v2.selectedForce)!.name} moving — ETA ${Math.round(r.etaMin / 60)}h${Math.round(r.etaMin % 60)}m`);
     return;
@@ -1617,33 +1679,15 @@ function frame(now: number): void {
       stratAcc += (dtReal / 1000) * SPEEDS[speedIdx];
       while (stratAcc >= 1 && !v2.pending) {
         stratAcc -= 1;
-        v2.red.evaluate(v2.front, v2.redIntel);
-        const r = stepWar(v2.front, S().campaign, { autoBattle: () => false });
-        if (v2.front.day > prevDay) {
-          advanceDays(S().campaign, v2.front.day - prevDay);
-          if (v2.front.day % REINFORCE_CYCLE_DAYS === 0) {
-            const arrived = fillReplacements(S().campaign, v2.front.day * 31 + 7, REINFORCE_PER_COMPANY);
-            if (arrived > 0) v2.view.flash(`+${arrived} replacements arrived`);
-          }
-          syncStrengthsV2(S().campaign, v2.front);
-          prevDay = v2.front.day;
-          save();
-        }
-        for (const c of r.pendingContacts) {
-          // OQ2 pin+queue: contact pauses the theater; the modal owns the
-          // player's answer. One at a time — the rest re-detect next minute.
-          v2.pending = c;
-          stratPaused = true;
-          showContactModalV2(c);
-          break;
-        }
+        stepTheaterMinuteV2(v2);
+        if (v2.pending) showContactModalV2(v2.pending);
       }
       const st = warStatus(v2.front, v2.goals);
       if (st.state === 'decided') showOperationEnd(st.winner === 'blue' ? 'won' : 'lost');
     }
     v2.view.clampPan(view.w, view.h);
     v2.view.draw(ctx, v2.front, v2.selectedForce, stratPaused, SPEEDS[speedIdx], view.w, view.h);
-    theaterHud.update(v2.front, v2.goals, v2.selectedForce, stratPaused, speedIdx);
+    theaterHud.update(v2.front, v2.goals, v2.selectedForce, stratPaused, speedIdx, v2.campaignCfg.supply, v2.campaignCfg.recon === 'contacts', v2.campaignCfg.nightTempo);
     if (touchHold) drawHoldRing(ctx, touchHold, now);
   } else if (mode === 'strategic') {
     hud.updateIdle('strategic', selectedChit >= 0 || stratPaused);

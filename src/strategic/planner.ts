@@ -10,7 +10,8 @@ import { lightAt } from '../sim/solar';
 import type { Side } from '../sim/sim';
 import { coarseOdds, TRIVIAL_RATIO } from './bridge';
 import { battleSiteOf, COARSE_DEF_MULT, CROSSING_ASSAULT_MULT, type Theater } from './theater';
-import { CONTACT_M, orderMove, route, type Force, type FrontV2 } from './theater/force';
+import { anchorNode, CONTACT_M, route, type Force, type FrontV2 } from './theater/force';
+import { forceEtaMinutes, orderMove } from './theater/step';
 import { graphGap } from './theater/contact';
 import { combatMult, effStrength } from './theater/combat';
 import type { IntelView } from './intel';
@@ -104,6 +105,7 @@ export class Commander2 {
     public readonly doctrine: DoctrineV2,
     private readonly goals: WarGoals,
     private readonly deadlineDay: number,
+    private readonly opts: { nightTempo?: boolean } = {},
   ) {}
 
   // Estimated effective enemy strength within contact range of a node.
@@ -173,8 +175,9 @@ export class Commander2 {
       best?.axis.assigned.push(f.id);
     }
     if (axes.length > 1) {
+      const byId = new Map(mobiles.map((f) => [f.id, f]));
       const mass = (axis: Axis): number =>
-        axis.assigned.reduce((a, id) => a + effStrength(front.forces.find((f) => f.id === id)!), 0);
+        axis.assigned.reduce((a, id) => a + effStrength(byId.get(id)!), 0);
       const need = (axis: Axis): number => this.doctrine.concentrationRatio * Math.max(1, this.defendersAt(front, intel, axis.objective));
       const weak = axes.filter((ax) => mass(ax) < need(ax));
       if (weak.length === axes.length) {
@@ -235,12 +238,18 @@ export class Commander2 {
       }
 
       if (plan.reserveIds.includes(f.id)) {
-        // Reserves answer only to commit triggers: a friendly battle going bad.
+        // Reserves answer only to commit triggers: a friendly battle going
+        // bad. The enemy side of the ledger reads CONTACTS, never truth —
+        // an engaged enemy is a contact at gap 0, so under fog the sweep
+        // has seen it; under omniscience the values are identical (§4.3).
         for (const b of [...front.battles].sort((p, q) => p.id - q.id)) {
-          const mine = front.forces.filter((x) => [b.attackerId, b.defenderId, ...b.joined].includes(x.id) && x.side === this.side);
-          const theirs = front.forces.filter((x) => [b.attackerId, b.defenderId, ...b.joined].includes(x.id) && x.side !== this.side);
+          const ids = [b.attackerId, b.defenderId, ...b.joined];
+          const mine = own.filter((x) => ids.includes(x.id));
           const mineEff = mine.reduce((a, x) => a + effStrength(x), 0);
-          const theirsEff = theirs.reduce((a, x) => a + effStrength(x), 0);
+          const theirsEff = intel
+            .contacts()
+            .filter((c) => ids.includes(c.forceId))
+            .reduce((a, c) => a + c.strength, 0);
           if (mine.length > 0 && mineEff < theirsEff && b.site.kind === 'node') {
             const r = orderMove(front, f.id, b.site.nodeId);
             if (r.ok) orders.push({ forceId: f.id, dest: b.site.nodeId, why: 'commit-reserve' });
@@ -263,7 +272,7 @@ export class Commander2 {
         // to clears the floor, and the reinforcement-join machinery stacks
         // them at the site.
         const axisEff = axis.assigned.reduce((a, id) => {
-          const g = front.forces.find((x) => x.id === id);
+          const g = own.find((x) => x.id === id);
           return g && g.strength > 0 ? a + effStrength(g) : a;
         }, 0);
         const ownEff = Math.max(axisEff, effStrength(f));
@@ -275,6 +284,21 @@ export class Commander2 {
         if (lightAt(front.clockMin) < 0.25) mult *= 1.0; // nightMult 1.0 until OQ7 lands a value
         const odds = coarseOdds(ownEff, defEff, mult);
         if (odds < attackFloor) continue; // held: not viable (yet)
+        // Dawn doctrine (S52): under night tempo an assault steps off only
+        // when its ARRIVAL falls in light — prepared fields of fire beat a
+        // blind approach, and a held force re-checks every eval as the
+        // arrival window sweeps across dawn. Advances (defEff 0) march at
+        // any hour; only the assault waits for first light. The eta runs
+        // the SAME shadow kernel over the prospective path orderMove would
+        // set, so the decision and the march cannot disagree.
+        if (this.opts.nightTempo) {
+          const r0 = route(t, anchorNode(t, f.pos), target);
+          if (r0) {
+            const prospective = f.pos.kind === 'edge' ? [f.pos.edgeId, ...r0.edges] : [...r0.edges];
+            const eta = forceEtaMinutes(front, { ...f, path: prospective }, target, { nightTempo: true });
+            if (lightAt(front.clockMin + eta) < 0.25) continue;
+          }
+        }
         viableSeen = true;
       }
       const r = orderMove(front, f.id, target);

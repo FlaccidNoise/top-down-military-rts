@@ -625,14 +625,21 @@ export function coarseOdds(atkEff: number, defEff: number, terrainMult: number):
 // wars 1-15 days, both outcomes). One implementation, two callers: the grid
 // resolveCoarse below and the V2 theater battle layer. Draw order is frozen:
 // winner roll, winner losses, loser losses.
+// atkEff/defEff (S50/S51): the WIN SCORE reads effective strength — supply
+// and fatigue enter resolveCoarse through the strength terms and nowhere
+// else (§4.4) — while the LOSS BANDS keep reading raw strength: a starving
+// force loses fights more often, it does not evaporate. Defaults preserve
+// the V1 grid path bit-for-bit.
 export function coarseOutcome(
   atkStrength: number,
   defStrength: number,
   terrainMult: number,
   rng: Rng,
   forcedWinner?: 'attacker' | 'defender' | null,
+  atkEff = atkStrength,
+  defEff = defStrength,
 ): { attackerWins: boolean; atkLosses: number; defLosses: number } {
-  const clampedScore = coarseOdds(atkStrength, defStrength, terrainMult);
+  const clampedScore = coarseOdds(atkEff, defEff, terrainMult);
   // clampedScore still allows a 5% upset either way — a forced outcome (the
   // player accepted an offered "foregone conclusion") must never roll for it.
   // The roll is DRAWN either way: a skipped draw would shift every later draw

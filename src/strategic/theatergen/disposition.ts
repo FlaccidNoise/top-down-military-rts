@@ -7,7 +7,7 @@ import type { CampaignConfig } from '../../campaign/spec';
 import { fitStrength, type Campaign } from '../../campaign/campaign';
 import type { Side } from '../../sim/sim';
 import type { Theater } from '../theater';
-import { MAX_FORCES, type Force } from '../theater/force';
+import { MAX_FORCES, type ForceInit } from '../theater/force';
 
 export class DispositionError extends Error {
   constructor(public readonly reason: 'no-entry-node' | 'garrison-starved' | 'establishment-zero', detail: string) {
@@ -36,7 +36,7 @@ const RED_MOBILE_STRENGTH: Record<number, [number, number]> = {
 };
 
 export interface Disposition {
-  forces: Omit<Force, 'id'>[];
+  forces: ForceInit[];
   establishment: Record<number, number>; // keyed by the force's ARRAY INDEX (ids assigned at addForce)
 }
 
@@ -47,7 +47,7 @@ export function makeDisposition(
   control: Side[],
   rng: Rng,
 ): Disposition {
-  const forces: Omit<Force, 'id'>[] = [];
+  const forces: ForceInit[] = [];
 
   // -- Blue: one line force per company, on ENTRY NODES — blue-side nodes of
   // the front partition with road rank <= 1, sorted by node id, cycled.
