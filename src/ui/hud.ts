@@ -654,7 +654,7 @@ function emplacementContext(sim: Sim, e: Emplacement): string {
     const w: WeaponDef = WEAPONS[def.weapon];
     if (w.arc) {
       btns.push(`<button class="hbtn" data-ctx="fire">Fire</button>`);
-      btns.push(`<button class="hbtn" data-ctx="smoke">Smoke</button>`);
+      btns.push(`<button class="hbtn" data-ctx="smoke">Smoke mission</button>`);
     }
     // Direct-fire AT guns can be pointed at a wall (D5). Same predicate
     // Sim.orderEmplacementBreach gates on, so the button never no-ops.

@@ -1,9 +1,9 @@
 import type { Camera } from '../render/camera';
 import { MOBILE, view } from '../render/view';
 import { ASSAULT_DANGER_MULT, compliance, dangerSamples, dangerScore, MOVE_FAMILY, type OrderKind } from '../sim/orders';
-import { eligible, fanOffsets, formationSlots, TEAM_FAN, SQUAD_FAN, type Side, type Sim, type UnitEvent } from '../sim/sim';
-import { orderLevel, resolveMoveSpots, type ResolvedSpot } from '../sim/spots';
-import { TEAM } from './hud';
+import { eligible, fanOffsets, formationSlots, squadClumpOffsets, TEAM_FAN, SQUAD_FAN, type Side, type Sim, type UnitEvent } from '../sim/sim';
+import { orderLevel, resolveDeployment, resolveMoveSpots, type ResolvedSpot } from '../sim/spots';
+import { emplacementOf, TEAM } from './hud';
 import type { ShotSolution } from './tooltip';
 
 export interface OverlayState {
@@ -22,6 +22,10 @@ export interface OverlayState {
   // orderLevel — ground for a move, the top storey for defend/ambush.
   orderFloor?: number | null
   floorFocus?: number // -1 = all floors; else the storey F has focused (main.ts)
+  // Deployment phase: preview and placement share resolveDeployment, so the
+  // ghost dots promise the tiles the warp will use. bearing = the enemy
+  // direction the deployment faces. null/undefined = battle.
+  deploy?: { x0: number; x1: number; bearing: number } | null
 }
 
 function teamCentroid(sim: Sim, soldierIds: number[]): { x: number; y: number } | null {
@@ -76,36 +80,45 @@ export interface MovePreview {
 // the draw path and safe for the parity test to call directly.
 export function previewMoveSpots(sim: Sim, st: OverlayState): MovePreview | null {
   if (st.targetMode || !st.cursor || st.selectedSquads.length === 0) return null;
+  if (st.deploy) return previewDeploy(sim, st);
+  // A non-formation armed kind (smoke, fire) moves nobody: there are no move
+  // spots to promise, so no ghost dots. Refusal feedback comes from the team
+  // order chip after the click (orderTeam sets a balked reason).
+  if (st.armedOrder && !MOVE_FAMILY.includes(st.armedOrder)) return null;
   const useArmed = st.armedOrder !== null && MOVE_FAMILY.includes(st.armedOrder);
   const kind: OrderKind = useArmed ? st.armedOrder! : 'move';
   const drag = st.formationDrag;
   const K = st.selectedSquads.length;
-  const squadOffs = fanOffsets(K, drag ? drag.width / K : SQUAD_FAN);
+  const squadOffs = drag ? fanOffsets(K, drag.width / K) : null;
+  const clump = drag ? null : squadClumpOffsets(K); // issueShortClick's clump
   const cos = drag ? Math.cos(drag.facing) : 0;
   const sin = drag ? Math.sin(drag.facing) : 0;
+  // ONE reservation set for the whole preview — the mirror of the one `used`
+  // commitOrder threads through every orderSquad call of the commit.
+  const used = new Set<number>();
   const teams: PreviewTeam[] = [];
   st.selectedSquads.forEach((squadId, si) => {
     const squad = sim.squads[squadId];
     if (!squad) return;
-    const ax = drag ? drag.ax + cos * squadOffs[si] : st.cursor!.x;
-    const ay = drag ? drag.ay + sin * squadOffs[si] : st.cursor!.y + squadOffs[si];
+    const ax = drag ? drag.ax + cos * squadOffs![si] : st.cursor!.x + clump![si][0];
+    const ay = drag ? drag.ay + sin * squadOffs![si] : st.cursor!.y + clump![si][1];
     // commitOrder narrows to the selected team only on a SHORT right-click of
     // the primary squad with no armed kind and no additive modifier; every
     // right-drag goes to orderSquad. Without this branch the preview shows
     // dots for teams that are not going to move.
     if (!drag && !useArmed && !st.squadForce && st.selectedTeam >= 0 && squadId === st.selectedSquad) {
-      pushPreviewTeam(sim, st, teams, st.selectedTeam, ax, ay, kind);
+      pushPreviewTeam(sim, st, teams, st.selectedTeam, ax, ay, kind, used);
       return;
     }
     const n = squad.teamIds.length;
     if (!drag) {
       const offs = fanOffsets(n, TEAM_FAN); // orderSquad's legacy y-axis fan
-      squad.teamIds.forEach((tid, ti) => pushPreviewTeam(sim, st, teams, tid, ax, ay + offs[ti], kind));
+      squad.teamIds.forEach((tid, ti) => pushPreviewTeam(sim, st, teams, tid, ax, ay + offs[ti], kind, used));
     } else {
       const share = drag.width / K / n; // orderSquad's (order.width ?? n * TEAM_FAN) / n
       const offs = fanOffsets(n, share);
       squad.teamIds.forEach((tid, ti) =>
-        pushPreviewTeam(sim, st, teams, tid, ax + cos * offs[ti], ay + sin * offs[ti], kind, drag.facing, share),
+        pushPreviewTeam(sim, st, teams, tid, ax + cos * offs[ti], ay + sin * offs[ti], kind, used, drag.facing, share),
       );
     }
   });
@@ -126,6 +139,55 @@ export function previewMoveSpots(sim: Sim, st: OverlayState): MovePreview | null
   return { kind, teams, placed, covered, refused, level };
 }
 
+// Deploy-phase preview: the same resolveDeployment call deployPlace commits,
+// adapted to PreviewTeam so the ghost dots, snap tails, refusal crosses and
+// the chip all work unchanged. No danger/verdict — deployment never runs the
+// compliance ladder — and whole squads always, deployPlace's own scope rule
+// (the battle path's team-narrowing does not exist here). Emplacement squads
+// are skipped exactly as deployPlace refuses them.
+function previewDeploy(sim: Sim, st: OverlayState): MovePreview | null {
+  const zone = st.deploy!;
+  const c = st.cursor!;
+  if (c.x < zone.x0 || c.x > zone.x1) return null; // outside the strip: deployPlace refuses, nothing to promise
+  const squadIds = st.selectedSquads.filter((id) => !emplacementOf(sim, id));
+  const plans = resolveDeployment(sim, squadIds, c.x, c.y, zone, zone.bearing);
+  const teams: PreviewTeam[] = [];
+  let ambush = false;
+  for (const p of plans) {
+    const team = sim.teams[p.teamId];
+    if (!team) continue;
+    const ids = team.soldierIds.filter((id) => {
+      const s = sim.soldiers[id];
+      return eligible(s) && s.inVehicle < 0;
+    });
+    const slots = formationSlots(ids.length);
+    const placed = new Map(p.spots.map((sp) => [sp.sid, sp]));
+    const mine: PreviewSpot[] = [];
+    const refused: PreviewTeam['refused'] = [];
+    ids.forEach((sid, i) => {
+      const slotX = p.x + slots[i][0];
+      const slotY = p.y + slots[i][1];
+      const sp = placed.get(sid);
+      if (sp) mine.push({ ...sp, slotX, slotY });
+      else refused.push({ sid, slotX, slotY });
+    });
+    if (p.kind === 'ambush') ambush = true;
+    teams.push({ teamId: p.teamId, x: p.x, y: p.y, level: p.level, spots: mine, refused, danger: null, verdict: null });
+  }
+  if (teams.length === 0) return null;
+  let placed = 0;
+  let covered = 0;
+  let refused = 0;
+  let top = 0;
+  for (const t of teams) {
+    placed += t.spots.length;
+    refused += t.refused.length;
+    top = Math.max(top, t.level);
+    for (const sp of t.spots) if (sp.covered) covered++;
+  }
+  return { kind: ambush ? 'ambush' : 'defend', teams, placed, covered, refused, level: top > 0 ? top : null };
+}
+
 function pushPreviewTeam(
   sim: Sim,
   st: OverlayState,
@@ -134,6 +196,7 @@ function pushPreviewTeam(
   x: number,
   y: number,
   kind: OrderKind,
+  used: Set<number>,
   facing?: number,
   width?: number,
 ): void {
@@ -145,7 +208,7 @@ function pushPreviewTeam(
   // squad straddling a tall building and a low one garrisons two storeys, and
   // the preview has to say so.
   const level = orderLevel(sim, kind, x, y, st.orderFloor ?? undefined);
-  const spots = resolveMoveSpots(sim, { soldierIds: ids, x, y, facing, width, kind, l: level }, new Set<number>());
+  const spots = resolveMoveSpots(sim, { soldierIds: ids, x, y, facing, width, kind, l: level }, used);
   const slots = formationSlots(ids.length, facing, width);
   const placed = new Map(spots.map((sp) => [sp.sid, sp]));
   const mine: PreviewSpot[] = [];
@@ -185,7 +248,7 @@ const previewMemo = new WeakMap<Sim, { key: string; val: MovePreview | null }>()
 function movePreview(sim: Sim, st: OverlayState): MovePreview | null {
   if (st.targetMode || !st.cursor || st.selectedSquads.length === 0) return null;
   const d = st.formationDrag;
-  const key = `${sim.tick}|${st.selectedSquads.join(',')}|${st.selectedSquad}|${st.selectedTeam}|${st.squadForce}|${st.armedOrder}|${st.orderFloor}|${st.cursor.x},${st.cursor.y}|${d ? `${d.ax},${d.ay},${d.facing},${d.width}` : ''}`;
+  const key = `${sim.tick}|${st.selectedSquads.join(',')}|${st.selectedSquad}|${st.selectedTeam}|${st.squadForce}|${st.armedOrder}|${st.orderFloor}|${st.cursor.x},${st.cursor.y}|${d ? `${d.ax},${d.ay},${d.facing},${d.width}` : ''}|${st.deploy ? `${st.deploy.x0},${st.deploy.x1},${st.deploy.bearing}` : ''}`;
   const hit = previewMemo.get(sim);
   if (hit && hit.key === key) return hit.val;
   const val = previewMoveSpots(sim, st);
@@ -449,7 +512,8 @@ export function drawOverlays(ctx: CanvasRenderingContext2D, cam: Camera, sim: Si
       if (!centroid) continue;
       const members = team.soldierIds.map((id) => sim.soldiers[id]).filter((s) => eligible(s));
       const speed = members.length > 0 ? Math.min(...members.map((s) => sim.moveSpeed(s))) : 0;
-      if (speed > 0.01) {
+      // A deployment is a warp — an ETA line would promise a march nobody makes.
+      if (speed > 0.01 && !st.deploy) {
         const secs = Math.hypot(t.x - centroid.x, t.y - centroid.y) / speed;
         eta = eta === null ? secs : Math.max(eta, secs);
       }

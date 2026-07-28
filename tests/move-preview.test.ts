@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { EDGE, GameMap } from '../src/sim/map';
-import { fanOffsets, Sim, TEAM_FAN } from '../src/sim/sim';
+import { fanOffsets, Sim, squadClumpOffsets, SQUAD_FAN, TEAM_FAN } from '../src/sim/sim';
 import { resolveMoveSpots, threatBearing } from '../src/sim/spots';
 import { formatContextChip, previewMoveSpots, type MovePreview, type OverlayState } from '../src/ui/overlays';
 
@@ -163,10 +163,15 @@ describe('cover truth and snap tails', () => {
     expectParity(sim, pv);
   });
 
-  it('an armed kind outside the move family previews the move the order will actually be', () => {
+  it('a non-formation armed kind (smoke, fire) previews NO move spots — the order moves nobody', () => {
+    // The old pin here asserted arming smoke previews a move, which pinned the
+    // MOVE_FAMILY issuability bug itself: arming Smoke ISSUED a plain move.
+    // commitOrder now dispatches every armed kind, so there is no move to
+    // preview and the ghost dots stay dark.
     const sim = hedgeSim();
-    const pv = previewMoveSpots(sim, state({ selectedSquads: [0], cursor: { x: 28.4, y: 12.3 }, armedOrder: 'smoke' }))!;
-    expect(pv.kind).toBe('move');
+    for (const armedOrder of ['smoke', 'fire'] as const) {
+      expect(previewMoveSpots(sim, state({ selectedSquads: [0], cursor: { x: 28.4, y: 12.3 }, armedOrder }))).toBeNull();
+    }
   });
 });
 
@@ -379,15 +384,37 @@ describe('the fan chain matches commitOrder → orderSquad → orderTeam', () =>
     expect(pv.teams.length).toBe(4);
     expect(pv.placed).toBe(24);
 
-    // commitOrder's right-drag branch verbatim, K = 2
+    // commitOrder's right-drag branch verbatim, K = 2 — one shared used set
     const K = 2;
     const seg = drag.width / K;
     const offs = fanOffsets(K, seg);
     const cos = Math.cos(drag.facing);
     const sin = Math.sin(drag.facing);
+    const used = new Set<number>();
     for (let i = 0; i < K; i++) {
-      sim.orderSquad(i, { kind: 'move', x: drag.ax + cos * offs[i], y: drag.ay + sin * offs[i], facing: drag.facing, width: seg });
+      sim.orderSquad(i, { kind: 'move', x: drag.ax + cos * offs[i], y: drag.ay + sin * offs[i], facing: drag.facing, width: seg }, used);
     }
     expectParity(sim, pv);
+  });
+
+  it('preview === execution through a MULTI-squad short click: squads clump, tiles never shared', () => {
+    const sim = new Sim(new GameMap(80, 60), 5);
+    sim.addSquadFromDef('blue', 'us_rifle', 12, 20);
+    sim.addSquadFromDef('blue', 'us_rifle', 12, 34);
+    const cursor = { x: 40, y: 27 };
+    const pv = previewMoveSpots(sim, state({ selectedSquads: [0, 1], cursor }))!;
+    expect(pv.teams.length).toBe(4);
+    // issueShortClick verbatim, K = 2: clump offsets + one shared used set
+    const offs = squadClumpOffsets(2);
+    const used = new Set<number>();
+    for (let i = 0; i < 2; i++) {
+      sim.orderSquad(i, { kind: 'move', x: cursor.x + offs[i][0], y: cursor.y + offs[i][1] }, used);
+    }
+    expectParity(sim, pv);
+    // the clump really clumps: every team anchor near the click, not on a 40 m line
+    for (const t of pv.teams) expect(Math.hypot(t.x - cursor.x, t.y - cursor.y)).toBeLessThan(SQUAD_FAN * 2);
+    // and the shared set holds: all previewed tiles distinct across all teams
+    const tiles = pv.teams.flatMap((t) => t.spots.map((sp) => `${sp.x},${sp.y}`));
+    expect(new Set(tiles).size).toBe(tiles.length);
   });
 });

@@ -515,10 +515,26 @@ export const OFFSETS: [number, number][] = [
 // and multi-squad fan (plain-click, 12m between squads).
 export const TEAM_FAN = 8;
 export const SQUAD_FAN = 12;
+// Rifle-team smoke grenade reach, meters (deploySmoke; the balk reason quotes it).
+export const SMOKE_THROW_M = 30;
 
 // Centered offsets: n items spread across `spacing` meters, centered on zero.
 export function fanOffsets(n: number, spacing: number): number[] {
   return Array.from({ length: n }, (_, i) => (i - (n - 1) / 2) * spacing);
+}
+
+// Compact 2-D anchors for a multi-squad point order: squads cluster round the
+// click (golden-angle spiral, ~SQUAD_FAN neighbour spacing) instead of forming
+// one long line — the line is the right-drag's job, where the player draws it.
+// Deterministic, rng-free; entry 0 is the click itself, so a single squad is
+// byte-identical to the old fanOffsets(1) path.
+export function squadClumpOffsets(n: number): [number, number][] {
+  return Array.from({ length: n }, (_, i) => {
+    if (i === 0) return [0, 0] as [number, number];
+    const r = SQUAD_FAN * 0.85 * Math.sqrt(i);
+    const a = i * 2.399963229728653; // golden angle, radians
+    return [r * Math.cos(a), r * Math.sin(a)] as [number, number];
+  });
 }
 
 // Per-soldier formation slots relative to a destination point.
@@ -790,6 +806,12 @@ export class Sim {
   // Per-squad move state, indexed by squad id. Read-only for the UI (route preview).
   squadDest: ({ x: number; y: number } | null)[] = [];
   squadWaypoints: { x: number; y: number }[][] = [];
+  // The direction each side expects its enemy from before intel exists — the
+  // attacker always enters at the west spawn (bridge.ts), so staging sets
+  // attacker 0 / defender π. threatBearing's last rung reads this instead of
+  // guessing due east when men dig in where they stand. Static per battle,
+  // never serialized: staging re-derives it.
+  threatAxis: Record<Side, number> = { blue: 0, red: Math.PI };
   smoke: Smoke[] = [];
   droppedKit: DroppedKit[] = [];
   // Recent-casualty flags for dangerScore/ambush triggers, indexed by squad/team id.
@@ -1681,9 +1703,10 @@ export class Sim {
     width?: number,
     kind: OrderKind = 'move',
     arc?: [number, number],
+    used: Set<number> = new Set<number>(),
   ): void {
     const eligibleIds = soldierIds.filter((id) => this.eligible(this.soldiers[id]));
-    const spots = resolveMoveSpots(this, { soldierIds: eligibleIds, x: wx, y: wy, facing, width, kind, arc, l: gl }, new Set<number>());
+    const spots = resolveMoveSpots(this, { soldierIds: eligibleIds, x: wx, y: wy, facing, width, kind, arc, l: gl }, used);
     for (const spot of spots) {
       const sid = spot.sid;
       const s = this.soldiers[sid];
@@ -1738,7 +1761,10 @@ export class Sim {
 
   // The order vocabulary's entry point (spec's "interpret + refuse"): runs
   // compliance, stores the legibility state, and kicks off execution.
-  orderTeam(teamId: number, order: TeamOrder): void {
+  // `used` is the ONE tile-reservation set of the whole player commit —
+  // orderSquad shares it across its teams and a multi-squad click shares it
+  // across squads, so clumped anchors cannot resolve two men onto one tile.
+  orderTeam(teamId: number, order: TeamOrder, used?: Set<number>): void {
     const team = this.teams[teamId];
     if (!team) return;
     const eligibleIds = team.soldierIds.filter((id) => this.eligible(this.soldiers[id]));
@@ -1768,16 +1794,22 @@ export class Sim {
       team.orderState = { order: effective, phase: 'executing', reason };
       if (effective.kind === 'sneak') this.sneakBaseline[team.id] = this.woundCount(team);
       const gl = orderLevel(this, effective.kind, effective.x, effective.y, effective.l);
-      this.moveSoldiersTo(team.soldierIds, effective.x, effective.y, gl, effective.facing, effective.width, effective.kind);
+      this.moveSoldiersTo(team.soldierIds, effective.x, effective.y, gl, effective.facing, effective.width, effective.kind, undefined, used);
     } else if (effective.kind === 'smoke') {
-      team.orderState = { order: effective, phase: 'executing', reason };
-      this.deploySmoke(team, effective);
+      // A throw that cannot happen must say so — a silently swallowed smoke
+      // order reads as "smoke is broken".
+      if (this.deploySmoke(team, effective)) {
+        team.orderState = { order: effective, phase: 'executing', reason };
+      } else {
+        const why = team.smokeLeft <= 0 ? 'no smoke grenades left' : `too far to throw smoke — get within ${SMOKE_THROW_M} m`;
+        team.orderState = { order: effective, phase: 'balked', reason: why };
+      }
     } else if (effective.kind === 'defend' || effective.kind === 'ambush') {
       team.orderState = { order: effective, phase: 'executing', reason };
       // Auto-top-floor garrison: the defend/ambush default, owned by orderLevel
       // so the preview can show the same storey the men will hold.
       const gl = orderLevel(this, effective.kind, effective.x, effective.y, effective.l);
-      this.moveSoldiersTo(team.soldierIds, effective.x, effective.y, gl, effective.facing, effective.width, effective.kind, effective.arc);
+      this.moveSoldiersTo(team.soldierIds, effective.x, effective.y, gl, effective.facing, effective.width, effective.kind, effective.arc, used);
     } else {
       // fire: no movement, members engage per updateSoldier's combat section
       team.orderState = { order: effective, phase: 'executing', reason };
@@ -1786,8 +1818,10 @@ export class Sim {
 
   // Squad click broadcasts to teams (spec §1), offsetting each team's
   // destination by team index x 8m so a multi-team squad doesn't stack.
-  // A direct order overrides any queued waypoint route.
-  orderSquad(squadId: number, order: TeamOrder): void {
+  // A direct order overrides any queued waypoint route. One `used` set spans
+  // every team of the squad (and, when the caller passes one, every squad of
+  // the commit), so neighbouring teams never resolve onto the same tile.
+  orderSquad(squadId: number, order: TeamOrder, used: Set<number> = new Set<number>()): void {
     const squad = this.squads[squadId];
     if (!squad) return;
     this.squadWaypoints[squadId] = [];
@@ -1798,7 +1832,7 @@ export class Sim {
       // Legacy: fan teams along y axis only
       const offs = fanOffsets(n, TEAM_FAN);
       squad.teamIds.forEach((teamId, ti) => {
-        this.orderTeam(teamId, { ...order, y: order.y + offs[ti] });
+        this.orderTeam(teamId, { ...order, y: order.y + offs[ti] }, used);
       });
     } else {
       // Formation: fan teams along the facing axis within order.width
@@ -1809,7 +1843,7 @@ export class Sim {
       squad.teamIds.forEach((teamId, ti) => {
         const dx = cos * offs[ti];
         const dy = sin * offs[ti];
-        this.orderTeam(teamId, { ...order, x: order.x + dx, y: order.y + dy, width: share });
+        this.orderTeam(teamId, { ...order, x: order.x + dx, y: order.y + dy, width: share }, used);
       });
     }
   }
@@ -1890,12 +1924,13 @@ export class Sim {
     if (this.woundCount(team) > (this.sneakBaseline[team.id] ?? 0)) order.kind = 'move';
   }
 
-  // Rifle-team smoke: 2 puffs at the point (<=30m from the team), 60s ttl,
-  // 2/battle budget. Mortar smoke arrives with emplacements (Task 9).
-  private deploySmoke(team: Team, order: TeamOrder): void {
-    if (team.smokeLeft <= 0) return;
+  // Rifle-team smoke: 2 puffs at the point (<= SMOKE_THROW_M from the team),
+  // 60s ttl, 2/battle budget. Mortar smoke arrives with emplacements (Task 9).
+  // Returns whether the throw happened — orderTeam surfaces a refusal.
+  private deploySmoke(team: Team, order: TeamOrder): boolean {
+    if (team.smokeLeft <= 0) return false;
     const centroid = this.centroidOf(team.soldierIds);
-    if (!centroid || Math.hypot(order.x - centroid.x, order.y - centroid.y) > 30) return;
+    if (!centroid || Math.hypot(order.x - centroid.x, order.y - centroid.y) > SMOKE_THROW_M) return false;
     team.smokeLeft--;
     // Column base = ground elevation + deployer's floor level: smoke thrown
     // from an upstairs window screens that floor, not the street.
@@ -1903,6 +1938,7 @@ export class Sim {
     const z0 = this.map.elevAt(Math.floor(order.x), Math.floor(order.y)) + (deployer?.level ?? 0) * FLOOR_H;
     this.smoke.push(smokePuff(order.x - 1, order.y, z0, 60));
     this.smoke.push(smokePuff(order.x + 1, order.y, z0, 60));
+    return true;
   }
 
   private inArc(fx: number, fy: number, tx: number, ty: number, arc: [number, number]): boolean {

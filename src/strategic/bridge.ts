@@ -174,6 +174,10 @@ export function makeStrategicBattle(
   // the ambient grade and the night spotting rules all derive from startMin.
   sim.startMin = front.clockMin;
   sim.buildings = plan.buildings;
+  // The attacker (either side) enters at the west spawn: before any contact
+  // exists, the attacker expects its enemy east and the defender west.
+  sim.threatAxis[attackerSide] = 0;
+  sim.threatAxis[attackerSide === 'blue' ? 'red' : 'blue'] = Math.PI;
 
   const { west } = plan.spawns;
   const yLo = 4;

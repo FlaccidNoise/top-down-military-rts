@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { EDGE, GameMap } from '../src/sim/map';
 import { dangerScore, visibleEnemies } from '../src/sim/orders';
-import { Sim, sightBetween, sightToSoldier } from '../src/sim/sim';
+import { Sim, sightBetween, sightToSoldier, SMOKE_THROW_M } from '../src/sim/sim';
 
 describe('order vocabulary: move/fast/sneak executor', () => {
   it('a steady team in a quiet map complies and paths directly (no bounding)', () => {
@@ -222,6 +222,23 @@ describe('order vocabulary: fire/smoke/defend/ambush', () => {
     expect(sim.soldiers[0].targetId).toBe(-1); // never had a visible target to aim at
     const endAmmo = Object.values(sim.soldiers[0].ammo).reduce((a: number, n) => a + (n ?? 0), 0);
     expect(endAmmo).toBeLessThanOrEqual(startAmmo); // area fire still burns ammo
+  });
+
+  it('a smoke order that cannot throw BALKS with a reason — never a silent nothing', () => {
+    const sim = new Sim(new GameMap(80, 10), 11);
+    sim.addSquad('blue', 'a', [{ name: 'A', weapon: 'garand', x: 5.5, y: 5.5 }]);
+    // out of reach: no puffs, no charge spent, and the chip says why
+    sim.orderTeam(0, { kind: 'smoke', x: 70, y: 5.5 });
+    expect(sim.smoke.length).toBe(0);
+    expect(sim.teams[0].smokeLeft).toBe(2);
+    expect(sim.teams[0].orderState.phase).toBe('balked');
+    expect(sim.teams[0].orderState.reason).toContain(`${SMOKE_THROW_M} m`);
+    // budget burned: same contract
+    sim.teams[0].smokeLeft = 0;
+    sim.orderTeam(0, { kind: 'smoke', x: 15, y: 5.5 });
+    expect(sim.smoke.length).toBe(0);
+    expect(sim.teams[0].orderState.phase).toBe('balked');
+    expect(sim.teams[0].orderState.reason).toBe('no smoke grenades left');
   });
 
   it('smoke blocks a previously clear line of sight', () => {

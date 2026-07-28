@@ -10,7 +10,8 @@ import { MOBILE, view, viewSize } from './render/view';
 import type { RedCommander } from './sim/ai';
 import { WEAPONS } from './sim/data';
 import { MOVE_FAMILY, type OrderKind, type TeamOrder } from './sim/orders';
-import { DT, fanOffsets, SQUAD_FAN, type Side, type Sim, type Soldier } from './sim/sim';
+import { DT, fanOffsets, squadClumpOffsets, SQUAD_FAN, type Side, type Sim, type Soldier } from './sim/sim';
+import { resolveDeployment } from './sim/spots';
 import { applyEngagementOutcome, makeStrategicBattle, newFront, resolveCoarse, syncStrengths, trivialMismatchWinner } from './strategic/bridge';
 import { StrategicCommander, RED_DEFENDER, BLUE_ATTACKER } from './strategic/command';
 import { operationStatus, REINFORCE_CYCLE_DAYS, REINFORCE_PER_COMPANY, type Chit, type Engagement, type Front } from './strategic/front';
@@ -700,47 +701,58 @@ function deployFlash(text: string): void {
   deployMsgUntil = performance.now() + 3000;
 }
 
-// Reposition the selected squads around (wx, wy): deterministic compact fan,
-// every man through nudgeSpawn (no rng), zone- and bounds-checked. Guns and
-// mounted men refuse — emplacements deploy where they stand.
+// The direction the deployment faces: staging already knows the attacker
+// enters from the west (sim.threatAxis, set in makeStrategicBattle), so your
+// enemy is east when you attack and west when you defend — known before a
+// single contact exists.
+function deployBearing(): number {
+  return sim.threatAxis.blue;
+}
+
+// Reposition the selected squads around (wx, wy): the SAME resolver chain the
+// preview runs (resolveDeployment → resolveMoveSpots), so the warp lands on
+// the tiles the ghost dots promised — dug in facing the enemy, prone (ambush)
+// where the ground pays prone, crouched (defend) otherwise. No rng, no
+// compliance ladder: deployment is administrative. Guns refuse — emplacements
+// deploy where they stand.
 function deployPlace(wx: number, wy: number): void {
   const zone = deployZone();
   if (wx < zone.x0 || wx > zone.x1) {
     deployFlash(`Outside your deployment zone (x ${zone.x0}–${Math.round(zone.x1)})`);
     return;
   }
-  const K = selectedSquads.length;
-  if (K === 0) {
+  if (selectedSquads.length === 0) {
     deployFlash('Select a squad first — tap it, then right-click the ground');
     return;
   }
-  const offs = fanOffsets(K, SQUAD_FAN);
-  selectedSquads.forEach((id, qi) => {
+  const squadIds: number[] = [];
+  for (const id of selectedSquads) {
     const squad = sim.squads[id];
-    if (!squad) return;
+    if (!squad) continue;
     if (emplacementOf(sim, id)) {
       deployFlash(`${squad.name}: guns deploy where they stand`);
-      return;
+      continue;
     }
-    const ax = wx;
-    const ay = wy + offs[qi];
-    let i = 0;
-    for (const sid of squad.soldierIds) {
-      const s = sim.soldiers[sid];
-      if (!s.alive || s.inVehicle >= 0) continue;
-      const gx = ax + ((i % 4) - 1.5) * 2;
-      const gy = ay + Math.floor(i / 4) * 2 - 2;
-      const p = sim.nudgeSpawn(
-        Math.max(zone.x0 + 0.5, Math.min(zone.x1 - 0.5, gx)),
-        Math.max(1, Math.min(sim.map.h - 2, gy)),
-      );
-      s.x = p.x;
-      s.y = p.y;
-      s.level = 0;
+    squadIds.push(id);
+  }
+  const plans = resolveDeployment(sim, squadIds, wx, wy, zone, deployBearing());
+  for (const p of plans) {
+    for (const sp of p.spots) {
+      const s = sim.soldiers[sp.sid];
+      s.x = sp.x + 0.5;
+      s.y = sp.y + 0.5;
+      s.level = sp.l;
       s.path = null;
-      i++;
     }
-  });
+    // Direct write, not orderTeam: the ladder must not balk a pre-battle
+    // reposition, and stanceOf derives crouch/prone from this order state —
+    // without it every deployed man stands.
+    sim.teams[p.teamId].orderState = { order: { kind: p.kind, x: p.x, y: p.y, arc: p.arc, l: p.level }, phase: 'executing', reason: '' };
+  }
+  for (const id of squadIds) {
+    sim.squadWaypoints[id] = [];
+    sim.squadDest[id] = null;
+  }
 }
 
 // V2 contact modal (OQ2 pin+queue: the theater is paused by the caller; the
@@ -1253,25 +1265,34 @@ function beginOrderAnchor(sx: number, sy: number): void {
   rmbAnchor = { sx, sy, wx, wy };
 }
 
-// The plain right-click: every selected squad, fanned on the y axis, narrowed
-// to one team only where commitOrder's rule says so. The floor menu issues
-// through here too (with `l` set), so "which units move" is one rule shared by
-// both paths — and the same one previewMoveSpots mirrors.
+// The plain right-click: every selected squad, clumped round the click point
+// (squadClumpOffsets — the long line is the right-drag's job), narrowed to one
+// team only where commitOrder's rule says so. The floor menu issues through
+// here too (with `l` set), so "which units move" is one rule shared by both
+// paths — and the same one previewMoveSpots mirrors. One `used` set spans the
+// whole commit so clumped squads never resolve two men onto one tile.
 function issueShortClick(wx: number, wy: number, squadForce: boolean, l?: number): void {
   const K = selectedSquads.length;
-  const useArmed = armedOrder !== null && MOVE_FAMILY.includes(armedOrder);
-  const kind: OrderKind = useArmed ? armedOrder! : 'move';
-  const offs = fanOffsets(K, SQUAD_FAN);
+  // EVERY armed kind issues — MOVE_FAMILY is the formation-capability list,
+  // not an issuability gate. Reusing it here silently turned an armed Smoke or
+  // Fire into a plain move (the men walked to the point they should have
+  // screened) from M4b until now.
+  const kind: OrderKind = armedOrder ?? 'move';
+  const formation = armedOrder !== null && MOVE_FAMILY.includes(armedOrder);
+  const offs = squadClumpOffsets(K);
+  const used = new Set<number>();
   const primary = getPrimary();
   for (let i = 0; i < K; i++) {
     const id = selectedSquads[i];
-    const order: TeamOrder = { kind, x: wx, y: wy + offs[i], l };
-    if (useArmed || squadForce) {
-      sim.orderSquad(id, order);
+    const order: TeamOrder = { kind, x: wx + offs[i][0], y: wy + offs[i][1], l };
+    // A formation kind orders the whole squad; a point tool (smoke, fire)
+    // respects team narrowing — one team's smoke charge, not the squad's.
+    if (formation || squadForce) {
+      sim.orderSquad(id, order, used);
     } else if (selectedTeam >= 0 && id === primary) {
-      sim.orderTeam(selectedTeam, order);
+      sim.orderTeam(selectedTeam, order, used);
     } else {
-      sim.orderSquad(id, order);
+      sim.orderSquad(id, order, used);
     }
   }
 }
@@ -1320,6 +1341,16 @@ function commitOrder(sx: number, sy: number, opts: { squadForce: boolean; floors
   const useArmed = armedOrder !== null && MOVE_FAMILY.includes(armedOrder);
   const kind: OrderKind = useArmed ? armedOrder! : 'move';
 
+  // A non-formation armed kind (smoke, fire) is a point tool: it issues at the
+  // release point whatever the drag length — you aim a throw, you don't draw a
+  // line with it.
+  if (armedOrder && !useArmed) {
+    issueShortClick(wx, wy, opts.squadForce);
+    armedOrder = null;
+    rmbAnchor = null;
+    return;
+  }
+
   if (len < 2) {
     issueShortClick(wx, wy, opts.squadForce);
     if (useArmed) armedOrder = null;
@@ -1331,12 +1362,13 @@ function commitOrder(sx: number, sy: number, opts: { squadForce: boolean; floors
     const offs = fanOffsets(K, seg);
     const cos = Math.cos(facing);
     const sin = Math.sin(facing);
+    const used = new Set<number>();
     for (let i = 0; i < K; i++) {
       const id = selectedSquads[i];
       const ax = rmbAnchor.wx + cos * offs[i];
       const ay = rmbAnchor.wy + sin * offs[i];
       const order: TeamOrder = { kind, x: ax, y: ay, facing, width: seg };
-      sim.orderSquad(id, order);
+      sim.orderSquad(id, order, used);
     }
     if (useArmed) armedOrder = null;
   }
@@ -1927,6 +1959,7 @@ function frame(now: number): void {
       cursor,
       orderFloor: floorMenu ? floorMenu.level : null,
       floorFocus,
+      deploy: deployPhase ? { ...deployZone(), bearing: deployBearing() } : null,
     }, pings);
     if (touchHold) drawHoldRing(ctx, touchHold, now);
     tooltip.update(sim, pick, shot, mouse.x, mouse.y, pick?.kind === 'terrain' && (primary >= 0 || selectedVehicle >= 0));

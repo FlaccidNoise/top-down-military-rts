@@ -74,6 +74,15 @@ describe('threatBearing ladder (design §1.3)', () => {
     // anchor west of the man ⇒ travel direction is west
     expect(threatBearing(sim, { soldierIds: ids, x: 20.5, y: 10.5, kind: 'move' })).toBeCloseTo(Math.PI, 6);
   });
+
+  it('4: dig-in-where-you-stand reads the side threat axis, never atan2(0,0) = due east', () => {
+    const sim = new Sim(new GameMap(40, 20), 1);
+    const ids = [addOne(sim, 'blue', 20.5, 10.5)];
+    // anchor on the man himself: the travel vector is degenerate
+    expect(threatBearing(sim, { soldierIds: ids, x: 20.5, y: 10.5, kind: 'move' })).toBeCloseTo(0, 6); // default: attacker, enemy east
+    sim.threatAxis.blue = Math.PI; // staged as the defender (bridge.ts sets this)
+    expect(threatBearing(sim, { soldierIds: ids, x: 20.5, y: 10.5, kind: 'move' })).toBeCloseTo(Math.PI, 6);
+  });
 });
 
 describe('cover-snap scorer fixtures (design §4.3)', () => {

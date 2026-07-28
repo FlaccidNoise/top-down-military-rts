@@ -25,7 +25,7 @@
 
 import { EDGE } from './map';
 import type { OrderKind } from './orders';
-import { formationSlots, type Sim, type Soldier, type Stance } from './sim';
+import { eligible, fanOffsets, formationSlots, SQUAD_FAN, TEAM_FAN, type Sim, type Soldier, type Stance } from './sim';
 
 export const SNAP_R = 3; // cover-snap ring bound (tiles) — the coherence cap (§1.2)
 const FALLBACK_R = 5; // legacy findSpot reach (sim.ts findSpot, r <= 5)
@@ -135,8 +135,9 @@ export function threatBearing(sim: Sim, q: SpotQuery): number {
   if (bd <= INTEL_RANGE) return Math.atan2(by - q.y, bx - q.x);
   // 3. travel direction: team centroid → anchor (you default to covering the
   //    way you are advancing). Men told to dig in exactly where they stand
-  //    give atan2(0, 0) = 0 — due east on no evidence at all. Deterministic
-  //    and cheap, but it is a guess; see the M3 handoff.
+  //    used to give atan2(0, 0) = 0 — due east on no evidence; a degenerate
+  //    move now falls to the side's threat axis (staging knows the attacker
+  //    enters from the west long before any contact exists).
   let cx = 0;
   let cy = 0;
   let n = 0;
@@ -147,8 +148,11 @@ export function threatBearing(sim: Sim, q: SpotQuery): number {
     cy += s.y;
     n++;
   }
-  if (n === 0) return 0;
-  return Math.atan2(q.y - cy / n, q.x - cx / n);
+  if (n === 0) return sim.threatAxis[side];
+  const dx = q.x - cx / n;
+  const dy = q.y - cy / n;
+  if (Math.hypot(dx, dy) < 2) return sim.threatAxis[side];
+  return Math.atan2(dy, dx);
 }
 
 // Midpoint of a counterclockwise arc [a0, a1] under inArc's convention
@@ -300,6 +304,93 @@ export function crawlCoverSpot(sim: Sim, s: Soldier, blocked: Set<number>): { x:
     }
   }
   return best;
+}
+
+// ── Deployment placement (deploy phase) ─────────────────────────────────────
+// deployPlace (main.ts) and the deploy-phase preview (overlays.ts) both call
+// this, so the warp lands on the tiles the ghost dots promised — the same
+// preview === execution contract resolveMoveSpots gives ordered movement.
+//
+// Anchors clamp DEPLOY_EDGE_INSET inside the zone because the resolver may
+// snap a spot up to FALLBACK_R tiles off a slot and slots reach ±2.2 m:
+// 8 > 5 + 2.2, so every resolved tile stays in-zone by construction — the
+// tutorial gate asserts exactly that.
+export const DEPLOY_EDGE_INSET = 8;
+const DEPLOY_ARC_HALF = Math.PI / 4;
+
+export interface DeployTeamPlan {
+  teamId: number;
+  kind: OrderKind; // defend, upgraded to ambush where the ground pays prone
+  x: number; // clamped team anchor — the order the team holds after the warp
+  y: number;
+  arc: [number, number];
+  level: number;
+  spots: ResolvedSpot[];
+}
+
+// A tile where lying down buys cover that crouching does not: the only such
+// terrain is a bank lip (BANK_PRONE_LIP). Behind a hedgerow bank or a hill
+// shoulder the deployment goes prone — the reverse-slope start the ambush
+// order already encodes.
+function proneImproves(sim: Sim, x: number, y: number, bearing: number): boolean {
+  return directionalCover(sim, x, y, bearing, 'prone') > directionalCover(sim, x, y, bearing, 'crouch');
+}
+
+// Squads fan by SQUAD_FAN and teams by TEAM_FAN on the y axis — the exact
+// anchor chain a plain-click battle order runs (issueShortClick → orderSquad),
+// so deployment and the first move order read as one placement grammar. The
+// deployment digs in facing `enemyBearing` (the attacker enters from the west,
+// so the axis is known before a single contact exists), and each team's order
+// kind comes from the ground it landed on: ambush (prone) where a majority of
+// its spots gain from lying down, defend (crouch) otherwise.
+export function resolveDeployment(
+  sim: Sim,
+  squadIds: number[],
+  wx: number,
+  wy: number,
+  zone: { x0: number; x1: number },
+  enemyBearing: number,
+): DeployTeamPlan[] {
+  const arc: [number, number] = [enemyBearing - DEPLOY_ARC_HALF, enemyBearing + DEPLOY_ARC_HALF];
+  const lo = zone.x0 + DEPLOY_EDGE_INSET;
+  const hi = zone.x1 - DEPLOY_EDGE_INSET;
+  const ax = lo <= hi ? Math.max(lo, Math.min(hi, wx)) : (zone.x0 + zone.x1) / 2;
+  const clampY = (y: number) => Math.max(DEPLOY_EDGE_INSET, Math.min(sim.map.h - DEPLOY_EDGE_INSET, y));
+  // ONE used set for the whole placement: the fans put teams close together,
+  // and a per-team set would let neighbours resolve onto the same tile.
+  const used = new Set<number>();
+  const out: DeployTeamPlan[] = [];
+  const squadOffs = fanOffsets(squadIds.length, SQUAD_FAN);
+  squadIds.forEach((squadId, qi) => {
+    const squad = sim.squads[squadId];
+    if (!squad) return;
+    const teamOffs = fanOffsets(squad.teamIds.length, TEAM_FAN);
+    squad.teamIds.forEach((teamId, ti) => {
+      const team = sim.teams[teamId];
+      if (!team) return;
+      const ids = team.soldierIds.filter((id) => {
+        const s = sim.soldiers[id];
+        return eligible(s) && s.inVehicle < 0;
+      });
+      if (ids.length === 0) return;
+      const ay = clampY(wy + squadOffs[qi] + teamOffs[ti]);
+      const level = orderLevel(sim, 'defend', ax, ay);
+      // Trial at ambush (prone scoring) FIRST: bank lips only score at prone
+      // (BANK_PRONE_LIP), so a crouch-first trial would never snap to the one
+      // terrain the prone upgrade exists for. Where a majority of the team's
+      // spots gain from lying down, the ambush trial stands; otherwise the
+      // team digs in at defend. The trial resolves against a COPY of `used`,
+      // identical to `used` at this point, so a kept trial is exactly the
+      // resolve it stands in for.
+      const trial = resolveMoveSpots(sim, { soldierIds: ids, x: ax, y: ay, kind: 'ambush', arc, l: level }, new Set(used));
+      const prone = trial.filter((sp) => proneImproves(sim, sp.x, sp.y, enemyBearing)).length;
+      const kind: OrderKind = trial.length > 0 && prone * 2 >= trial.length ? 'ambush' : 'defend';
+      const spots = kind === 'ambush' ? trial : resolveMoveSpots(sim, { soldierIds: ids, x: ax, y: ay, kind, arc, l: level }, new Set(used));
+      for (const sp of spots) used.add(sp.y * sim.map.w + sp.x);
+      out.push({ teamId, kind, x: ax, y: ay, arc, level, spots });
+    });
+  });
+  return out;
 }
 
 // For each soldier: anchor = formation slot; scored cover-snap within
