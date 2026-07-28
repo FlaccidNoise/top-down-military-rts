@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { newCampaign } from '../src/campaign/campaign';
 import { makeTheater } from '../src/strategic/theatergen';
-import { addForce, orderMove, type Force, type FrontV2 } from '../src/strategic/theater/force';
+import { orderMove } from '../src/strategic/theater/step';
+import { addForce, type Force, type FrontV2 } from '../src/strategic/theater/force';
 import { battleDuration, joinBattle, openBattle, resolveBattleV2, retreatForce, stepWar } from '../src/strategic/theater/war';
 import { MOVE_MPM, type Theater, type TheaterEdge, type Vec } from '../src/strategic/theater';
 

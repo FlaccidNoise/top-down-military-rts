@@ -36,7 +36,8 @@ import { DispositionError, makeDisposition } from './strategic/theatergen/dispos
 import { makeWarGoals, warStatus, type WarGoals } from './strategic/goals';
 import { ContactIntel, OmniscientIntel, type IntelView } from './strategic/intel';
 import { Commander2, RED_V2 } from './strategic/planner';
-import { addForce, orderMove, type CoarseBattle, type FrontV2, type MoveReject } from './strategic/theater/force';
+import { addForce, type CoarseBattle, type FrontV2, type MoveReject } from './strategic/theater/force';
+import { orderMove } from './strategic/theater/step';
 import { battleCatchUpMin, openBattle, retreatForce, stepWar } from './strategic/theater/war';
 import { syncStrengthsV2 } from './strategic/theater/sync';
 import type { Contact } from './strategic/theater/contact';
@@ -733,6 +734,7 @@ function stepTheaterMinuteV2(v2: SessionV2): void {
     autoBattle: () => false,
     supply: v2.campaignCfg.supply,
     recon: v2.campaignCfg.recon,
+    nightTempo: v2.campaignCfg.nightTempo,
   });
   if (v2.front.day > prevDay) {
     advanceDays(S().campaign, v2.front.day - prevDay);
@@ -1301,7 +1303,7 @@ function stratOrderMove(sx: number, sy: number): void {
     if (v2.selectedForce < 0) return;
     const n = v2.view.nodeAtScreen(sx, sy, view.w, view.h);
     if (n < 0) return;
-    const r = orderMove(v2.front, v2.selectedForce, n);
+    const r = orderMove(v2.front, v2.selectedForce, n, { nightTempo: v2.campaignCfg.nightTempo });
     if (!r.ok) v2.view.flash(MOVE_REJECT_TEXT[r.reason]);
     else v2.view.flash(`${v2.front.forces.find((f) => f.id === v2.selectedForce)!.name} moving — ETA ${Math.round(r.etaMin / 60)}h${Math.round(r.etaMin % 60)}m`);
     return;

@@ -196,63 +196,6 @@ export type MoveReject =
 
 export type MoveOrder = { ok: true; etaMin: number } | { ok: false; reason: MoveReject };
 
-// §3.7: every arm maps to a visible flash string at the UI layer; silent
-// returns die here.
-export function orderMove(front: FrontV2, forceId: number, destNodeId: number): MoveOrder {
-  const f = front.forces.find((x) => x.id === forceId);
-  if (!f) return { ok: false, reason: 'unknown-force' };
-  if (f.engagedIn !== null) return { ok: false, reason: 'engaged' };
-  if (f.queuedAt !== null) return { ok: false, reason: 'queued-at-defile' };
-  const dest = front.theater.nodes[destNodeId];
-  if (!dest) return { ok: false, reason: 'no-route' };
-  // Rivers are transit, never a destination (standing doctrine): PURE ford
-  // nodes refuse. A town or village that carries ford metadata (a crossing
-  // merged into a settlement) is dry ground and a legal destination — found
-  // live: 'Gué-de-Ifs', a town objective the player could not order onto.
-  if (dest.kind === 'ford') return { ok: false, reason: 'destination-unholdable' };
-  if (f.pos.kind === 'node' && f.pos.nodeId === destNodeId) return { ok: false, reason: 'already-there' };
-
-  const start = anchorNode(front.theater, f.pos);
-  const r = route(front.theater, start, destNodeId);
-  if (!r) return { ok: false, reason: 'no-route' };
-  // Mid-edge: the remaining metres of the current edge precede the route.
-  f.path = f.pos.kind === 'edge' ? [f.pos.edgeId, ...r.edges] : [...r.edges];
-  // A force already mid-edge keeps its position; its first path entry is its
-  // own edge, consumed as it reaches the anchor node.
-  return { ok: true, etaMin: forceEtaMinutes(front, f, destNodeId) };
-}
-
-// ETA mirrors step() arithmetic EXACTLY (the chitEtaMinutes lockstep rule):
-// remaining metres of the current edge at paceMpm, then each path edge, plus
-// ford dwell at each passed ford, plus the force's own already-elapsed dwell.
-export function forceEtaMinutes(front: FrontV2, f: Force, destNodeId: number): number {
-  const t = front.theater;
-  let min = 0;
-  let at: number;
-  if (f.pos.kind === 'edge') {
-    const e = edgeById(t, f.pos.edgeId);
-    const remain = f.pos.dir === 1 ? e.lengthM - f.pos.s : f.pos.s;
-    min += remain / e.paceMpm;
-    at = anchorNode(t, f.pos);
-  } else {
-    at = f.pos.nodeId;
-  }
-  const pathFrom = f.pos.kind === 'edge' ? f.path.slice(1) : f.path;
-  for (const eid of pathFrom) {
-    const e = edgeById(t, eid);
-    const c = t.nodes[at].crossing;
-    if (c) {
-      const need = c.kind === 'ford' ? FORD_CROSS_MIN : BRIDGE_DWELL_MIN;
-      min += Math.max(0, need - (at === anchorNode(t, f.pos) ? f.dwellMin : 0));
-    }
-    at = otherEnd(e, at);
-    min += edgeMinutes(e);
-  }
-  // ETA is unopposed-march time: defile QUEUE waits are other forces'
-  // behavior, not this force's arithmetic, and are deliberately excluded.
-  if (at !== destNodeId && !(f.pos.kind === 'node' && f.pos.nodeId === destNodeId && pathFrom.length === 0)) {
-    // The path must end at the destination — a mismatch is a routing bug.
-    if (pathFrom.length > 0) throw new Error(`forceEtaMinutes: path ends at ${at}, not ${destNodeId}`);
-  }
-  return Math.ceil(min);
-}
+// orderMove and forceEtaMinutes live in step.ts beside the march kernel
+// (S51/S52): the ETA is a SHADOW run of the same per-minute arithmetic the
+// live step executes — a closed form here would lie across dusk and fatigue.

@@ -4,14 +4,12 @@ import {
   addForce,
   BRIDGE_DWELL_MIN,
   FORD_CROSS_MIN,
-  forceEtaMinutes,
   MAX_FORCES,
-  orderMove,
   route,
   type Force,
   type FrontV2,
 } from '../src/strategic/theater/force';
-import { stepMovement } from '../src/strategic/theater/step';
+import { forceEtaMinutes, orderMove, stepMovement } from '../src/strategic/theater/step';
 import { MOVE_MPM, type Theater, type TheaterEdge, type Vec } from '../src/strategic/theater';
 
 // Synthetic fixture: precise control over lengths and crossings.
@@ -78,21 +76,26 @@ describe('routing + the crossing economy', () => {
     expect(route(closer, 0, 2)!.edges).toEqual([0, 1]);
   });
 
-  it('a 3-edge route arrives at the independently computed minute', () => {
+  it('a 3-edge route arrives when the ETA said it would; fatigue drags past the fresh nominal', () => {
     const fr = front();
     const f = blue(fr);
     const order = orderMove(fr, f.id, 4);
     expect(order.ok).toBe(true);
-    // Hand arithmetic: ford path 80min + 45 dwell + edge5 60min = 185.
-    const expected = Math.ceil(2000 / 50 + FORD_CROSS_MIN + 2000 / 50 + 3000 / 50);
-    if (order.ok) expect(order.etaMin).toBe(expected);
+    // Fresh-force nominal: ford path 80min + 45 dwell + edge5 60min = 185.
+    // S51 makes pace time-varying — a 3-hour march tires the column, so the
+    // TRUE arrival sits a few minutes past the nominal and the ETA (a shadow
+    // of the same kernel) predicts it exactly.
+    const nominal = Math.ceil(2000 / 50 + FORD_CROSS_MIN + 2000 / 50 + 3000 / 50);
+    const eta = order.ok ? order.etaMin : -1;
+    expect(eta).toBeGreaterThanOrEqual(nominal);
+    expect(eta).toBeLessThanOrEqual(Math.ceil(nominal * 1.1)); // drag is real but bounded
     let steps = 0;
     while (!(f.pos.kind === 'node' && f.pos.nodeId === 4) && steps < 1000) {
       stepMovement(fr);
       fr.clockMin++;
       steps++;
     }
-    expect(steps).toBe(expected);
+    expect(steps).toBe(eta);
   });
 
   it('the ETA mirror holds at 0/25/50/100% of the march', () => {

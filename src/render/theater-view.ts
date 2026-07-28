@@ -5,7 +5,8 @@
 // existing touch grammar ports unchanged. Muted-Normandy palette shared in
 // register with the grid view it replaces.
 import { pointAlong, type Region, type TerrainClass, type Theater } from '../strategic/theater';
-import { forceEtaMinutes, type Force, type FrontV2 } from '../strategic/theater/force';
+import type { Force, FrontV2 } from '../strategic/theater/force';
+import { forceEtaMinutes, type MoveKernelOpts } from '../strategic/theater/step';
 import { supplyTierOf, type SupplyTier } from '../strategic/theater/supply';
 import { contactConf } from '../strategic/intel';
 import type { ReconMode } from '../campaign/spec';
@@ -341,12 +342,12 @@ export class TheaterView {
     }
   }
 
-  // ETA readout for the HUD: mirrors step arithmetic (S13).
-  etaFor(front: FrontV2, forceId: number, dest: number): number | null {
+  // ETA readout for the HUD: the S13 mirror, kernel opts threaded (S52).
+  etaFor(front: FrontV2, forceId: number, dest: number, opts: MoveKernelOpts = {}): number | null {
     const f = front.forces.find((x) => x.id === forceId);
     if (!f) return null;
     try {
-      return forceEtaMinutes(front, f, dest);
+      return forceEtaMinutes(front, f, dest, opts);
     } catch {
       return null;
     }

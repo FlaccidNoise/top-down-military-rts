@@ -6,7 +6,7 @@ import { makeTheater } from '../src/strategic/theatergen';
 import { makeDisposition } from '../src/strategic/theatergen/disposition';
 import { addForce, type FrontV2 } from '../src/strategic/theater/force';
 import { battleCatchUpMin, openBattle, stepWar } from '../src/strategic/theater/war';
-import { orderMove } from '../src/strategic/theater/force';
+import { orderMove } from '../src/strategic/theater/step';
 import { applyTheaterOutcome, makeTheaterBattle } from '../src/strategic/bridge2';
 
 const CFG = DEFAULT_PRESET.theater;

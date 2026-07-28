@@ -42,7 +42,7 @@ export class TheaterHud {
     const contacts = front.intel?.blue.length ?? 0;
     const sig = [
       front.day, hh, mm, held, paused, speedIdx, selectedForce,
-      sel ? `${sel.strength}:${sel.path.length}:${sel.engagedIn}:${sel.untracedMin}` : '',
+      sel ? `${sel.strength}:${sel.path.length}:${sel.engagedIn}:${sel.untracedMin}:${Math.round(sel.fatigue * 100)}` : '',
       front.events.length, lastEvent?.text ?? '', supplyOn, reconOn, contacts,
     ].join('|');
     if (sig === this.lastSig) return;
@@ -58,10 +58,16 @@ export class TheaterHud {
       const hrs = Math.floor(f.untracedMin / 60);
       return `<span class="th-sup th-sup-${tier}">${tier === 'low' ? 'SUPPLY LOW' : 'OUT OF SUPPLY'} · cut ${hrs}h</span>`;
     };
+    const fatigueBar = (f: Force): string => {
+      const pct = Math.round(f.fatigue * 100);
+      const cls = f.fatigue >= 0.66 ? 'high' : f.fatigue >= 0.33 ? 'mid' : 'low';
+      return `<span class="th-fat"><span class="th-fat-label">fatigue</span><span class="th-fat-track"><span class="th-fat-fill th-fat-${cls}" style="width:${pct}%"></span></span></span>`;
+    };
     const selCard = sel
       ? `<div class="panel th-force">
           <b>${sel.name}</b> · ${sel.strength} men · ${sel.role}
           ${sel.engagedIn !== null ? '<span class="th-eng">ENGAGED</span>' : sel.path.length > 0 ? '<span class="th-mov">moving</span>' : '<span class="th-hold">holding</span>'}
+          ${fatigueBar(sel)}
           ${supplyLine(sel)}
         </div>`
       : '';

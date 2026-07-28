@@ -36,6 +36,10 @@ const TRIVIAL_DURATION_MIN = 15;
 // endMin - startMin is battleDuration-capped at 240 except when a late join
 // re-floors endMin at now+15, so the cap is re-asserted here.
 export const CATCH_UP_CAP_MIN = 240;
+// S51 combat-fatigue lumps: coarse participants +0.15; a FOUGHT battle
+// (bridge2 applyTheaterOutcome) charges +0.25 — a real fight is worse.
+export const COARSE_BATTLE_FATIGUE = 0.15;
+export const FOUGHT_BATTLE_FATIGUE = 0.25;
 export function battleCatchUpMin(b: CoarseBattle): number {
   return Math.min(CATCH_UP_CAP_MIN, Math.max(0, b.endMin - b.startMin));
 }
@@ -247,6 +251,11 @@ export function resolveBattleV2(
   distribute(sides.attackers, atkLosses);
   distribute(sides.defenders, defLosses);
 
+  // S51: a coarse battle is hours under fire — every participant tires.
+  for (const f of [...sides.attackers, ...sides.defenders]) {
+    f.fatigue = Math.min(1, f.fatigue + COARSE_BATTLE_FATIGUE);
+  }
+
   const principalAtk = forceById(front, battle.attackerId);
   record.won = attackerWins === (principalAtk.side === 'blue');
   campaign.log.push(record);
@@ -313,6 +322,7 @@ export interface StepOptions {
   autoBattle?: (c: Contact) => boolean;
   supply?: boolean; // S50: run the hourly supply trace (CampaignConfig.supply)
   recon?: 'omniscient' | 'contacts'; // S53: run the 15-min detection sweep
+  nightTempo?: boolean; // S52: light ramps march pace (CampaignConfig.nightTempo)
 }
 
 export interface StepResult {
@@ -335,8 +345,8 @@ export function stepWar(front: FrontV2, campaign: Campaign, opts: StepOptions = 
   for (const b of [...front.battles].sort((p, q) => p.id - q.id)) {
     if (b.endMin <= front.clockMin) done.push(resolveBattleV2(front, campaign, b, opts.nightMult ?? 1.0));
   }
-  // 2) Advance all unengaged forces.
-  events.push(...stepMovement(front));
+  // 2) Advance all unengaged forces (fatigue + pace kernel inside).
+  events.push(...stepMovement(front, { nightTempo: opts.nightTempo }));
   // 3) Contacts over final positions.
   const contacts = detectContacts(front);
   const pending: Contact[] = [];
