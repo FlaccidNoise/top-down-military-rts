@@ -102,12 +102,19 @@ function reserveChurchyard(
   // quadrant tried: an enclosure with a street through it is not an enclosure,
   // and for 'enclos' the cross route is placed 12-20 tiles off the place
   // precisely so one of the four quadrants is always clear of it.
+  //
+  // Water is rejected on the same rule and for the same reason. The churchyard
+  // is the one reservation placed off `place` rather than clipped to R_env: at
+  // side 34 and gap 2 its far corner reaches 36 tiles out, which is past the
+  // west edge of a bridge-head envelope and into the river (§2.5's clearance
+  // is 6-12 tiles, measured, and this square is three times that). Caught on
+  // seed 12 of 'bridge': a church tower standing in eleven tiles of water.
   const fit = (sx: number, sy: number, len: number): Rect | null => {
     const x = sx < 0 ? place.x - gapX - len : place.x + gapX;
     const y = sy < 0 ? place.y - gapY - len : place.y + gapY;
     if (x < 3 || y < 3 || x + len > w - 3 || y + len > h - 3) return null;
     for (let yy = y; yy < y + len; yy++)
-      for (let xx = x; xx < x + len; xx++) if (sk.road[yy * w + xx]) return null;
+      for (let xx = x; xx < x + len; xx++) if (sk.road[yy * w + xx] || sk.water[yy * w + xx]) return null;
     return { x, y, w: len, h: len };
   };
   let rect: Rect | null = null;

@@ -10,23 +10,29 @@ import { shopfrontsFor } from '../src/render/shops';
 // baseline in scripts/sweep.mjs depends on it, and a re-snapshotted baseline
 // is a regression nothing downstream would ever flag.
 
-// 'road' left this list at the mapgen-v3 P2 cutover and 'open' at P3: they run
-// the organic pipeline now, so they emit edge tops and roles and ARE dressed.
-// Each moved to V3_KINDS below rather than simply dropping out, because "draws
-// nothing where there is no data" is only half the contract — the other half is
-// that it draws exactly the data there is.
-const LEGACY = ['town', 'bridge', 'river'] as const;
+// 'road' left this list at the mapgen-v3 P2 cutover, 'open' at P3, 'woods' at
+// P4 and both water kinds at P5: they run the organic pipeline now, so they
+// emit edge tops and roles and ARE dressed. Each moved to V3_KINDS below rather
+// than simply dropping out, because "draws nothing where there is no data" is
+// only half the contract — the other half is that it draws exactly the data
+// there is. 'town' is the last one left and retires at P6.
+const LEGACY = ['town'] as const;
 // [kind, seeds, minimum claimed edges]. The floor is per kind because the wall
 // count is: measured over seeds 1-40 at 320x240, the bourg claims 353-575
 // edges, road 236-437, open 140-293 and woods 86-130 — a hamlet has a dozen
 // gardens where a bourg has fifty, and a forester pocket has two. One shared
 // bound would have to sit under 86 and would then assert nothing about the
-// kinds that carry the masonry.
+// kinds that carry the masonry. The water kinds run open's rural fabric over
+// a map the band has taken a twentieth of: measured 118-294 on river and
+// 141-334 on bridge over seeds 1-200, the bridge-head's own gardens being the
+// difference between them.
 const V3_KINDS = [
   ['bourg', [10, 11, 12], 300],
   ['road', [1, 3, 7, 11], 200],
   ['open', [1, 3, 7, 11], 120],
   ['woods', [1, 3, 7, 11], 70],
+  ['river', [1, 3, 7, 11], 100],
+  ['bridge', [1, 3, 7, 11], 120],
 ] as const;
 const BOURG_SEEDS = [10, 11, 12];
 const empty = new Uint8Array(320 * 240);

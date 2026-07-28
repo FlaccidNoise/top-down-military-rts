@@ -22,7 +22,7 @@ interface Town {
 function build(seed: number, w = 320, h = 240): Town {
   const sk = buildSkeleton(base(seed), w, h, BOURG);
   const land = reserveLandmarks(sk);
-  growMinorStreets(sk, { resv: land.resv });
+  growMinorStreets(sk, { resv: land.resv, blocked: land.resv });
   return { sk, land, pc: buildParcels(sk, land.resv) };
 }
 

@@ -192,6 +192,22 @@ describe('mapgen', () => {
     expect(isolatedTrees).toBeGreaterThan(150);
   });
 
+  // ── the water battery ────────────────────────────────────────────────────
+  //
+  // Written against the legacy blob pipeline and UNEDITED at the mapgen-v3 P5
+  // cutover, which is the point of leaving them alone: §2.5 reordered the
+  // whole generator around the band — the water is carved in the skeleton now,
+  // the town is placed clear of it, and streets, lanes, parcels and hedges all
+  // refuse it — and the deck rule these five tests describe came through it
+  // byte for byte. A band over 500 tiles, a crossing on road with the river
+  // within 2 either side, both spawns connected across it on foot and by
+  // vehicle, river wider than bridge, and generation at the 60x40 floor: all
+  // still true, none of it re-stated to suit the new implementation.
+  //
+  // The organic pipeline's own claims — one deck, nothing built in the river,
+  // the town clear of the bank, and the crossing as the ONLY way over — are in
+  // tests/bourg.test.ts under §2.5, because they are new properties rather
+  // than preserved ones.
   it('bridge maps: water river, road bridge objective, spawns connected across it (320x240)', () => {
     for (const seed of [1, 5, 9]) {
       const p = generateMap(seed, 320, 240, 'bridge');

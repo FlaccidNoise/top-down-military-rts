@@ -90,7 +90,7 @@ function placeFarms(
     for (let y = y0; y <= y1; y++)
       for (let x = x0; x <= x1; x++) {
         const i = y * w + x;
-        if (sk.road[i] || land.resv[i] || pc.claimed[i] || fp.occ[i] || inZone(x, y)) return false;
+        if (sk.road[i] || land.resv[i] || pc.claimed[i] || fp.occ[i] || sk.water[i] || inZone(x, y)) return false;
       }
     return true;
   };
@@ -161,11 +161,17 @@ function growFarmLanes(
   for (let i = 0, n = Math.max(6, ((w * h) / 2200) | 0); i < n; i++) {
     const ax = 6 + r.int(w - 12);
     const ay = 6 + r.int(h - 12);
-    if (!inZone(ax, ay)) attractors.push({ x: ax, y: ay });
+    if (!inZone(ax, ay) && !sk.water[ay * w + ax]) attractors.push({ x: ax, y: ay });
   }
   const alive = new Uint8Array(attractors.length).fill(1);
+  // A cart track stops at the bank: carved into sk.road, it would become a
+  // second bridge deck at the stamp and break the arterial's monopoly on the
+  // crossing (§2.5). The attractor filter above is the same rule said early —
+  // a point in the river can never be reached, so it would pull a node into
+  // the bank for the whole growth budget. Both draws happen either way, so
+  // neither test moves the stream on a dry kind.
   const free = (x: number, y: number): boolean =>
-    x >= 2 && y >= 2 && x < w - 2 && y < h - 2 && !inZone(x, y) && !fp.occ[y * w + x];
+    x >= 2 && y >= 2 && x < w - 2 && y < h - 2 && !inZone(x, y) && !fp.occ[y * w + x] && !sk.water[y * w + x];
 
   let carved = 0;
   const carve = (a: Vec, b: Vec): boolean => {
@@ -291,7 +297,10 @@ function bocage(
   const owner = new Int32Array(w * h).fill(-1);
   for (let y = 0; y < h; y++)
     for (let x = 0; x < w; x++) {
-      if (inZone(x, y)) continue;
+      // Water owns no parcel, which does two things at once: no hedge is ever
+      // proposed on the river, and the two banks stop belonging to the same
+      // site — so the bocage grid ends at the water instead of ignoring it.
+      if (inZone(x, y) || sk.water[y * w + x]) continue;
       const cx = (x / cell) | 0;
       const cy = (y / cell) | 0;
       let best = -1;

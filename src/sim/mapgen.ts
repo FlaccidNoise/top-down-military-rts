@@ -93,7 +93,7 @@ export interface Vec {
 
 // What each objective IS, so tooling stops index-guessing. Parallel to
 // MapPlan.objectives.
-export type ObjectiveKind = 'place' | 'woods' | 'faubourg' | 'church' | 'street' | 'halt';
+export type ObjectiveKind = 'place' | 'woods' | 'faubourg' | 'church' | 'street' | 'halt' | 'bridge';
 
 export interface MapPlan {
   map: GameMap;
@@ -604,6 +604,21 @@ function tryGenerateV3(
         objectiveKinds.push('halt');
       }
     }
+  }
+
+  // §2.5 · the crossing, appended LAST — after the relief block, so V5's halt
+  // can never end up behind it. Tooling reads the TAG and not an index
+  // (stage.mjs deriveTargets), but "the last objective is the crossing" is a
+  // contract of its own: the garrison splits by objective (bridge.ts), so the
+  // bridge gets its own sector for free by being on the list at all.
+  //
+  // A water profile that recorded no deck is a layout with no crossing on it:
+  // reroll, exactly as the legacy pipeline did rather than emit an objective
+  // nothing can stand on.
+  if (plan.sk.profile.water) {
+    if (!st.crossing) return null;
+    objectives.push(st.crossing);
+    objectiveKinds.push('bridge');
   }
 
   // Interiors: LAST. After the relief block rather than inside it, because V5's

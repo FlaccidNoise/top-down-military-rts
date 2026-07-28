@@ -54,6 +54,10 @@ export interface KindProfile {
   // than drawing a zero count — the stage owns its own sub-stream, so skipping
   // it moves nothing, and that is what keeps every kind but `woods` frozen.
   clearings: [number, number];
+  // stage 2c — the N→S water band (streets.ts carveWater, TAG.WATER). null is
+  // no river at all and takes no draw, which is what keeps every dry kind
+  // byte-identical. `width` is the band's span in tiles before its ±3 walk.
+  water: { width: number } | null;
 }
 
 // The bourg, verbatim. Do not "tidy" a value here: each one is the number the
@@ -81,6 +85,7 @@ export const BOURG: KindProfile = {
   stands: [2, 3],
   standRadius: [6, 5],
   clearings: [0, 0],
+  water: null,
 };
 
 // §2.2 — the linear roadside village. Everything about it follows from one
@@ -123,6 +128,7 @@ export const ROAD: KindProfile = {
   stands: [3, 3],
   standRadius: [6, 5],
   clearings: [0, 0],
+  water: null,
 };
 
 // §2.3 — scattered farmsteads, hedged parcels, a tiny nucleus. The inversion
@@ -178,6 +184,7 @@ export const OPEN: KindProfile = {
   stands: [3, 3],
   standRadius: [6, 5],
   clearings: [0, 0],
+  water: null,
 };
 
 // §2.4 — stands, clearings, a forester pocket. `open` inverted the bourg by
@@ -235,6 +242,91 @@ export const WOODS: KindProfile = {
   stands: [16, 8],
   standRadius: [40, 18],
   clearings: [2, 3],
+  water: null,
+};
+
+// §2.5 — the ford assault. `river` is OPEN's countryside with a 5-wide band
+// through it, and the numbers below are open's VERBATIM rather than a spread
+// of it: each kind's fingerprints are frozen against its own record, so a
+// `river: { ...OPEN, water }` would let a future tuning pass on `open` move
+// river's pins with nothing in the diff to say why.
+//
+// What the kind is, is the composition and not the numbers. The nucleus sits
+// east of the band by construction (streets.ts carveWater), so both banks are
+// bocage country and the fight is suppress-and-cross rather than a fight for a
+// structure: the crossing is the only armour route on the map, and the west
+// bank is where the attack forms up. 5 tiles wide against the bridge's 3 is
+// the whole difference in the water itself — wide enough that the far bank is
+// a separate problem, which is what makes it a river rather than a stream.
+export const RIVER: KindProfile = {
+  archetypeW: [
+    ['carrefour', 70],
+    ['bourgRue', 30],
+  ],
+  envW: [34, 12],
+  envH: [26, 8],
+  densFalloff: 20,
+  minStreets: 3,
+  maxStreets: 8,
+  churchPct: 10,
+  marketPct: 0,
+  forecourtPct: 0,
+  placeLen: null,
+  maxBuildings: 24,
+  minBuildings: 4,
+  farms: [4, 3],
+  bocageCell: 20,
+  stands: [3, 3],
+  standRadius: [6, 5],
+  clearings: [0, 0],
+  water: { width: 5 },
+};
+
+// §2.5 — the bridge-head hamlet. The one kind whose nucleus exists BECAUSE of
+// the water: a village grows where a road crosses a river, and the crossing is
+// then the thing it is defended from. carveWater puts R_env 6-12 tiles east of
+// the band, so the houses overlook the deck and the defence is fire onto a
+// 3-wide approach the attacker has no way round.
+//
+// The envelope is 44-59 x 34-43 — §2.5's numbers, between open's hamlet and
+// road's ribbon, because a bridge-head is a real village and not a crossroads
+// with four cottages on it. densFalloff 15 sits between the bourg's 12 and
+// open's 20 for the same reason: at 20 an envelope this size is fringe-grade
+// eight tiles from the junction and the whole bridge-head comes out detached,
+// which is the one thing it must not be — the far bank is defended from party
+// walls or it is not defended.
+//
+// Landmarks are rolled, not suppressed: church 25, market 10, per §2.5.
+// placeLen is what makes the market roll mean anything at all — reserveMarket
+// needs a widened rect 12 by 11 to fit its island and returns null on the
+// plain 3-wide crossing (landmarks.ts), so `marketPct 10` against
+// `placeLen: null` would be a dead draw. 16-23 columns is road's short bulge,
+// which is the right size for a village that grew on a bridge approach.
+//
+// forecourtPct 0 is open's value and NOT a deviation from §2.5, which names
+// only the church and the market: a hamlet of this size has no mairie.
+export const BRIDGE: KindProfile = {
+  archetypeW: [
+    ['carrefour', 70],
+    ['bourgRue', 30],
+  ],
+  envW: [44, 16],
+  envH: [34, 10],
+  densFalloff: 15,
+  minStreets: 4,
+  maxStreets: 10,
+  churchPct: 25,
+  marketPct: 10,
+  forecourtPct: 0,
+  placeLen: [16, 8],
+  maxBuildings: 36,
+  minBuildings: 4,
+  farms: [4, 3],
+  bocageCell: 20,
+  stands: [3, 3],
+  standRadius: [6, 5],
+  clearings: [0, 0],
+  water: { width: 3 },
 };
 
 // The routing table: a kind reaches the v3 pipeline exactly when it has a
@@ -245,4 +337,6 @@ export const PROFILES: Partial<Record<MapKind, KindProfile>> = {
   road: ROAD,
   open: OPEN,
   woods: WOODS,
+  river: RIVER,
+  bridge: BRIDGE,
 };

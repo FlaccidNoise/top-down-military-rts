@@ -44,8 +44,12 @@ const PRE_RELIEF: Record<MapKind, string[]> = {
   // pipeline for the organic one (scripts/fp.mjs --kind woods).
   woods: ['6bc6def', 'd2a9c9dd', 'a61532f1', 'ecff631b', '48258cb', '72030ab0', '423c2e6c', '87eceaeb'],
   town: ['bcd466e9', '6553b8e2', '3a445204', '4c57c79f', 'acdb9db2', 'dd238bd7', 'ace5f889', 'e538b159'],
-  river: ['c9eaae79', '8f53c2f7', '1960e94d', 'a8c59af', '56ad5890', 'bf06b29d', 'ae9aedd1', 'cdf8c519'],
-  bridge: ['f06a37fd', '9372bb3f', '8f86ad51', 'caa32459', '19e12808', '1c7f8003', '8d190660', '63adc289'],
+  // Recaptured at the mapgen-v3 P5 cutover, when the two water kinds left the
+  // legacy pipeline for the organic one (scripts/fp.mjs --kind river,bridge).
+  // These cover the water stage itself: TAG.WATER's band is carved inside the
+  // skeleton, so `relief: 'none'` still has the whole river in it.
+  river: ['f2ca41e0', '3330bc', 'e5d5cf7c', '72a47f04', 'aa1757a0', '1903ea07', '16b26262', '295d950d'],
+  bridge: ['e988600b', '439d781f', 'a6be8c60', '543369d', '49b3b5ac', '3fbe1eff', '1194e1c1', '667ef460'],
   bourg: ['cd8c2d19', '98495a59', 'ee37d24f', 'e958b91f', 'f91e2d3a', '3d001667', '2cb58b53', '6201baba'],
 };
 

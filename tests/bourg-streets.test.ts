@@ -18,7 +18,8 @@ const SEEDS = Array.from({ length: 20 }, (_, i) => i + 1);
 
 function town(seed: number, w = 320, h = 240, resv?: Uint8Array): Skeleton {
   const sk = buildSkeleton(base(seed), w, h, BOURG);
-  growMinorStreets(sk, { resv: resv ?? new Uint8Array(w * h) });
+  const mask = resv ?? new Uint8Array(w * h);
+  growMinorStreets(sk, { resv: mask, blocked: mask });
   return sk;
 }
 

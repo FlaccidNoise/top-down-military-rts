@@ -4,7 +4,7 @@ import { GameMap, los } from '../src/sim/map';
 import { generateMap, validate, type MapPlan, type Vec } from '../src/sim/mapgen';
 import { buildObjectives } from '../src/sim/bourg/objectives';
 import { planBourg, stampBourg } from '../src/sim/bourg/plan';
-import { BOURG, OPEN, ROAD, WOODS } from '../src/sim/bourg/profile';
+import { BOURG, BRIDGE, OPEN, RIVER, ROAD, WOODS } from '../src/sim/bourg/profile';
 import { furnishInteriors } from '../src/sim/interiors/furnish';
 import { mulberry32 } from '../src/sim/rng';
 import { PatchIndex } from '../src/render/patches';
@@ -364,6 +364,88 @@ describe('perf: bourg generation (§5.5)', () => {
     expect(mean(ts)).toBeLessThan(WOODS_MEAN_MS);
     expect(max(ts)).toBeLessThan(WOODS_MAX_MS);
   }, 60_000);
+
+  // mapgen-v3 §4's budget for the two water kinds, UNMODIFIED at 35/80 — the
+  // first §4 generator budget of the chain that survives its own measurement.
+  // Measured the same way and over the same 200 seeds: river mean 19.5 / p95
+  // 20.7 / max 21.1, bridge 20.5 / 21.6 / 22.4, against the bourg's 23.2 and
+  // open's 22.7 on the same box. They are the cheapest v3 kinds after `road`
+  // for the reason the others were dearer than §4 expected: the band takes a
+  // twentieth of the map out of the bocage grid, the parcel CCL and the stand
+  // pass, and every stage downstream of it does less work.
+  //
+  // 35 sits at 1.7-1.8x the measurement, which is where the bourg's 40 sits
+  // against its own 23.2 — so unlike `open` and `woods` this one is a
+  // generator-cost gate at the design's own number rather than a contention
+  // detector, and it needs no deviation.
+  const WATER_MEAN_MS = 35;
+  const WATER_MAX_MS = 80;
+
+  for (const kind of ['river', 'bridge'] as const) {
+    it(`${kind}-gen: 320x240 stays inside the 35 ms mean / 80 ms max budget`, () => {
+      generateMap(1, MAP_W, MAP_H, kind); // JIT warmup
+      const ts: number[] = [];
+      for (let seed = 1; seed <= 20; seed++) {
+        let best = Infinity;
+        for (let rep = 0; rep < BOURG_REPS; rep++) {
+          const t0 = performance.now();
+          generateMap(seed, MAP_W, MAP_H, kind);
+          best = Math.min(best, performance.now() - t0);
+        }
+        ts.push(best);
+      }
+      console.log(`[perf] ${kind}-gen ${JSON.stringify({ mean: round(mean(ts)), p95: round(p95(ts)), max: round(max(ts)) })}`);
+      expect(mean(ts)).toBeLessThan(WATER_MEAN_MS);
+      expect(max(ts)).toBeLessThan(WATER_MAX_MS);
+    }, 60_000);
+  }
+
+  for (const [kind, profile] of [
+    ['river', RIVER],
+    ['bridge', BRIDGE],
+  ] as const) {
+    it(`${kind}-reject: the first attempt validates on essentially every seed`, () => {
+      // Two gates can reject a water map and neither exists on a dry kind: the
+      // attempt is thrown away when the deck came out empty (no crossing at
+      // all), and validate's west→east vehicle route has to run over that deck
+      // because water is the one terrain no vehicle can enter. So this number
+      // is the reject rate AND the statement that the crossing works — 0/200
+      // rejects, with the minBuildings floor and the empty-deck guard each
+      // firing 0 times.
+      let rejects = 0;
+      let floorHits = 0;
+      let noDeck = 0;
+      const rejected: number[] = [];
+      for (let seed = 1; seed <= REJECT_SEEDS; seed++) {
+        const base = mulberry32((seed ^ 0x51ab3fc7) >>> 0).int(0x7fffffff);
+        const plan = planBourg(base, MAP_W, MAP_H, profile);
+        if (plan.fp.buildings.length < profile.minBuildings) {
+          floorHits++;
+          rejects++;
+          rejected.push(seed);
+          continue;
+        }
+        const map = new GameMap(MAP_W, MAP_H);
+        const st = stampBourg(map, plan);
+        map.maxStories = st.maxStories;
+        if (!st.crossing) {
+          noDeck++;
+          rejects++;
+          rejected.push(seed);
+          continue;
+        }
+        const { objectives, objectiveKinds } = buildObjectives(plan.sk, plan.land, plan.fp, st.woodsStands);
+        objectives.push(st.crossing);
+        objectiveKinds.push('bridge');
+        if (!validate({ map, buildings: plan.fp.buildings, spawns: plan.spawns, objectives, objectiveKinds, woodsStands: st.woodsStands })) {
+          rejects++;
+          rejected.push(seed);
+        }
+      }
+      console.log(`[perf] ${kind}-reject ${JSON.stringify({ rejects, floorHits, noDeck, seeds: REJECT_SEEDS, rate: round(rejects / REJECT_SEEDS), rejected })}`);
+      expect(rejects / REJECT_SEEDS).toBeLessThan(REJECT_HARD_LIMIT);
+    }, 120_000);
+  }
 
   it('woods-reject: the first attempt validates on essentially every seed', () => {
     // The interesting gate on this kind is validate's vehicle route: 'woods' is

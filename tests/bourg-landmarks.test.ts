@@ -18,7 +18,7 @@ function reserve(seed: number, w = 320, h = 240): { sk: Skeleton; land: Landmark
 
 function grown(seed: number, w = 320, h = 240): { sk: Skeleton; land: Landmarks } {
   const r = reserve(seed, w, h);
-  growMinorStreets(r.sk, { resv: r.land.resv });
+  growMinorStreets(r.sk, { resv: r.land.resv, blocked: r.land.resv });
   return r;
 }
 

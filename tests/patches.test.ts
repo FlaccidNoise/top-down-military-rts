@@ -123,8 +123,15 @@ describe('PatchIndex', () => {
       return Math.max(0, a);
     };
     // 'road' left this list at the mapgen-v3 P2 cutover — it has a place
-    // widening of its own now, and is asserted with the bourg below.
-    for (const kind of ['town', 'bridge', 'river'] as const) {
+    // widening of its own now, and is asserted with the bourg below — 'open'
+    // at P3, 'woods' at P4 and both water kinds at P5. Every v3 kind carries
+    // junction geometry the blob pipeline never made: measured over these four
+    // seeds, 'bridge' paves four elongated squares (KindProfile.placeLen 16-23
+    // — the bridge-head has a place) and 'river' one, which is 'open's own
+    // count and comes from a wide cross route meeting the arterial rather than
+    // from a widening. 'town' is the last legacy kind and retires at P6, with
+    // this test.
+    for (const kind of ['town'] as const) {
       for (const seed of [1, 3, 7, 11]) {
         const { map } = generateMap(seed, 320, 240, kind);
         const pi = new PatchIndex(map);
