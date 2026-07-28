@@ -179,7 +179,10 @@ function advanceForce(front: FrontV2, f: Force, budget: number, out: TheaterEven
   const arriveId = f.pos.dir === 1 ? e.b : e.a;
   f.pos = { kind: 'node', nodeId: arriveId };
   if (f.path[0] === e.id) f.path.shift();
-  if (!shadow) paintCapture(front, f, arriveId);
+  if (!shadow) {
+    f.lastEdgeId = e.id; // the approach a crossing contact classifies from
+    paintCapture(front, f, arriveId);
+  }
   if (f.path.length === 0) {
     if (!shadow) {
       const ev: TheaterEvent = {

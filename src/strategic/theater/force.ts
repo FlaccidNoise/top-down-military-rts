@@ -22,12 +22,17 @@ export interface Force {
   queuedAt: number | null; // bridge node id while waiting at the defile
   untracedMin: number; // S50 supply: minutes since a road last traced to a friendly source
   fatigue: number; // S51: 0..1 march/combat fatigue
+  // The edge this force last WALKED (set on arrival at a node). A contact at
+  // a crossing node classifies bridge/ford-assault from the attacker's
+  // approach; a force standing ON the node would otherwise have forgotten
+  // which bank it came from.
+  lastEdgeId: number | null;
 }
 
 // Creation shape: the realism fields default to fresh at the ONE chokepoint
 // (addForce), so disposition and test literals never carry boilerplate zeros.
-export type ForceInit = Omit<Force, 'id' | 'untracedMin' | 'fatigue'> &
-  Partial<Pick<Force, 'untracedMin' | 'fatigue'>>;
+export type ForceInit = Omit<Force, 'id' | 'untracedMin' | 'fatigue' | 'lastEdgeId'> &
+  Partial<Pick<Force, 'untracedMin' | 'fatigue' | 'lastEdgeId'>>;
 
 export interface CoarseBattle {
   id: number;
@@ -89,7 +94,7 @@ export function addForce(front: FrontV2, f: ForceInit): Force {
   if (front.forces.length >= MAX_FORCES) {
     throw new Error(`addForce: MAX_FORCES (${MAX_FORCES}) reached — the force cap is asserted here and in makeDisposition, never at generation`);
   }
-  const force: Force = { untracedMin: 0, fatigue: 0, ...f, id: front.nextForceId++ };
+  const force: Force = { untracedMin: 0, fatigue: 0, lastEdgeId: null, ...f, id: front.nextForceId++ };
   front.forces.push(force);
   return force;
 }
@@ -199,3 +204,11 @@ export type MoveOrder = { ok: true; etaMin: number } | { ok: false; reason: Move
 // orderMove and forceEtaMinutes live in step.ts beside the march kernel
 // (S51/S52): the ETA is a SHADOW run of the same per-minute arithmetic the
 // live step executes — a closed form here would lie across dusk and fatigue.
+
+// Where a force's current path ends, or null when it stands.
+export function pathDestination(t: Theater, f: Force): number | null {
+  if (f.path.length === 0) return null;
+  let at = anchorNode(t, f.pos);
+  for (const eid of f.pos.kind === 'edge' ? f.path.slice(1) : f.path) at = otherEnd(edgeById(t, eid), at);
+  return at;
+}

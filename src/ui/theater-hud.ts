@@ -3,7 +3,8 @@
 // the selected force card, and the §3.9 event scrollback. DOM overlay per
 // the hybrid doctrine; rebuilds are signature-throttled like StratHud.
 import type { WarGoals } from '../strategic/goals';
-import type { Force, FrontV2 } from '../strategic/theater/force';
+import { pathDestination, type Force, type FrontV2 } from '../strategic/theater/force';
+import { forceEtaMinutes } from '../strategic/theater/step';
 import { supplyTierOf } from '../strategic/theater/supply';
 
 const SPEED_LABELS = ['1×', '10×', '60×'];
@@ -31,7 +32,7 @@ export class TheaterHud {
     });
   }
 
-  update(front: FrontV2, goals: WarGoals, selectedForce: number, paused: boolean, speedIdx: number, supplyOn = false, reconOn = false): void {
+  update(front: FrontV2, goals: WarGoals, selectedForce: number, paused: boolean, speedIdx: number, supplyOn = false, reconOn = false, nightTempo = false): void {
     const control = goals.blue.find((c) => c.kind === 'control');
     const objectives = control && control.kind === 'control' ? control.nodeIds : [];
     const held = objectives.filter((n) => front.controlByNode[n] === 'blue').length;
@@ -58,6 +59,17 @@ export class TheaterHud {
       const hrs = Math.floor(f.untracedMin / 60);
       return `<span class="th-sup th-sup-${tier}">${tier === 'low' ? 'SUPPLY LOW' : 'OUT OF SUPPLY'} · cut ${hrs}h</span>`;
     };
+    // Persistent ETA: destination read off the live path, minutes from the
+    // SAME shadow kernel the step marches — the readout survives re-opens
+    // and dusk instead of living only in the order flash.
+    const etaLine = (f: Force): string => {
+      const dest = pathDestination(front.theater, f);
+      if (dest === null || f.engagedIn !== null) return '';
+      const eta = forceEtaMinutes(front, f, dest, { nightTempo });
+      const hh = Math.floor(eta / 60);
+      const mm = eta % 60;
+      return ` → ${front.theater.nodes[dest].name} · ETA ${hh > 0 ? `${hh}h` : ''}${mm.toString().padStart(2, '0')}m`;
+    };
     const fatigueBar = (f: Force): string => {
       const pct = Math.round(f.fatigue * 100);
       const cls = f.fatigue >= 0.66 ? 'high' : f.fatigue >= 0.33 ? 'mid' : 'low';
@@ -66,7 +78,7 @@ export class TheaterHud {
     const selCard = sel
       ? `<div class="panel th-force">
           <b>${sel.name}</b> · ${sel.strength} men · ${sel.role}
-          ${sel.engagedIn !== null ? '<span class="th-eng">ENGAGED</span>' : sel.path.length > 0 ? '<span class="th-mov">moving</span>' : '<span class="th-hold">holding</span>'}
+          ${sel.engagedIn !== null ? '<span class="th-eng">ENGAGED</span>' : sel.path.length > 0 ? `<span class="th-mov">moving${etaLine(sel)}</span>` : '<span class="th-hold">holding</span>'}
           ${fatigueBar(sel)}
           ${supplyLine(sel)}
         </div>`

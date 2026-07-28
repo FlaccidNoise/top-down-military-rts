@@ -79,7 +79,10 @@ export function openBattle(front: FrontV2, c: Contact): CoarseBattle {
     startMin: front.clockMin,
     endMin: front.clockMin + battleDuration(atk.strength, def.strength, forced !== null),
     forced,
-    approachEdgeId: atk.pos.kind === 'edge' ? atk.pos.edgeId : null,
+    // Mid-edge: the edge under the attacker. At a node: the edge it last
+    // WALKED — an assault delivered onto a crossing node classifies
+    // bridge/ford-assault from the bank it actually came from.
+    approachEdgeId: atk.pos.kind === 'edge' ? atk.pos.edgeId : atk.lastEdgeId,
   };
   front.battles.push(battle);
   atk.engagedIn = battle.id;

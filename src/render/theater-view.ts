@@ -4,7 +4,7 @@
 // control tint. Camera mirrors StrategicView's pan/zoom interface so the
 // existing touch grammar ports unchanged. Muted-Normandy palette shared in
 // register with the grid view it replaces.
-import { pointAlong, type Region, type TerrainClass, type Theater } from '../strategic/theater';
+import { pointAlong, type Region, type TerrainClass, type Theater, type Vec } from '../strategic/theater';
 import type { Force, FrontV2 } from '../strategic/theater/force';
 import { forceEtaMinutes, type MoveKernelOpts } from '../strategic/theater/step';
 import { supplyTierOf, type SupplyTier } from '../strategic/theater/supply';
@@ -46,6 +46,8 @@ export class TheaterView {
   recon: ReconMode = 'omniscient'; // S53: 'contacts' fogs every enemy-derived mark
   private flashText = '';
   private flashUntil = 0;
+  private readonly smoothed = new Map<number, Vec[]>();
+  private readonly labelW = new Map<string, number>();
 
   constructor(private readonly theater: Theater) {}
 
@@ -201,7 +203,10 @@ export class TheaterView {
       }
     }
 
-    // Nodes: control tint ring, kind glyph, names at label-worthy ranks.
+    // Nodes: control tint ring, kind glyph; labels collected for a
+    // declutter pass — towns first, then villages/crossings, greedy cull on
+    // screen-space overlap so a dense cluster reads as its principal name.
+    const labels: { sx: number; sy: number; text: string; rank: number; id: number; px: number }[] = [];
     for (const n of this.theater.nodes) {
       const [sx, sy] = this.toScreen(n.pos.x, n.pos.y, w, h);
       const owner = front.controlByNode[n.id];
@@ -224,11 +229,24 @@ export class TheaterView {
         ctx.stroke();
       }
       if (n.rank <= 1 || n.crossing || this.zoomMul > 1.8) {
-        ctx.fillStyle = 'rgba(230, 220, 200, 0.85)';
-        ctx.font = `${n.rank === 0 ? 12 : 10}px ui-monospace, monospace`;
-        ctx.textAlign = 'center';
-        ctx.fillText(n.name, sx, sy - r - 5);
+        labels.push({ sx, sy: sy - r - 5, text: n.name, rank: n.rank, id: n.id, px: n.rank === 0 ? 12 : 10 });
       }
+    }
+    const placed: { x0: number; y0: number; x1: number; y1: number }[] = [];
+    ctx.textAlign = 'center';
+    for (const l of labels.sort((a, b) => a.rank - b.rank || a.id - b.id)) {
+      ctx.font = `${l.px}px ui-monospace, monospace`;
+      const key = `${l.px}:${l.text}`;
+      let tw = this.labelW.get(key);
+      if (tw === undefined) {
+        tw = ctx.measureText(l.text).width;
+        this.labelW.set(key, tw);
+      }
+      const rect = { x0: l.sx - tw / 2 - 2, y0: l.sy - l.px, x1: l.sx + tw / 2 + 2, y1: l.sy + 2 };
+      if (placed.some((p) => rect.x0 < p.x1 && rect.x1 > p.x0 && rect.y0 < p.y1 && rect.y1 > p.y0)) continue;
+      placed.push(rect);
+      ctx.fillStyle = 'rgba(230, 220, 200, 0.85)';
+      ctx.fillText(l.text, l.sx, l.sy);
     }
 
     // Battles: a pulsing ring at the site (deterministic phase from clock).
@@ -353,9 +371,31 @@ export class TheaterView {
     }
   }
 
+  // Two rounds of Chaikin corner-cutting, cached per region — RENDER ONLY:
+  // regionAt and every classifier still read the raw lattice polygon, so a
+  // battle classifies identically while the map loses its stair-steps.
+  private smoothPoly(r: Region): Vec[] {
+    let pts = this.smoothed.get(r.id);
+    if (!pts) {
+      pts = r.polygon;
+      for (let round = 0; round < 2; round++) {
+        const out: Vec[] = [];
+        for (let i = 0; i < pts.length; i++) {
+          const a = pts[i];
+          const b = pts[(i + 1) % pts.length];
+          out.push({ x: 0.75 * a.x + 0.25 * b.x, y: 0.75 * a.y + 0.25 * b.y });
+          out.push({ x: 0.25 * a.x + 0.75 * b.x, y: 0.25 * a.y + 0.75 * b.y });
+        }
+        pts = out;
+      }
+      this.smoothed.set(r.id, pts);
+    }
+    return pts;
+  }
+
   private tracePoly(ctx: CanvasRenderingContext2D, r: Region, w: number, h: number): void {
     ctx.beginPath();
-    r.polygon.forEach((p, i) => {
+    this.smoothPoly(r).forEach((p, i) => {
       const [sx, sy] = this.toScreen(p.x, p.y, w, h);
       if (i === 0) ctx.moveTo(sx, sy);
       else ctx.lineTo(sx, sy);
