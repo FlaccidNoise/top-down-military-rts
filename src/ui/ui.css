@@ -1050,6 +1050,11 @@ html.mobile .st-wp-cancel { width: 32px; height: 32px; font-size: 18px; }
 .coach {
   position: absolute;
   z-index: 20;
+  /* An absolutely-positioned box shrink-to-fits into the space LEFT of the
+     viewport edge, so a bubble anchored to right-hand chrome collapses to a
+     one-word column before the clamp in coach.ts ever measures it. max-content
+     opts out of that; max-width still caps it. */
+  width: max-content;
   max-width: min(280px, calc(100vw - 24px));
   padding: 10px var(--sp-3);
   background: var(--paper);
@@ -1096,6 +1101,25 @@ html.mobile .st-wp-cancel { width: 32px; height: 32px; font-size: 18px; }
 }
 .coach-x:hover { color: var(--ink); }
 .coach-x:focus-visible {
+  outline: 2px solid var(--amber);
+  outline-offset: 1px;
+}
+/* Tutorial-driver bubbles only: the door out of the whole sequence, on every
+   step, so a veteran is never more than one click from silence. */
+.coach-skip {
+  display: block;
+  margin: 6px 0 0 auto;
+  padding: 4px 0;
+  background: none;
+  border: none;
+  font: inherit;
+  font-size: var(--fs-sm);
+  color: rgba(var(--ink-rgb), 0.7);
+  text-decoration: underline;
+  cursor: pointer;
+}
+.coach-skip:hover { color: var(--ink); }
+.coach-skip:focus-visible {
   outline: 2px solid var(--amber);
   outline-offset: 1px;
 }
@@ -1619,4 +1643,67 @@ html.mobile #floormenu .fm-row { padding: 12px 16px; }
   #manual .mn-navi { flex: 0 0 auto; min-height: 44px; border-color: var(--border); white-space: nowrap; }
   #manual .mn-content { padding: 0 var(--sp-3) 30vh; }
   #manual .mn-keys { grid-template-columns: 1fr; gap: var(--sp-1); }
+}
+
+/* ---- tutorial briefing card ---- */
+/* Same chrome as the debrief, one z-index above it so the Field Manual (12)
+   still opens over the card and the card is still there behind it. */
+#briefing {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  z-index: 11;
+  background: #0d0f0b;
+  font-size: var(--fs-lg);
+  line-height: 1.6;
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  color: var(--paper);
+}
+#briefing .bf-scroll { overflow-y: auto; min-height: 0; touch-action: pan-y; flex: 1; }
+#briefing .bf { max-width: 640px; margin: 48px auto 0; padding: 0 var(--sp-5); }
+#briefing h1 {
+  letter-spacing: 6px;
+  font-size: 26px;
+  margin: 0 0 var(--sp-4);
+  color: var(--amber-bright);
+}
+#briefing .bf-entry { margin: 0 0 var(--sp-4); }
+#briefing .bf-entry h3 {
+  color: var(--amber);
+  font-size: var(--fs-lg);
+  letter-spacing: 1px;
+  margin: 0 0 2px;
+}
+#briefing .bf-entry p { margin: 0; max-width: 68ch; }
+#briefing .bf-actions {
+  flex-shrink: 0;
+  display: flex;
+  gap: var(--sp-2);
+  justify-content: center;
+  flex-wrap: wrap;
+  padding: 20px var(--sp-5) var(--sp-5);
+  border-top: 1px solid var(--border-soft);
+}
+#briefing button {
+  padding: 10px 20px;
+  min-height: 44px;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--muted);
+  font: inherit;
+  font-size: var(--fs-lg);
+  letter-spacing: 1px;
+  cursor: pointer;
+}
+#briefing button:hover { background: rgba(255, 255, 255, 0.04); color: var(--paper); border-color: var(--muted); }
+#briefing button.primary { background: var(--chip-bg); color: var(--amber-bright); border-color: var(--amber); font-weight: var(--fw-label); }
+#briefing button.primary:hover { background: var(--chip-active-bg); }
+#briefing button:focus-visible { outline: 2px solid var(--amber); outline-offset: 1px; }
+@media (max-width: 720px) {
+  #briefing .bf { margin: var(--sp-4) auto 0; padding: 0 var(--sp-3); }
+  #briefing h1 { font-size: 18px; letter-spacing: 3px; }
+  #briefing .bf-actions { padding: var(--sp-3); }
+  #briefing button { flex: 1 1 auto; padding: 10px var(--sp-2); }
 }

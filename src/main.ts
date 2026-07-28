@@ -27,6 +27,7 @@ import { coach } from './ui/coach';
 import { showFloorMenu } from './ui/floormenu';
 import { MainMenu, type SaveProbe } from './ui/mainmenu';
 import { ManualScreen } from './ui/manual';
+import { Tutorial } from './ui/tutorial';
 import { TheaterView } from './render/theater-view';
 import { TheaterHud } from './ui/theater-hud';
 import { CustomizeScreen } from './ui/customize';
@@ -215,7 +216,7 @@ let selectedTeam = -1; // -1 = whole squad; narrowed to one team within selected
 let inspectedSoldier = -1; // health panel target; independent of selection, never affects orders
 let selectedVehicle = -1;
 let lastTeamId = -1; // most recently selected team, survives a later vehicle selection (Mount reads this)
-let armedOrder: OrderKind | null = null; // order kind armed via ⇧1-7 / order bar, issued by right-click
+let armedOrder: OrderKind | null = null; // order kind armed via ⇧1-8 / order bar, issued by right-click
 let targetMode: '' | 'barrage' | 'air' | 'wheel' | 'empfire' | 'empsmoke' | 'breach' = '';
 let floorFocus = -1; // -1 = all floors; 0..maxStories-1 = only that floor, others dimmed (F key)
 // The open floor menu: its world target pins the order preview (the pointer is
@@ -403,8 +404,8 @@ const stratHud = new StratHud({
   setSpeed: (i) => { speedIdx = i; },
 });
 const theaterHud = new TheaterHud({
-  togglePause: () => { stratPaused = !stratPaused; },
-  setSpeed: (i) => { speedIdx = i; },
+  togglePause: () => { stratPaused = !stratPaused; tutorial?.notify('speed-changed'); },
+  setSpeed: (i) => { speedIdx = i; tutorial?.notify('speed-changed'); },
 });
 const tooltip = new Tooltip(hud.root);
 const healthPanel = new HealthPanel(hud.root, () => { inspectedSoldier = -1; });
@@ -423,6 +424,11 @@ const menu = new PauseMenu({
   onFieldManual: () => { manual.open(); },
 });
 menu.setKeymap(loadKeymap(localStorage));
+// The tutorial driver teaches over the live game. It does not exist at all on
+// the pinned art path: ?camp= must render byte-identical frames forever.
+const tutorial = campPinned
+  ? null
+  : new Tutorial(coach, MOBILE, (chapterId) => manual.open(chapterId), typeof localStorage !== 'undefined' ? localStorage : undefined);
 
 function probeSave(): SaveProbe {
   if (campPinned) return { status: 'none' };
@@ -646,6 +652,7 @@ function startTheaterBattle(c: Contact): void {
   bootBattle(tb, tb.name);
   deployPhase = true;
   deployMsg = '';
+  // 'deploy-start' waits for the battle HUD to exist — see needsBootFrame.
 }
 
 const MOVE_REJECT_TEXT: Record<MoveReject, string> = {
@@ -760,6 +767,7 @@ function showContactModalV2(c: Contact): void {
   debriefEl.style.display = 'flex';
   document.getElementById('fight')!.onclick = () => {
     debriefEl.style.display = 'none';
+    tutorial?.notify('contact-closed');
     startTheaterBattle(c);
   };
   if (trivial) {
@@ -769,6 +777,7 @@ function showContactModalV2(c: Contact): void {
       v2.view.flash(`${atk.name} vs ${def.name}: ${r.attackerWon ? 'attacker wins' : 'defender holds'}`);
       debriefEl.style.display = 'none';
       v2.pending = null;
+      tutorial?.notify('contact-closed');
       save();
     };
   }
@@ -776,8 +785,10 @@ function showContactModalV2(c: Contact): void {
     document.getElementById('standdown')!.onclick = () => {
       debriefEl.style.display = 'none';
       v2.pending = null; // the force stays halted where contact stopped it
+      tutorial?.notify('contact-closed');
     };
   }
+  tutorial?.notify('contact-open');
 }
 
 function debriefRows(): string {
@@ -835,7 +846,9 @@ function showDebrief(): void {
       stratPaused = true;
       inspectedSoldier = -1;
       tooltip.clear();
+      tutorial?.notify('debrief-closed');
     });
+    tutorial?.notify('debrief-open');
     return;
   }
   const e = pendingEngagement;
@@ -962,6 +975,9 @@ function startCampaignV2(
     stratPaused = true;
     stratAcc = 0;
     if (source.kind === 'fresh') save();
+    // One frame late on purpose: the theater HUD the resumed steps anchor to
+    // is built by the first strategic frame, which has not run yet.
+    requestAnimationFrame(() => tutorial?.notify('campaign-start'));
   } catch (e) {
     // Generation and disposition rejects surface VISIBLY and leave the menu
     // up — never a silent fallback theater.
@@ -1247,6 +1263,7 @@ function stratTapSelect(sx: number, sy: number): void {
   const v2 = S().v2;
   if (v2) {
     v2.selectedForce = v2.view.forceAtScreen(v2.front, 'blue', sx, sy, view.w, view.h);
+    if (v2.selectedForce >= 0) tutorial?.notify('force-selected');
     return;
   }
   const cell = S().stratView.cellAtScreen(sx, sy, view.w, view.h);
@@ -1266,7 +1283,10 @@ function stratOrderMove(sx: number, sy: number): void {
     if (n < 0) return;
     const r = orderMove(v2.front, v2.selectedForce, n);
     if (!r.ok) v2.view.flash(MOVE_REJECT_TEXT[r.reason]);
-    else v2.view.flash(`${v2.front.forces.find((f) => f.id === v2.selectedForce)!.name} moving — ETA ${Math.round(r.etaMin / 60)}h${Math.round(r.etaMin % 60)}m`);
+    else {
+      v2.view.flash(`${v2.front.forces.find((f) => f.id === v2.selectedForce)!.name} moving — ETA ${Math.round(r.etaMin / 60)}h${Math.round(r.etaMin % 60)}m`);
+      tutorial?.notify('move-ordered');
+    }
     return;
   }
   if (selectedChit < 0) return;
@@ -1505,7 +1525,7 @@ window.addEventListener('keydown', (e) => {
   
   // Global actions
   if (action === 'pause') {
-    if (mode === 'strategic') stratPaused = !stratPaused;
+    if (mode === 'strategic') { stratPaused = !stratPaused; tutorial?.notify('speed-changed'); }
     else paused = !paused;
     return;
   }
@@ -1525,6 +1545,7 @@ window.addEventListener('keydown', (e) => {
     if (action === 'speed1') speedIdx = 0;
     if (action === 'speed2') speedIdx = 1;
     if (action === 'speed3') speedIdx = 2;
+    if (action.startsWith('speed')) tutorial?.notify('speed-changed');
     return;
   }
   
@@ -1779,6 +1800,7 @@ function frame(now: number): void {
     if (deployPhase && !paused) {
       deployPhase = false;
       deployMsg = '';
+      tutorial?.notify('deploy-commit');
     }
     renderer.draw(ctx, cam, selectedSquads, now, floorFocus);
     if (deployPhase) {
@@ -1865,6 +1887,9 @@ function frame(now: number): void {
         const t = document.getElementById('touchbar');
         if (t) coach.maybeShow('touch-basics', t, 'Drag to pan · pinch to zoom · press and hold to give an order');
       }
+      // Same frame, same reason: the deploy bubble points at the battle HUD's
+      // pause control, which the update above has only just built.
+      if (deployPhase) tutorial?.notify('deploy-start');
     }
 
     if (sim.winner && winnerAt < 0) winnerAt = now;

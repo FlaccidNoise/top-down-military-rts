@@ -37,11 +37,31 @@ export class Coach {
 
   maybeShow(id: string, target: HTMLElement, text: string): void {
     if (this.dismissed.has(id) || typeof document === 'undefined') return;
+    this.bubble(target, text, () => this.dismiss(id), null);
+  }
+
+  /**
+   * A tutorial-driver bubble: the same chrome plus a "Skip tutorial" link. The
+   * driver owns its own gating and its own storage, so nothing here reads or
+   * writes the coach dismissed set.
+   */
+  showStep(target: HTMLElement, text: string, onDismiss: () => void, onSkip: () => void): void {
+    if (typeof document === 'undefined') return;
+    this.bubble(target, text, onDismiss, onSkip);
+  }
+
+  hide(): void {
+    this.hideCurrent();
+  }
+
+  private bubble(target: HTMLElement, text: string, onDismiss: () => void, onSkip: (() => void) | null): void {
     this.hideCurrent();
     const el = document.createElement('div');
     el.className = 'coach';
-    el.innerHTML = `<span class="coach-text">${text}</span><button class="coach-x" aria-label="Dismiss" title="Dismiss">\u2715</button>`;
-    el.querySelector('.coach-x')!.addEventListener('click', () => this.dismiss(id));
+    const skip = onSkip ? '<button class="coach-skip">Skip tutorial</button>' : '';
+    el.innerHTML = `<span class="coach-text">${text}</span>${skip}<button class="coach-x" aria-label="Dismiss" title="Dismiss">\u2715</button>`;
+    el.querySelector('.coach-x')!.addEventListener('click', () => { this.hideCurrent(); onDismiss(); });
+    if (onSkip) el.querySelector('.coach-skip')!.addEventListener('click', () => { this.hideCurrent(); onSkip(); });
     const r = target.getBoundingClientRect();
     el.style.position = 'absolute';
     el.style.top = `${r.bottom + window.scrollY + 8}px`;
