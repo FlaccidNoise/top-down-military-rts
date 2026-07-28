@@ -55,9 +55,16 @@ describe('mapgen', () => {
   // Re-frozen at the mapgen-v3 P3 cutover: `generateMap(seed)` defaults to
   // 'open', which is the organic pipeline now (8105059f/d2a77805 were the
   // legacy blob village).
+  //
+  // Re-frozen again for the sightline pass (sim/sightlines.ts), which thins
+  // canopy on the one bearing out of an objective that has no lane: both of
+  // these seeds put an objective in a wood (fc9ffc0d → ee72cb87,
+  // ae7bfa6d → 9d4e9bcb). The pass writes nothing on a bourg or a road map,
+  // and tests/bourg.test.ts's 8607a31f / 6e8a0239 / c81d25a5 / e44efdd6 holding
+  // is the control that says so.
   it('matches known snapshots (catches accidental generator drift)', () => {
-    expect(fingerprint(1)).toMatchInlineSnapshot(`"fc9ffc0d"`);
-    expect(fingerprint(2)).toMatchInlineSnapshot(`"ae7bfa6d"`);
+    expect(fingerprint(1)).toMatchInlineSnapshot(`"ee72cb87"`);
+    expect(fingerprint(2)).toMatchInlineSnapshot(`"9d4e9bcb"`);
   });
 
   // I12 · interiors §6.2. The answer to "you only fingerprint the config you do
@@ -73,11 +80,25 @@ describe('mapgen', () => {
   it('pins the furnished configuration (interiors: true)', () => {
     // The two open lines re-froze at the P3 cutover with the geometry under
     // them (8ab735cc/d6cff694 were the legacy blob village); the two bourg
-    // lines did not move, and are P3's leak control on the interiors side.
-    expect(furnishedFingerprint(1, 160, 120, 'open')).toMatchInlineSnapshot(`"ac8b9a3f"`);
-    expect(furnishedFingerprint(2, 160, 120, 'open')).toMatchInlineSnapshot(`"cde4019b"`);
-    expect(furnishedFingerprint(1, 320, 240, 'bourg')).toMatchInlineSnapshot(`"7028d0b1"`);
-    expect(furnishedFingerprint(2, 320, 240, 'bourg')).toMatchInlineSnapshot(`"25b60a5b"`);
+    // lines did not move there, and were P3's leak control on the interiors
+    // side.
+    //
+    // Three of the four moved with the per-role fit-out: the mairie left the
+    // house table, the halle gained stall rows and the bakery/forge trades
+    // split off the shop role (cde4019b → 47cd132f, 7028d0b1 → 816ddf75,
+    // 25b60a5b → cc8117a7). open/1 held at ac8b9a3f there, which was the leak
+    // control working — that seed's map carries none of the four roles.
+    //
+    // Then the two OPEN lines moved once more for the sightline pass, which is
+    // terrain and not interiors at all (ac8b9a3f → ec048e9d,
+    // 47cd132f → ad28aa41): both seeds put an objective in a wood. The two
+    // BOURG lines did not, because the pass measured the bourg and wrote
+    // nothing — so this pair is now the leak control in the other direction,
+    // and they agree tile for tile with the flag-off pins in bourg.test.ts.
+    expect(furnishedFingerprint(1, 160, 120, 'open')).toMatchInlineSnapshot(`"ec048e9d"`);
+    expect(furnishedFingerprint(2, 160, 120, 'open')).toMatchInlineSnapshot(`"ad28aa41"`);
+    expect(furnishedFingerprint(1, 320, 240, 'bourg')).toMatchInlineSnapshot(`"816ddf75"`);
+    expect(furnishedFingerprint(2, 320, 240, 'bourg')).toMatchInlineSnapshot(`"cc8117a7"`);
   });
 
   // The validation gate inlines canStep (mapgen.ts reachField) for speed, so it

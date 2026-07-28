@@ -190,6 +190,18 @@ function anyDoor(
   return undefined;
 }
 
+// What a terrace unit does for a living, off ONE draw on the plot stream. p 0.35
+// it is a trade rather than a dwelling, and two fifths of those trades are named
+// ones whose interior is not a generic fit-out (interiors §4.3: a bakery has an
+// oven, a forge has an anvil, a grocer has neither).
+//
+// The split is thresholds on the SAME draw the shop/townhouse choice already
+// took, so it adds no draw anywhere and no downstream stream moves. `stories`
+// reads role only for church/civic/halle, so the map arrays do not move either
+// — this changes what a building IS, not where it is.
+const tradeRole = (r: number): BuildingRole =>
+  r < 0.07 ? 'bakery' : r < 0.14 ? 'forge' : r < 0.35 ? 'shop' : 'townhouse';
+
 export function buildFootprints(sk: Skeleton, land: Landmarks, pc: Parcels): Footprints {
   const { w, h } = sk;
   const { maxBuildings } = sk.profile;
@@ -340,7 +352,7 @@ export function buildFootprints(sk: Skeleton, land: Landmarks, pc: Parcels): Foo
         y: body.y,
         w: body.w,
         h: body.h,
-        role: terrace ? (r9.next() < 0.35 ? 'shop' : 'townhouse') : mid ? 'townhouse' : 'farmhouse',
+        role: terrace ? tradeRole(r9.next()) : mid ? 'townhouse' : 'farmhouse',
         parts: parts.length > 1 ? parts : undefined,
         doors,
         frontage: front,

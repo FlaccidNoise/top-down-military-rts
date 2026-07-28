@@ -246,8 +246,14 @@ describe('interiors rooms — the three townhouse variants (§3.3)', () => {
     const it = stamp(map, { x: 10, y: 10, w: 6, h: 8, role: 'townhouse', doors: [{ x: 12, y: 17, side: 's', width: 1 }] });
     resetInterior(map, it);
     expect(planRooms(map, it, 'townhouse', rng(9))).not.toBeNull();
-    expect(planRooms(map, it, 'halle', rng(9))).toBeNull();
-    expect(planRooms(map, it, 'halt', rng(9))).toBeNull();
+    expect(planRooms(map, it, 'halt', rng(9))).toBeNull(); // the one role with no plan
+    // A halle is planned as ONE open volume and no wall at all: the aisles of a
+    // covered market are furniture (I7's stall rows), never partitions.
+    resetInterior(map, it);
+    const halle = planRooms(map, it, 'halle', rng(9)) as RoomPlan;
+    expect(kinds(halle)).toEqual(['bay']);
+    expect(halle.rooms[0].tiles.length).toBe(it.tiles.length);
+    expect(wallLines(map, it)).toEqual([]);
     resetInterior(map, it);
     expect(planRooms(map, it, 'church', rng(9))).not.toBeNull(); // I6's, and it is wired
   });

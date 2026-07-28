@@ -199,30 +199,45 @@ export interface RoomPlan {
 //
 //  'house'  → §3.2 hall / passage / enfilade, by frontage width and depth
 //  'shop'   → §3.4 storefront / back room / store
+//  'civic'  → §3.4's partition, a PUBLIC fit-out: counter rail, benches, no hearth
+//  'bakery' → §3.4's partition, an oven mass behind the counter
+//  'forge'  → §3.4's partition, a fire and an anvil on the working floor
 //  'barn'   → §3.5 a volume, not a plan: stall stubs + optional tack room
 //  'church' → §3.6 arcades, chancel + arch, sacristy, tower door
+//  'halle'  → no partition at all: stall rows and aisles, furniture only
 //  'none'   → not partitioned and not furnished
 //
-// Two roles are 'none', and both are DECISIONS THIS FREEZE MAKES because the
-// design doc predates them:
-//  - `halle` is a roof on posts. `stampStructure` returns after stamping four
-//    corner posts, so there is no envelope to partition, the keep-clear and
-//    non-sealing invariants are vacuous, and market stalls in an open passage
-//    are a route hazard, not a room. A market-stall pass is a later task.
-//  - `halt` is V5's 28-tile station shed, the newest and least-tested structure
-//    on the map. Barn mangers in a booking hall are the wrong flavour and the
-//    conservative freeze costs nothing. A bench row is later polish.
-export const PLAN_BY_ROLE: Record<BuildingRole, 'house' | 'shop' | 'barn' | 'church' | 'none'> = {
+// The four trade rows all take §3.4's partitioner and differ only in their
+// FURNITURE table. That is the whole distinction the brief asks for — a mairie
+// and a baker are not different geometries, they are different fit-outs of one
+// frontage-room-plus-back-room shell — and it is why adding a trade costs one
+// table and no partitioner.
+//
+// `civic` used to take the HOUSE table, which gave the mairie a kitchen hearth,
+// a deal table and a dresser. A town hall is a public room, so it now takes its
+// own. `halle` used to be 'none' on the grounds that market stalls in an open
+// passage are a route hazard: they are not, because the stalls are `furn_light`
+// (passable, move 2.2) laid in rows with bare aisles between, so a halle stays
+// the most permeable building on the map and gains a covered-market fight.
+//
+// `halt` stays 'none': V5's 28-tile station shed is the newest structure on the
+// map and a bench row is polish, not a fight.
+export const PLAN_BY_ROLE: Record<
+  BuildingRole,
+  'house' | 'shop' | 'civic' | 'bakery' | 'forge' | 'barn' | 'church' | 'halle' | 'none'
+> = {
   house: 'house',
   farmhouse: 'house',
   townhouse: 'house', // §3.3's three variants are selected inside the house partitioner
-  civic: 'house', // a mairie is a hall and rooms
+  civic: 'civic',
   shop: 'shop',
+  bakery: 'bakery',
+  forge: 'forge',
   barn: 'barn',
   church: 'church',
   church_tower: 'church', // planned as part of the group, not on its own
   church_apse: 'church',
-  halle: 'none',
+  halle: 'halle',
   halt: 'none',
 };
 

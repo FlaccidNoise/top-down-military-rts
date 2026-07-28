@@ -83,10 +83,9 @@ export function furnishInteriors(map: GameMap, buildings: readonly Building[], b
     // index-sensitivity D9 exists to kill. The mass bbox is read off the map
     // and cannot depend on emission order at all.
     const key = structKey({ x: it.x0, y: it.y0, w: it.w, h: it.h });
-    // 'none' (halle, halt) is not partitioned and not furnished — but D11 says
-    // EVERY mass of interior area >= 20 gets a second way in, and a station
-    // shed with one door is exactly the building that most wants one. A halle
-    // has no envelope at all and falls out of addRearDoor on its own.
+    // 'none' (halt) is not partitioned and not furnished — but D11 says EVERY
+    // mass of interior area >= 20 gets a second way in, and a station shed with
+    // one door is exactly the building that most wants one.
     if (PLAN_BY_ROLE[role] === 'none') {
       addRearDoor(map, it, furnStream(base, key, FURN_TAG.doors));
       continue;
@@ -106,8 +105,12 @@ export function furnishInteriors(map: GameMap, buildings: readonly Building[], b
     const table = PLAN_BY_ROLE[role];
     if (table === 'house') furnishHouse(c, role);
     else if (table === 'shop') furnishShop(c);
+    else if (table === 'civic') furnishCivic(c);
+    else if (table === 'bakery') furnishBakery(c);
+    else if (table === 'forge') furnishForge(c);
     else if (table === 'barn') furnishBarn(c);
     else if (table === 'church') furnishChurch(c);
+    else if (table === 'halle') furnishHalle(c);
 
     if (import.meta.env.DEV) verify(map, it, role);
   }
@@ -452,37 +455,9 @@ function furnishShop(c: Ctx): void {
   const back = c.first('backroom');
   const store = c.first('store');
 
-  // 1 · the counter. THE reason a shop is a different fight from a house: an
-  // attacker through the front door faces it at 2 m, has to walk round an
-  // offset 1-tile gap to get past, and eats a defender with coverBehind 0.40
-  // the whole way. Skipped when the storefront is too shallow to stand one in.
+  // 1 · the counter.
   if (front) {
-    const dS = Math.max(...front.tiles.map((t) => dOf(f, c.x(t), c.y(t)))) + 1;
-    if (dS >= 3) {
-      const dc = Math.min(2, dS - 2);
-      // The gap is OFFSET from the door on purpose — that is the whole counter:
-      // an attacker cannot walk straight through, he has to step sideways
-      // along the front of it. `clamp` can land it back on the door on a narrow
-      // frontage, so try either neighbour before giving up (on a 4-wide shop
-      // there is nowhere else, and the door apron keeps that tile clear anyway).
-      const lo = 1;
-      const hi = Math.max(1, f.A - 2);
-      let gap = clamp(f.doorA + 2 + dGap, lo, hi);
-      if (gap === f.doorA) gap = gap - 1 >= lo ? gap - 1 : gap + 1 <= hi ? gap + 1 : gap;
-      // Written as maximal contiguous free runs rather than one all-or-nothing
-      // group: a window nook or a door apron in the line would otherwise delete
-      // the whole counter, and those tiles are protected for a reason.
-      let run: number[] = [];
-      for (let a = 0; a <= f.A; a++) {
-        const t = a < f.A ? c.tile(tileX(f, a, dc), tileY(f, a, dc)) : -1;
-        if (a < f.A && a !== gap && c.free(t)) {
-          run.push(t);
-          continue;
-        }
-        if (run.length > 0) c.put(run, 'furn_heavy');
-        run = [];
-      }
-    }
+    counter(c, f, front, dGap);
     // 2 · shelving against the windowless side wall.
     const shelf = sideShelf(c, f, front, dShelf);
     if (shelf.length > 0) c.put(shelf, 'furn_heavy');
@@ -514,6 +489,45 @@ function furnishShop(c: Ctx): void {
 
 const clamp = (v: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, v));
 
+// THE reason a shop is a different fight from a house, and now the piece every
+// trade shares: an attacker through the front door faces the counter at 2 m,
+// has to walk round an offset 1-tile gap to get past, and eats a defender with
+// coverBehind 0.40 the whole way. A mairie's rail and a baker's counter are the
+// same object with a different sign over the door. Skipped when the frontage
+// room is too shallow to stand one in.
+function counter(c: Ctx, f: Frame, front: Room, dGap: number): void {
+  const dS = Math.max(...front.tiles.map((t) => dOf(f, c.x(t), c.y(t)))) + 1;
+  if (dS < 3) return;
+  const dc = Math.min(2, dS - 2);
+  // The gap is OFFSET from the door on purpose — that is the whole counter: an
+  // attacker cannot walk straight through, he has to step sideways along the
+  // front of it. `clamp` can land it back on the door on a narrow frontage, so
+  // try either neighbour before giving up (on a 4-wide shop there is nowhere
+  // else, and the door apron keeps that tile clear anyway).
+  const lo = 1;
+  const hi = Math.max(1, f.A - 2);
+  let gap = clamp(f.doorA + 2 + dGap, lo, hi);
+  if (gap === f.doorA) gap = gap - 1 >= lo ? gap - 1 : gap + 1 <= hi ? gap + 1 : gap;
+  // Written as maximal contiguous free runs rather than one all-or-nothing
+  // group: a window nook or a door apron in the line would otherwise delete the
+  // whole counter, and those tiles are protected for a reason.
+  let run: number[] = [];
+  for (let a = 0; a <= f.A; a++) {
+    const t = a < f.A ? c.tile(tileX(f, a, dc), tileY(f, a, dc)) : -1;
+    if (a < f.A && a !== gap && c.free(t)) {
+      run.push(t);
+      continue;
+    }
+    if (run.length > 0) c.put(run, 'furn_heavy');
+    run = [];
+  }
+}
+
+// Free tiles of a room that stand against a solid wall, ascending: waiting
+// benches, presses, stacked stock — anything that lines a room's edges.
+const wallSeats = (c: Ctx, room: Room): number[] =>
+  room.tiles.filter((t) => c.free(t) && SIDES.some((s) => c.solid(c.x(t), c.y(t), s)));
+
 // A 1xN run of shelving down whichever across-extreme of the storefront carries
 // no window. Up to three tiles, from the frontage end.
 function sideShelf(c: Ctx, f: Frame, front: Room, r: number): number[] {
@@ -528,6 +542,166 @@ function sideShelf(c: Ctx, f: Frame, front: Room, r: number): number[] {
   if (col.length === 0) return [];
   const start = r % col.length;
   return col.slice(start, start + 3);
+}
+
+// ── §4.3 · civic — the mairie ───────────────────────────────────────────────
+//
+// A town hall is a PUBLIC room, and until this table existed it was furnished
+// as somebody's kitchen: a hearth on the longest wall, a deal table, a dresser.
+// The fit-out here says what the building is for. No hearth anywhere — a mairie
+// has no chimney breast on the ground floor and, more to the point, the
+// hearth's coverBehind 0.50 is the deepest cover in the game and it belongs to
+// the buildings that earn it.
+
+function furnishCivic(c: Ctx): void {
+  // discipline 1: every draw, up front, in this order, forever.
+  const dGap = c.s3.int(2);
+  const dBench = c.s3.int(3);
+  const dDesk = c.s3.int(2);
+  const dChair = c.s3.int(3);
+  const dPress = c.s3.int(3);
+
+  const f = frameOf(c.map, c.it);
+  const hall = c.first('storefront'); // the public room behind the front door
+  const office = c.first('backroom');
+  const records = c.first('store');
+
+  // 1 · the rail across the public room. Same object as a shop's counter and
+  // the same fight: the clerk's side of it is the defensible half.
+  if (hall) {
+    counter(c, f, hall, dGap);
+    // 2 · benches down the walls of the public room. `furn_light`, so the room
+    // stays crossable — a queue of chairs is cover, not a barricade.
+    for (const t of wallSeats(c, hall).slice(dBench, dBench + 4)) c.put([t], 'furn_light');
+  }
+
+  // 3 · the clerk's desk and his chair.
+  if (office) {
+    const desk = c.putFirst(tableSpots(c, office, dDesk === 1, true, []), 'furn_heavy');
+    const chair = pick(neighboursOf(c, office, desk), dChair);
+    if (chair !== null) c.put([chair], 'furn_light');
+  }
+
+  // 4 · the record press in the strong room.
+  if (records) {
+    const press = pick(wallPairs(c, records), dPress);
+    if (press !== null) c.put(press, 'furn_heavy');
+  }
+}
+
+// ── §4.3 · bakery and forge — the named trades ──────────────────────────────
+//
+// Both are §3.4's shell with a FIRE in it, and the fire is the whole point: a
+// `hearth` is impassable with coverBehind 0.50, so a trade building hands the
+// defender one piece of hard cover that a grocer's shop does not have. The two
+// differ in where it sits — a baker's oven is behind the counter in the
+// bake-house, a smith's fire is on the working floor where the doors open.
+
+function furnishBakery(c: Ctx): void {
+  const dGap = c.s3.int(2);
+  const dOven = c.s3.int(3);
+  const dSacks = 2 + c.s3.int(3);
+
+  const f = frameOf(c.map, c.it);
+  const front = c.first('storefront');
+  const bakehouse = c.first('backroom') ?? front;
+  const store = c.first('store');
+
+  // 1 · the counter the loaves are sold over.
+  if (front) counter(c, f, front, dGap);
+
+  // 2 · the oven: a hearth against the longest windowless wall of the room
+  // behind the counter, widened to a 1x2 mass where the wall takes it. Offered
+  // as pairs first and a single stone last, so a bake-house too tight for the
+  // mass still gets its fire.
+  if (bakehouse) {
+    const spot = pick(hearthSpots(c, bakehouse, false), dOven);
+    if (spot !== null) c.putFirst([...wallPairs(c, bakehouse).filter((g) => g.includes(spot)), [spot]], 'hearth');
+  }
+
+  // 3 · flour sacks in the store.
+  if (store) for (const t of store.tiles.filter((t) => c.free(t)).slice(0, dSacks)) c.put([t], 'furn_light');
+}
+
+function furnishForge(c: Ctx): void {
+  const dFire = c.s3.int(3);
+  const dAnvil = c.s3.int(3);
+  const dStock = 2 + c.s3.int(3);
+
+  const floor = c.first('storefront'); // the working floor, doors onto the street
+  const store = c.first('store') ?? c.first('backroom');
+
+  // 1 · the fire, against a windowless wall of the working floor.
+  let fire: number[] = [];
+  if (floor) {
+    const spot = pick(hearthSpots(c, floor, false), dFire);
+    if (spot !== null) fire = c.put([spot], 'hearth');
+  }
+
+  // 2 · the anvil. Free-standing heavy, 2-3 tiles off the fire: close enough to
+  // be the same workplace, far enough that a smith can walk between them — and
+  // far enough that the pair does not seal the corner it stands in. With no
+  // fire placed there is no anvil either; a lone block in an empty room reads
+  // as a table, and this table already has one of those.
+  if (floor && fire.length > 0) {
+    const near = (t: number): boolean =>
+      fire.every((hf) => {
+        const d = Math.max(Math.abs(c.x(t) - c.x(hf)), Math.abs(c.y(t) - c.y(hf)));
+        return d >= 2 && d <= 3;
+      });
+    const anvil = pick(floor.tiles.filter((t) => c.free(t) && near(t)), dAnvil);
+    if (anvil !== null) c.put([anvil], 'furn_heavy');
+  }
+
+  // 3 · iron stock along the back wall.
+  if (store) for (const t of wallSeats(c, store).slice(0, dStock)) c.put([t], 'furn_light');
+}
+
+// ── §4.3 · halle — the covered market ───────────────────────────────────────
+
+/**
+ * Stall rows with aisles between them.
+ *
+ * A halle has four corner piers, twenty open envelope edges and no doors: it is
+ * not a room, it is a roof over a piece of the place. So the fit-out is laid on
+ * the GEOMETRY of the mass rather than on a room list — rows one tile wide
+ * perpendicular to the long axis, every third line, with the outer ring and one
+ * cross-aisle left bare.
+ *
+ * Every tile of it is `furn_light`: passable at move cost 2.2 with cover 0.25.
+ * That is deliberate and it is what makes stalls in an open passage safe — the
+ * most permeable building on the map stays permeable, the non-sealing BFS is
+ * skipped for a passable key, and crossing the market under fire is slow rather
+ * than impossible.
+ */
+function furnishHalle(c: Ctx): void {
+  const dPhase = c.s3.int(3);
+  const dCross = c.s3.int(2);
+
+  const it = c.it;
+  const alongX = it.w >= it.h;
+  // The row axis: `k` walks the long axis one line per stall row, `j` walks the
+  // short axis along a row. Both spans exclude the outer ring, which is the
+  // circulation the market traders leave themselves.
+  const k0 = (alongX ? it.x0 : it.y0) + 1;
+  const k1 = (alongX ? it.x0 + it.w : it.y0 + it.h) - 1;
+  const j0 = (alongX ? it.y0 : it.x0) + 1;
+  const j1 = (alongX ? it.y0 + it.h : it.x0 + it.w) - 1;
+  const cross = (alongX ? it.y0 + (it.h >> 1) : it.x0 + (it.w >> 1)) + dCross;
+
+  for (let k = k0; k < k1; k++) {
+    if ((k - k0 + dPhase) % 3 !== 0) continue;
+    let run: number[] = [];
+    for (let j = j0; j <= j1; j++) {
+      const t = alongX ? c.tile(k, j) : c.tile(j, k);
+      if (j < j1 && j !== cross && c.free(t)) {
+        run.push(t);
+        continue;
+      }
+      if (run.length > 0) c.put(run, 'furn_light');
+      run = [];
+    }
+  }
 }
 
 // ── §4.3 · church ───────────────────────────────────────────────────────────

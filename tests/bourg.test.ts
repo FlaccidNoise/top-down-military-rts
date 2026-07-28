@@ -1386,6 +1386,15 @@ describe('bourg determinism (§5.4)', () => {
     expect(fingerprint(generateMap(2, W, H, 'road'))).toMatchInlineSnapshot(`"e44efdd6"`);
   });
 
+  // THE SIGHTLINE PASS moved the eight values below and NOT the four above.
+  // sim/sightlines.ts thins canopy on the one bearing out of an objective that
+  // has no lane, so the four rural kinds moved (open 33ea696e → 8fea6b7c /
+  // d93565c1 → 5cb18dcd, woods 931653ee → 5501bec6 / 3ba205d8 → b76f1e20,
+  // river 70f6b888 → 9932b3e0 / dcc4245a → 2ad1aa28, bridge 29ad0293 →
+  // 2536d09d / 207dddf6 → 6b62080a) and the bourg and the road did not: their
+  // objectives already had lanes and the pass wrote nothing at all on them.
+  // That split IS the claim the pass makes about itself, pinned.
+  //
   // The open kind's, frozen at the P3 cutover. Unlike road, RELIEF_BY_KIND.open
   // carries rail, so these cover the halt as well as the relief stage; the
   // relief-off control is the PRE_RELIEF.open row in relief-wiring.test.ts.
@@ -1393,8 +1402,8 @@ describe('bourg determinism (§5.4)', () => {
   // the quick-battle scenario uses — the two move together or one of them is
   // a bug.
   it('pins the open fingerprints', () => {
-    expect(fingerprint(generateMap(1, W, H, 'open'))).toMatchInlineSnapshot(`"33ea696e"`);
-    expect(fingerprint(generateMap(2, W, H, 'open'))).toMatchInlineSnapshot(`"d93565c1"`);
+    expect(fingerprint(generateMap(1, W, H, 'open'))).toMatchInlineSnapshot(`"8fea6b7c"`);
+    expect(fingerprint(generateMap(2, W, H, 'open'))).toMatchInlineSnapshot(`"5cb18dcd"`);
   });
 
   // The woods kind's, frozen at the P4 cutover. RELIEF_BY_KIND.woods carries
@@ -1403,8 +1412,8 @@ describe('bourg determinism (§5.4)', () => {
   // relief-wiring.test.ts. They also cover the clearing sub-stage (tag 16),
   // which is the only new machinery in the kind.
   it('pins the woods fingerprints', () => {
-    expect(fingerprint(generateMap(1, W, H, 'woods'))).toMatchInlineSnapshot(`"931653ee"`);
-    expect(fingerprint(generateMap(2, W, H, 'woods'))).toMatchInlineSnapshot(`"3ba205d8"`);
+    expect(fingerprint(generateMap(1, W, H, 'woods'))).toMatchInlineSnapshot(`"5501bec6"`);
+    expect(fingerprint(generateMap(2, W, H, 'woods'))).toMatchInlineSnapshot(`"b76f1e20"`);
   });
 
   // The two water kinds', frozen at the P5 cutover. RELIEF_BY_KIND gives both
@@ -1415,13 +1424,13 @@ describe('bourg determinism (§5.4)', () => {
   // TAG.WATER is drawn inside the skeleton, so the band is in the pre-relief
   // literals too.
   it('pins the river fingerprints', () => {
-    expect(fingerprint(generateMap(1, W, H, 'river'))).toMatchInlineSnapshot(`"70f6b888"`);
-    expect(fingerprint(generateMap(2, W, H, 'river'))).toMatchInlineSnapshot(`"dcc4245a"`);
+    expect(fingerprint(generateMap(1, W, H, 'river'))).toMatchInlineSnapshot(`"9932b3e0"`);
+    expect(fingerprint(generateMap(2, W, H, 'river'))).toMatchInlineSnapshot(`"2ad1aa28"`);
   });
 
   it('pins the bridge fingerprints', () => {
-    expect(fingerprint(generateMap(1, W, H, 'bridge'))).toMatchInlineSnapshot(`"29ad0293"`);
-    expect(fingerprint(generateMap(2, W, H, 'bridge'))).toMatchInlineSnapshot(`"207dddf6"`);
+    expect(fingerprint(generateMap(1, W, H, 'bridge'))).toMatchInlineSnapshot(`"2536d09d"`);
+    expect(fingerprint(generateMap(2, W, H, 'bridge'))).toMatchInlineSnapshot(`"6b62080a"`);
   });
 
   it('pins the bourg with relief off — the stage is purely additive', () => {
