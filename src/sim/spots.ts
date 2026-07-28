@@ -328,12 +328,32 @@ export interface DeployTeamPlan {
   spots: ResolvedSpot[];
 }
 
-// A tile where lying down buys cover that crouching does not: the only such
-// terrain is a bank lip (BANK_PRONE_LIP). Behind a hedgerow bank or a hill
-// shoulder the deployment goes prone — the reverse-slope start the ambush
-// order already encodes.
+// A 1 m rise between a man and the threat hides a prone eye (0.4 m) and passes
+// a crouching one (1.1 m) — the engine's own stance-discrimination height
+// (sim.ts eye heights). That is the reverse slope, and it is ELEVATION, which
+// directionalCover cannot see: it reads terrain cover, not the ground itself.
+const PRONE_CREST = 1;
+// How far back from the crest still counts as behind it. A man does not have
+// to be against the slope to be in its defilade, and a formation spread over
+// ±2 m would otherwise split a squad on one hillside into some prone and some
+// not — the majority vote below then reads the whole team as standing.
+const PRONE_CREST_REACH = 3;
+
+// A tile where lying down buys what crouching does not: a bank lip
+// (BANK_PRONE_LIP), or a crest between the man and the enemy. Behind either,
+// the deployment lies down — the reverse-slope start the ambush order encodes.
 function proneImproves(sim: Sim, x: number, y: number, bearing: number): boolean {
-  return directionalCover(sim, x, y, bearing, 'prone') > directionalCover(sim, x, y, bearing, 'crouch');
+  if (directionalCover(sim, x, y, bearing, 'prone') > directionalCover(sim, x, y, bearing, 'crouch')) return true;
+  const here = sim.map.elevAt(x, y);
+  const dx = Math.cos(bearing);
+  const dy = Math.sin(bearing);
+  for (let r = 1; r <= PRONE_CREST_REACH; r++) {
+    const nx = x + Math.round(dx * r);
+    const ny = y + Math.round(dy * r);
+    if (!sim.map.inBounds(nx, ny)) return false;
+    if (sim.map.elevAt(nx, ny) - here >= PRONE_CREST) return true;
+  }
+  return false;
 }
 
 // Squads fan by SQUAD_FAN and teams by TEAM_FAN on the y axis — the exact

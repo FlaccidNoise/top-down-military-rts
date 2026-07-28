@@ -41,6 +41,18 @@ describe('resolveDeployment', () => {
     for (const sp of plan.spots) expect(sp.x).toBeLessThan(BX);
   });
 
+  it('goes prone behind a HILL: a 1 m crest toward the enemy is the reverse slope', () => {
+    const sim = new Sim(new GameMap(48, 24), 7);
+    const CX = 20; // a N-S ridge one metre above the ground the men hold
+    for (let y = 0; y < 24; y++) sim.map.elev[y * 48 + CX] = 1;
+    const sq = addSquadOf(sim, 'blue', 3, 10.5, 12.5);
+    const [plan] = resolveDeployment(sim, [sq], CX - 2, 12.5, ZONE, 0); // enemy east, ridge between
+    expect(plan.kind).toBe('ambush');
+    // and the same ground with the enemy the other way is NOT a reverse slope
+    const [away] = resolveDeployment(sim, [sq], CX - 2, 12.5, ZONE, Math.PI);
+    expect(away.kind).toBe('defend');
+  });
+
   it('stays flat on open ground: no cover anywhere means defend, uncovered, on the slots', () => {
     const sim = new Sim(new GameMap(48, 24), 7);
     const sq = addSquadOf(sim, 'blue', 3, 10.5, 12.5);
