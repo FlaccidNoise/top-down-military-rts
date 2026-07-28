@@ -533,7 +533,7 @@ describe('interiors integration — determinism (§6.4)', () => {
   // pinned fingerprints are the same proof and a stronger one: `mulberry32` is
   // a pure counter, so ONE extra draw anywhere before the end of an attempt
   // changes every downstream number and therefore the FNV hash of seven arrays.
-  // 8105059f / d2a77805 / 97b5bca / eb9a14e6 all still hold (mapgen.test.ts,
+  // fc9ffc0d / ae7bfa6d / 8607a31f / 6e8a0239 all still hold (mapgen.test.ts,
   // bourg.test.ts), which is only possible if the flag-off path draws zero.
   // What is NOT covered by those is that the flag-ON draw is the LAST one, so
   // that is what this asserts.

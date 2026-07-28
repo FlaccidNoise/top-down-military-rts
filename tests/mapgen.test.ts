@@ -56,8 +56,8 @@ describe('mapgen', () => {
   // 'open', which is the organic pipeline now (8105059f/d2a77805 were the
   // legacy blob village).
   it('matches known snapshots (catches accidental generator drift)', () => {
-    expect(fingerprint(1)).toMatchInlineSnapshot(`"768c6c15"`);
-    expect(fingerprint(2)).toMatchInlineSnapshot(`"14d954d5"`);
+    expect(fingerprint(1)).toMatchInlineSnapshot(`"fc9ffc0d"`);
+    expect(fingerprint(2)).toMatchInlineSnapshot(`"ae7bfa6d"`);
   });
 
   // I12 · interiors §6.2. The answer to "you only fingerprint the config you do
@@ -68,16 +68,16 @@ describe('mapgen', () => {
   // that has leaked out of the interiors module.
   //
   // The two bourg lines also move legitimately when the BOURG layout is meant
-  // to change, in which case tests/bourg.test.ts's 97b5bca / eb9a14e6 move in
+  // to change, in which case tests/bourg.test.ts's 8607a31f / 6e8a0239 move in
   // the same commit. One of them moving alone is a bug.
   it('pins the furnished configuration (interiors: true)', () => {
     // The two open lines re-froze at the P3 cutover with the geometry under
     // them (8ab735cc/d6cff694 were the legacy blob village); the two bourg
     // lines did not move, and are P3's leak control on the interiors side.
-    expect(furnishedFingerprint(1, 160, 120, 'open')).toMatchInlineSnapshot(`"d796a7cf"`);
-    expect(furnishedFingerprint(2, 160, 120, 'open')).toMatchInlineSnapshot(`"a7569fd7"`);
-    expect(furnishedFingerprint(1, 320, 240, 'bourg')).toMatchInlineSnapshot(`"f3c5a70"`);
-    expect(furnishedFingerprint(2, 320, 240, 'bourg')).toMatchInlineSnapshot(`"2f746b24"`);
+    expect(furnishedFingerprint(1, 160, 120, 'open')).toMatchInlineSnapshot(`"ac8b9a3f"`);
+    expect(furnishedFingerprint(2, 160, 120, 'open')).toMatchInlineSnapshot(`"cde4019b"`);
+    expect(furnishedFingerprint(1, 320, 240, 'bourg')).toMatchInlineSnapshot(`"7028d0b1"`);
+    expect(furnishedFingerprint(2, 320, 240, 'bourg')).toMatchInlineSnapshot(`"25b60a5b"`);
   });
 
   // The validation gate inlines canStep (mapgen.ts reachField) for speed, so it

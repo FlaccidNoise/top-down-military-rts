@@ -37,6 +37,19 @@ const LANE_KILL = 7; // an attractor within this of a node is satisfied
 const LANE_ATTRACT = 45; // …and one further than this influences nothing
 const LANE_MAX_NODES = 140;
 
+// Woods-stand outline (paintRural `stand`). STAND_EDGE is where the solid
+// canopy stops and the dithered treeline starts, as a fraction of the local
+// radius: at the old 0.55 the fuzzy band was 45 % of the stand and swallowed any
+// shape put inside it, which is most of why every stand read as a soft circle.
+// STAND_BASE then pays for the tighter band — a crisper edge paints MORE, and
+// 0.838 is the value that holds the mean canopy at the 1.94·rad² per stand that
+// WOODS was swept against (profile.ts): measured over seeds 1-40 at 320x240 the
+// woods kind reads 58.10 % mean / 58.80 % median against 57.63 / 58.60 before,
+// and open 1.16 % against 1.17 %. Neither constant is a taste value; move one
+// and the kind's canopy fraction moves with it.
+const STAND_BASE = 0.838;
+const STAND_EDGE = 0.8;
+
 const clamp = (v: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, v));
 
 // ── the town/country line ────────────────────────────────────────────────────
@@ -403,10 +416,38 @@ export function paintRural(
   const r13 = sk.S(TAG.WOODS);
   const woodsStands: Vec[] = [];
   const stand = (cx0: number, cy0: number, rad: number): void => {
-    for (let y = Math.max(1, cy0 - rad); y <= Math.min(h - 2, cy0 + rad); y++)
-      for (let x = Math.max(1, cx0 - rad); x <= Math.min(w - 2, cx0 + rad); x++) {
-        const d2 = (x - cx0) * (x - cx0) + (y - cy0) * (y - cy0);
-        const rr = rad * (0.55 + r13.next() * 0.45);
+    // The stand's outline: STAND_BASE plus two low-order harmonics of the polar
+    // angle, so a stand lobes instead of being a disc. The four coefficients are
+    // drawn ONCE, before the tile loop — a per-tile draw is isotropic and
+    // averages straight back to the circle this used to be — and each pair is an
+    // amplitude AND a phase, which is what lets the harmonics be built from
+    // de Moivre polynomials in the unit vector. That matters: Math.atan2 and
+    // Math.cos are not correctly-rounded across engines, and this pipeline is
+    // byte-deterministic (mapgen.ts). Only +-*/ and Math.sqrt are used, and all
+    // four are exact per IEEE-754.
+    const a2 = (r13.next() - 0.5) * 0.68;
+    const b2 = (r13.next() - 0.5) * 0.68;
+    const a3 = (r13.next() - 0.5) * 0.48;
+    const b3 = (r13.next() - 0.5) * 0.48;
+    // |a·cos kθ + b·sin kθ| ≤ √(a²+b²), so this is the outline's true reach and
+    // the loop box is sized to it. Sizing the box to `rad` instead would clip
+    // every lobe flat against the same square, which is a worse artefact than
+    // the circle.
+    const reach = Math.ceil(rad * (STAND_BASE + Math.sqrt(a2 * a2 + b2 * b2) + Math.sqrt(a3 * a3 + b3 * b3)));
+    for (let y = Math.max(1, cy0 - reach); y <= Math.min(h - 2, cy0 + reach); y++)
+      for (let x = Math.max(1, cx0 - reach); x <= Math.min(w - 2, cx0 + reach); x++) {
+        const dx = x - cx0;
+        const dy = y - cy0;
+        const d2 = dx * dx + dy * dy;
+        if (d2 > reach * reach) continue; // corners of the box: rejected before any draw
+        const d = Math.sqrt(d2) || 1; // centre tile: (u,v) = (0,0), radius = the base
+        const u = dx / d;
+        const v = dy / d;
+        const c2 = u * u - v * v; // cos 2θ
+        const s2 = 2 * u * v; // sin 2θ
+        // …and (u·c2 − v·s2, v·c2 + u·s2) is (cos 3θ, sin 3θ).
+        const f = STAND_BASE + a2 * c2 + b2 * s2 + a3 * (u * c2 - v * s2) + b3 * (v * c2 + u * s2);
+        const rr = rad * f * (STAND_EDGE + r13.next() * (1 - STAND_EDGE));
         if (d2 < rr * rr && !inZone(x, y) && plantable(x, y)) map.setTerrain(x, y, 'woods');
       }
   };

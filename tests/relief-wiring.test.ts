@@ -31,25 +31,21 @@ function fingerprint(plan: MapPlan): string {
 // merge of the bourg and verticality lanes — i.e. from the binary that had
 // relief.ts but no call to it. Plain literals, never inline snapshots: an
 // `-u` run must not be able to launder a regression into a new baseline.
+//
+// EVERY row was recaptured together at the woods-stand outline change
+// (rural.ts `stand`: the disc became a two-harmonic outline, and its rng draws
+// moved from per-tile to per-stand). Each kind paints stands, so each kind's
+// terrain and its tag-13 stream position moved, and nothing else in the change
+// touches the generator. Recapture is `npx vite-node scripts/fp.mjs`.
 const PRE_RELIEF: Record<MapKind, string[]> = {
-  // Recaptured at the mapgen-v3 P3 cutover, when 'open' left the legacy
-  // pipeline for the organic one (scripts/fp.mjs --kind open).
-  open: ['4edf4a39', '19f92704', '282359e7', 'dad20c4a', '6acb50d4', '8814cb3e', '509acb34', 'e1066bdf'],
-  // Recaptured at the mapgen-v3 P2 cutover, when 'road' left the legacy
-  // pipeline for the organic one (scripts/fp.mjs --kind road). It shared the
-  // 'open' row above until then, which is the clearest statement of what the
-  // legacy generator did with the kind: nothing.
-  road: ['58ca7432', '22bff2e4', '3d52bdb8', 'e4e97f2f', '3ded323c', 'ed38633c', '4d2e6f16', 'd4ab3dc0'],
-  // Recaptured at the mapgen-v3 P4 cutover, when 'woods' left the legacy
-  // pipeline for the organic one (scripts/fp.mjs --kind woods).
-  woods: ['6bc6def', 'd2a9c9dd', 'a61532f1', 'ecff631b', '48258cb', '72030ab0', '423c2e6c', '87eceaeb'],
-  // Recaptured at the mapgen-v3 P5 cutover, when the two water kinds left the
-  // legacy pipeline for the organic one (scripts/fp.mjs --kind river,bridge).
-  // These cover the water stage itself: TAG.WATER's band is carved inside the
-  // skeleton, so `relief: 'none'` still has the whole river in it.
-  river: ['f2ca41e0', '3330bc', 'e5d5cf7c', '72a47f04', 'aa1757a0', '1903ea07', '16b26262', '295d950d'],
-  bridge: ['e988600b', '439d781f', 'a6be8c60', '543369d', '49b3b5ac', '3fbe1eff', '1194e1c1', '667ef460'],
-  bourg: ['cd8c2d19', '98495a59', 'ee37d24f', 'e958b91f', 'f91e2d3a', '3d001667', '2cb58b53', '6201baba'],
+  open: ['21f5ff8d', '95885696', '50ff3fc3', '8a30c59b', 'e0e636a5', 'f773a08c', '9cec67b9', 'edd39507'],
+  road: ['8de623f', 'e27652b4', 'fcdf5136', '8038d64a', 'baffed95', '69983e22', '3919c58e', 'e8538fa4'],
+  woods: ['3ef904e3', 'b22a05c1', '2fc13413', 'e1c92e82', 'e5ea0548', '4c936ec4', 'd2a5ead4', 'a6ed98e'],
+  // The water kinds' rows cover the water stage itself: TAG.WATER's band is
+  // carved inside the skeleton, so `relief: 'none'` still has the whole river.
+  river: ['6e11bcf1', '2f27d3ac', 'ae050f22', '7359454d', '92198093', '2814cf23', '4444eacc', '6162d945'],
+  bridge: ['340e0fae', '19efc6f2', 'b616c028', 'a9ffb892', 'd21a6449', '79871389', 'b0a99c37', '23c63a96'],
+  bourg: ['800dd794', '93844609', '8a2946f3', '2a5a10e4', 'b962b460', 'cf9c6267', '5f874b45', '74835d92'],
 };
 
 const cache = new Map<string, MapPlan>();

@@ -6,7 +6,7 @@ import type { Archetype } from './streets';
 // Every field here is a constant lifted out of a bourg stage AT ITS CURRENT
 // VALUE, so `BOURG` reproduces the pipeline byte for byte — that is what makes
 // the extraction provable rather than argued (the frozen fingerprints
-// 97b5bca/eb9a14e6 and the PRE_RELIEF.bourg row are the control). A new map
+// 8607a31f/6e8a0239 and the PRE_RELIEF.bourg row are the control). A new map
 // kind is then a new record, not a new branch.
 //
 // Ranges are [base, span]: the stage draws `base + rng.int(span)`, so [70, 41]
@@ -53,6 +53,14 @@ export interface KindProfile {
   // carveClearings, TAG.CLEARING). [0, 0] skips the sub-stage entirely rather
   // than drawing a zero count — the stage owns its own sub-stream, so skipping
   // it moves nothing, and that is what keeps every kind but `woods` frozen.
+  //
+  // It stays [0, 0] on every small-stand kind, and that is a MEASURED decision,
+  // not an oversight: a clearing is 12-19 tiles across and a stand at
+  // standRadius [6, 5] is 12-24, so a carve is stand-sized. The pick maximises
+  // canopy, so it lands on the biggest stand on the map and deletes it —
+  // `open` at clearings [1, 1] loses 5 % of its canopy (1.16 % → 1.10 % of
+  // tiles, seeds 1-40) and gives back grass that is indistinguishable from the
+  // grass round it. Only `woods`, whose radii are 40-57, has anything to carve.
   clearings: [number, number];
   // stage 2c — the N→S water band (streets.ts carveWater, TAG.WATER). null is
   // no river at all and takes no draw, which is what keeps every dry kind
