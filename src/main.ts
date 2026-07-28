@@ -40,6 +40,7 @@ import { addForce, orderMove, type CoarseBattle, type FrontV2, type MoveReject }
 import { resolveBattleV2, openBattle, stepWar } from './strategic/theater/war';
 import { syncStrengthsV2 } from './strategic/theater/sync';
 import type { Contact } from './strategic/theater/contact';
+import { BATTLE_CLASS_TO_MAPKIND } from './strategic/theater';
 import { applyTheaterOutcome, makeTheaterBattle, type TheaterBattle } from './strategic/bridge2';
 import { adoptLegacyRoster, discardSaves, loadGameV2, saveGameV2 } from './strategic/save2';
 import { TRIVIAL_RATIO } from './strategic/bridge';
@@ -215,6 +216,16 @@ let lastTeamId = -1; // most recently selected team, survives a later vehicle se
 let armedOrder: OrderKind | null = null; // order kind armed via ⇧1-7 / order bar, issued by right-click
 let targetMode: '' | 'barrage' | 'air' | 'wheel' | 'empfire' | 'empsmoke' | 'breach' = '';
 let floorFocus = -1; // -1 = all floors; 0..maxStories-1 = only that floor, others dimmed (F key)
+// Deployment phase (V2 campaign battles only — the pinned harness never sees
+// it): battle boots paused in DEPLOY; select + right-click REPOSITIONS inside
+// your zone instead of ordering; the first unpause commits and begins.
+let deployPhase = false;
+let deployMsg = '';
+let deployMsgUntil = 0;
+const DEPLOY_ATK_DEPTH = 32; // = ATTACK_POST_MARGIN
+const DEPLOY_DEF_LINE: Record<string, number> = { bourg: 60, woods: 80 };
+const DEPLOY_DEF_DEFAULT = 70;
+const deployOverride = new URLSearchParams(location.search).get('deploy'); // ?deploy=atk,defLine — OQ19 tuning
 let winnerAt = -1; // ms timestamp when winner appeared
 let debriefShown = false;
 let needsBootFrame = false; // re-run bootCamera once the battle HUD is laid out
@@ -624,6 +635,8 @@ function startTheaterBattle(c: Contact): void {
   v2.battle = { b, tb };
   v2.pending = null;
   bootBattle(tb, tb.name);
+  deployPhase = true;
+  deployMsg = '';
 }
 
 const MOVE_REJECT_TEXT: Record<MoveReject, string> = {
@@ -634,6 +647,73 @@ const MOVE_REJECT_TEXT: Record<MoveReject, string> = {
   'no-route': 'No road reaches there',
   'destination-unholdable': "Can't hold open water — take the bridge or the bank",
 };
+
+// The player's deploy zone in map-x: attackers own the western entry strip,
+// defenders own everything past the line (kind-adjusted). AUTO-PLACED units
+// are legal wherever staging put them — the zone constrains REPOSITIONING.
+function deployZone(): { x0: number; x1: number } {
+  const v2 = S().v2;
+  const b = v2?.battle;
+  if (!b) return { x0: 0, x1: sim.map.w };
+  const atkF = v2!.front.forces.find((f) => f.id === b.b.attackerId)!;
+  const kind = BATTLE_CLASS_TO_MAPKIND[b.tb.battleClass];
+  let atkDepth = DEPLOY_ATK_DEPTH;
+  let defLine = DEPLOY_DEF_LINE[kind] ?? DEPLOY_DEF_DEFAULT;
+  if (deployOverride) {
+    const [a, d] = deployOverride.split(',').map(Number);
+    if (Number.isFinite(a)) atkDepth = a;
+    if (Number.isFinite(d)) defLine = d;
+  }
+  return atkF.side === 'blue' ? { x0: 0, x1: atkDepth } : { x0: defLine, x1: sim.map.w };
+}
+
+function deployFlash(text: string): void {
+  deployMsg = text;
+  deployMsgUntil = performance.now() + 3000;
+}
+
+// Reposition the selected squads around (wx, wy): deterministic compact fan,
+// every man through nudgeSpawn (no rng), zone- and bounds-checked. Guns and
+// mounted men refuse — emplacements deploy where they stand.
+function deployPlace(wx: number, wy: number): void {
+  const zone = deployZone();
+  if (wx < zone.x0 || wx > zone.x1) {
+    deployFlash(`Outside your deployment zone (x ${zone.x0}–${Math.round(zone.x1)})`);
+    return;
+  }
+  const K = selectedSquads.length;
+  if (K === 0) {
+    deployFlash('Select a squad first — tap it, then right-click the ground');
+    return;
+  }
+  const offs = fanOffsets(K, SQUAD_FAN);
+  selectedSquads.forEach((id, qi) => {
+    const squad = sim.squads[id];
+    if (!squad) return;
+    if (emplacementOf(sim, id)) {
+      deployFlash(`${squad.name}: guns deploy where they stand`);
+      return;
+    }
+    const ax = wx;
+    const ay = wy + offs[qi];
+    let i = 0;
+    for (const sid of squad.soldierIds) {
+      const s = sim.soldiers[sid];
+      if (!s.alive || s.inVehicle >= 0) continue;
+      const gx = ax + ((i % 4) - 1.5) * 2;
+      const gy = ay + Math.floor(i / 4) * 2 - 2;
+      const p = sim.nudgeSpawn(
+        Math.max(zone.x0 + 0.5, Math.min(zone.x1 - 0.5, gx)),
+        Math.max(1, Math.min(sim.map.h - 2, gy)),
+      );
+      s.x = p.x;
+      s.y = p.y;
+      s.level = 0;
+      s.path = null;
+      i++;
+    }
+  });
+}
 
 // V2 contact modal (OQ2 pin+queue: the theater is paused by the caller; the
 // defender path NEVER offers Stand down — an AI attack cannot be vetoed).
@@ -1062,6 +1142,11 @@ function commitOrder(sx: number, sy: number, opts: { squadForce: boolean; floors
   if (targetMode !== '') { rmbAnchor = null; return; }
   if (aiControl) { rmbAnchor = null; return; }
   const [wx, wy] = cam.screenToWorld(sx, sy, view.w, view.h);
+  if (deployPhase) {
+    deployPlace(wx, wy);
+    rmbAnchor = null;
+    return;
+  }
   if (opts.floors && selectedSquads.length > 0 && sim.map.storiesAt(Math.floor(wx), Math.floor(wy)) >= 2) {
     showFloorMenu(document.body, sim, wx, wy, sx, sy, (level) => {
       const order: TeamOrder = { kind: armedOrder ?? 'move', x: wx, y: wy, l: level };
@@ -1652,7 +1737,38 @@ function frame(now: number): void {
       }
     }
 
+    // Deployment: the first unpause commits and begins the battle.
+    if (deployPhase && !paused) {
+      deployPhase = false;
+      deployMsg = '';
+    }
     renderer.draw(ctx, cam, selectedSquads, now, floorFocus);
+    if (deployPhase) {
+      const zone = deployZone();
+      const [zx0, zy0] = cam.worldToScreen(zone.x0, 0, view.w, view.h);
+      const [zx1, zy1] = cam.worldToScreen(zone.x1, sim.map.h, view.w, view.h);
+      ctx.fillStyle = 'rgba(90, 140, 90, 0.12)';
+      ctx.fillRect(zx0, zy0, zx1 - zx0, zy1 - zy0);
+      ctx.strokeStyle = 'rgba(150, 200, 150, 0.5)';
+      ctx.setLineDash([8, 6]);
+      ctx.lineWidth = 2;
+      ctx.strokeRect(zx0, zy0, zx1 - zx0, zy1 - zy0);
+      ctx.setLineDash([]);
+      // Below the battle HUD's top chrome, never under it.
+      const strip = document.getElementById('obj-strip')?.getBoundingClientRect();
+      const by = strip && strip.height > 0 ? strip.bottom + 6 : 40;
+      ctx.fillStyle = 'rgba(20, 18, 12, 0.85)';
+      const bw = Math.min(680, view.w - 20);
+      ctx.fillRect((view.w - bw) / 2, by, bw, deployMsg && performance.now() < deployMsgUntil ? 46 : 30);
+      ctx.fillStyle = '#e8dcc4';
+      ctx.font = '12px ui-monospace, monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText('DEPLOYMENT — select squads, right-click (press-hold on touch) to reposition inside your zone · Resume to begin', view.w / 2, by + 19);
+      if (deployMsg && performance.now() < deployMsgUntil) {
+        ctx.fillStyle = '#d8a878';
+        ctx.fillText(deployMsg, view.w / 2, by + 37);
+      }
+    }
     drawOverlays(ctx, cam, sim, {
       pick, shot,
       selectedSquad: primary,

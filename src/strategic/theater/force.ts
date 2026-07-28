@@ -186,9 +186,11 @@ export function orderMove(front: FrontV2, forceId: number, destNodeId: number): 
   if (f.queuedAt !== null) return { ok: false, reason: 'queued-at-defile' };
   const dest = front.theater.nodes[destNodeId];
   if (!dest) return { ok: false, reason: 'no-route' };
-  // Rivers are transit, never a destination (standing doctrine): ford nodes
-  // refuse; bridge nodes are legal.
-  if (dest.crossing?.kind === 'ford') return { ok: false, reason: 'destination-unholdable' };
+  // Rivers are transit, never a destination (standing doctrine): PURE ford
+  // nodes refuse. A town or village that carries ford metadata (a crossing
+  // merged into a settlement) is dry ground and a legal destination — found
+  // live: 'Gué-de-Ifs', a town objective the player could not order onto.
+  if (dest.kind === 'ford') return { ok: false, reason: 'destination-unholdable' };
   if (f.pos.kind === 'node' && f.pos.nodeId === destNodeId) return { ok: false, reason: 'already-there' };
 
   const start = anchorNode(front.theater, f.pos);

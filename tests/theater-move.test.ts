@@ -123,6 +123,11 @@ describe('routing + the crossing economy', () => {
     expect(orderMove(fr, 999, 2)).toEqual({ ok: false, reason: 'unknown-force' });
     expect(orderMove(fr, f.id, 0)).toEqual({ ok: false, reason: 'already-there' });
     expect(orderMove(fr, f.id, 3)).toEqual({ ok: false, reason: 'destination-unholdable' }); // ford
+    // A settlement CARRYING ford metadata is dry ground — legal (Gué-de-Ifs).
+    const fordTown: typeof fr.theater = JSON.parse(JSON.stringify(fr.theater));
+    fordTown.nodes[2].crossing = { riverId: 0, kind: 'ford' };
+    const fr2 = { ...fr, theater: fordTown };
+    expect(orderMove(fr2, f.id, 2).ok).toBe(true);
     expect(orderMove(fr, f.id, 99)).toEqual({ ok: false, reason: 'no-route' });
     f.engagedIn = 1;
     expect(orderMove(fr, f.id, 2)).toEqual({ ok: false, reason: 'engaged' });

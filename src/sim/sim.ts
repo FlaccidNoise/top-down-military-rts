@@ -980,7 +980,9 @@ export class Sim {
   // Spawn safety: expanding-ring walk (no rng) to the nearest passable tile,
   // so squads anchored beside water (bridge posts) never start in the river.
   // Keeps the fractional part of the position; no-op on fully passable ground.
-  private nudgeSpawn(x: number, y: number): { x: number; y: number } {
+  // Public since the deployment phase (V2): pre-tick placement shares the
+  // spawn nudge — deterministic expanding ring, zero rng draws.
+  nudgeSpawn(x: number, y: number): { x: number; y: number } {
     const tx = Math.round(x);
     const ty = Math.round(y);
     if (this.map.terrainAt(tx, ty).passable) return { x, y };
