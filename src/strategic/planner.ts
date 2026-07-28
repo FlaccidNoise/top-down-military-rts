@@ -10,8 +10,8 @@ import { lightAt } from '../sim/solar';
 import type { Side } from '../sim/sim';
 import { coarseOdds, TRIVIAL_RATIO } from './bridge';
 import { battleSiteOf, COARSE_DEF_MULT, CROSSING_ASSAULT_MULT, type Theater } from './theater';
-import { CONTACT_M, route, type Force, type FrontV2 } from './theater/force';
-import { orderMove } from './theater/step';
+import { anchorNode, CONTACT_M, route, type Force, type FrontV2 } from './theater/force';
+import { forceEtaMinutes, orderMove } from './theater/step';
 import { graphGap } from './theater/contact';
 import { combatMult, effStrength } from './theater/combat';
 import type { IntelView } from './intel';
@@ -105,6 +105,7 @@ export class Commander2 {
     public readonly doctrine: DoctrineV2,
     private readonly goals: WarGoals,
     private readonly deadlineDay: number,
+    private readonly opts: { nightTempo?: boolean } = {},
   ) {}
 
   // Estimated effective enemy strength within contact range of a node.
@@ -283,6 +284,21 @@ export class Commander2 {
         if (lightAt(front.clockMin) < 0.25) mult *= 1.0; // nightMult 1.0 until OQ7 lands a value
         const odds = coarseOdds(ownEff, defEff, mult);
         if (odds < attackFloor) continue; // held: not viable (yet)
+        // Dawn doctrine (S52): under night tempo an assault steps off only
+        // when its ARRIVAL falls in light — prepared fields of fire beat a
+        // blind approach, and a held force re-checks every eval as the
+        // arrival window sweeps across dawn. Advances (defEff 0) march at
+        // any hour; only the assault waits for first light. The eta runs
+        // the SAME shadow kernel over the prospective path orderMove would
+        // set, so the decision and the march cannot disagree.
+        if (this.opts.nightTempo) {
+          const r0 = route(t, anchorNode(t, f.pos), target);
+          if (r0) {
+            const prospective = f.pos.kind === 'edge' ? [f.pos.edgeId, ...r0.edges] : [...r0.edges];
+            const eta = forceEtaMinutes(front, { ...f, path: prospective }, target, { nightTempo: true });
+            if (lightAt(front.clockMin + eta) < 0.25) continue;
+          }
+        }
         viableSeen = true;
       }
       const r = orderMove(front, f.id, target);
