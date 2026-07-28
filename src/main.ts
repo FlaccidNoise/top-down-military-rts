@@ -43,7 +43,7 @@ import { syncStrengthsV2 } from './strategic/theater/sync';
 import type { Contact } from './strategic/theater/contact';
 import { BATTLE_CLASS_TO_MAPKIND } from './strategic/theater';
 import { applyTheaterOutcome, makeTheaterBattle, type TheaterBattle } from './strategic/bridge2';
-import { adoptLegacyRoster, discardSaves, loadGameV2, saveGameV2 } from './strategic/save2';
+import { adoptLegacyRoster, discardSaves, loadGameV2, saveGameV2, type AiSave } from './strategic/save2';
 import { TRIVIAL_RATIO } from './strategic/bridge';
 import { bindTouch, classify as classifyGesture, drawHoldRing, type TouchHandlers } from './ui/touch';
 import './ui/ui.css';
@@ -158,7 +158,9 @@ const save = () => {
   if (campPinned) return;
   const s = S();
   if (s.v2) {
-    if (!saveGameV2(s.v2.seed, s.v2.theaterCfg, s.v2.campaignCfg, s.campaign, s.v2.front)) {
+    // §4.8: the red plan rides the save — a reloaded commander keeps its axes.
+    const ai = { red: { lastEvalMin: s.v2.red.lastEvalMin, plan: s.v2.red.plan } };
+    if (!saveGameV2(s.v2.seed, s.v2.theaterCfg, s.v2.campaignCfg, s.campaign, s.v2.front, ai)) {
       mainMenu.setStorageWritable(false);
     }
   } else {
@@ -453,7 +455,7 @@ const mainMenu = new MainMenu({
   onContinue: () => {
     const g = loadGameV2();
     if (g.status !== 'ok') throw new Error(`Continue: probe said ok but load returned '${g.status}'`);
-    startCampaignV2({ kind: 'loaded', seed: g.seed, theaterCfg: g.cfg, campaignCfg: g.campaignCfg ?? DEFAULT_PRESET.campaign, campaign: g.campaign, front: g.front });
+    startCampaignV2({ kind: 'loaded', seed: g.seed, theaterCfg: g.cfg, campaignCfg: g.campaignCfg ?? DEFAULT_PRESET.campaign, campaign: g.campaign, front: g.front, ai: g.ai });
   },
   // OQ1 roster carry-over: the v3 grid save cannot migrate, the named men can.
   onContinueLegacy: () => {
@@ -939,7 +941,7 @@ function bootError(message: string): void {
 function startCampaignV2(
   source:
     | { kind: 'fresh'; seed: number; theaterCfg?: TheaterConfig; campaignCfg?: CampaignConfig; roster?: Campaign }
-    | { kind: 'loaded'; seed: number; theaterCfg: TheaterConfig; campaignCfg: CampaignConfig; campaign: Campaign; front: FrontV2 },
+    | { kind: 'loaded'; seed: number; theaterCfg: TheaterConfig; campaignCfg: CampaignConfig; campaign: Campaign; front: FrontV2; ai?: AiSave },
 ): void {
   const theaterCfg = source.kind === 'fresh' ? source.theaterCfg ?? DEFAULT_PRESET.theater : source.theaterCfg;
   const camp = source.kind === 'fresh' ? source.campaignCfg ?? DEFAULT_PRESET.campaign : source.campaignCfg;
@@ -992,6 +994,13 @@ function startCampaignV2(
         selectedForce: -1,
       },
     };
+    // §4.8: a reloaded red keeps its axes — restore the persisted plan.
+    // Missing field (a save written before persistence) = fresh commander,
+    // which replans on its next eval exactly as before.
+    if (source.kind === 'loaded' && source.ai?.red) {
+      session.v2!.red.plan = source.ai.red.plan;
+      session.v2!.red.lastEvalMin = source.ai.red.lastEvalMin ?? -Infinity;
+    }
     mode = 'strategic';
     mainMenu.close();
     selectedChit = -1;

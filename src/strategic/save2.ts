@@ -8,7 +8,18 @@
 import type { Campaign } from '../campaign/campaign';
 import { GEN_VERSION, type CampaignConfig, type TheaterConfig } from '../campaign/spec';
 import { makeTheater } from './theatergen';
+import type { OperationalPlan } from './planner';
 import type { CoarseBattle, Force, FrontV2, StratContact, TheaterEvent } from './theater/force';
+
+// §4.8: a reloaded commander must NOT forget its axes — a goal-driven
+// opponent that replans on load is a determinism break dressed as
+// simplification. lastEvalMin is null on the wire when the instance holds
+// -Infinity (never evaluated): JSON has no -Infinity.
+export interface CommanderSaveV2 {
+  lastEvalMin: number | null;
+  plan: OperationalPlan | null;
+}
+export type AiSave = Partial<Record<'blue' | 'red', CommanderSaveV2>>;
 
 const KEY_V4 = 'ccg-save-v4';
 const KEY_V3 = 'ccg-save-v3';
@@ -32,9 +43,25 @@ export interface SaveV4 {
     defileQueues: Record<number, number[]>;
     intel?: Record<'blue' | 'red', StratContact[]>; // S53: absent when omniscient
   };
+  ai?: AiSave; // §4.8: absent on saves written before commander persistence
 }
 
-export function saveGameV2(seed: number, cfg: TheaterConfig, campaignCfg: CampaignConfig, campaign: Campaign, front: FrontV2): boolean {
+export function saveGameV2(
+  seed: number,
+  cfg: TheaterConfig,
+  campaignCfg: CampaignConfig,
+  campaign: Campaign,
+  front: FrontV2,
+  ai?: Partial<Record<'blue' | 'red', { lastEvalMin: number; plan: OperationalPlan | null }>>,
+): boolean {
+  const wireAi: AiSave | undefined = ai
+    ? Object.fromEntries(
+        Object.entries(ai).map(([side, c]) => [
+          side,
+          { lastEvalMin: Number.isFinite(c.lastEvalMin) ? c.lastEvalMin : null, plan: c.plan },
+        ]),
+      )
+    : undefined;
   const payload: SaveV4 = {
     schema: 4,
     genVersion: GEN_VERSION,
@@ -42,6 +69,7 @@ export function saveGameV2(seed: number, cfg: TheaterConfig, campaignCfg: Campai
     theaterCfg: cfg,
     campaignCfg,
     campaign,
+    ai: wireAi,
     front: {
       clockMin: front.clockMin,
       day: front.day,
@@ -64,7 +92,7 @@ export function saveGameV2(seed: number, cfg: TheaterConfig, campaignCfg: Campai
 }
 
 export type LoadV2 =
-  | { status: 'ok'; seed: number; cfg: TheaterConfig; campaignCfg: CampaignConfig; campaign: Campaign; front: FrontV2 }
+  | { status: 'ok'; seed: number; cfg: TheaterConfig; campaignCfg: CampaignConfig; campaign: Campaign; front: FrontV2; ai?: AiSave }
   | { status: 'none' }
   | { status: 'stale-generator' }
   | { status: 'corrupt'; detail: string }
@@ -108,7 +136,7 @@ export function loadGameV2(): LoadV2 {
     // normalize to fresh, exactly what addForce defaults a new force to.
     forces: p.front.forces.map((f) => ({ ...f, untracedMin: f.untracedMin ?? 0, fatigue: f.fatigue ?? 0 })),
   };
-  return { status: 'ok', seed: p.seed, cfg: p.theaterCfg, campaignCfg: p.campaignCfg, campaign: p.campaign, front };
+  return { status: 'ok', seed: p.seed, cfg: p.theaterCfg, campaignCfg: p.campaignCfg, campaign: p.campaign, front, ai: p.ai };
 }
 
 // The OQ1 roster carry-over: the v3 campaign object is schema-compatible —
