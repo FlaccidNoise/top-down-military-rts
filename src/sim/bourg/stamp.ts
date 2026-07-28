@@ -2,19 +2,15 @@ import { EDGE, FLOOR_H, type EdgeType, type GameMap } from '../map';
 import type { Building, DoorEdge, Rect } from '../mapgen';
 
 // Mask-based structure stamper (docs/plans/2026-07-26-town-gen-design.md §3.3,
-// T3). Where addBuilding walks the perimeter of one rect, this builds an
+// T3), and since the mapgen-v3 P6 retirement the only one. It builds an
 // occupancy mask over the union of a Building's `parts` and extracts the
 // boundary as "the two tiles either side of this grid edge disagree". That is
 // ~10 lines and it gets L, U, courtyard and church-with-tower for free, which
-// a rect walker cannot express at all.
-//
-// Legacy addBuilding is deliberately left untouched and still serves every
-// other map kind: refactoring it onto this path would risk a one-bit
-// fingerprint drift for zero gain.
+// the rect walker it replaced could not express at all.
 
 const MAX_PARTITION_DEPTH = 2; // §3.3 step 6
-const MIN_PARTITION_SPAN = 8; // both halves must clear 4 tiles, matching addBuilding's `w >= 8`
-const WINDOW_PERIOD = 3; // every 3rd position of an exterior run, phase 1 — as addBuilding's win()
+const MIN_PARTITION_SPAN = 8; // both halves must clear 4 tiles
+const WINDOW_PERIOD = 3; // every 3rd position of an exterior run, phase 1
 
 // Boundary-edge classification, kept per grid edge over the mask's bbox.
 const B_NONE = 0; // not a boundary of this mask
@@ -282,7 +278,7 @@ function assertShape(b: Building, parts: Rect[]): void {
   }
 }
 
-// Fall back to addBuilding's convention when a caller supplies no doors: one
+// Fall back to the plain convention when a caller supplies no doors: one
 // opening mid-span on the street side. Scans outward from mid-span for the
 // first position that is genuinely on the mask boundary, then tries the other
 // faces, so a plot whose frontage face is entirely party wall still gets a way in.

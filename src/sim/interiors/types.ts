@@ -112,9 +112,9 @@ export type FurnitureKey = (typeof FURNITURE_KEYS)[number];
 //   Then write the structure's own plan.
 //
 // Consequences, all of them intended:
-//  - the pass is idempotent and independent of whichever stamper ran. Legacy
-//    `addBuilding`'s `w >= 8` partition at doorX and T3 `stampStructure`'s
-//    depth-2 AABB partitions are both simply overwritten.
+//  - the pass is idempotent and independent of whichever stamper ran. T3
+//    `stampStructure`'s depth-2 AABB partitions are simply overwritten, as the
+//    retired rect walker's mid-span partition was.
 //  - the church gets its tower door: nave and tower share a buildingId, so the
 //    town design's post-pass left that span EDGE.NONE, and interiors rewrites
 //    it to WALL (top = max of the two storey heights) + exactly one DOOR.
@@ -162,8 +162,7 @@ export interface Structure {
 //   the landing room = the room whose tiles contain a `map.stairs` tile
 //
 // Interiors NEVER MOVES A STAIR. It reads the tile the stamper placed
-// (`addBuilding`'s interior corner, `stampStructure`'s farthest-from-door
-// interior tile) and plans around it.
+// (`stampStructure`'s farthest-from-door interior tile) and plans around it.
 
 export type RoomKind =
   | 'hall' // house/farmhouse: the 2-wide circulation spine, front door to back wall
@@ -321,8 +320,8 @@ export const PLAN_BY_ROLE: Record<BuildingRole, 'house' | 'shop' | 'barn' | 'chu
 
 // ── §F · rng sub-streams (§6.1, D9) ─────────────────────────────────────────
 //
-// One draw on the shared stream inside `generateMap`, as the LAST draw of
-// `tryGenerate`, feeds every per-structure stream:
+// One draw on the shared stream inside `generateMap`, as the LAST draw of the
+// attempt, feeds every per-structure stream:
 //
 //   if (opts.interiors) furnishInteriors(map, buildings, rng.int(0x7fffffff));
 //

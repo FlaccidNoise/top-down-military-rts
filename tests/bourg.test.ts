@@ -1434,27 +1434,16 @@ describe('bourg determinism (§5.4)', () => {
     expect(fingerprint(generateMap(2, W, H, 'bourg', { relief: 'none' }))).toBe('98495a59');
   });
 
-  // §5.1's one-draw guard. The MECHANISM is D1 (the guard sits before
-  // tryGenerate's first draw) plus D2 (one shared-stream draw, inside it), but
-  // the mechanism is not the test. These pin the kinds the legacy pipeline
-  // still owns, and all six were verified byte-identical to `main` over 6 kinds
-  // x 3 sizes x 12 seeds at the commit that added them.
-  //
-  // 'road' left this list at the mapgen-v3 P2 cutover, 'open' at P3, 'woods'
-  // at P4 and both water kinds at P5 — each is a v3 kind now with its own pin
-  // above. 'town' is the last one left, and it is the leak control for P6: a
-  // profile or shared-stage change that moves it has escaped its kind. P6
-  // retires the kind and this test with it, at which point the six v3 pins
-  // above are the whole tripwire.
-  it('leaves the last legacy kind byte-identical', () => {
-    const fp = (kind: 'town', seed: number): string => fingerprint(generateMap(seed, 160, 120, kind));
-    expect([fp('town', 1), fp('town', 2)]).toMatchInlineSnapshot(`
-      [
-        "18f01cb4",
-        "d4caebbc",
-      ]
-    `);
-  });
+  // RETIRED at the mapgen-v3 P6 cutover: §5.1's one-draw guard test, which
+  // pinned the kinds the legacy pipeline still owned and asserted that no
+  // bourg tuning could reach them. 'road' left it at P2, 'open' at P3, 'woods'
+  // at P4, the water kinds at P5 and 'town' — the last legacy kind — was
+  // retired with the pipeline itself. The property it protected did not go
+  // away, it changed shape: the guard was D1 (a branch before the first draw),
+  // and what enforces it now is D2 alone (one shared-stream draw per attempt,
+  // every stage on its own sub-stream). The six per-kind pins above are the
+  // whole tripwire, and a profile change that moves a kind other than the one
+  // being tuned fails one of them.
 
   it('gives every stage tag a disjoint sub-stream', () => {
     // §2.1's rule, stated as something checkable. mulberry32 is a 32-bit

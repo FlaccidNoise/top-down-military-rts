@@ -39,9 +39,9 @@ export interface KindProfile {
   // cannot. null leaves the carrefour as the plain 3-wide crossing it was.
   placeLen: [number, number] | null;
   // stage 9 — the cap that sheds block-interior sheds before frontage, and the
-  // floor under which the whole attempt is rerolled. 0 disables the floor,
-  // which is what keeps a kind frozen before its own cutover: the reroll is
-  // new behaviour, not extraction (mapgen.ts tryGenerateV3).
+  // floor under which the whole attempt is rerolled. 0 disables the floor;
+  // `bourg` and `road` keep it disabled because their geometry pins were frozen
+  // before the reroll existed (mapgen.ts tryGenerateV3).
   maxBuildings: number;
   minBuildings: number;
   // stage 11 — the rural fabric
@@ -153,8 +153,8 @@ export const ROAD: KindProfile = {
 //
 // maxBuildings 24 is the nucleus cap; the outlying farms are appended past it
 // (rural.ts emitRural), so a 320x240 open map runs 20-40 buildings all in.
-// minBuildings 4 is the legacy floor carried over verbatim — the blob
-// pipeline rerolled an attempt that placed under four (mapgen.ts tryGenerate),
+// minBuildings 4 is the legacy floor carried over verbatim — the retired blob
+// pipeline rerolled an attempt that placed under four,
 // and scenario.ts destructures `[b0, , b2]` out of the list, so it is a
 // contract and not a preference.
 //
@@ -329,10 +329,12 @@ export const BRIDGE: KindProfile = {
   water: { width: 3 },
 };
 
-// The routing table: a kind reaches the v3 pipeline exactly when it has a
-// profile here (mapgen.ts tryGenerate). Partial while the legacy pipeline still
-// owns the other kinds — a cutover is an entry added here, not a new branch.
-export const PROFILES: Partial<Record<MapKind, KindProfile>> = {
+// The routing table, and since P6 retired the legacy pipeline it is the WHOLE
+// dispatch: generateMap looks the kind up here and runs the one pipeline
+// against what it finds. A new map kind is a record in this table, never a
+// branch. Exhaustive by type, so adding a MapKind arm fails to compile until
+// its parameters exist.
+export const PROFILES: Record<MapKind, KindProfile> = {
   bourg: BOURG,
   road: ROAD,
   open: OPEN,

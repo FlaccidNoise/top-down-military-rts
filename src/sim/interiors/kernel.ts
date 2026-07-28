@@ -55,7 +55,7 @@ export interface Interior {
   // because the only mass where the two flanks disagree is a church group
   // (nave 2, tower 4), where the design's rule for the shared span is
   // explicitly `max` anyway. All partition edges of a single-storey-count mass
-  // get exactly what addBuilding and stampStructure would have given them.
+  // get exactly what stampStructure would have given them.
   top: number;
 }
 

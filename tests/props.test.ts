@@ -10,7 +10,7 @@ import { propsFor } from '../src/render/props';
 const SEEDS = [1, 2, 3, 5, 7, 11, 13, 17, 19, 23];
 
 function build(seed: number) {
-  const plan = generateMap(seed, 320, 240, 'town');
+  const plan = generateMap(seed, 320, 240, 'open');
   return { map: plan.map, props: propsFor(plan.map, new PatchIndex(plan.map)) };
 }
 
@@ -79,7 +79,7 @@ describe('propsFor', () => {
 
   it('is byte-identical across two builds of the same map', () => {
     for (const seed of SEEDS) {
-      const plan = generateMap(seed, 320, 240, 'town');
+      const plan = generateMap(seed, 320, 240, 'open');
       const a = propsFor(plan.map, new PatchIndex(plan.map));
       const b = propsFor(plan.map, new PatchIndex(plan.map));
       expect(a).toEqual(b);

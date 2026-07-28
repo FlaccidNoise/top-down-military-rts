@@ -378,9 +378,9 @@ function fillSweptSegs(g: Ctx, segs: Seg[], width: number, style: string, odx: n
 }
 
 // Two builds of the same limestone. The waist-high plot wall keeps the warm
-// tones the legacy yard walls already use (yards.ts WALL_TONES), so a bourg
-// garden boundary and a 'town' farm boundary read as the same material on a
-// map that has both.
+// tones the yard walls already use (yards.ts WALL_TONES), so a bourg garden
+// boundary and a hamlet farm boundary read as the same material on a map that
+// has both.
 //
 // The head-high enclosure is wider, cooler and DARKER, not brighter. That is
 // counter-intuitive and it is the whole trick: doubling the height doubles the

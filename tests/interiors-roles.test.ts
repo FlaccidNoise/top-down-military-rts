@@ -93,24 +93,14 @@ describe('interiors roles — §3.7 legacy inference', () => {
     expect(bs.map((b) => b.role)).toEqual(['farmhouse', 'barn', 'civic', 'shop']);
   });
 
-  test('every building on every legacy kind ends up with a role, and it is deterministic', () => {
-    // 'open' left this list at the mapgen-v3 P3 cutover, 'woods' at P4 and
-    // 'river' at P5: the organic pipeline roles every mass it emits, including
-    // 9 shops on seed 7, so inferRoles is a no-op there and the "at most two
-    // shops" bound is about the INFERENCE and not about the map. It is
-    // asserted with the bourg below instead. 'town' is the last legacy kind.
-    for (const kind of ['town'] as const) {
-      const a = generateMap(7, 160, 120, kind);
-      const b = generateMap(7, 160, 120, kind);
-      inferRoles(a.buildings, a.objectives[0]);
-      inferRoles(b.buildings, b.objectives[0]);
-      expect(a.buildings.every((x) => x.role !== undefined), kind).toBe(true);
-      expect(a.buildings.map((x) => x.role), kind).toEqual(b.buildings.map((x) => x.role));
-      // "the TWO nearest, among the buildings still unlabelled" — a kind whose
-      // buildings are nearly all in close pairs simply has fewer left over
-      expect(a.buildings.filter((x) => x.role === 'shop').length, kind).toBeLessThanOrEqual(2);
-    }
-  });
+  // DELETED at the mapgen-v3 P6 retirement: 'every building on every legacy
+  // kind ends up with a role, and it is deterministic'. It ran inferRoles over
+  // a GENERATED map, which only made sense while a generator emitted buildings
+  // with no roles. 'open' left the list at the P3 cutover, 'woods' at P4,
+  // 'river' at P5 and 'town' was the last. The inference itself is asserted
+  // against the hand-built fixture above, where the input is chosen rather than
+  // hoped for; the generated half is now the test below, which asserts the
+  // stronger property that inferRoles has nothing left to do.
 
   test('a v3 kind is untouched — every building already carries its generator role', () => {
     for (const [kind, w, h] of [['bourg', 320, 240], ['road', 320, 240], ['open', 160, 120], ['woods', 320, 240], ['river', 320, 240], ['bridge', 320, 240]] as const) {
@@ -185,7 +175,7 @@ describe('interiors roles — D11 the rear door', () => {
 
   test('both doors reach the whole interior after the pass has furnished it', () => {
     const bad: string[] = [];
-    for (const kind of ['open', 'town'] as const) {
+    for (const kind of ['open', 'woods'] as const) {
       const plan = generateMap(5, 160, 120, kind);
       furnishInteriors(plan.map, plan.buildings, 21, plan.objectives[0]);
       for (const struct of structuresOf(plan.map, plan.buildings)) {
@@ -203,8 +193,8 @@ describe('interiors roles — D11 the rear door', () => {
   test('after the pass every bourg mass of area >= 20 has two doors on two sides', () => {
     // The bourg already gives most of its buildings two openings (frontage +
     // venelle), so D11 fires on only a handful here — 5 barns and 2 farmhouses
-    // on this seed. It is the LEGACY kinds, where addBuilding emits exactly one
-    // door, that it transforms. What matters either way is the end state.
+    // on this seed. It transformed the legacy kinds instead, whose one-door
+    // footprints it retired with at P6. What matters either way is the end state.
     const plan = generateMap(4, 320, 240, 'bourg');
     const before = new Map<number, number>();
     for (const struct of structuresOf(plan.map, plan.buildings)) {

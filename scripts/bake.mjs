@@ -19,7 +19,7 @@ import { arg, launch, gotoStaged, deriveTargets, place } from './lib/stage.mjs';
 const PORT = Number(arg('port', '5198'));
 const SEED = Number(arg('seed', '7'));
 const LIMIT_MS = Number(arg('limit', '8'));
-const KIND = arg('kind', 'town'); // --kind bourg times the bourg surfaces (place chunk etc.)
+const KIND = arg('kind', 'open'); // --kind bourg times the bourg surfaces (place chunk etc.)
 const BANDS = [8, 16, 32, 48];
 const REPS = 5;
 

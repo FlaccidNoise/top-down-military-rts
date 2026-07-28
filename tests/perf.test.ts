@@ -155,38 +155,25 @@ describe('perf: mapgen validation gate', () => {
   // (docs/plans/2026-07-26-town-gen-design.md D3). Measured on this box before
   // the swap: 'town' 320x240 mean 59.6ms, 'open' 40.9ms; after: 5.3ms / 6.6ms.
   //
-  // Two asserts, because neither alone is enough. The first is a RATIO, for the
-  // same reason los-micro uses one — absolute ms flap under vitest contention,
-  // but the property T1 actually bought is that the gate is O(1) in building
-  // count, and that is measurable load-invariantly by re-validating one map
-  // with its building list padded 20x. Pre-T1 that padding multiplied the A*
-  // count by 20; post-T1 it adds 20x an array lookup.
+  // The assert is a RATIO, for the same reason los-micro uses one — absolute ms
+  // flap under vitest contention, but the property T1 actually bought is that
+  // the gate is O(1) in building count, and that is measurable load-invariantly
+  // by re-validating one map with its building list padded 20x. Pre-T1 that
+  // padding multiplied the A* count by 20; post-T1 it adds 20x an array lookup.
   const PADDED_MAX_RATIO = 1.5;
-  // The second is absolute, with the design's post-T1 budget doubled to absorb
-  // full-suite contention. It only fires on a real blowup, and the logged mean
-  // is the number to read.
-  const GEN_SANITY_MS = 30;
 
-  it('flood-fill gate: mapgen stays inside budget and is flat in building count', () => {
-    generateMap(1, MAP_W, MAP_H, 'town'); // JIT warmup: the first call runs ~3x the steady state
-    const means: Record<string, number> = {};
-    // 'open' left this loop at the mapgen-v3 P3 cutover. GEN_SANITY_MS is a
-    // single-pass mean under full-suite contention, calibrated against the
-    // legacy blob village at ~3 ms; the organic pipeline costs ~20 ms
-    // standalone and 50-90 ms contended, so keeping 'open' here would have
-    // made this a contention detector. Every v3 kind has its own min-of-reps
-    // budget in the block below, which is where that cost belongs.
-    for (const kind of ['town'] as const) {
-      const ts: number[] = [];
-      for (let seed = 1; seed <= 20; seed++) {
-        const t0 = performance.now();
-        generateMap(seed, MAP_W, MAP_H, kind);
-        ts.push(performance.now() - t0);
-      }
-      means[kind] = mean(ts);
-    }
-
-    const plan = generateMap(SEED, MAP_W, MAP_H, 'town');
+  // The absolute half of this gate went with 'town' at the mapgen-v3 P6
+  // retirement. It was a single-pass mean over a whole-generator call, budgeted
+  // at 30 ms against the legacy blob village's ~3 ms; the organic pipeline
+  // costs ~20 ms standalone and 50-90 ms contended, so no surviving kind fits
+  // that budget and re-pointing it would have made it a contention detector
+  // rather than a gate. 'open' left the loop at P3 for exactly that reason.
+  // Every kind now has its own min-of-reps generator budget in the block below,
+  // which is where whole-generator cost belongs. What is left here is the
+  // property T1 actually bought, which no other test asserts: validate() is
+  // flat in building count.
+  it('flood-fill gate: validate is flat in building count', () => {
+    const plan = generateMap(SEED, MAP_W, MAP_H, 'open');
     const padded = { ...plan, buildings: Array.from({ length: 20 }, () => plan.buildings).flat() };
     // MIN of the reps, not the mean. The ratio is taken between two ~4 ms
     // measurements, and a mean over five reps carries every scheduler hiccup
@@ -209,7 +196,6 @@ describe('perf: mapgen validation gate', () => {
 
     console.log(
       `[perf] mapgen-gate ${JSON.stringify({
-        townMean: round(means.town),
         validateMs: round(bare),
         validate20xBuildingsMs: round(fat),
         ratio: round(fat / bare),
@@ -217,7 +203,6 @@ describe('perf: mapgen validation gate', () => {
       })}`,
     );
     expect(fat / bare).toBeLessThan(PADDED_MAX_RATIO);
-    expect(means.town).toBeLessThan(GEN_SANITY_MS);
   }, 60_000);
 });
 
@@ -567,10 +552,12 @@ describe('perf: bourg generation (§5.5)', () => {
   }, 120_000);
 
   it('bourg-patches: PatchIndex construction is still O(w·h), not O(buildings)', () => {
-    // T13's second half. A bourg is the same 76,800 tiles as a 'town' with ~3x
-    // the buildings, so a construction cost that tracks the building list shows
-    // up here as a ratio and nowhere else — and PatchIndex is built once per
-    // battle load, on the same synchronous path as the generator.
+    // T13's second half. A bourg is the same 76,800 tiles as an 'open' hamlet
+    // with several times the buildings, so a construction cost that tracks the
+    // building list shows up here as a ratio and nowhere else — and PatchIndex
+    // is built once per battle load, on the same synchronous path as the
+    // generator. The lean side of the comparison was 'town' until the
+    // mapgen-v3 P6 retirement; 'open' is the sparsest kind left.
     const best = (map: GameMap): number => {
       let b = Infinity;
       for (let i = 0; i < 9; i++) {
@@ -580,23 +567,31 @@ describe('perf: bourg generation (§5.5)', () => {
       }
       return b;
     };
-    const townPlan = generateMap(SEED, MAP_W, MAP_H, 'town');
+    const openPlan = generateMap(SEED, MAP_W, MAP_H, 'open');
     const bourgPlan = generateMap(SEED, MAP_W, MAP_H, 'bourg');
-    best(townPlan.map); // warmup
-    const townMs = best(townPlan.map);
+    best(openPlan.map); // warmup
+    const openMs = best(openPlan.map);
     const bourgMs = best(bourgPlan.map);
     console.log(
       `[perf] bourg-patches ${JSON.stringify({
-        townMs: round(townMs),
+        openMs: round(openMs),
         bourgMs: round(bourgMs),
-        ratio: round(bourgMs / townMs),
-        townBuildings: townPlan.buildings.length,
+        ratio: round(bourgMs / openMs),
+        openBuildings: openPlan.buildings.length,
         bourgBuildings: bourgPlan.buildings.length,
       })}`,
     );
-    // min-of-reps on both sides, as the flood-fill gate's ratio does; measured
-    // 1.08 with 21 vs 55 buildings, and an O(n²) regression is orders out
-    expect(bourgMs / townMs).toBeLessThan(2);
+    // min-of-reps on both sides, as the flood-fill gate's ratio does. Measured
+    // standalone on this seed over 5 reps: 1.17-1.49 with 35 open buildings
+    // against 78 bourg ones — the cost tracks the 76,800 tiles, not the list.
+    //
+    // The bound moved from 2.0 to 2.5 when 'open' replaced 'town' here at the
+    // mapgen-v3 P6 retirement. It is a ratio of two ~2 ms measurements, and the
+    // pair does not inflate together under contention: a full parallel suite
+    // read 2.11 and tripped a 2.0 bound that had 1.85x headroom over 'town's
+    // 1.08. 2.5 restores that headroom over the number above. An O(n²)
+    // regression on 78 buildings is orders past either.
+    expect(bourgMs / openMs).toBeLessThan(2.5);
   }, 60_000);
 });
 
@@ -614,8 +609,8 @@ describe('perf: bourg generation (§5.5)', () => {
 //    The design's 4 ms budget is a production budget and the shipped path meets
 //    it; what runs in CI is the 4 ms path.
 // 2. THE CEILINGS ARE CONTENTION CEILINGS, NOT BUDGETS. Isolated, min-of-reps:
-//    0.59 ms mean / 1.01 ms max on 160x120 'open', 0.99 / 1.16 on 160x120
-//    'town', 3.25 / 3.93 on a 45-building 320x240 bourg. The whole-suite
+//    0.59 ms mean / 1.01 ms max on 160x120 'open', 3.25 / 3.93 on a
+//    45-building 320x240 bourg. The whole-suite
 //    contention factor this file has already measured for generateMap is ~1.8x
 //    (bourg-gen's comment: 18.0 standalone → 31.8 under load), so the asserts
 //    sit at roughly 2.5x the isolated mean. The console line is the real
@@ -628,7 +623,7 @@ describe('perf: interiors furnishing (§6.5)', () => {
   // Times the pass ALONE, on an already-generated map, which is the only way to
   // see it: as a delta between two `generateMap` calls it is inside the noise
   // of the generator it is a tenth of.
-  function furnishCost(kind: 'open' | 'town' | 'bourg', w: number, h: number, seeds: number): number[] {
+  function furnishCost(kind: 'open' | 'bourg', w: number, h: number, seeds: number): number[] {
     // V8 needs more than one pass over ~2,000 lines of cold partitioner before
     // it tiers up: a single warmup call measures 27 ms/map on a bourg and 4 ms
     // once warm. Six is empirically past the knee.
@@ -654,21 +649,20 @@ describe('perf: interiors furnishing (§6.5)', () => {
   }
 
   it('furnish-cost: the pass stays inside its budget on 160x120 and on a 45-building bourg', () => {
+    // A second 160x120 sample on 'town' sat beside 'open' here until the
+    // mapgen-v3 P6 retirement. Both measured the same pass on the same size
+    // class, so what it added was a second generator, not a second budget.
     const open = furnishCost('open', 160, 120, 20);
-    const town = furnishCost('town', 160, 120, 20);
     const bourg = furnishCost('bourg', MAP_W, MAP_H, 10);
     console.log(
       `[perf] furnish-cost ${JSON.stringify({
         openMean: round(mean(open)),
         openMax: round(max(open)),
-        townMean: round(mean(town)),
-        townMax: round(max(town)),
         bourgMean: round(mean(bourg)),
         bourgMax: round(max(bourg)),
       })}`,
     );
     expect(mean(open)).toBeLessThan(FURN_SMALL_MS);
-    expect(mean(town)).toBeLessThan(FURN_SMALL_MS);
     expect(mean(bourg)).toBeLessThan(FURN_BOURG_MS);
   }, 120_000);
 

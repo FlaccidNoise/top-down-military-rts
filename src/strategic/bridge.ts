@@ -677,11 +677,11 @@ export function resolveCoarse(
   const defCell = front.sector.cells[e.cell];
   const atkCell = front.sector.cells[attacker.cell];
   // Coarse balance knobs (tuned 2026-07 across 16 campaign seeds: wars run
-  // 1-15 days with both 'won' and 'lost' outcomes): a town garrison is a
+  // 1-15 days with both 'won' and 'lost' outcomes): a bourg garrison is a
   // fortress (repeated full-strength assaults to crack), woods give cover,
   // and an assault across a defended river/bridge crossing is costlier.
   let terrainMult = 1.0;
-  if (defCell.terrain === 'town' || defCell.terrain === 'bourg') terrainMult *= 7.0;
+  if (defCell.terrain === 'bourg') terrainMult *= 7.0;
   if (defCell.terrain === 'woods') terrainMult *= 1.5;
   if (atkCell.terrain === 'river' || atkCell.terrain === 'bridge') terrainMult *= 2.0; // assault across a defended crossing
   if (lightAt(front.clockMin) < 0.25) terrainMult *= nightMult;

@@ -77,8 +77,8 @@ for (const [k, v] of Object.entries(cols)) console.log(`  ${k.padEnd(6)} ${fmt(s
 console.log(`  reject rate (attempt 0): ${rejects}/${N} = ${((100 * rejects) / N).toFixed(2)}%${rejectSeeds.length ? ` seeds=${rejectSeeds.join(',')}` : ''}`);
 
 if (has('kinds')) {
-  console.log('\nlegacy kinds (T1 flood-fill gate regression, §5.5):');
-  for (const kind of ['open', 'woods', 'town', 'river', 'bridge', 'road']) {
+  console.log('\nother kinds (T1 flood-fill gate regression, §5.5):');
+  for (const kind of ['open', 'woods', 'river', 'bridge', 'road']) {
     const v = [];
     for (let s = 1; s <= 20; s++) {
       const t = performance.now();

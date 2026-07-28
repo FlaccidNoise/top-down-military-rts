@@ -81,10 +81,9 @@ export function stampBourg(map: GameMap, plan: BourgPlan): BourgStamp {
     for (let i = 0; i < sk.water.length; i++) if (sk.water[i]) map.setTerrain(i % sk.w, (i / sk.w) | 0, 'water');
   // 11b: hedges, woods, orchards, fields — every pass writes only over 'grass'
   const woodsStands = paintRural(map, sk, land, pc, fp, rural);
-  // roads next, so they win over the rural passes exactly as mapgen's do — and
-  // over the water, which is the legacy deck rule byte for byte (mapgen.ts
-  // tryGenerate): a road tile that overwrites water IS the bridge, and it is
-  // recorded before the water is lost.
+  // roads next, so they win over the rural passes — and over the water, which
+  // is the retired legacy pipeline's deck rule byte for byte: a road tile that
+  // overwrites water IS the bridge, and it is recorded before the water is lost.
   const deck: number[] = [];
   for (let i = 0; i < sk.road.length; i++)
     if (sk.road[i]) {

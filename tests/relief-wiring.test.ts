@@ -9,7 +9,7 @@ import { astar } from '../src/sim/path';
 // geometry against hand-built maps; this file owns the GENERATOR contract:
 // where the stage fires, what it is forbidden to move, and what the halt is.
 
-const KINDS: MapKind[] = ['open', 'road', 'woods', 'town', 'river', 'bridge', 'bourg'];
+const KINDS: MapKind[] = ['open', 'road', 'woods', 'river', 'bridge', 'bourg'];
 const W = 320;
 const H = 240;
 
@@ -43,7 +43,6 @@ const PRE_RELIEF: Record<MapKind, string[]> = {
   // Recaptured at the mapgen-v3 P4 cutover, when 'woods' left the legacy
   // pipeline for the organic one (scripts/fp.mjs --kind woods).
   woods: ['6bc6def', 'd2a9c9dd', 'a61532f1', 'ecff631b', '48258cb', '72030ab0', '423c2e6c', '87eceaeb'],
-  town: ['bcd466e9', '6553b8e2', '3a445204', '4c57c79f', 'acdb9db2', 'dd238bd7', 'ace5f889', 'e538b159'],
   // Recaptured at the mapgen-v3 P5 cutover, when the two water kinds left the
   // legacy pipeline for the organic one (scripts/fp.mjs --kind river,bridge).
   // These cover the water stage itself: TAG.WATER's band is carved inside the
@@ -134,11 +133,12 @@ describe('V3 additivity', () => {
       }
   });
 
-  it("leaves 'town' byte-identical even with the stage switched on", () => {
-    // H8: the bourg design freezes 'town' and every sweep crop depends on it,
-    // so its profile is the null one and the guard never fires.
-    PRE_RELIEF.town.forEach((want, i) => expect([i + 1, fingerprint(gen(i + 1, W, H, 'town'))]).toEqual([i + 1, want]));
-  });
+  // DELETED at the mapgen-v3 P6 retirement: H8's "leaves 'town' byte-identical
+  // even with the stage switched on". 'town' was the one kind whose relief
+  // profile was NO_RELIEF, so the stage was a no-op on it with the size gate
+  // wide open — a control on the guard. Every surviving kind carries a live
+  // profile, so the control has no subject; the per-kind test below is what
+  // asserts a kind gets its own profile and not one global switch.
 
   it('applies the per-kind profile, not one global switch', () => {
     for (const kind of KINDS) {

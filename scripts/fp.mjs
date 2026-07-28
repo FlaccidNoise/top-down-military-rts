@@ -13,7 +13,7 @@
 // literal exactly. That round-trip is the test of this script.
 import { generateMap } from '../src/sim/mapgen';
 
-const KINDS = ['open', 'road', 'woods', 'town', 'river', 'bridge', 'bourg'];
+const KINDS = ['open', 'road', 'woods', 'river', 'bridge', 'bourg'];
 const W = 320;
 const H = 240;
 const SEEDS = 8;

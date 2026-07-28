@@ -362,21 +362,12 @@ describe('interiors furnish — the real maps', () => {
     expect(bad).toEqual([]);
   });
 
-  test('a legacy town furnishes too — every building, no role, nothing sealed', () => {
-    const plan = generateMap(1, 160, 120, 'town');
-    const map = plan.map;
-    furnishInteriors(map, plan.buildings, 99);
-    let furnished = 0;
-    const bad: string[] = [];
-    for (const struct of structuresOf(map, plan.buildings)) {
-      const it = interiorOf(map, struct);
-      if (it === null) continue;
-      if (sealedTiles(map, it).length > 0) bad.push(`#${it.id} sealed`);
-      if (furnitureIn(map, it).length > 0) furnished++;
-    }
-    expect(bad).toEqual([]);
-    expect(furnished).toBe(plan.buildings.length);
-  });
+  // DELETED at the mapgen-v3 P6 retirement: 'a legacy town furnishes too —
+  // every building, no role, nothing sealed'. Its subject was a generator that
+  // emitted bare role-less footprints, and no generator does: every kind runs
+  // the organic pipeline and roles every mass. The surviving half — every
+  // building furnished, nothing sealed, on a 160x120 map — is asserted over all
+  // six kinds and ten seeds by the sweep in tests/interiors.test.ts.
 
   test('no furniture key is vehicle-passable — findVehicleSpot can never pick one', () => {
     for (const k of FURNITURE_KEYS) expect(TERRAIN[k].noVehicle).toBe(true);

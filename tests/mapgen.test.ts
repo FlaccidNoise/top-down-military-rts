@@ -259,12 +259,12 @@ describe('mapgen', () => {
 
   // DELETED at the mapgen-v3 P3 cutover: 'town maps pack a denser village
   // around the crossroads'. It asserted near(town) >= near(open) + 6 within 40
-  // tiles of the crossroads, and that is now false — measured deltas +4, -2, -6
+  // tiles of the crossroads, and that became false — measured deltas +4, -2, -6
   // on seeds 1, 5, 9, because the organic hamlet packs its carrefour harder
   // than the legacy blob cluster ever did. The half of it worth keeping (the
   // open nucleus IS dense) is asserted directly by the scenario battery above
   // and by the open structure battery in tests/bourg.test.ts; the other half
-  // compared two different generators and dies with 'town' at P6 anyway.
+  // compared two generators, and P6 retired the one it was comparing against.
 
   it('bridge objective sits on the carved road-water crossing (seeds 1-15)', () => {
     for (const kind of ['bridge', 'river'] as const) {

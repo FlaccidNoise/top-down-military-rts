@@ -487,9 +487,9 @@ export function buildSkeleton(base: number, w: number, h: number, profile: KindP
 const BANK_GAP_MIN = 6;
 const BANK_GAP_SPAN = 7;
 
-// The N→S band, west of the nucleus. The walk is the legacy river verbatim
-// (mapgen.ts tryGenerate): a seed column, ±1 with p 0.15 per row, clamped to
-// ±3 of the seed, so the band wanders about a line rather than off it.
+// The N→S band, west of the nucleus. The walk is the retired legacy river's
+// verbatim: a seed column, ±1 with p 0.15 per row, clamped to ±3 of the seed,
+// so the band wanders about a line rather than off it.
 //
 // DEVIATION from §2.5, which derives the band from `place` and then places the
 // ENVELOPE clear of it. The envelope IS place, offset by half its width, so
