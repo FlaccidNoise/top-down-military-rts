@@ -727,7 +727,7 @@ export function sightToSoldier(sim: Sim, x0: number, y0: number, t: Soldier, l0 
 // intel too. Recomputed on a cadence in step(); deterministic (no RNG) and
 // never read back by sim behavior.
 export const SPOT_INTERVAL = 15; // ticks: 0.5 s between spotting sweeps
-const SPOT_RANGE = 200; // m — beyond every small-arms range
+export const SPOT_RANGE = 200; // m — beyond every small-arms range
 export const CONTACT_TTL = 45 * 30; // ticks a last-known ghost lingers
 
 export interface Contact {
