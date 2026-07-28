@@ -5,3 +5,5 @@ dist/
 .playwright-mcp/
 .DS_Store
 *.log
+scripts/.bal-*.json
+scripts/.bal-*.log
