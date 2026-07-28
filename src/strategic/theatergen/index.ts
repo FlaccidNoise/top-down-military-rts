@@ -116,15 +116,46 @@ export function makeTheater(seed: number, cfg: TheaterConfig): TheaterResult {
       .filter((n) => (n.kind === 'town' && control[n.id] === 'red') || (n.crossing?.riverId === 0 && n.crossing.kind === 'bridge'))
       .map((n) => n.id)
       .sort((a, b) => a - b);
-    // Supply sources: the westmost blue node and the eastmost red node —
-    // the map-edge lifelines. Drawn tiebreak keeps the stage's stream live
-    // so appending draws later never reshuffles another stage.
+    // Supply sources: the map-edge lifelines — westmost blue, eastmost red,
+    // picked from each side's LARGEST connected component of own-controlled
+    // nodes. The literal westmost blue node can hang off a red-held crossing
+    // on a spur (crossings start red by the partition rule), and a source
+    // nobody can trace from makes supply a lie for the whole campaign —
+    // found live at seed 7: source 14's only road ran through crossing 15
+    // and every blue force read OUT from minute one. Drawn tiebreak keeps
+    // the stage's stream live so appending draws later never reshuffles
+    // another stage.
     void objRng.next();
-    const blueSorted = nodes.filter((n) => control[n.id] === 'blue').sort((a, b) => a.pos.x - b.pos.x || a.id - b.id);
-    const redSorted = nodes.filter((n) => control[n.id] === 'red').sort((a, b) => b.pos.x - a.pos.x || a.id - b.id);
+    const sideSources = (side: Side, eastmost: boolean): number[] => {
+      const mine = new Set(nodes.filter((n) => control[n.id] === side).map((n) => n.id));
+      const seen = new Set<number>();
+      const out: number[] = [];
+      for (const start of [...mine].sort((a, b) => a - b)) {
+        if (seen.has(start)) continue;
+        const comp: number[] = [start];
+        seen.add(start);
+        const q = [start];
+        while (q.length > 0) {
+          const n = q.pop()!;
+          for (const e of edges) {
+            if (e.moveClass === 'rail') continue;
+            const far = e.a === n ? e.b : e.b === n ? e.a : -1;
+            if (far < 0 || seen.has(far) || !mine.has(far)) continue;
+            seen.add(far);
+            comp.push(far);
+            q.push(far);
+          }
+        }
+        const byX = comp
+          .map((id) => nodes[id])
+          .sort((a, b) => (eastmost ? b.pos.x - a.pos.x : a.pos.x - b.pos.x) || a.id - b.id);
+        out.push(byX[0].id);
+      }
+      return out.sort((a, b) => a - b);
+    };
     const sources: Record<Side, number[]> = {
-      blue: blueSorted.length > 0 ? [blueSorted[0].id] : [],
-      red: redSorted.length > 0 ? [redSorted[0].id] : [],
+      blue: sideSources('blue', false),
+      red: sideSources('red', true),
     };
 
     const theater: Theater = {

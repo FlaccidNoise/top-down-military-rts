@@ -225,3 +225,30 @@ describe('no-supply-source (the 12th reject)', () => {
     }
   });
 });
+
+// The spur-source regression (GEN_VERSION 2): the literal westmost blue node
+// can hang off a red-held crossing, and a source nobody can trace from makes
+// supply a lie for the whole campaign — every blue force read OUT from
+// minute one at seed 7. Sources now come from each side's largest component.
+describe('sources reach the army', () => {
+  it('every disposition force starts SUPPLIED across 16 seeds', () => {
+    for (let s = 1; s <= 16; s++) {
+      const { theater, initialControlByNode } = makeTheater(s, DEFAULT_PRESET.theater);
+      const campaign = newCampaign(s, DEFAULT_PRESET.campaign.blueCompanies);
+      const spec = presetSpec(DEFAULT_PRESET, s);
+      const d = makeDisposition(theater, DEFAULT_PRESET.campaign, campaign, initialControlByNode, specStream(spec, SPEC_TAG.DISPOSITION));
+      const front: FrontV2 = {
+        theater, clockMin: 360, day: 1, nextForceId: 0, nextBattleId: 0, forces: [],
+        controlByNode: [...initialControlByNode], battles: [], events: [], defileQueues: {},
+      };
+      for (const f of d.forces) addForce(front, f);
+      for (const side of ['blue', 'red'] as const) {
+        const { traced } = traceSupply(front, side);
+        for (const f of front.forces) {
+          if (f.side !== side) continue;
+          expect(forceSupplied(front, f, traced), `seed ${s}: ${f.name} starts cut off`).toBe(true);
+        }
+      }
+    }
+  });
+});
