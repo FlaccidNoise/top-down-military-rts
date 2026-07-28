@@ -579,6 +579,7 @@ export class RedCommander {
       if (Math.hypot(c.x - cur.x, c.y - cur.y) > POST_HELD_RADIUS) return working(cur);
       if (this.threatConfNear(cur.x, cur.y, POST_CLEAR_RADIUS) >= CLEAR_CONF) return working(cur);
       this.takenPosts.push(cur);
+      this.lastProgressTick = sim.tick; // an objective taken restarts the culmination stall clock
     }
     const next = this.nextPost(sim, cur);
     // Nothing left it knows of, or the objective it is already on has come

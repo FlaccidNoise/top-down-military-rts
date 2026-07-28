@@ -333,6 +333,55 @@ describe('AI commander doctrine', () => {
     expect(manTeam.orderState.order?.kind).toBe('defend');
   });
 
+  it('culmination: an objective taken mid-window restarts the stall clock — a winning attack does not break off', () => {
+    // The reset half of "losses without progress". The latch test above never
+    // takes an objective, so it cannot see a dead reset path (the audit that
+    // demanded this test found exactly that: the reset was planned and never
+    // wired — a forced-precondition latch test stayed green throughout).
+    const sim = new Sim(new GameMap(140, 60), 105);
+    const post = { x: 120, y: 30 };
+    const mg = sim.addSquad('red', 'MG', [{ name: 'G', weapon: 'mg42', x: 60.5, y: 30.5 }]);
+    const mkTeam = (name: string, y0: number) =>
+      sim.addSquad(
+        'red',
+        name,
+        Array.from({ length: 6 }, (_, i) => ({ name: `${name}${i}`, weapon: 'kar98k' as const, x: 96.5, y: y0 + i })),
+      );
+    const man = mkTeam('M', 24.5);
+    const man2 = mkTeam('N', 33.5);
+    const garrison = sim.addSquad('blue', 'Garrison', [{ name: 'B1', weapon: 'kar98k', x: 122.5, y: 30.5 }]);
+    const commander = new RedCommander({ side: 'red', stance: 'attack', posts: { [mg.id]: post, [man.id]: post, [man2.id]: post } });
+
+    sim.tick = SPOT_INTERVAL;
+    commander.update(sim); // classify: stall clock starts
+
+    // Inside the stall window the attack takes its objective: garrison gone,
+    // M team standing on the post (never-spotted defenders leave no threat
+    // confidence, so standing on the post records it taken).
+    for (const id of garrison.soldierIds) sim.soldiers[id].alive = false;
+    man.soldierIds.forEach((id, i) => {
+      sim.soldiers[id].x = post.x + 0.5;
+      sim.soldiers[id].y = post.y - 2.5 + i;
+    });
+    sim.tick = SPOT_INTERVAL + 10650;
+    commander.update(sim);
+    expect(commander['takenPosts'].length).toBeGreaterThan(0); // the take really happened — the reset is not asserted on air
+
+    // Past the ORIGINAL deadline with losses over the threshold: the clock
+    // restarted at the take, so the attack presses on.
+    const hit = [...man.soldierIds.slice(0, 3), ...man2.soldierIds.slice(0, 2)];
+    for (const id of hit) sim.soldiers[id].downed = true;
+    sim.tick = SPOT_INTERVAL + 10800 + 150;
+    commander.update(sim);
+    expect(commander['culminated']).toBe(false);
+
+    // A full stall window after the take, still bleeding and no new ground:
+    // now it culminates.
+    sim.tick = SPOT_INTERVAL + 10650 + 10800;
+    commander.update(sim);
+    expect(commander['culminated']).toBe(true);
+  });
+
   it('smoke before assault: the commander screens the objective with mortar smoke, and the charge steps off only after the screen is up', () => {
     const map = new GameMap(140, 60);
     const sim = new Sim(map, 102);

@@ -58,7 +58,9 @@ const OUT = argList('out', ['.balance-baseline.json'])[0];
 // from the repo root doubles to scripts/scripts/ and the ENOENT lands AFTER
 // the whole sweep has run. Touch the target now so a bad path dies in 1s.
 const OUT_URL = new URL(`./${OUT}`, import.meta.url);
-writeFileSync(OUT_URL, '', { flag: 'a' });
+// Not under --merge: a pre-touched 0-byte .bal-* out file would land in the
+// merge's own shard glob and JSON.parse('') kills the merge it protects.
+if (!process.argv.includes('--merge')) writeFileSync(OUT_URL, '', { flag: 'a' });
 
 // One cell: campaign seed = battle seed = `seed`, defender is the
 // full-strength (109-man) Garnison St-Aubin, engagement cell terrain forced to
