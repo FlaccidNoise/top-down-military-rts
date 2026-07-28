@@ -4,18 +4,23 @@
 import { esc } from './mainmenu';
 import { MANUAL, type ManualChapter } from './manual-data';
 
-/** Case-insensitive substring match over heading, body and both key columns. */
+/**
+ * Case-insensitive substring match over chapter title, heading, body and both
+ * key columns. A title hit keeps the whole chapter: the titles are the labels
+ * the player reads in the rail, and typing one back must never answer that
+ * nothing matches.
+ */
 export function filterManual(term: string): ManualChapter[] {
   const q = term.trim().toLowerCase();
   if (!q) return MANUAL;
   return MANUAL
-    .map((c) => ({
+    .map((c) => c.title.toLowerCase().includes(q) ? c : {
       ...c,
       entries: c.entries.filter((e) => {
         const keys = e.keys ? ` ${e.keys.desktop} ${e.keys.touch}` : '';
         return `${e.heading} ${e.body}${keys}`.toLowerCase().includes(q);
       }),
-    }))
+    })
     .filter((c) => c.entries.length > 0);
 }
 

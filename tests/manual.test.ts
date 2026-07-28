@@ -20,7 +20,22 @@ describe('filterManual', () => {
     for (const term of ['contact', 'CONTACT', 'Smoke', 'bridge']) {
       const hits = filterManual(term);
       expect(hits.length, term).toBeGreaterThan(0);
-      for (const e of allEntries(hits)) expect(entryText(e), `${term} / ${e.heading}`).toContain(term.toLowerCase());
+      for (const c of hits) {
+        if (c.title.toLowerCase().includes(term.toLowerCase())) continue; // whole chapter, by title
+        for (const e of c.entries) expect(entryText(e), `${term} / ${e.heading}`).toContain(term.toLowerCase());
+      }
+    }
+  });
+
+  // Three of the six titles appear in no entry ("Starting an Operation", "The
+  // Theater Map", "Touch Controls"). Without this rule the player types a label
+  // the rail is showing them and the manual answers that nothing matches.
+  it('returns the whole chapter when the term matches its title', () => {
+    for (const c of MANUAL) {
+      const hits = filterManual(c.title);
+      const chapter = hits.find((h) => h.id === c.id);
+      expect(chapter, `title search found no chapter for '${c.title}'`).toBeTruthy();
+      expect(chapter!.entries.length, c.title).toBe(c.entries.length);
     }
   });
 
