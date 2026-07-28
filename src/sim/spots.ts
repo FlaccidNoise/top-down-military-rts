@@ -317,6 +317,16 @@ export function crawlCoverSpot(sim: Sim, s: Soldier, blocked: Set<number>): { x:
 // tutorial gate asserts exactly that.
 export const DEPLOY_EDGE_INSET = 8;
 const DEPLOY_ARC_HALF = Math.PI / 4;
+// A team holds ONE posture, so the prone upgrade is a vote: lie down when at
+// least 1/PRONE_SHARE_DEN of the team's spots gain by it. A bank lip is a
+// one-tile-wide feature and a crest is a line, so a squad spread over a few
+// metres rarely gets half its men behind one — at a half the upgrade fired for
+// 5% of teams, which undersells ground the men are genuinely using. A third
+// is the loosest share that still means "this team is on that feature" rather
+// than "one man happens to be". The cost of being wrong is small and one-
+// sided: ambush is prone AND holds fire until contact, which is what a
+// deploying defender wants anyway, and any order the player issues replaces it.
+const PRONE_SHARE_DEN = 3;
 
 export interface DeployTeamPlan {
   teamId: number;
@@ -339,11 +349,17 @@ const PRONE_CREST = 1;
 // not — the majority vote below then reads the whole team as standing.
 const PRONE_CREST_REACH = 3;
 
-// A tile where lying down buys what crouching does not: a bank lip
-// (BANK_PRONE_LIP), or a crest between the man and the enemy. Behind either,
-// the deployment lies down — the reverse-slope start the ambush order encodes.
+// Is this a tile to lie down on? Anything real between the man and the enemy
+// counts — a hedge, a wall lip, a bank, or a crest.
+//
+// The narrower rule this replaces asked whether prone scores BETTER than
+// crouch, which only a bank lip and a crest do (a hedge covers you equally at
+// either height). Measured over 120 deployments that fired for 5% of teams,
+// and loosening the team vote from a half to a third moved it not at all —
+// the vote was never the limiter, the test was. Men dug in behind a hedgerow
+// are lying down, and that is the posture the player asked to see.
 function proneImproves(sim: Sim, x: number, y: number, bearing: number): boolean {
-  if (directionalCover(sim, x, y, bearing, 'prone') > directionalCover(sim, x, y, bearing, 'crouch')) return true;
+  if (directionalCover(sim, x, y, bearing, 'prone') > 0) return true;
   const here = sim.map.elevAt(x, y);
   const dx = Math.cos(bearing);
   const dy = Math.sin(bearing);
@@ -404,7 +420,7 @@ export function resolveDeployment(
       // resolve it stands in for.
       const trial = resolveMoveSpots(sim, { soldierIds: ids, x: ax, y: ay, kind: 'ambush', arc, l: level }, new Set(used));
       const prone = trial.filter((sp) => proneImproves(sim, sp.x, sp.y, enemyBearing)).length;
-      const kind: OrderKind = trial.length > 0 && prone * 2 >= trial.length ? 'ambush' : 'defend';
+      const kind: OrderKind = trial.length > 0 && prone * PRONE_SHARE_DEN >= trial.length ? 'ambush' : 'defend';
       const spots = kind === 'ambush' ? trial : resolveMoveSpots(sim, { soldierIds: ids, x: ax, y: ay, kind, arc, l: level }, new Set(used));
       for (const sp of spots) used.add(sp.y * sim.map.w + sp.x);
       out.push({ teamId, kind, x: ax, y: ay, arc, level, spots });

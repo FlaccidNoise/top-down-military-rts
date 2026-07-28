@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { GameMap } from '../src/sim/map';
 import { DEPLOY_EDGE_INSET, resolveDeployment } from '../src/sim/spots';
-import { Sim, type Side } from '../src/sim/sim';
+import { Sim, stanceOf, type Side } from '../src/sim/sim';
 
 // Deployment placement (deployPlace/previewDeploy both consume this): staged
 // maps, no generated content, so every assertion is exact. The battle-side
@@ -17,15 +17,18 @@ function addSquadOf(sim: Sim, side: Side, n: number, x: number, y: number): numb
 const ZONE = { x0: 0, x1: 32 };
 
 describe('resolveDeployment', () => {
-  it('deploys into cover: spots snap to the safe flank of a hedge, kind defend (crouch ground)', () => {
+  it('deploys into cover behind a hedge, and lies down there', () => {
     const sim = new Sim(new GameMap(48, 24), 7);
     const HX = 20;
     for (let y = 0; y < 24; y++) sim.map.setTerrain(HX, y, 'hedge');
     const sq = addSquadOf(sim, 'blue', 3, 10.5, 12.5);
     const [plan] = resolveDeployment(sim, [sq], HX - 2, 12.5, ZONE, 0); // enemy east
-    expect(plan.kind).toBe('defend');
+    // A hedge scores the same prone or crouched, so the older rule ("does
+    // prone beat crouch") left this team standing. Anything real between the
+    // men and the enemy is now reason enough to get down.
+    expect(plan.kind).toBe('ambush');
     expect(plan.spots.length).toBe(3);
-    // hedge pays at crouch; nobody stands IN the hedge, everyone west of it
+    // nobody stands IN the hedge; everyone west of it
     for (const sp of plan.spots) expect(sp.x).toBeLessThan(HX);
     expect(plan.spots.some((sp) => sp.covered)).toBe(true);
   });
@@ -91,6 +94,30 @@ describe('resolveDeployment', () => {
     const one = resolveDeployment(sim, [sq], HX - 2, 12.5, ZONE, 0);
     const two = resolveDeployment(sim, [sq], HX - 2, 12.5, ZONE, 0);
     expect(two).toEqual(one);
+  });
+
+  // The whole point of the feature is the POSE the player sees. resolveDeployment
+  // only chooses the order; stance is derived from it (stanceOf), so this walks
+  // the last link: place, write the order the way deployPlace does, read the
+  // stance the renderer will read. The original report was "they just are all
+  // standing in a grid" — that is this assertion.
+  it('the placement produces the pose: deployed men are prone behind cover, crouched without it', () => {
+    const cover = new Sim(new GameMap(48, 24), 7);
+    for (let y = 0; y < 24; y++) cover.map.setTerrain(20, y, 'hedge');
+    const bare = new Sim(new GameMap(48, 24), 7);
+    for (const [sim, want] of [[cover, 'prone'], [bare, 'crouch']] as const) {
+      const sq = addSquadOf(sim, 'blue', 3, 10.5, 12.5);
+      for (const p of resolveDeployment(sim, [sq], 18, 12.5, ZONE, 0)) {
+        for (const sp of p.spots) {
+          const s = sim.soldiers[sp.sid];
+          s.x = sp.x + 0.5;
+          s.y = sp.y + 0.5;
+          s.path = null;
+        }
+        sim.teams[p.teamId].orderState = { order: { kind: p.kind, x: p.x, y: p.y, arc: p.arc, l: p.level }, phase: 'executing', reason: '' };
+        for (const sp of p.spots) expect(stanceOf(sim, sim.soldiers[sp.sid])).toBe(want);
+      }
+    }
   });
 
   it('faces the deployment at the enemy: the arc midpoint is the bearing passed in', () => {
