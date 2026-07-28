@@ -18,11 +18,12 @@ export interface MainMenuCallbacks {
   onContinue(): void;
   onContinueLegacy(): void;
   onDiscardSave(): void;
+  onFieldManual(): void;
 }
 
 // Save-file strings (detail, clock, theaterName) reach innerHTML; a corrupt
 // save is hostile input and must reject visibly WITHOUT executing.
-function esc(s: string): string {
+export function esc(s: string): string {
   return s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 }
 
@@ -30,6 +31,7 @@ const CONTINUE_ID = 'mm-continue';
 const CONTINUE_LEGACY_ID = 'mm-continue-legacy';
 const DISCARD_ID = 'mm-discard';
 const NEW_OP_ID = 'mm-new';
+const MANUAL_ID = 'mm-manual';
 
 // Pure — no DOM globals, so the five states are testable without a browser.
 export function renderContinueBlock(probe: SaveProbe): string {
@@ -122,9 +124,11 @@ export class MainMenu {
     </div></div></div>
     <div class="db-actions">
       <button id="${NEW_OP_ID}" class="primary">New Operation</button>
+      <button id="${MANUAL_ID}">Field Manual</button>
     </div>`;
 
     this.el.querySelector(`#${NEW_OP_ID}`)?.addEventListener('click', () => this.cb.onNewOperation());
+    this.el.querySelector(`#${MANUAL_ID}`)?.addEventListener('click', () => this.cb.onFieldManual());
     this.el.querySelector(`#${CONTINUE_ID}`)?.addEventListener('click', () => this.cb.onContinue());
     this.el.querySelector(`#${CONTINUE_LEGACY_ID}`)?.addEventListener('click', () => this.cb.onContinueLegacy());
     this.el.querySelector(`#${DISCARD_ID}`)?.addEventListener('click', () => this.cb.onDiscardSave());

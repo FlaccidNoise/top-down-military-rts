@@ -5,13 +5,13 @@ import { coach } from './coach';
 export class PauseMenu {
   private el: HTMLDivElement;
   private _open = false;
-  private cb: { onResume(): void; onKeymapChanged(k: Keymap): void };
+  private cb: { onResume(): void; onKeymapChanged(k: Keymap): void; onFieldManual(): void };
   private km: Keymap = { bindings: { ...DEFAULTS }, version: 0 };
   private captureActive = false;
   private captureAction: string | null = null;
   private captureHandler: ((e: KeyboardEvent) => void) | null = null;
 
-  constructor(cb: { onResume(): void; onKeymapChanged(k: Keymap): void }) {
+  constructor(cb: { onResume(): void; onKeymapChanged(k: Keymap): void; onFieldManual(): void }) {
     this.cb = cb;
     this.el = document.createElement('div');
     this.el.id = 'pausemenu';
@@ -48,6 +48,9 @@ export class PauseMenu {
     this.el.innerHTML = this.mainView();
     this.el.querySelector('#pm-resume')?.addEventListener('click', () => this.close());
     this.el.querySelector('#pm-keybindings')?.addEventListener('click', () => this.showKeybindings());
+    // Opens the manual OVER this menu. close() resumes the game, so it must not
+    // run here — the player reads while the battle stays stopped.
+    this.el.querySelector('#pm-manual')?.addEventListener('click', () => this.cb.onFieldManual());
   }
 
   private mainView(): string {
@@ -56,6 +59,7 @@ export class PauseMenu {
       <div class="db-actions">
         <button id="pm-resume" class="primary">Resume</button>
         <button id="pm-keybindings">Keybindings</button>
+        <button id="pm-manual">Field Manual</button>
       </div>
     </div></div>`;
   }

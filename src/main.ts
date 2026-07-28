@@ -26,6 +26,7 @@ import { PauseMenu } from './ui/menu';
 import { coach } from './ui/coach';
 import { showFloorMenu } from './ui/floormenu';
 import { MainMenu, type SaveProbe } from './ui/mainmenu';
+import { ManualScreen } from './ui/manual';
 import { TheaterView } from './render/theater-view';
 import { TheaterHud } from './ui/theater-hud';
 import { CustomizeScreen } from './ui/customize';
@@ -408,6 +409,9 @@ const theaterHud = new TheaterHud({
 const tooltip = new Tooltip(hud.root);
 const healthPanel = new HealthPanel(hud.root, () => { inspectedSoldier = -1; });
 let pauseBeforeMenu: boolean | null = null;
+// Renders only when opened, and only the main menu, the pause menu or the
+// tutorial opens it. Nothing on the ?camp= art path can reach it.
+const manual = new ManualScreen();
 const menu = new PauseMenu({
   onResume: () => {
     if (pauseBeforeMenu === null) return;
@@ -415,7 +419,8 @@ const menu = new PauseMenu({
     else paused = pauseBeforeMenu;
     pauseBeforeMenu = null;
   },
-  onKeymapChanged: (km: Keymap) => { hud.setKeymap(km); }
+  onKeymapChanged: (km: Keymap) => { hud.setKeymap(km); },
+  onFieldManual: () => { manual.open(); },
 });
 menu.setKeymap(loadKeymap(localStorage));
 
@@ -463,6 +468,7 @@ const mainMenu = new MainMenu({
     discardSaves();
     mainMenu.setSaveProbe(probeSave());
   },
+  onFieldManual: () => { manual.open(); },
 });
 
 function showContactModal(e: Engagement): void {

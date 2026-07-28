@@ -1484,3 +1484,139 @@ html.mobile #floormenu .fm-row { padding: 12px 16px; }
   #customize { padding: 12px; gap: 10px; }
   #customize .cz-label { width: 105px; }
 }
+
+/* ---- field manual ---- */
+#manual {
+  position: fixed;
+  inset: 0;
+  display: none;
+  flex-direction: column;
+  z-index: 12; /* above the pause menu (10) and customize (11) — it opens over both */
+  background: #0d0f0b;
+  font-size: var(--fs-lg);
+  line-height: 1.6;
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  color: var(--paper);
+}
+#manual .mn-head {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  width: 100%;
+  max-width: 1000px;
+  box-sizing: border-box;
+  margin: 0 auto;
+  padding: var(--sp-4) var(--sp-5) var(--sp-3);
+  border-bottom: 1px solid var(--border-soft);
+}
+#manual h1 { letter-spacing: 6px; font-size: 22px; margin: 0; flex: 1; }
+#manual #mn-search {
+  width: 220px;
+  padding: 7px var(--sp-2);
+  font: inherit;
+  color: var(--paper);
+  background: var(--ink);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+}
+#manual #mn-search::placeholder { color: var(--muted); }
+#manual #mn-close {
+  flex-shrink: 0;
+  width: 34px;
+  height: 34px;
+  font: inherit;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+}
+#manual #mn-close:hover { color: var(--amber-bright); border-color: var(--amber); }
+#manual .mn-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  width: 100%;
+  max-width: 1000px;
+  box-sizing: border-box;
+  margin: 0 auto;
+}
+#manual .mn-rail {
+  flex: 0 0 200px;
+  overflow-y: auto;
+  padding: var(--sp-4) 0 var(--sp-5) var(--sp-5);
+  border-right: 1px solid var(--border-soft);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  align-items: stretch;
+}
+#manual .mn-navi {
+  font: inherit;
+  text-align: left;
+  padding: 7px var(--sp-2);
+  cursor: pointer;
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid transparent;
+  border-radius: 3px;
+}
+#manual .mn-navi:hover { color: var(--paper); border-color: var(--border); }
+#manual .mn-navi.active { color: var(--amber-bright); border-color: var(--amber); background: var(--chip-bg); }
+#manual .mn-content {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  touch-action: pan-y;
+  padding: 0 var(--sp-5) 40vh;
+}
+#manual .mn-ch h2 {
+  color: var(--amber-bright);
+  letter-spacing: 2px;
+  font-size: 15px;
+  margin: var(--sp-5) 0 var(--sp-2);
+  padding-bottom: var(--sp-1);
+  border-bottom: 1px solid var(--border-soft);
+}
+#manual .mn-entry { margin: 0 0 var(--sp-4); }
+#manual .mn-entry h3 { color: var(--amber); font-size: var(--fs-lg); letter-spacing: 1px; margin: 0 0 2px; }
+#manual .mn-entry p { margin: 0; max-width: 68ch; }
+#manual .mn-keys {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--sp-2);
+  margin-top: 6px;
+  padding: 6px var(--sp-2);
+  background: rgba(var(--paper-rgb), 0.04);
+  border-left: 2px solid var(--border);
+}
+#manual .mn-klabel { display: block; color: var(--muted); font-size: var(--fs-sm); letter-spacing: 1px; }
+#manual .mn-kval { display: block; color: var(--paper); }
+#manual .mn-empty { color: var(--muted); margin: var(--sp-5) 0; }
+#manual button:focus-visible,
+#manual #mn-search:focus-visible { outline: 2px solid var(--amber); outline-offset: 1px; }
+@media (max-width: 720px) {
+  /* Phone: the rail becomes a chip row over the text, and every target clears
+     44px. The content pane keeps the scroll so search and chips stay reachable. */
+  #manual .mn-head { flex-wrap: wrap; padding: var(--sp-3) var(--sp-3) var(--sp-2); gap: var(--sp-2); }
+  #manual h1 { font-size: 17px; letter-spacing: 3px; flex: 1 1 auto; }
+  #manual #mn-search { order: 3; flex: 1 1 100%; width: auto; min-height: 44px; }
+  #manual #mn-close { width: 44px; height: 44px; }
+  #manual .mn-body { flex-direction: column; }
+  #manual .mn-rail {
+    flex: 0 0 auto;
+    flex-direction: row;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding: var(--sp-2) var(--sp-3);
+    border-right: none;
+    border-bottom: 1px solid var(--border-soft);
+    -webkit-overflow-scrolling: touch;
+  }
+  #manual .mn-navi { flex: 0 0 auto; min-height: 44px; border-color: var(--border); white-space: nowrap; }
+  #manual .mn-content { padding: 0 var(--sp-3) 30vh; }
+  #manual .mn-keys { grid-template-columns: 1fr; gap: var(--sp-1); }
+}
