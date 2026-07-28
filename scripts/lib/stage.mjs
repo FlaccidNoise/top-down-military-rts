@@ -123,7 +123,25 @@ export function deriveTargets(page, { seed, kind }) {
       const g = window.__game;
       const { generateMap } = await import('/src/sim/mapgen.ts');
       const plan = generateMap(seed, 320, 240, kind);
-      const [vil, woods, hamlet] = plan.objectives;
+      // R1: crops come off the objective TAG, never an objective INDEX — every
+      // kind now emits objectiveKinds (mapgen.ts objectiveKinds, always
+      // present post mapgen-v3), and the greedy garrison fill
+      // (objectives.ts:95-125) pads every kind's list out to 12, so an index
+      // is only positionally the same thing while the list is a fixed shape,
+      // which stopped being true the moment that fill started running for
+      // every kind.
+      const kinds = plan.objectiveKinds ?? [];
+      const objOf = (k) => {
+        const i = kinds.indexOf(k);
+        return i < 0 ? null : plan.objectives[i];
+      };
+      const vil = objOf('place') ?? plan.objectives[0];
+      const woods = objOf('woods') ?? plan.objectives[1] ?? vil;
+      // The secondary cluster (objectives.ts:73-82): 'faubourg' when the
+      // archetype grew a real one, 'street' (the far end of the Grande Rue)
+      // otherwise — always the FIRST 'street' tag, since it is pushed before
+      // the greedy fill's own 'street'-tagged entries.
+      const hamlet = objOf('faubourg') ?? objOf('street') ?? vil;
       const d2 = (a, b) => (a.x - b.x) ** 2 + (a.y - b.y) ** 2;
       const bCenter = (b) => ({ x: b.x + b.w / 2, y: b.y + b.h / 2 });
       const farm = plan.buildings
@@ -163,24 +181,12 @@ export function deriveTargets(page, { seed, kind }) {
         return { x: biggest.reduce((a, s) => a + s.x, 0) / biggest.length, y: biggest.reduce((a, s) => a + s.y, 0) / biggest.length };
       };
 
-      // §5.6: the bourg's crops come off objectiveKinds, never off objective
-      // INDICES. The bourg's list is 6-9 long and its tail is a greedy garrison
-      // fill, so index 2 is a different thing on every seed — the legacy
-      // village/hamlet/farm triple below is only positional because the legacy
-      // objective list is fixed-shape. Legacy kinds take no new code path here.
-      if (kind === 'bourg') {
-        const kinds = plan.objectiveKinds ?? [];
-        const objOf = (k) => {
-          const i = kinds.indexOf(k);
-          return i < 0 ? null : plan.objectives[i];
-        };
-        const place = objOf('place') ?? vil;
-        // A farm cour: the outbuilding-bearing structure farthest from the
-        // place, i.e. one of T9's outlying compounds rather than a town yard.
-        const rural = plan.buildings.filter((b) => b.role === 'farmhouse' || b.role === 'barn');
-        const cour = (rural.length ? rural : plan.buildings).map(bCenter).sort((a, b) => d2(b, place) - d2(a, place))[0];
-        // The longest party-wall run — the whole point of the generator, and
-        // the crop that catches a thatched high street (N2 / smallOfPair).
+      // The longest party-wall run. Bourg and road both terrace their
+      // frontage (footprints.ts DENS_TERRACE); this is the crop that catches
+      // a thatched high street (roofs.ts smallOfPair), invisible in every
+      // other frame. Not an objective tag — buildings carry terraceRun
+      // directly — so it is derived the same way for every kind that has one.
+      const terraceCentroid = (fallback) => {
         const runs = new Map();
         for (const b of plan.buildings) {
           if (b.terraceRun === undefined || b.terraceRun < 0) continue;
@@ -188,17 +194,22 @@ export function deriveTargets(page, { seed, kind }) {
           arr.push(bCenter(b));
           runs.set(b.terraceRun, arr);
         }
-        const longest = [...runs.values()].sort((a, b) => b.length - a.length)[0] ?? [place];
-        const terrace = {
-          x: longest.reduce((a, p) => a + p.x, 0) / longest.length,
-          y: longest.reduce((a, p) => a + p.y, 0) / longest.length,
-        };
+        const longest = [...runs.values()].sort((a, b) => b.length - a.length)[0] ?? [fallback];
+        return { x: longest.reduce((a, p) => a + p.x, 0) / longest.length, y: longest.reduce((a, p) => a + p.y, 0) / longest.length };
+      };
+
+      if (kind === 'bourg') {
+        const place = vil;
+        // A farm cour: the outbuilding-bearing structure farthest from the
+        // place, i.e. one of T9's outlying compounds rather than a town yard.
+        const rural = plan.buildings.filter((b) => b.role === 'farmhouse' || b.role === 'barn');
+        const cour = (rural.length ? rural : plan.buildings).map(bCenter).sort((a, b) => d2(b, place) - d2(a, place))[0];
         return {
           farlod: { x: 160, y: 120, scale: Math.min(1280 / 320, 800 / 240) },
           place: { ...place, scale: 24 },
           church: { ...(objOf('church') ?? place), scale: 24 },
-          street: { ...(objOf('street') ?? objOf('faubourg') ?? place), scale: 24 },
-          terrace: { ...terrace, scale: 24 },
+          street: { ...hamlet, scale: 24 },
+          terrace: { ...terraceCentroid(place), scale: 24 },
           cour: { ...cour, scale: 24 },
           bocage: { ...(bestHedgeBlock([[place, 60]]) ?? bocage), scale: 24 },
           units: { ...squadCentroid('blue'), scale: 32 },
@@ -218,7 +229,19 @@ export function deriveTargets(page, { seed, kind }) {
         enemy: { ...squadCentroid('red'), scale: 32 },
         soldiers48: { ...squadCentroid('blue'), scale: 48 },
       };
-      if (kind === 'bridge' || kind === 'river') t.bridge = { ...plan.objectives[plan.objectives.length - 1], scale: 16 };
+      // road: the fight IS the street (profile.ts ROAD) — the terraced
+      // frontage is the one crop no other kind needs.
+      if (kind === 'road') t.terrace = { ...terraceCentroid(vil), scale: 24 };
+      // river/bridge: the crossing, appended last and tagged 'bridge'
+      // (mapgen.ts:318-322) — always present once plan.sk.profile.water is set.
+      if (kind === 'bridge' || kind === 'river') t.bridge = { ...(objOf('bridge') ?? plan.objectives[plan.objectives.length - 1]), scale: 16 };
+      // woods: a carved clearing (rural.ts carveClearings) is the kill zone
+      // the kind is built around. Clearings are appended to woodsStands AFTER
+      // every stand (rural.ts:453-456, "appended, never prepended"), and the
+      // profile always carves at least one (profile.ts WOODS.clearings [2,3]
+      // plus the guaranteed astride-the-arterial pick), so the last entry is
+      // always a clearing centre.
+      if (kind === 'woods') t.clearing = { ...plan.woodsStands[plan.woodsStands.length - 1], scale: 24 };
       return t;
     },
     { seed, kind }
