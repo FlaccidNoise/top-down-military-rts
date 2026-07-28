@@ -34,6 +34,7 @@ import { SPEC_TAG, specStream, type CampaignConfig, type TheaterConfig } from '.
 import { makeTheater, TheaterGenError } from './strategic/theatergen';
 import { DispositionError, makeDisposition } from './strategic/theatergen/disposition';
 import { makeWarGoals, warStatus, type WarGoals } from './strategic/goals';
+import { DEPLOY_ATK_DEPTH, DEPLOY_DEF_LINE, DEPLOY_DEF_DEFAULT } from './strategic/deploy';
 import { OmniscientIntel } from './strategic/intel';
 import { Commander2, RED_V2 } from './strategic/planner';
 import { addForce, orderMove, type CoarseBattle, type FrontV2, type MoveReject } from './strategic/theater/force';
@@ -226,9 +227,6 @@ let floorMenu: { wx: number; wy: number; level: number | null } | null = null;
 let deployPhase = false;
 let deployMsg = '';
 let deployMsgUntil = 0;
-const DEPLOY_ATK_DEPTH = 32; // = ATTACK_POST_MARGIN
-const DEPLOY_DEF_LINE: Record<string, number> = { bourg: 60, woods: 80 };
-const DEPLOY_DEF_DEFAULT = 70;
 const deployOverride = new URLSearchParams(location.search).get('deploy'); // ?deploy=atk,defLine — OQ19 tuning
 let winnerAt = -1; // ms timestamp when winner appeared
 let debriefShown = false;
