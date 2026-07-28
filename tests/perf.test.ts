@@ -4,7 +4,7 @@ import { GameMap, los } from '../src/sim/map';
 import { generateMap, validate, type MapPlan, type Vec } from '../src/sim/mapgen';
 import { buildObjectives } from '../src/sim/bourg/objectives';
 import { planBourg, stampBourg } from '../src/sim/bourg/plan';
-import { BOURG, OPEN, ROAD } from '../src/sim/bourg/profile';
+import { BOURG, OPEN, ROAD, WOODS } from '../src/sim/bourg/profile';
 import { furnishInteriors } from '../src/sim/interiors/furnish';
 import { mulberry32 } from '../src/sim/rng';
 import { PatchIndex } from '../src/render/patches';
@@ -335,6 +335,67 @@ describe('perf: bourg generation (§5.5)', () => {
     expect(mean(ts)).toBeLessThan(OPEN_MEAN_MS);
     expect(max(ts)).toBeLessThan(OPEN_MAX_MS);
   }, 60_000);
+
+  // The same DEVIATION from mapgen-v3 §4 as `open` above, which budgets the two
+  // together at 25 mean / 60 max. Measured the same way over the same 200
+  // seeds: mean 22.1 / p95 23.5 / max 24.2, against open's 22.1, road's 19.2
+  // and the bourg's 22.5 on the same box. §4 expected `woods` to be the
+  // CHEAPEST kind — it skips most of parcels and footprints — and the stand
+  // pass gives all of that back and a little more: 19-26 stands at radius 36-51
+  // is the pass that paints most of the map, and it costs about what a bourg's
+  // fifty plots cost. Same 40/90 as the bourg, for the same reason: 25 would be
+  // a contention detector, not a generator-cost gate.
+  const WOODS_MEAN_MS = 40;
+  const WOODS_MAX_MS = 90;
+
+  it('woods-gen: 320x240 stays inside the 40 ms mean / 90 ms max budget', () => {
+    generateMap(1, MAP_W, MAP_H, 'woods'); // JIT warmup
+    const ts: number[] = [];
+    for (let seed = 1; seed <= 20; seed++) {
+      let best = Infinity;
+      for (let rep = 0; rep < BOURG_REPS; rep++) {
+        const t0 = performance.now();
+        generateMap(seed, MAP_W, MAP_H, 'woods');
+        best = Math.min(best, performance.now() - t0);
+      }
+      ts.push(best);
+    }
+    console.log(`[perf] woods-gen ${JSON.stringify({ mean: round(mean(ts)), p95: round(p95(ts)), max: round(max(ts)) })}`);
+    expect(mean(ts)).toBeLessThan(WOODS_MEAN_MS);
+    expect(max(ts)).toBeLessThan(WOODS_MAX_MS);
+  }, 60_000);
+
+  it('woods-reject: the first attempt validates on essentially every seed', () => {
+    // The interesting gate on this kind is validate's vehicle route: 'woods' is
+    // noVehicle and covers 41-70 % of the map, so if the stand pass could paint
+    // over the arterial, west→east would fail here rather than in the game. It
+    // cannot — stands only plant on 'grass' and the road bitmap is carved
+    // first — and 0/200 rejects with the minBuildings floor firing 0 times is
+    // what that looks like from outside.
+    let rejects = 0;
+    let floorHits = 0;
+    const rejected: number[] = [];
+    for (let seed = 1; seed <= REJECT_SEEDS; seed++) {
+      const base = mulberry32((seed ^ 0x51ab3fc7) >>> 0).int(0x7fffffff);
+      const plan = planBourg(base, MAP_W, MAP_H, WOODS);
+      if (plan.fp.buildings.length < WOODS.minBuildings) {
+        floorHits++;
+        rejects++;
+        rejected.push(seed);
+        continue;
+      }
+      const map = new GameMap(MAP_W, MAP_H);
+      const st = stampBourg(map, plan);
+      map.maxStories = st.maxStories;
+      const { objectives, objectiveKinds } = buildObjectives(plan.sk, plan.land, plan.fp, st.woodsStands);
+      if (!validate({ map, buildings: plan.fp.buildings, spawns: plan.spawns, objectives, objectiveKinds, woodsStands: st.woodsStands })) {
+        rejects++;
+        rejected.push(seed);
+      }
+    }
+    console.log(`[perf] woods-reject ${JSON.stringify({ rejects, floorHits, seeds: REJECT_SEEDS, rate: round(rejects / REJECT_SEEDS), rejected })}`);
+    expect(rejects / REJECT_SEEDS).toBeLessThan(REJECT_HARD_LIMIT);
+  }, 120_000);
 
   it('open-reject: the first attempt validates on essentially every seed', () => {
     // The bourg's gate on the open profile, plus the one gate open adds:

@@ -32,6 +32,11 @@ export const TAG = {
   ORCHARD: 12,
   WOODS: 13,
   ELEV: 14,
+  // 15 is WATER, reserved by mapgen-v3 §0 for the P5 river/bridge stage and
+  // deliberately left as a hole rather than closed up: the tags are frozen
+  // constants, so taking 15 here would force the water stage onto 16 and make
+  // the design's own numbering wrong for every seed generated after it.
+  CLEARING: 16,
 } as const;
 
 // mulberry32 is a 32-bit counter (rng.ts:8-22): two streams seeded 1 apart are

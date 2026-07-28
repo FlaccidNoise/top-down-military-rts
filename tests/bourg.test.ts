@@ -8,7 +8,7 @@ import { buildFootprints } from '../src/sim/bourg/footprints';
 import { reserveLandmarks } from '../src/sim/bourg/landmarks';
 import { buildParcels } from '../src/sim/bourg/parcels';
 import { planBourg, stampBourg, type BourgPlan, type BourgStamp } from '../src/sim/bourg/plan';
-import { BOURG, OPEN, ROAD } from '../src/sim/bourg/profile';
+import { BOURG, OPEN, ROAD, WOODS } from '../src/sim/bourg/profile';
 import { addRuralFabric, paintRural } from '../src/sim/bourg/rural';
 import { MIN_REAR_SPAN_Q8, stampEnclosures } from '../src/sim/bourg/enclosures';
 import { stampStructure } from '../src/sim/bourg/stamp';
@@ -721,6 +721,301 @@ describe('open connectivity (mapgen-v3 §2.3)', () => {
   });
 });
 
+// ── mapgen-v3 §2.4 · the woods kind ─────────────────────────────────────────
+//
+// Two properties carry this kind and neither is a count: the map is under
+// canopy, and the canopy has holes in it that are big enough to fight across.
+// Everything below measures those off the FINISHED map rather than off the
+// generator's own bookkeeping, because the clearings are not on MapPlan — they
+// are terrain, and terrain is what the fight reads.
+
+const woodsCache = new Map<string, MapPlan>();
+function wood(seed: number, w = W, h = H): MapPlan {
+  const key = `${seed}:${w}:${h}`;
+  let p = woodsCache.get(key);
+  if (!p) {
+    p = generateMap(seed, w, h, 'woods');
+    woodsCache.set(key, p);
+  }
+  return p;
+}
+
+function woodsStamp(seed: number): { plan: BourgPlan; stamp: BourgStamp } {
+  const base = mulberry32((seed ^ 0x51ab3fc7) >>> 0).int(0x7fffffff);
+  const plan = planBourg(base, W, H, WOODS);
+  const map = new GameMap(W, H);
+  return { plan, stamp: stampBourg(map, plan) };
+}
+
+// The east-west arterial, recovered off the finished map by following the
+// 3-wide road band from the west edge. Per-column independence does NOT work:
+// a 3-wide north-south street satisfies the same local test at every row it
+// spans, so a column that carries one picks the wrong road and every
+// measurement downstream of it is about a village street instead.
+function arterialRow(map: GameMap): Int32Array {
+  const row = new Int32Array(map.w).fill(-1);
+  const isRoad = (x: number, y: number): boolean => map.terrainKeyAt(x, y) === 'road';
+  let prev = -1;
+  for (let x = 0; x < map.w; x++) {
+    const cand: number[] = [];
+    for (let y = 1; y < map.h - 1; y++) if (isRoad(x, y - 1) && isRoad(x, y) && isRoad(x, y + 1)) cand.push(y);
+    if (cand.length === 0) {
+      row[x] = prev;
+      continue;
+    }
+    let best = cand[0];
+    if (prev >= 0) for (const y of cand) if (Math.abs(y - prev) < Math.abs(best - prev)) best = y;
+    row[x] = best;
+    prev = best;
+  }
+  return row;
+}
+
+// A clearing, as the map shows it: a disc of radius 6 — 12 tiles across, §2.4's
+// floor — with no wood and no building in it, sitting inside an annulus that IS
+// wood. The annulus is what makes this a clearing rather than a field: at
+// radius 10-13 it is outside the largest ellipse the carve draws (rx 9), so it
+// reads the country the clearing was cut out of and not the cut itself.
+//
+// The threshold has teeth, and they were measured rather than assumed: over
+// seeds 1-200 this finds 2+ clearings on 200 and one straddling the arterial on
+// 200, while the same generator with KindProfile.clearings [0, 0] finds 2+ on
+// 6 and one on the arterial on 2. A woods map has plenty of open ground; what
+// it does not have without the sub-stage is open ground with wood all round it.
+function clearingPoints(map: GameMap): Vec[] {
+  const { w, h } = map;
+  const wood = new Uint8Array(w * h);
+  const built = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++)
+    for (let x = 0; x < w; x++) {
+      const k = map.terrainKeyAt(x, y);
+      if (k === 'woods') wood[y * w + x] = 1;
+      if (k === 'floor') built[y * w + x] = 1;
+    }
+  const disc: [number, number][] = [];
+  const ring: [number, number][] = [];
+  for (let dy = -13; dy <= 13; dy++)
+    for (let dx = -13; dx <= 13; dx++) {
+      const d2 = dx * dx + dy * dy;
+      if (d2 <= 36) disc.push([dx, dy]);
+      else if (d2 >= 100 && d2 <= 169) ring.push([dx, dy]);
+    }
+  const out: Vec[] = [];
+  for (let y = 13; y < h - 13; y++)
+    for (let x = 13; x < w - 13; x++) {
+      let open = true;
+      for (const [dx, dy] of disc) {
+        const i = (y + dy) * w + x + dx;
+        if (wood[i] || built[i]) {
+          open = false;
+          break;
+        }
+      }
+      if (!open) continue;
+      let trees = 0;
+      for (const [dx, dy] of ring) if (wood[(y + dy) * w + x + dx]) trees++;
+      if (trees / ring.length >= 0.35) out.push({ x, y });
+    }
+  return out;
+}
+
+// Connected components of that set, 8-neighbour — one component per clearing.
+// Counting deduped points instead merges two clearings that happen to be 9
+// tiles apart and splits none, so it under-reports exactly where the assertion
+// is tightest.
+function clearingCount(pts: Vec[]): number {
+  const key = (v: Vec): number => v.y * 4096 + v.x;
+  const set = new Set(pts.map(key));
+  const seen = new Set<number>();
+  let n = 0;
+  for (const p of pts) {
+    if (seen.has(key(p))) continue;
+    n++;
+    const stack = [p];
+    seen.add(key(p));
+    while (stack.length > 0) {
+      const c = stack.pop() as Vec;
+      for (let dy = -1; dy <= 1; dy++)
+        for (let dx = -1; dx <= 1; dx++) {
+          const v = { x: c.x + dx, y: c.y + dy };
+          if (!set.has(key(v)) || seen.has(key(v))) continue;
+          seen.add(key(v));
+          stack.push(v);
+        }
+    }
+  }
+  return n;
+}
+
+describe('woods structure (mapgen-v3 §2.4)', () => {
+  it('puts the map under canopy', () => {
+    // The kind in one number. Measured 0.41-0.70 of the map as 'woods' over
+    // seeds 1-200 (median 0.59) against 0.03 for the legacy blob generator and
+    // 0.01-0.05 for every other v3 kind, so the floor here is not a tolerance
+    // — anything under a third and the tactical claim ("short sightlines
+    // everywhere except the clearings") is simply false of the map.
+    for (const seed of SEEDS) {
+      const { map } = wood(seed);
+      let trees = 0;
+      for (let i = 0; i < map.tiles.length; i++) if (map.terrainKeyAt(i % W, (i / W) | 0) === 'woods') trees++;
+      const frac = trees / (W * H);
+      expect([seed, frac > 0.33, frac < 0.85]).toEqual([seed, true, true]);
+    }
+  });
+
+  it('carves at least two clearings, each 12 tiles across, out of that canopy', () => {
+    for (const seed of SEEDS) expect([seed, clearingCount(clearingPoints(wood(seed).map)) >= 2]).toEqual([seed, true]);
+  });
+
+  it('puts one of them astride the arterial', () => {
+    // §2.4's guarantee, and the reason the sub-stage scans the arterial for its
+    // blindest column instead of sampling: every stand is noVehicle, so the
+    // arterial is the ONLY route armour has across the map (validate's vehicle
+    // gate, mapgen.ts). A lane that never opens out is 320 tiles with no ground
+    // to fight over; one clearing on it is the kill zone the attack has to
+    // cross. Measured on 200/200 seeds, against 2/200 with the sub-stage off.
+    for (const seed of SEEDS) {
+      const { map } = wood(seed);
+      const row = arterialRow(map);
+      const on = clearingPoints(map).some((c) => row[c.x] >= 0 && Math.abs(c.y - row[c.x]) <= 6);
+      expect([seed, on]).toEqual([seed, true]);
+    }
+  });
+
+  it('emits 11-20 buildings: a forester pocket, not a village', () => {
+    // maxBuildings 14 caps the nucleus and the 1-2 farms add two apiece past
+    // it. Measured 11-20 over seeds 1-200 (median 16) at 320x240.
+    for (const seed of SEEDS) {
+      const n = wood(seed).buildings.length;
+      expect([seed, n >= 11, n <= 20]).toEqual([seed, true, true]);
+    }
+  });
+
+  it('raises no church, no market and no mairie, and leaves the junction plain', () => {
+    // churchPct/marketPct/forecourtPct all 0 and placeLen null. A charcoal
+    // burner's holding in a wood has none of them, and the plain 3-wide
+    // crossing keeps objectives[0] a bare road tile.
+    for (const seed of SEEDS) {
+      const { plan } = woodsStamp(seed);
+      expect([seed, plan.land.place.w, plan.land.place.h]).toEqual([seed, 3, 3]);
+      expect([seed, plan.land.market, plan.land.forecourt, plan.fp.church]).toEqual([seed, null, null, null]);
+      expect([seed, plan.fp.buildings.filter((b) => b.role === 'halle' || b.role === 'civic' || b.role === 'church_tower')]).toEqual([seed, []]);
+    }
+  });
+
+  it('scatters 1-2 outlying farm compounds and appends them after the pocket', () => {
+    for (const seed of SEEDS) {
+      const { plan } = woodsStamp(seed);
+      const farms = plan.rural.farms.length;
+      expect([seed, farms >= 1, farms <= 2]).toEqual([seed, true, true]);
+      const tail = plan.fp.buildings.slice(plan.fp.buildings.length - 2 * farms);
+      expect([seed, tail.map((b) => b.role)]).toEqual([seed, Array.from({ length: 2 * farms }, (_, i) => (i % 2 ? 'barn' : 'farmhouse'))]);
+    }
+  });
+
+  it('keeps the MG lane off the whole-map scale', () => {
+    // Same bitmap proxy and the same bound as the other three kinds. Measured
+    // 25-62 over seeds 1-200 (median 35) — the arterial, since a wood has no
+    // street long enough to matter.
+    for (const seed of SEEDS) expect([seed, longest3WideRoadRun(wood(seed).map) <= 80]).toEqual([seed, true]);
+  });
+
+  it('garrisons every building: no centre outside 45 m of an objective', () => {
+    for (const seed of SEEDS) {
+      const { buildings, objectives } = wood(seed);
+      const r2 = GARRISON_RADIUS * GARRISON_RADIUS;
+      const uncovered = buildings
+        .filter((b) => {
+          const c = centreOf(b);
+          return !objectives.some((o) => (c.x - o.x) * (c.x - o.x) + (c.y - o.y) * (c.y - o.y) <= r2);
+        })
+        .map((b) => `${b.role}@${b.x},${b.y}`);
+      expect([seed, uncovered]).toEqual([seed, []]);
+    }
+  });
+
+  it('pins the objective prefix, keeps the arrays parallel, and puts the MG42 on road', () => {
+    for (const seed of SEEDS) {
+      const { map, objectives, objectiveKinds } = wood(seed);
+      expect([seed, objectiveKinds?.length]).toEqual([seed, objectives.length]);
+      expect([seed, objectiveKinds?.slice(0, 3)]).toEqual([seed, ['place', 'woods', 'street']]);
+      expect([seed, map.terrainKeyAt(objectives[0].x, objectives[0].y)]).toEqual([seed, 'road']);
+      for (const o of objectives) expect([seed, o, map.terrainAt(o.x, o.y).passable]).toEqual([seed, o, true]);
+    }
+  });
+
+  it('keeps every anchor passable, clearing centres included', () => {
+    // woodsStands carries the stand centres AND the clearing centres on this
+    // kind (rural.ts paintRural), and bridge.ts stages garrisons on all of
+    // them. Measured 21-31 a seed over 1-200.
+    for (const seed of SEEDS) {
+      const { map, woodsStands } = wood(seed);
+      expect([seed, woodsStands.length > 10]).toEqual([seed, true]);
+      for (const s of woodsStands) expect([seed, s, map.terrainAt(s.x, s.y).passable]).toEqual([seed, s, true]);
+    }
+  });
+
+  it('generates at every size generateMap accepts', () => {
+    for (const [w, h] of [
+      [60, 40],
+      [160, 120],
+      [240, 180],
+    ] as [number, number][])
+      for (const seed of [1, 2, 3]) {
+        const p = wood(seed, w, h);
+        expect(p.objectiveKinds?.[0]).toBe('place');
+        expect(p.buildings.length).toBeGreaterThanOrEqual(WOODS.minBuildings);
+        expect(p.map.terrainKeyAt(p.objectives[0].x, p.objectives[0].y)).toBe('road');
+      }
+  });
+});
+
+describe('woods connectivity (mapgen-v3 §2.4)', () => {
+  it('reaches every objective from both spawns on foot, every door and stair from the west, and east by vehicle', () => {
+    // The vehicle half is the one that bites on this kind: 'woods' is
+    // noVehicle and covers well over half the map, so armour has the arterial
+    // and the farm lanes and nothing else.
+    for (const seed of SEEDS) {
+      const { map, spawns, objectives, buildings } = wood(seed);
+      const west = reachField(map, spawns.west.x, spawns.west.y, 'foot');
+      const east = reachField(map, spawns.east.x, spawns.east.y, 'foot');
+      const veh = reachField(map, spawns.west.x, spawns.west.y, 'vehicle');
+      const at = (f: Uint8Array, v: Vec): number => f[Math.round(v.y) * W + Math.round(v.x)];
+      for (const o of objectives) expect([seed, o, at(west, o), at(east, o)]).toEqual([seed, o, 1, 1]);
+      expect([seed, at(veh, spawns.east)]).toEqual([seed, 1]);
+      let strandedDoors = 0;
+      for (const b of buildings) for (const d of b.doors ?? []) if (!west[d.y * W + d.x]) strandedDoors++;
+      let strandedStairs = 0;
+      for (let i = 0; i < map.stairs.length; i++) if (map.stairs[i] && !west[i]) strandedStairs++;
+      expect([seed, strandedDoors, strandedStairs]).toEqual([seed, 0, 0]);
+    }
+  });
+
+  it('makes every gate in a free-standing wall infantry-permeable and vehicle-proof', () => {
+    // Measured 8-19 a seed over 1-200, against open's 16-31: bocage CELL 32 is
+    // half as many parcels, which is the point — a wood is not hedged country.
+    for (const seed of SEEDS) {
+      const { map } = wood(seed);
+      let gates = 0;
+      const bad: string[] = [];
+      eachFreeStandingGate(wood(seed), (ax, ay, bx, by) => {
+        gates++;
+        if (!map.canStep(ax, ay, bx, by, 'foot')) bad.push(`foot blocked at ${bx},${by}`);
+        if (map.canStep(ax, ay, bx, by, 'vehicle')) bad.push(`vehicle passes at ${bx},${by}`);
+      });
+      expect([seed, gates > 5, bad]).toEqual([seed, true, []]);
+    }
+  });
+
+  it('strands no enclosure', () => {
+    for (const seed of SEEDS) {
+      const { plan, stamp } = woodsStamp(seed);
+      expect([seed, plan.fp.buildings]).toEqual([seed, generateMap(seed, W, H, 'woods', { relief: 'none' }).buildings]);
+      expect([seed, stamp.enclosures.orphans]).toEqual([seed, 0]);
+    }
+  });
+});
+
 // ── §5.4 determinism ────────────────────────────────────────────────────────
 
 describe('bourg determinism (§5.4)', () => {
@@ -784,6 +1079,16 @@ describe('bourg determinism (§5.4)', () => {
     expect(fingerprint(generateMap(2, W, H, 'open'))).toMatchInlineSnapshot(`"105d0d5f"`);
   });
 
+  // The woods kind's, frozen at the P4 cutover. RELIEF_BY_KIND.woods carries
+  // sunken 2 and no rail, so these cover the sunken-lane pass and exclude the
+  // halt; the relief-off control is the PRE_RELIEF.woods row in
+  // relief-wiring.test.ts. They also cover the clearing sub-stage (tag 16),
+  // which is the only new machinery in the kind.
+  it('pins the woods fingerprints', () => {
+    expect(fingerprint(generateMap(1, W, H, 'woods'))).toMatchInlineSnapshot(`"dc3bf256"`);
+    expect(fingerprint(generateMap(2, W, H, 'woods'))).toMatchInlineSnapshot(`"408139ec"`);
+  });
+
   it('reproduces T14 exactly with relief off — the stage is purely additive', () => {
     // Relief writes elev, the two new terrain keys and crossings, and nothing
     // else: no street, plot, wall, door, storey or objective of the bourg
@@ -800,19 +1105,13 @@ describe('bourg determinism (§5.4)', () => {
   // still owns, and all six were verified byte-identical to `main` over 6 kinds
   // x 3 sizes x 12 seeds at the commit that added them.
   //
-  // 'road' left this list at the mapgen-v3 P2 cutover and 'open' at P3 — each
-  // is a v3 kind now with its own pin above. The four that remain are the leak
-  // controls for every task after P3: a profile change that moves one of them
-  // has escaped its kind.
+  // 'road' left this list at the mapgen-v3 P2 cutover, 'open' at P3 and
+  // 'woods' at P4 — each is a v3 kind now with its own pin above. The three
+  // that remain are the leak controls for every task after P4: a profile change
+  // that moves one of them has escaped its kind.
   it('leaves every legacy kind byte-identical', () => {
-    const fp = (kind: 'woods' | 'town' | 'river' | 'bridge', seed: number): string =>
+    const fp = (kind: 'town' | 'river' | 'bridge', seed: number): string =>
       fingerprint(generateMap(seed, 160, 120, kind));
-    expect([fp('woods', 1), fp('woods', 2)]).toMatchInlineSnapshot(`
-      [
-        "90b98069",
-        "ca094aca",
-      ]
-    `);
     expect([fp('town', 1), fp('town', 2)]).toMatchInlineSnapshot(`
       [
         "18f01cb4",

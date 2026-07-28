@@ -18,13 +18,15 @@ import { shopfrontsFor } from '../src/render/shops';
 const LEGACY = ['town', 'bridge', 'river'] as const;
 // [kind, seeds, minimum claimed edges]. The floor is per kind because the wall
 // count is: measured over seeds 1-40 at 320x240, the bourg claims 353-575
-// edges, road 236-437 and open 140-293 — a hamlet has a dozen gardens where a
-// bourg has fifty. One shared bound would have to sit under 140 and would then
-// assert nothing about the two kinds that carry the most masonry.
+// edges, road 236-437, open 140-293 and woods 86-130 — a hamlet has a dozen
+// gardens where a bourg has fifty, and a forester pocket has two. One shared
+// bound would have to sit under 86 and would then assert nothing about the
+// kinds that carry the masonry.
 const V3_KINDS = [
   ['bourg', [10, 11, 12], 300],
   ['road', [1, 3, 7, 11], 200],
   ['open', [1, 3, 7, 11], 120],
+  ['woods', [1, 3, 7, 11], 70],
 ] as const;
 const BOURG_SEEDS = [10, 11, 12];
 const empty = new Uint8Array(320 * 240);

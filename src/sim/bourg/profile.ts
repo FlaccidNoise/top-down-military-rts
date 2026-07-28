@@ -49,6 +49,11 @@ export interface KindProfile {
   bocageCell: number;
   stands: [number, number]; // stands BEYOND the guaranteed east anchor
   standRadius: [number, number];
+  // Ellipses of grass carved back OUT of the painted stands (rural.ts
+  // carveClearings, TAG.CLEARING). [0, 0] skips the sub-stage entirely rather
+  // than drawing a zero count — the stage owns its own sub-stream, so skipping
+  // it moves nothing, and that is what keeps every kind but `woods` frozen.
+  clearings: [number, number];
 }
 
 // The bourg, verbatim. Do not "tidy" a value here: each one is the number the
@@ -75,6 +80,7 @@ export const BOURG: KindProfile = {
   bocageCell: 22,
   stands: [2, 3],
   standRadius: [6, 5],
+  clearings: [0, 0],
 };
 
 // §2.2 — the linear roadside village. Everything about it follows from one
@@ -116,6 +122,7 @@ export const ROAD: KindProfile = {
   bocageCell: 22,
   stands: [3, 3],
   standRadius: [6, 5],
+  clearings: [0, 0],
 };
 
 // §2.3 — scattered farmsteads, hedged parcels, a tiny nucleus. The inversion
@@ -170,6 +177,64 @@ export const OPEN: KindProfile = {
   bocageCell: 20,
   stands: [3, 3],
   standRadius: [6, 5],
+  clearings: [0, 0],
+};
+
+// §2.4 — stands, clearings, a forester pocket. `open` inverted the bourg by
+// letting the rural fabric take the map; `woods` goes one further and lets ONE
+// pass of it take the map. Stands 16-23 at radius 40-57 against open's 3-5 at
+// 6-10 is not a tuning step, it is the difference between a wood on the map and
+// a map that is wood, and every other number here follows from it.
+//
+// DEVIATION from §2.4, which asks for stands 8-12 at radius 8-14. Those numbers
+// paint 3.5 % of a 320x240 map as trees — measured, and the same 3 % the legacy
+// blob generator painted, i.e. §2.4's own tactical claim ("short sightlines
+// everywhere except the clearings") is false of the map its numbers build. The
+// stand pass paints roughly 1.94·r² tiles per stand before overlap, so canopy
+// is quadratic in the radius and barely linear in anything else; the values
+// here were swept against measured canopy and settled at 40-70 % (median 58 %,
+// seeds 1-200). That is the number the kind actually is, and it is the reason
+// the clearing sub-stage has anything to carve.
+//
+// The nucleus is a forester pocket, not a village: a 28-35 x 22-27 envelope
+// (open's, shrunk), streets 3-6, no church, no market, no mairie, no place, and
+// maxBuildings 14. minBuildings 3 rather than open's 4 — the floor exists to
+// stop a kind coming out as two sheds, and three is what a pocket is. farms 1-2
+// is the charcoal burner's holding; bocage CELL 32 against open's 20 is the
+// same statement from the other side, since a hedged parcel is a thing you do
+// to open country and there is not much of that here.
+//
+// clearings 2-4 is the counterweight, and the only genuinely new machinery in
+// the kind. Under a solid canopy every sightline is 8 m and a battle is a
+// series of ambushes at grenade range; the clearings are where a fight can
+// actually be had, and one of them is guaranteed astride the arterial so the
+// one vehicle route across the map opens into a kill zone rather than running
+// blind end to end.
+//
+// densFalloff 20 is open's, not a measured value for this kind: with an
+// envelope this small the density gradient is spent inside the nucleus either
+// way. It is the first thing to reach for if the pocket comes out too even.
+export const WOODS: KindProfile = {
+  archetypeW: [
+    ['carrefour', 70],
+    ['bourgRue', 30],
+  ],
+  envW: [28, 8],
+  envH: [22, 6],
+  densFalloff: 20,
+  minStreets: 3,
+  maxStreets: 6,
+  churchPct: 0,
+  marketPct: 0,
+  forecourtPct: 0,
+  placeLen: null,
+  maxBuildings: 14,
+  minBuildings: 3,
+  farms: [1, 2],
+  bocageCell: 32,
+  stands: [16, 8],
+  standRadius: [40, 18],
+  clearings: [2, 3],
 };
 
 // The routing table: a kind reaches the v3 pipeline exactly when it has a
@@ -179,4 +244,5 @@ export const PROFILES: Partial<Record<MapKind, KindProfile>> = {
   bourg: BOURG,
   road: ROAD,
   open: OPEN,
+  woods: WOODS,
 };

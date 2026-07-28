@@ -40,7 +40,9 @@ const PRE_RELIEF: Record<MapKind, string[]> = {
   // 'open' row above until then, which is the clearest statement of what the
   // legacy generator did with the kind: nothing.
   road: ['58ca7432', '22bff2e4', '3d52bdb8', 'e4e97f2f', '3ded323c', 'ed38633c', '4d2e6f16', 'd4ab3dc0'],
-  woods: ['be23a411', '5a98532c', 'c52c9047', '495360ad', '23933a75', 'f357e7dd', 'c08092d3', 'b00bdf46'],
+  // Recaptured at the mapgen-v3 P4 cutover, when 'woods' left the legacy
+  // pipeline for the organic one (scripts/fp.mjs --kind woods).
+  woods: ['6bc6def', 'd2a9c9dd', 'a61532f1', 'ecff631b', '48258cb', '72030ab0', '423c2e6c', '87eceaeb'],
   town: ['bcd466e9', '6553b8e2', '3a445204', '4c57c79f', 'acdb9db2', 'dd238bd7', 'ace5f889', 'e538b159'],
   river: ['c9eaae79', '8f53c2f7', '1960e94d', 'a8c59af', '56ad5890', 'bf06b29d', 'ae9aedd1', 'cdf8c519'],
   bridge: ['f06a37fd', '9372bb3f', '8f86ad51', 'caa32459', '19e12808', '1c7f8003', '8d190660', '63adc289'],
