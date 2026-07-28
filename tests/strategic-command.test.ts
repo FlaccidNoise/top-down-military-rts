@@ -305,7 +305,9 @@ describe('StrategicCommander', () => {
       const blueSoldiers = sim.soldiers.filter(s => s.side === 'blue');
 
       expect(red.length).toBeGreaterThan(0);
-      expect(red.length).toBe(reserve.strength);
+      // The chit's strength is its infantry; the StuG and SdKfz crews ride on
+      // top of it (establishment men, not chit manpower).
+      expect(red.filter((s) => s.inVehicle < 0).length).toBe(reserve.strength);
 
       const redAvgX = red.reduce((a, s) => a + s.x, 0) / red.length;
       expect(redAvgX).toBeLessThan(sim.map.w / 2);
@@ -324,8 +326,8 @@ describe('StrategicCommander', () => {
 
       const blue = sim.soldiers.filter(s => s.side === 'blue');
       const red = sim.soldiers.filter(s => s.side === 'red');
-      expect(blue.length).toBe(138);
-      expect(red.length).toBe(36);
+      expect(blue.length).toBe(138 + 5); // roster + Sherman/M3 crews
+      expect(red.length).toBe(36 + 6); // garrison + PaK 40 crew
     });
 
     // Regression: a red-AI counterattack vs the player crashed the debrief

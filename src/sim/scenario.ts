@@ -7,19 +7,28 @@ const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v
 const center = (b: Building): Vec => ({ x: b.x + b.w / 2, y: b.y + b.h / 2 });
 
 // Nearest road tile center to (x,y) — vehicles spawn on the road, never in a
-// woods stand or hedge the map happened to grow next to the entry point.
-function roadSpot(sim: Sim, x: number, y: number): Vec {
+// woods stand or hedge the map happened to grow next to the entry point. With
+// no road in reach it falls back to the nearest tile a hull may actually
+// occupy (TerrainDef.noVehicle, the same test astar uses): a vehicle staged on
+// illegal ground finds no route out and sits there for the whole battle.
+// `taken` holds tile indices already claimed, so two vehicles staged off the
+// same entry point never stack. Zero rng draws — an expanding-ring scan.
+export function roadSpot(sim: Sim, x: number, y: number, taken?: Set<number>): Vec {
+  let fallback: Vec | null = null;
   for (let r = 0; r < 8; r++) {
     for (let dy = -r; dy <= r; dy++) {
       for (let dx = -r; dx <= r; dx++) {
         if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
         const tx = Math.floor(x) + dx;
         const ty = Math.floor(y) + dy;
-        if (sim.map.inBounds(tx, ty) && sim.map.terrainKeyAt(tx, ty) === 'road') return { x: tx + 0.5, y: ty + 0.5 };
+        if (!sim.map.inBounds(tx, ty) || taken?.has(ty * sim.map.w + tx)) continue;
+        if (sim.map.terrainKeyAt(tx, ty) === 'road') return { x: tx + 0.5, y: ty + 0.5 };
+        const t = sim.map.terrainAt(tx, ty);
+        if (!fallback && t.passable && !t.noVehicle) fallback = { x: tx + 0.5, y: ty + 0.5 };
       }
     }
   }
-  return { x, y };
+  return fallback ?? { x, y };
 }
 
 function addVehicleOnRoad(sim: Sim, side: Side, kind: VehicleKey, x: number, y: number, facing: number): Vehicle {

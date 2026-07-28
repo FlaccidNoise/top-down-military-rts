@@ -5,6 +5,7 @@ import { cellIndex, makeDefaultSector, parseSector } from '../src/strategic/sect
 import { applyEngagementOutcome, makeStrategicBattle, newFront, resolveCoarse, syncStrengths, trivialMismatchWinner } from '../src/strategic/bridge';
 import { loadGame, saveGame } from '../src/strategic/save';
 import { StrategicView } from '../src/render/strategic';
+import type { Sim } from '../src/sim/sim';
 
 describe('sector', () => {
   it('parses the default sector: 40×30, river neutral, bridges, objective town', () => {
@@ -180,13 +181,67 @@ describe('bridge', () => {
     const able = front.chits.find((ch) => ch.side === 'blue')!;
     const wache = front.chits.find((ch) => ch.name === 'Brückenwache Süd')!;
     const { sim } = makeStrategicBattle(c, front, { attackerId: able.id, defenderId: wache.id, cell: wache.cell }, 5);
-    const blue = sim.soldiers.filter((s) => s.side === 'blue');
+    // Armour and gun crews are establishment men (pid -1) fielded on top of
+    // the roster and the chit counter — a bridge cell is an armour kind.
+    const blue = sim.soldiers.filter((s) => s.side === 'blue' && s.pid > 0);
     const red = sim.soldiers.filter((s) => s.side === 'red');
     expect(blue.length).toBe(138);
-    expect(blue.every((s) => s.pid > 0)).toBe(true);
-    expect(red.length).toBe(36); // prefix of de_grenadier_co TO&E by strength: 4x 9-man Gruppen
+    expect(red.length).toBe(36 + 6); // prefix of de_grenadier_co TO&E by strength: 4x 9-man Gruppen, + PaK 40 crew
     const [a, b] = blue;
     expect(a.bonds[b.id]).toBeCloseTo(0.3); // trained-together, wired from campaign
+  });
+
+  // Vehicles reached a Sim only through the test-only scenario path until now:
+  // sim.vehicles was empty in every campaign battle, so every AT weapon on the
+  // field was structurally dead.
+  it('an armour-kind engagement fields the attacker armour section and the defender AT gun', () => {
+    const { c, front } = setup();
+    const able = front.chits.find((ch) => ch.side === 'blue')!;
+    const reserve = front.chits.find((ch) => ch.name === 'Reserve')!;
+    const e = { attackerId: able.id, defenderId: reserve.id, cell: reserve.cell };
+    expect(front.sector.cells[e.cell].terrain).toBe('road');
+    const { sim } = makeStrategicBattle(c, front, e, 11);
+
+    expect(sim.vehicles.map((v) => v.kind)).toEqual(['sherman', 'm3_halftrack']);
+    expect(sim.vehicles.every((v) => v.side === 'blue' && v.alive)).toBe(true);
+    // Staged on ground a hull may actually occupy — an illegal start tile
+    // finds no route out and parks the vehicle for the whole battle.
+    for (const v of sim.vehicles) {
+      const t = sim.map.terrainAt(Math.floor(v.x), Math.floor(v.y));
+      expect(t.passable && !t.noVehicle).toBe(true);
+    }
+    expect(new Set(sim.vehicles.map((v) => `${Math.floor(v.x)},${Math.floor(v.y)}`)).size).toBe(2); // no stacking
+
+    const gun = sim.emplacements.find((em) => em.kind === 'pak40')!;
+    expect(gun.side).toBe('red');
+    expect(gun.state).toBe('deployed');
+    expect(sim.teams[gun.crewTeamId].soldierIds.length).toBe(6);
+    expect(Math.abs(gun.facing)).toBeGreaterThan(Math.PI / 2); // laid on the western approach
+    expect(sim.emplacements.some((em) => em.kind === 'at57')).toBe(false); // blue attacks: no blue gun
+  });
+
+  it('woods and river engagements stay infantry fights', () => {
+    const { c, front } = setup();
+    const able = front.chits.find((ch) => ch.side === 'blue')!;
+    const reserve = front.chits.find((ch) => ch.name === 'Reserve')!;
+    reserve.cell = cellIndex(front.sector, 23, 3); // woods
+    const { sim } = makeStrategicBattle(c, front, { attackerId: able.id, defenderId: reserve.id, cell: reserve.cell }, 11);
+    expect(sim.vehicles.length).toBe(0);
+    expect(sim.emplacements.some((em) => em.kind === 'pak40')).toBe(false);
+  });
+
+  it('staging an armour engagement twice is identical', () => {
+    const { c, front } = setup();
+    const able = front.chits.find((ch) => ch.side === 'blue')!;
+    const reserve = front.chits.find((ch) => ch.name === 'Reserve')!;
+    const e = { attackerId: able.id, defenderId: reserve.id, cell: reserve.cell };
+    const print = (s: Sim) =>
+      JSON.stringify([
+        s.soldiers.map((x) => [x.side, x.name, x.pid, x.x, x.y, x.courage, x.inVehicle]),
+        s.vehicles.map((v) => [v.side, v.kind, v.x, v.y, v.facing]),
+        s.emplacements.map((m) => [m.side, m.kind, m.x, m.y, m.facing, m.state]),
+      ]);
+    expect(print(makeStrategicBattle(c, front, e, 11).sim)).toBe(print(makeStrategicBattle(c, front, e, 11).sim));
   });
 
   it('an engagement on a river cell fights on the river battle map', () => {
@@ -240,7 +295,7 @@ describe('bridge', () => {
     expect(sim.winner).toBe('blue');
     const out = applyEngagementOutcome(c, front, e, sim);
     expect(out.cellTaken).toBe(true);
-    expect(out.redLosses).toBe(36);
+    expect(out.redLosses).toBe(36 + 6); // garrison + the PaK 40 crew
     expect(front.sector.cells[e.cell].owner).toBe('blue');
     expect(able.cell).toBe(e.cell);
     expect(front.chits.find((ch) => ch.name === 'Brückenwache Süd')).toBeUndefined();
