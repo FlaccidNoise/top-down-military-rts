@@ -123,6 +123,16 @@ export function previewMoveSpots(sim: Sim, st: OverlayState): MovePreview | null
     }
   });
   if (teams.length === 0) return null;
+  const { placed, covered, refused, top } = summarize(teams);
+  // An explicit pick is worth reporting even when it is the ground floor: the
+  // player chose it off the floor menu and the chip must confirm the choice.
+  const level = top > 0 || st.orderFloor != null ? top : null;
+  return { kind, teams, placed, covered, refused, level };
+}
+
+// The chip's counts, over whichever teams the preview assembled — the ordered
+// path and the deployment path answer the same four questions.
+function summarize(teams: PreviewTeam[]): { placed: number; covered: number; refused: number; top: number } {
   let placed = 0;
   let covered = 0;
   let refused = 0;
@@ -133,10 +143,7 @@ export function previewMoveSpots(sim: Sim, st: OverlayState): MovePreview | null
     top = Math.max(top, t.level);
     for (const sp of t.spots) if (sp.covered) covered++;
   }
-  // An explicit pick is worth reporting even when it is the ground floor: the
-  // player chose it off the floor menu and the chip must confirm the choice.
-  const level = top > 0 || st.orderFloor != null ? top : null;
-  return { kind, teams, placed, covered, refused, level };
+  return { placed, covered, refused, top };
 }
 
 // Deploy-phase preview: the same resolveDeployment call deployPlace commits,
@@ -175,16 +182,7 @@ function previewDeploy(sim: Sim, st: OverlayState): MovePreview | null {
     teams.push({ teamId: p.teamId, x: p.x, y: p.y, level: p.level, spots: mine, refused, danger: null, verdict: null });
   }
   if (teams.length === 0) return null;
-  let placed = 0;
-  let covered = 0;
-  let refused = 0;
-  let top = 0;
-  for (const t of teams) {
-    placed += t.spots.length;
-    refused += t.refused.length;
-    top = Math.max(top, t.level);
-    for (const sp of t.spots) if (sp.covered) covered++;
-  }
+  const { placed, covered, refused, top } = summarize(teams);
   return { kind: ambush ? 'ambush' : 'defend', teams, placed, covered, refused, level: top > 0 ? top : null };
 }
 

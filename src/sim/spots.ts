@@ -318,14 +318,18 @@ export function crawlCoverSpot(sim: Sim, s: Soldier, blocked: Set<number>): { x:
 export const DEPLOY_EDGE_INSET = 8;
 const DEPLOY_ARC_HALF = Math.PI / 4;
 // A team holds ONE posture, so the prone upgrade is a vote: lie down when at
-// least 1/PRONE_SHARE_DEN of the team's spots gain by it. A bank lip is a
-// one-tile-wide feature and a crest is a line, so a squad spread over a few
-// metres rarely gets half its men behind one — at a half the upgrade fired for
-// 5% of teams, which undersells ground the men are genuinely using. A third
-// is the loosest share that still means "this team is on that feature" rather
-// than "one man happens to be". The cost of being wrong is small and one-
-// sided: ambush is prone AND holds fire until contact, which is what a
-// deploying defender wants anyway, and any order the player issues replaces it.
+// least 1/PRONE_SHARE_DEN of the team's spots gain by it. A third is the
+// loosest share that still means "this team is on that feature" rather than
+// "one man happens to be".
+//
+// Measured over 120 deployments, and the history matters because it is easy to
+// draw the wrong conclusion from half of it: under the ORIGINAL narrow
+// proneImproves (prone must beat crouch, true only on a bank lip) this constant
+// was inert — 2 and 3 both gave 6/120 — which is what proved the detector and
+// not the vote was the limiter. Against the current broad test it does decide:
+// 2 → 86/120, 3 → 96/120, 4 → 96/120. So 3 is a real choice over 2, and 4 buys
+// nothing. Roughly half of all teams vote unanimously either way (59/120), which
+// is why the share only ever arbitrates the split remainder.
 const PRONE_SHARE_DEN = 3;
 
 export interface DeployTeamPlan {

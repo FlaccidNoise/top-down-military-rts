@@ -135,6 +135,11 @@ const ARMOR_CLEAR = 3;
 
 export const GARRISON_RADIUS = 45; // meters from an objective a garrison post may sit
 export const ATTACK_POST_MARGIN = 32; // attack posts start this far east of the west spawn (see attackObjectives)
+// No defender stages inside the attacker's deployment strip. ATTACK_POST_MARGIN
+// IS the strip depth (deploy.ts binds DEPLOY_ATK_DEPTH to it — imported the
+// other way to keep the module graph acyclic); +4 clears addSquadFromDef's
+// +-3 spawn scatter so no man of a legal squad lands in the zone.
+export const GARRISON_STANDOFF = ATTACK_POST_MARGIN + 4;
 const FORD_SUPPRESSION = 0.45; // crossing under fire: shaken at spawn (fast-decaying)
 const FORD_STAMINA = 0.65; // an hour wading: no sprinting off the far bank
 
