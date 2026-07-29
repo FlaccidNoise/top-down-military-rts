@@ -1743,10 +1743,20 @@ window.addEventListener('keydown', (e) => {
 let last = performance.now();
 let acc = 0;
 const DT_MS = DT * 1000;
+// The RENDER clock. Effects that must look alive between sim ticks run on wall
+// time — flame flicker, muzzle flashes, melee hits — because 30 Hz sampling
+// makes a flame visibly step. Wall time does not stop when the battle does,
+// so a paused game sat there with its fires still guttering. This clock is
+// wall time that STOPS with the sim: everything cosmetic reads it instead of
+// performance.now(), and pause freezes the picture the way the player expects.
+// Real `now` still drives the things that are about the player and not the
+// battle — the hold ring, the debrief delay, coachmarks.
+let fxNow = 0;
 
 function frame(now: number): void {
   const dtReal = Math.min(now - last, 250);
   last = now;
+  if (!(mode === 'battle' ? paused : stratPaused)) fxNow += dtReal;
   if (mode === 'battle' && panHeld.size > 0 && !menu.isOpen) {
     let pdx = 0;
     let pdy = 0;
@@ -1864,11 +1874,13 @@ function frame(now: number): void {
     // mutation the renderer has to notice (stale chunks, stale enclosure runs,
     // stale wall bands), where a boom is only ever a thing that was watched.
     const breaches = sim.takeBreaches();
-    renderer.addEvents(shots, now);
-    renderer.addMeleeEvents(melee, now);
-    renderer.addBooms(booms, now);
-    renderer.addBreaches(breaches, now);
-    renderer.addPlanes(sim.takePlanes(), now);
+    // fxNow, not now: an effect stamped with wall time would keep ageing while
+    // the battle is stopped, and would be born already half-expired on resume.
+    renderer.addEvents(shots, fxNow);
+    renderer.addMeleeEvents(melee, fxNow);
+    renderer.addBooms(booms, fxNow);
+    renderer.addBreaches(breaches, fxNow);
+    renderer.addPlanes(sim.takePlanes(), fxNow);
     audio.addShots(shots, cam, cw, chh);
     audio.addMelee(melee, cam, cw, chh);
     audio.addBooms(booms, cam, cw, chh);
@@ -1904,7 +1916,7 @@ function frame(now: number): void {
       deployMsg = '';
       tutorial?.notify('deploy-commit');
     }
-    renderer.draw(ctx, cam, selectedSquads, now, floorFocus);
+    renderer.draw(ctx, cam, selectedSquads, fxNow, floorFocus);
     if (deployPhase) {
       const zone = deployZone();
       const [zx0, zy0] = cam.worldToScreen(zone.x0, 0, view.w, view.h);

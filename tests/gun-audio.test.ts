@@ -56,3 +56,43 @@ describe('GUN audio table', () => {
     }
   });
 });
+
+// A crash reported from production: a non-finite gain reached AudioParam.value
+// and threw INSIDE the frame loop, which aborts the rest of the frame — so it
+// cost the game its drawing and HUD update too (seen as high-speed flicker)
+// before it died. Sound is cosmetic; it must never be able to throw.
+describe('placement never yields a non-finite AudioParam value', () => {
+  // place() is private, so drive the arithmetic it does, with the same
+  // NaN-safe comparisons. This pins the SHAPE of the fix: a comparison that
+  // culls on NaN rather than one NaN slips through.
+  const place = (sx: number, sy: number, cw: number, ch: number): [number, number] | null => {
+    if (!(cw > 0) || !(ch > 0)) return null;
+    const half = Math.hypot(cw, ch) / 2;
+    const nd = Math.hypot(sx - cw / 2, sy - ch / 2) / half;
+    if (!(nd <= 2.6)) return null;
+    const gain = Math.max(0.08, 1 - nd * 0.62);
+    const pan = Math.max(-1, Math.min(1, (sx - cw / 2) / (cw / 2)));
+    return Number.isFinite(gain) && Number.isFinite(pan) ? [gain, pan] : null;
+  };
+
+  it('culls a zero-area viewport instead of producing NaN', () => {
+    // `view` starts {w:0,h:0} and a frame can run before the first resize.
+    // The old cull was `nd > 2.6`, which is FALSE for NaN — the whole bug.
+    expect(place(0, 0, 0, 0)).toBeNull();
+    expect(place(100, 100, 0, 800)).toBeNull();
+  });
+
+  it('culls NaN screen coordinates (a NaN camera or a NaN world position)', () => {
+    expect(place(NaN, 400, 1280, 800)).toBeNull();
+    expect(place(640, NaN, 1280, 800)).toBeNull();
+  });
+
+  it('still places an ordinary on-screen shot, and still culls a far off-screen one', () => {
+    const centre = place(640, 400, 1280, 800)!;
+    expect(centre[0]).toBeCloseTo(1, 6); // dead centre = full gain
+    expect(centre[1]).toBeCloseTo(0, 6);
+    const edge = place(1280, 400, 1280, 800)!;
+    expect(edge[1]).toBeCloseTo(1, 6); // hard right
+    expect(place(99999, 99999, 1280, 800)).toBeNull();
+  });
+});

@@ -112,12 +112,22 @@ export class AudioEngine {
   // Returns [gain, pan, nd] — nd is the normalized distance from viewport centre
   // (0 = dead centre, 1 ≈ screen corner), reused by the near-miss crack gate.
   private place(x: number, y: number, cam: Camera, cw: number, ch: number): [number, number, number] | null {
+    // A zero-area viewport is real: `view` starts {w:0,h:0} and a frame can run
+    // before the first resize measures the canvas. Then `half` is 0, nd is 0/0
+    // = NaN, and — this is the bug that crashed the game — `nd > 2.6` is FALSE
+    // for NaN, so the cull passed it through and a NaN gain reached
+    // AudioParam.value, which throws. An exception here aborts the rest of the
+    // frame (addShots runs before renderer.draw), so it also cost the frame its
+    // drawing and its HUD update: the reported "flickering at high speed".
+    // Every comparison below is written so NaN fails it and culls.
+    if (!(cw > 0) || !(ch > 0)) return null;
     const [sx, sy] = cam.worldToScreen(x, y, cw, ch);
     const half = Math.hypot(cw, ch) / 2;
     const nd = Math.hypot(sx - cw / 2, sy - ch / 2) / half;
-    if (nd > 2.6) return null;
+    if (!(nd <= 2.6)) return null;
     const gain = Math.max(0.08, 1 - nd * 0.62);
     const pan = Math.max(-1, Math.min(1, (sx - cw / 2) / (cw / 2)));
+    if (!Number.isFinite(gain) || !Number.isFinite(pan)) return null;
     return [gain, pan, nd];
   }
 
@@ -189,6 +199,9 @@ export class AudioEngine {
   private gunshot(w: Gun, level: number, pan: number, near: boolean): void {
     const ctx = this.ctx;
     if (!ctx || this.voices >= MAX_VOICES) return;
+    // Belt and braces behind place()'s cull: sound is cosmetic and must never
+    // be able to throw inside the frame loop, whatever a caller hands it.
+    if (!Number.isFinite(level) || !Number.isFinite(pan)) return;
     const out = ctx.createGain();
     out.gain.value = level;
     const p = ctx.createStereoPanner();
