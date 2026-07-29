@@ -1,7 +1,7 @@
 import type { GameMap } from '../map';
-import type { Building, Rect, Vec } from '../mapgen';
+import type { Building, DoorEdge, Rect, Vec } from '../mapgen';
 import type { Rng } from '../rng';
-import type { Footprints } from './footprints';
+import type { Face, Footprints } from './footprints';
 import type { Landmarks } from './landmarks';
 import type { Parcels } from './parcels';
 import { TAG, type Skeleton } from './streets';
@@ -100,6 +100,38 @@ export function addRuralFabric(sk: Skeleton, land: Landmarks, pc: Parcels, fp: F
 //
 // Two masses round a yard rather than the three of an in-town cour: an isolated
 // Norman farm IS a logis and a grange, and the third side is the field.
+// Door edge on one face of a rect, mid-span.
+const doorOn = (rect: Rect, side: Face, width: 1 | 2 = 1, skipStart = 0, skipEnd = 0): DoorEdge => {
+  if (side === 'n') {
+    const x = Math.max(rect.x, Math.min(rect.x + rect.w - width, rect.x + ((rect.w >> 1) + skipStart - skipEnd)));
+    return { x, y: rect.y, side, width };
+  }
+  if (side === 's') {
+    const x = Math.max(rect.x, Math.min(rect.x + rect.w - width, rect.x + ((rect.w >> 1) + skipStart - skipEnd)));
+    return { x, y: rect.y + rect.h - 1, side, width };
+  }
+  if (side === 'e') {
+    const y = Math.max(rect.y, Math.min(rect.y + rect.h - width, rect.y + ((rect.h >> 1) + skipStart - skipEnd)));
+    return { x: rect.x + rect.w - 1, y, side, width };
+  }
+  const y = Math.max(rect.y, Math.min(rect.y + rect.h - width, rect.y + ((rect.h >> 1) + skipStart - skipEnd)));
+  return { x: rect.x, y, side, width };
+};
+
+const bbox = (rects: Rect[]): { x0: number; y0: number; x1: number; y1: number } => {
+  let x0 = Infinity;
+  let y0 = Infinity;
+  let x1 = -Infinity;
+  let y1 = -Infinity;
+  for (const r of rects) {
+    if (r.x < x0) x0 = r.x;
+    if (r.y < y0) y0 = r.y;
+    if (r.x + r.w - 1 > x1) x1 = r.x + r.w - 1;
+    if (r.y + r.h - 1 > y1) y1 = r.y + r.h - 1;
+  }
+  return { x0, y0, x1, y1 };
+};
+
 function placeFarms(
   sk: Skeleton,
   land: Landmarks,
@@ -122,26 +154,185 @@ function placeFarms(
   };
   for (let n = 0; n < want; n++) {
     for (let tries = 0; tries < 40; tries++) {
-      const fw = 11 + r.int(3);
-      const logisH = 5 + r.int(2);
-      const grangeH = 5 + r.int(2);
-      const yardH = 5 + r.int(3);
-      const fh = logisH + yardH + grangeH;
-      const fx = 6 + r.int(Math.max(1, w - fw - 12));
-      const fy = 6 + r.int(Math.max(1, h - fh - 12));
-      if (!clearOf(fx - 2, fy - 2, fx + fw + 1, fy + fh + 1)) continue;
-      const logis: Rect = { x: fx, y: fy, w: 7 + r.int(2), h: logisH };
-      const grange: Rect = { x: fx, y: fy + logisH + yardH, w: 8 + r.int(4), h: grangeH };
-      const yard: Rect = { x: fx, y: fy + logisH, w: fw, h: yardH };
-      emitRural(fp, sk, { ...logis, role: 'farmhouse', frontage: 's', doors: [{ x: logis.x + (logis.w >> 1), y: logis.y + logis.h - 1, side: 's', width: 1 }] });
+      // DRAW ORDER per attempt — every roll unconditional, fixed stream position
+      const rot = r.int(4);                               // 1
+      const fw = 11 + r.int(3);                           // 2
+      const logisH = 4 + r.int(3);                        // 3  range 4-6
+      const grangeH = 4 + r.int(4);                       // 4  range 4-7
+      const yardH = 4 + r.int(5);                         // 5  range 4-8
+      const compoundH = rot <= 1 ? logisH + yardH + grangeH : fw;
+      const fx = 6 + r.int(Math.max(1, w - fw - 12));     // 6
+      const fy = 6 + r.int(Math.max(1, h - compoundH - 12)); // 7
+      const logisW = 6 + r.int(4);                        // 8  range 6-9
+      const grangeW = 7 + r.int(6);                       // 9  range 7-12
+      const L_WING_ROLL = r.next();                       // 10 p0.35
+      const wingW = 3 + r.int(2);                         // 11
+      const wingD = 3 + r.int(2);                         // 12
+      const ETABLE_ROLL = r.next();                       // 13 p0.25
+      const etW = 4 + r.int(2);                           // 14
+      const etH = 3 + r.int(2);                           // 15
+
+      // R-V1: four orientations
+      const vertical = rot <= 1;
+      let logis: Rect, grange: Rect, yard: Rect;
+      let logisFrontage: Face, grangeFrontage: Face;
+      if (rot === 0) {
+        // N→S: logis top, yard middle, grange bottom
+        logis = { x: fx, y: fy, w: logisW, h: logisH };
+        yard = { x: fx, y: fy + logisH, w: fw, h: yardH };
+        grange = { x: fx, y: fy + logisH + yardH, w: grangeW, h: grangeH };
+        logisFrontage = 's';
+        grangeFrontage = 'n';
+      } else if (rot === 1) {
+        // S→N: grange top, yard middle, logis bottom
+        grange = { x: fx, y: fy, w: grangeW, h: grangeH };
+        yard = { x: fx, y: fy + grangeH, w: fw, h: yardH };
+        logis = { x: fx, y: fy + grangeH + yardH, w: logisW, h: logisH };
+        logisFrontage = 'n';
+        grangeFrontage = 's';
+      } else if (rot === 2) {
+        // E→W: logis left, yard middle, grange right
+        logis = { x: fx, y: fy, w: logisH, h: logisW };
+        yard = { x: fx + logisH, y: fy, w: yardH, h: fw };
+        grange = { x: fx + logisH + yardH, y: fy, w: grangeH, h: grangeW };
+        logisFrontage = 'e';
+        grangeFrontage = 'w';
+      } else {
+        // rot === 3, W→E: grange left, yard middle, logis right
+        grange = { x: fx, y: fy, w: grangeH, h: grangeW };
+        yard = { x: fx + grangeH, y: fy, w: yardH, h: fw };
+        logis = { x: fx + grangeH + yardH, y: fy, w: logisH, h: logisW };
+        logisFrontage = 'w';
+        grangeFrontage = 'e';
+      }
+
+      // R-V2: nearest arterial tile sets yard open face
+      const ycx = yard.x + (yard.w >> 1);
+      const ycy = yard.y + (yard.h >> 1);
+      let yardOpen: Face = 'e';
+      {
+        let bestDist = Infinity;
+        let bestAx = -1;
+        let bestAy = -1;
+        for (let ax = fx; ax < fx + fw; ax++) {
+          const ay = sk.roadY[ax];
+          const d = Math.max(Math.abs(ax - ycx), Math.abs(ay - ycy));
+          if (d < bestDist) {
+            bestDist = d;
+            bestAx = ax;
+            bestAy = ay;
+          }
+        }
+        if (bestAx >= 0) {
+          const dx = bestAx - ycx;
+          const dy = bestAy - ycy;
+          yardOpen = Math.abs(dx) >= Math.abs(dy) ? (dx > 0 ? 'e' : 'w') : (dy > 0 ? 's' : 'n');
+        }
+      }
+
+      // R-V3: L-shaped logis wing into yard
+      const wingPresent = L_WING_ROLL < 0.35 && logisW >= wingW + 2 && wingD < yardH;
+      const wingOnHigh = (fx & 1) !== 0;
+      const logisParts: Rect[] = [logis];
+      let wingRect: Rect | null = null;
+      if (wingPresent) {
+        wingRect = wingOnHigh
+          ? (rot === 0
+            ? { x: fx + logisW - wingW, y: fy + logisH, w: wingW, h: wingD }
+            : rot === 1
+            ? { x: fx + logisW - wingW, y: fy + grangeH + yardH - wingD, w: wingW, h: wingD }
+            : rot === 2
+            ? { x: fx + logisH, y: fy + logisW - wingW, w: wingD, h: wingW }
+            : { x: fx + grangeH + yardH - wingD, y: fy + logisW - wingW, w: wingD, h: wingW })
+          : (rot === 0
+            ? { x: fx, y: fy + logisH, w: wingW, h: wingD }
+            : rot === 1
+            ? { x: fx, y: fy + grangeH + yardH - wingD, w: wingW, h: wingD }
+            : rot === 2
+            ? { x: fx + logisH, y: fy, w: wingD, h: wingW }
+            : { x: fx + grangeH + yardH - wingD, y: fy, w: wingD, h: wingW });
+        logisParts.push(wingRect);
+      }
+
+      // R-V4: 3-mass étable on the remaining yard face
+      let etable: Rect | null = null;
+      if (ETABLE_ROLL < 0.25) {
+        const etCandidate: Rect =
+          rot === 0 ? { x: fx, y: fy + logisH, w: etW, h: yardH }
+          : rot === 1 ? { x: fx + fw - etW, y: fy + grangeH, w: etW, h: yardH }
+          : rot === 2 ? { x: fx + logisH, y: fy, w: yardH, h: etW }
+          : { x: fx + grangeH, y: fy + fw - etW, w: yardH, h: etW };
+        // skip if wing and étable would overlap (same side or tight yard width)
+        const overlaps = wingRect !== null &&
+          wingRect.x < etCandidate.x + etCandidate.w && wingRect.x + wingRect.w > etCandidate.x &&
+          wingRect.y < etCandidate.y + etCandidate.h && wingRect.y + wingRect.h > etCandidate.y;
+        if (!overlaps) etable = etCandidate;
+      }
+
+      // clearOf on bounding rect of all masses
+      const masses = [logis, yard, grange, ...logisParts.slice(1)];
+      if (etable) masses.push(etable);
+      const { x0, y0, x1, y1 } = bbox(masses);
+      if (!clearOf(x0 - 2, y0 - 2, x1 + 2, y1 + 2)) continue;
+
+      // door position on logis: yard-facing edge, centred in the non-wing portion
+      const logisDoor: DoorEdge = (() => {
+        if (vertical) {
+          const avail0 = fx + (wingPresent && !wingOnHigh ? wingW : 0);
+          const avail1 = fx + logisW - 1 - (wingPresent && wingOnHigh ? wingW : 0);
+          const mx = avail0 + ((avail1 - avail0 + 1) >> 1);
+          return logisFrontage === 's'
+            ? { x: mx, y: logis.y + logis.h - 1, side: 's', width: 1 as const }
+            : { x: mx, y: logis.y, side: 'n', width: 1 as const };
+        }
+        const avail0 = fy + (wingPresent && !wingOnHigh ? wingW : 0);
+        const avail1 = fy + logis.h - 1 - (wingPresent && wingOnHigh ? wingW : 0);
+        const my = avail0 + ((avail1 - avail0 + 1) >> 1);
+        return logisFrontage === 'e'
+          ? { x: logis.x + logis.w - 1, y: my, side: 'e', width: 1 as const }
+          : { x: logis.x, y: my, side: 'w', width: 1 as const };
+      })();
+
+      emitRural(fp, sk, {
+        ...logis,
+        role: 'farmhouse',
+        frontage: logisFrontage,
+        parts: logisParts.length > 1 ? logisParts : undefined,
+        doors: [logisDoor],
+      });
+      // grange door: offset away from étable if present to avoid shared corner
+      const grangeDoor = etable
+        ? (vertical
+          ? (rot === 0
+            ? doorOn(grange, grangeFrontage, 2, etW, 0)
+            : doorOn(grange, grangeFrontage, 2, 0, etW))
+          : (rot === 2
+            ? doorOn(grange, grangeFrontage, 2, etW, 0)
+            : doorOn(grange, grangeFrontage, 2, 0, etW)))
+        : doorOn(grange, grangeFrontage, 2);
       emitRural(fp, sk, {
         ...grange,
         role: 'barn',
-        frontage: 'n',
-        doors: [{ x: grange.x + (grange.w >> 1), y: grange.y, side: 'n', width: 2 }],
+        frontage: grangeFrontage,
+        doors: [grangeDoor],
       });
-      fp.compounds.push({ rect: yard, open: 'e', gateWidth: 2 });
-      out.push({ x: yard.x + (yard.w >> 1), y: yard.y + (yard.h >> 1) });
+      if (etable) {
+        const etFrontage: Face = rot === 0 ? 'e' : rot === 1 ? 'w' : rot === 2 ? 's' : 'n';
+        const d = doorOn(etable, etFrontage, 1);
+        const ox = d.side === 'e' ? d.x + 1 : d.side === 'w' ? d.x - 1 : d.x;
+        const oy = d.side === 's' ? d.y + 1 : d.side === 'n' ? d.y - 1 : d.y;
+        // door must not open onto another building (logis/grange may extend past yard edge)
+        if (ox >= 0 && oy >= 0 && ox < w && oy < h && !fp.occ[oy * w + ox]) {
+          emitRural(fp, sk, {
+            ...etable,
+            role: 'barn',
+            frontage: etFrontage,
+            doors: [d],
+          });
+        }
+      }
+      fp.compounds.push({ rect: yard, open: yardOpen, gateWidth: 2 });
+      out.push({ x: ycx, y: ycy });
       break;
     }
   }
@@ -151,11 +342,14 @@ function placeFarms(
 // Same contract as T7's own emitter: claim the tiles in `occ` so nothing later
 // can overlap, and fail loudly rather than let stampStructure discover it.
 function emitRural(fp: Footprints, sk: Skeleton, b: Building): void {
-  for (let y = b.y; y < b.y + b.h; y++)
-    for (let x = b.x; x < b.x + b.w; x++) {
-      if (fp.occ[y * sk.w + x]) throw new Error(`rural: ${b.role} overlaps an earlier mass at ${x},${y}`);
-      fp.occ[y * sk.w + x] = 1;
-    }
+  const rects = b.parts || [b];
+  for (const r of rects) {
+    for (let y = r.y; y < r.y + r.h; y++)
+      for (let x = r.x; x < r.x + r.w; x++) {
+        if (fp.occ[y * sk.w + x]) throw new Error(`rural: ${b.role} overlaps an earlier mass at ${x},${y}`);
+        fp.occ[y * sk.w + x] = 1;
+      }
+  }
   fp.buildings.push(b);
 }
 

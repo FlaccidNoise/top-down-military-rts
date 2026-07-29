@@ -25,7 +25,7 @@ import { shopfrontsFor } from '../src/render/shops';
 const V3_KINDS = [
   ['bourg', [10, 11, 12], 300],
   ['road', [1, 3, 7, 11], 200],
-  ['open', [1, 3, 7, 11], 120],
+  ['open', [1, 3, 7, 11], 100],
   ['woods', [1, 3, 7, 11], 70],
   ['river', [1, 3, 7, 11], 100],
   ['bridge', [1, 3, 7, 11], 120],

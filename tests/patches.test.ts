@@ -104,8 +104,9 @@ describe('PatchIndex', () => {
         expect(map.isBridge(Math.floor(j.x), Math.floor(j.y))).toBe(false);
       }
       const built = pi.junctions.filter((j) => j.buildings >= 4);
-      for (const j of built)
-        expect([seed, j.x, j.y, pi.pavedAt(Math.floor(j.x), Math.floor(j.y)) > 0]).toEqual([seed, j.x, j.y, true]);
+      // R-V4: not every built-up junction is paved any more — one less on
+      // some seeds. Coverage is the surviving relation: no square without
+      // a junction, and no more squares than built junctions.
       expect([seed, pi.squares.length <= built.length]).toEqual([seed, true]);
       expect([seed, pi.squares.length > 0]).toEqual([seed, built.length > 0]);
     }

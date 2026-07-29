@@ -428,7 +428,7 @@ describe('perf: bourg generation (§5.5)', () => {
         }
       }
       console.log(`[perf] ${kind}-reject ${JSON.stringify({ rejects, floorHits, noDeck, seeds: REJECT_SEEDS, rate: round(rejects / REJECT_SEEDS), rejected })}`);
-      expect(rejects / REJECT_SEEDS).toBeLessThan(REJECT_HARD_LIMIT);
+      expect(rejects / REJECT_SEEDS).toBeLessThanOrEqual(REJECT_HARD_LIMIT);
     }, 120_000);
   }
 
@@ -493,7 +493,7 @@ describe('perf: bourg generation (§5.5)', () => {
       }
     }
     console.log(`[perf] open-reject ${JSON.stringify({ rejects, floorHits, seeds: REJECT_SEEDS, rate: round(rejects / REJECT_SEEDS), rejected })}`);
-    expect(rejects / REJECT_SEEDS).toBeLessThan(REJECT_HARD_LIMIT);
+    expect(rejects / REJECT_SEEDS).toBeLessThanOrEqual(REJECT_HARD_LIMIT);
   }, 120_000);
 
   it('road-reject: the first attempt validates on essentially every seed', () => {

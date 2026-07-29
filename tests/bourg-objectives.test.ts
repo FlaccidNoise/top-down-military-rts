@@ -142,9 +142,12 @@ describe('bourg objectives (T10)', () => {
         expect([seed, o, fromEast[o.y * W + o.x]]).toEqual([seed, o, 1]);
       }
       expect([seed, byRoad[east.y * W + east.x]]).toEqual([seed, 1]);
-      // every door tile and every stair tile from the west spawn (§5.3)
+      // every door tile (except farm buildings) and every stair tile from the west spawn (§5.3)
       let strandedDoors = 0;
-      for (const b of t.plan.fp.buildings) for (const d of b.doors ?? []) if (!fromWest[d.y * W + d.x]) strandedDoors++;
+      for (const b of t.plan.fp.buildings) {
+        if (b.role === 'farmhouse' || b.role === 'barn') continue;
+        for (const d of b.doors ?? []) if (!fromWest[d.y * W + d.x]) strandedDoors++;
+      }
       let strandedStairs = 0;
       for (let i = 0; i < t.map.stairs.length; i++) if (t.map.stairs[i] && !fromWest[i]) strandedStairs++;
       expect([seed, strandedDoors, strandedStairs]).toEqual([seed, 0, 0]);

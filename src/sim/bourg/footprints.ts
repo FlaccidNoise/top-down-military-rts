@@ -369,8 +369,8 @@ export function buildFootprints(sk: Skeleton, land: Landmarks, pc: Parcels): Foo
       const ew = Math.min(aw, 4 + r9.int(3));
       if (avail - eh - deepest >= 3) {
         const et = localRect(p, a0, p.setback + avail - eh, ew, eh);
-        const ed = anyDoor([et], front, alongAxis ? et.x + (et.w >> 1) : et.y + (et.h >> 1), blocked);
-        if (ed) emit({ x: et.x, y: et.y, w: et.w, h: et.h, role: 'barn', doors: ed, frontage: front });
+        const ed = anyDoor([et], rear, alongAxis ? et.x + (et.w >> 1) : et.y + (et.h >> 1), blocked);
+        if (ed) emit({ x: et.x, y: et.y, w: et.w, h: et.h, role: 'barn', doors: ed, frontage: rear });
       }
     }
 

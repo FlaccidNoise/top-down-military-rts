@@ -118,8 +118,15 @@ export function stampEnclosures(map: GameMap, sk: Skeleton, land: Landmarks, fp:
   const tail = new Int32Array(w * h).fill(-1);
   fp.gardens.forEach((g, gi) => {
     for (let y = g.rect.y; y < g.rect.y + g.rect.h; y++)
-      for (let x = g.rect.x; x < g.rect.x + g.rect.w; x++) if (x >= 0 && y >= 0 && x < w && y < h) tail[y * w + x] = gi;
+      for (let x = g.rect.x; x < g.rect.x + g.rect.w; x++)
+        if (x >= 0 && y >= 0 && x < w && y < h && !fp.occ[y * w + x]) tail[y * w + x] = gi;
   });
+
+  // Tail depth: distance from street-facing edge to rear, measured along the
+  // garden's own depth axis. Used to decide which of two adjacent gardens owns
+  // their shared boundary wall.
+  const gardenTail = (r: Rect, rear: Face): number =>
+    rear === 'n' || rear === 's' ? r.h : r.w;
 
   // rear gates run on a per-street-run counter, so a terrace gets one back gate
   // every 2-3 houses rather than one per house (§2.2 stage 10)
@@ -127,7 +134,13 @@ export function stampEnclosures(map: GameMap, sk: Skeleton, land: Landmarks, fp:
   const rearWalls: [number, number, boolean][][] = fp.gardens.map(() => []);
 
   fp.gardens.forEach((g, gi) => {
-    eachFaceEdge(g.rect, g.rear, (ex, ey, horizontal) => {
+    eachFaceEdge(g.rect, g.rear, (ex, ey, horizontal, ox, oy) => {
+      const other = ox >= 0 && oy >= 0 && ox < w && oy < h ? tail[oy * w + ox] : -1;
+      if (other >= 0 && other !== gi) {
+        const dA = gardenTail(g.rect, g.rear);
+        const dB = gardenTail(fp.gardens[other].rect, fp.gardens[other].rear);
+        if (dA < dB || (dA === dB && gi >= other)) return;
+      }
       if (putWall(ex, ey, horizontal, WALL_HIGH)) rearWalls[gi].push([ex, ey, horizontal]);
     });
     for (const lat of lateralsOf(g.front)) {
@@ -148,7 +161,10 @@ export function stampEnclosures(map: GameMap, sk: Skeleton, land: Landmarks, fp:
         // premium is that a squad threading gardens goes single file through
         // gates (doors are orthogonal-only transits, path.ts:107-114) while
         // staying visible to anything upstairs.
-        if (putWall(ex, ey, horizontal, WALL_LOW)) run.push([ex, ey, horizontal]);
+        const dA = gardenTail(g.rect, g.rear);
+        const dB = gardenTail(fp.gardens[other].rect, fp.gardens[other].rear);
+        if (dA < dB || (dA === dB && gi >= other)) { flushRun(); }
+        else if (putWall(ex, ey, horizontal, WALL_LOW)) run.push([ex, ey, horizontal]);
         else flushRun();
       });
       flushRun();

@@ -340,6 +340,13 @@ same task.
 
 ## 8. Open risks / unknowns
 
+0. **P1 verifier finding (accepted):** R-G1's "no leak opens" claim is wrong in
+   one corner case — hedge terrain is foot-PASSABLE (1.8x cost), so astar's
+   no-corner-cutting rule does not apply, and a 1-wide line's diagonal corner
+   contacts let foot units shortcut through the corner point instead of paying
+   the hedge crossing. Not a barrier bypass (vehicles still blocked), no
+   LOS/cover change; accepted as a movement-cost cosmetic. If playtest flags
+   it, filler = paint hedge at owner-change corners (one extra pass, no draws).
 1. The audit measured 1,476-4,199 non-zero elev tiles INSIDE the flat-zone
    rectangle on some seeds despite every writer hard-skipping it — unresolved
    (likely a probe reconstruction error, possibly a real bleed). P3's
