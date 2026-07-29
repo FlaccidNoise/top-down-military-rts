@@ -66,6 +66,8 @@ export interface KindProfile {
   // no river at all and takes no draw, which is what keeps every dry kind
   // byte-identical. `width` is the band's span in tiles before its ±3 walk.
   water: { width: number } | null;
+  /** S4 per-site land-use assignment: [cropPct, orchPct] out of 100; remainder is pasture. */
+  fieldMix: [number, number];
 }
 
 // The bourg, verbatim. Do not "tidy" a value here: each one is the number the
@@ -89,11 +91,12 @@ export const BOURG: KindProfile = {
   maxBuildings: 80,
   minBuildings: 0,
   farms: [2, 2],
-  bocageCell: 22,
+  bocageCell: 26,
   stands: [2, 3],
   standRadius: [6, 5],
   clearings: [0, 0],
   water: null,
+  fieldMix: [35, 10],
 };
 
 // §2.2 — the linear roadside village. Everything about it follows from one
@@ -132,11 +135,12 @@ export const ROAD: KindProfile = {
   maxBuildings: 55,
   minBuildings: 0,
   farms: [2, 2],
-  bocageCell: 22,
+  bocageCell: 24,
   stands: [3, 3],
   standRadius: [6, 5],
   clearings: [0, 0],
   water: null,
+  fieldMix: [40, 10],
 };
 
 // §2.3 — scattered farmsteads, hedged parcels, a tiny nucleus. The inversion
@@ -188,11 +192,12 @@ export const OPEN: KindProfile = {
   maxBuildings: 24,
   minBuildings: 4,
   farms: [4, 3],
-  bocageCell: 20,
+  bocageCell: 24,
   stands: [3, 3],
   standRadius: [6, 5],
   clearings: [0, 0],
   water: null,
+  fieldMix: [45, 10],
 };
 
 // §2.4 — stands, clearings, a forester pocket. `open` inverted the bourg by
@@ -246,11 +251,12 @@ export const WOODS: KindProfile = {
   maxBuildings: 14,
   minBuildings: 3,
   farms: [1, 2],
-  bocageCell: 32,
+  bocageCell: 34,
   stands: [16, 8],
   standRadius: [40, 18],
   clearings: [2, 3],
   water: null,
+  fieldMix: [15, 5],
 };
 
 // §2.5 — the ford assault. `river` is OPEN's countryside with a 5-wide band
@@ -283,11 +289,12 @@ export const RIVER: KindProfile = {
   maxBuildings: 24,
   minBuildings: 4,
   farms: [4, 3],
-  bocageCell: 20,
+  bocageCell: 24,
   stands: [3, 3],
   standRadius: [6, 5],
   clearings: [0, 0],
   water: { width: 5 },
+  fieldMix: [45, 10],
 };
 
 // §2.5 — the bridge-head hamlet. The one kind whose nucleus exists BECAUSE of
@@ -330,11 +337,12 @@ export const BRIDGE: KindProfile = {
   maxBuildings: 36,
   minBuildings: 4,
   farms: [4, 3],
-  bocageCell: 20,
+  bocageCell: 24,
   stands: [3, 3],
   standRadius: [6, 5],
   clearings: [0, 0],
   water: { width: 3 },
+  fieldMix: [45, 10],
 };
 
 // The routing table, and since P6 retired the legacy pipeline it is the WHOLE

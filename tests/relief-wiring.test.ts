@@ -46,14 +46,14 @@ function fingerprint(plan: MapPlan): string {
 // Recaptured by hand from `npx vite-node scripts/fp.mjs`; seeds 4 and 6 of
 // `open` and seed 6 of `woods` held their old values on their own.
 const PRE_RELIEF: Record<MapKind, string[]> = {
-  open: ['2676e4cb', '38113c32', 'c3219d2f', '8a30c59b', '2d3be83f', 'f773a08c', '6ab36789', '8c8bdc4d'],
-  road: ['8de623f', 'e27652b4', 'fcdf5136', '8038d64a', 'baffed95', '69983e22', '3919c58e', 'e8538fa4'],
-  woods: ['de83d883', 'd997e029', '90bbc5ad', '2f9e6e2e', '59052980', '4c936ec4', 'c5553d36', '6a9f0334'],
+  open: ['28dbdcf1', '11af2758', '85d3cf76', 'c2e25162', '849d8024', '9923f097', '68ecbe67', '64b93704'],
+  road: ['e1aed8b2', 'd6958e9e', 'f6236e4f', '9f59588d', 'b7c1e461', 'c7683e3b', '908abc35', '6d93902'],
+  woods: ['1c944d2d', '2d7919f5', 'abe954ed', 'c288962', 'bff79347', '1de11947', 'a754369d', '85a5caa1'],
   // The water kinds' rows cover the water stage itself: TAG.WATER's band is
   // carved inside the skeleton, so `relief: 'none'` still has the whole river.
-  river: ['e0987879', '3702f282', '8c2e19a4', '7359454d', '92198093', '2814cf23', 'dfff05e4', '134e8dd7'],
-  bridge: ['bdb9d4fc', 'ed105b76', 'a80ffcbc', 'eea52390', 'd80e51db', '79871389', 'a8884c17', '86d73598'],
-  bourg: ['800dd794', '93844609', '8a2946f3', '2a5a10e4', 'b962b460', 'cf9c6267', '5f874b45', '74835d92'],
+  river: ['c04abc05', 'e576f1d4', 'cfc8011e', '7f9dc43a', 'bf703183', 'e7ef39b2', 'bc8f0660', '835b44a5'],
+  bridge: ['49461d48', '4c716a05', 'e098d241', '377d42e2', 'a201146c', '6986dc82', '38ee369', '221d467d'],
+  bourg: ['63947cac', '946700e6', '4dd2b12', '8f0edd40', '181485bc', '642abd63', 'c472bb19', '19d3050e'],
 };
 
 const cache = new Map<string, MapPlan>();

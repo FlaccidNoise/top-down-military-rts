@@ -73,7 +73,7 @@ describe('propsFor', () => {
     for (const seed of SEEDS) {
       const { props } = build(seed);
       expect(props.length).toBeGreaterThanOrEqual(40);
-      expect(props.length).toBeLessThanOrEqual(900);
+      expect(props.length).toBeLessThanOrEqual(1300); // re-baselined for V4-P1: R-F2 paints fields from bocage parcels (larger area)
     }
   });
 

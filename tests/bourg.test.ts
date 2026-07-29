@@ -8,7 +8,7 @@ import { buildFootprints } from '../src/sim/bourg/footprints';
 import { reserveLandmarks } from '../src/sim/bourg/landmarks';
 import { buildParcels } from '../src/sim/bourg/parcels';
 import { planBourg, stampBourg, type BourgPlan, type BourgStamp } from '../src/sim/bourg/plan';
-import { BOURG, BRIDGE, OPEN, RIVER, ROAD, WOODS } from '../src/sim/bourg/profile';
+import { BOURG, BRIDGE, OPEN, PROFILES, RIVER, ROAD, WOODS } from '../src/sim/bourg/profile';
 import { addRuralFabric, paintRural } from '../src/sim/bourg/rural';
 import { MIN_REAR_SPAN_Q8, stampEnclosures } from '../src/sim/bourg/enclosures';
 import { stampStructure } from '../src/sim/bourg/stamp';
@@ -1370,8 +1370,8 @@ describe('bourg determinism (§5.4)', () => {
   // is what makes both legitimate rather than silent — with the stage switched
   // off, T14's numbers come back bit for bit.
   it('pins the bourg fingerprints', () => {
-    expect(fingerprint(town(1))).toMatchInlineSnapshot(`"8607a31f"`);
-    expect(fingerprint(town(2))).toMatchInlineSnapshot(`"6e8a0239"`);
+    expect(fingerprint(town(1))).toMatchInlineSnapshot(`"9cd79af6"`);
+    expect(fingerprint(town(2))).toMatchInlineSnapshot(`"24b527ba"`);
   });
 
   // The road kind's counterpart, frozen at the P2 cutover. At 320x240 the
@@ -1382,8 +1382,8 @@ describe('bourg determinism (§5.4)', () => {
   // laundered by `-u`. Moving these is legitimate only when the road layout
   // was meant to change; the four bourg values above must not move with them.
   it('pins the road fingerprints', () => {
-    expect(fingerprint(generateMap(1, W, H, 'road'))).toMatchInlineSnapshot(`"c81d25a5"`);
-    expect(fingerprint(generateMap(2, W, H, 'road'))).toMatchInlineSnapshot(`"e44efdd6"`);
+    expect(fingerprint(generateMap(1, W, H, 'road'))).toMatchInlineSnapshot(`"63ee0475"`);
+    expect(fingerprint(generateMap(2, W, H, 'road'))).toMatchInlineSnapshot(`"2ce1f909"`);
   });
 
   // THE SIGHTLINE PASS moved the eight values below and NOT the four above.
@@ -1402,8 +1402,8 @@ describe('bourg determinism (§5.4)', () => {
   // the quick-battle scenario uses — the two move together or one of them is
   // a bug.
   it('pins the open fingerprints', () => {
-    expect(fingerprint(generateMap(1, W, H, 'open'))).toMatchInlineSnapshot(`"8fea6b7c"`);
-    expect(fingerprint(generateMap(2, W, H, 'open'))).toMatchInlineSnapshot(`"5cb18dcd"`);
+    expect(fingerprint(generateMap(1, W, H, 'open'))).toMatchInlineSnapshot(`"f9b1a521"`);
+    expect(fingerprint(generateMap(2, W, H, 'open'))).toMatchInlineSnapshot(`"63ae4098"`);
   });
 
   // The woods kind's, frozen at the P4 cutover. RELIEF_BY_KIND.woods carries
@@ -1412,8 +1412,8 @@ describe('bourg determinism (§5.4)', () => {
   // relief-wiring.test.ts. They also cover the clearing sub-stage (tag 16),
   // which is the only new machinery in the kind.
   it('pins the woods fingerprints', () => {
-    expect(fingerprint(generateMap(1, W, H, 'woods'))).toMatchInlineSnapshot(`"5501bec6"`);
-    expect(fingerprint(generateMap(2, W, H, 'woods'))).toMatchInlineSnapshot(`"b76f1e20"`);
+    expect(fingerprint(generateMap(1, W, H, 'woods'))).toMatchInlineSnapshot(`"9d9cfae7"`);
+    expect(fingerprint(generateMap(2, W, H, 'woods'))).toMatchInlineSnapshot(`"472df18f"`);
   });
 
   // The two water kinds', frozen at the P5 cutover. RELIEF_BY_KIND gives both
@@ -1424,13 +1424,13 @@ describe('bourg determinism (§5.4)', () => {
   // TAG.WATER is drawn inside the skeleton, so the band is in the pre-relief
   // literals too.
   it('pins the river fingerprints', () => {
-    expect(fingerprint(generateMap(1, W, H, 'river'))).toMatchInlineSnapshot(`"9932b3e0"`);
-    expect(fingerprint(generateMap(2, W, H, 'river'))).toMatchInlineSnapshot(`"2ad1aa28"`);
+    expect(fingerprint(generateMap(1, W, H, 'river'))).toMatchInlineSnapshot(`"d3b60712"`);
+    expect(fingerprint(generateMap(2, W, H, 'river'))).toMatchInlineSnapshot(`"bc9eceb9"`);
   });
 
   it('pins the bridge fingerprints', () => {
-    expect(fingerprint(generateMap(1, W, H, 'bridge'))).toMatchInlineSnapshot(`"2536d09d"`);
-    expect(fingerprint(generateMap(2, W, H, 'bridge'))).toMatchInlineSnapshot(`"6b62080a"`);
+    expect(fingerprint(generateMap(1, W, H, 'bridge'))).toMatchInlineSnapshot(`"ad60d733"`);
+    expect(fingerprint(generateMap(2, W, H, 'bridge'))).toMatchInlineSnapshot(`"8f863d07"`);
   });
 
   it('pins the bourg with relief off — the stage is purely additive', () => {
@@ -1440,8 +1440,8 @@ describe('bourg determinism (§5.4)', () => {
     // must never be able to "fix" them. Held T14's values until the woods-stand
     // outline change, which repaints every kind's stands; recaptured by hand
     // from `npx vite-node scripts/fp.mjs --kind bourg`, seeds 1 and 2.
-    expect(fingerprint(generateMap(1, W, H, 'bourg', { relief: 'none' }))).toBe('800dd794');
-    expect(fingerprint(generateMap(2, W, H, 'bourg', { relief: 'none' }))).toBe('93844609');
+    expect(fingerprint(generateMap(1, W, H, 'bourg', { relief: 'none' }))).toBe('63947cac');
+    expect(fingerprint(generateMap(2, W, H, 'bourg', { relief: 'none' }))).toBe('946700e6');
   });
 
   // RETIRED at the mapgen-v3 P6 cutover: §5.1's one-draw guard test, which
@@ -1513,6 +1513,103 @@ describe('bourg determinism (§5.4)', () => {
       // above are vacuous
       expect(countKey(a.map, 'field')).not.toBe(countKey(b.map, 'field'));
     }
+  });
+});
+
+// ── V4-P1 · bocage coherence battery (§5) ─────────────────────────────────
+
+// R-G1 invariant: hedges are 1-wide lines, not 2-wide bands. A 2-wide band
+// shows up as a run of hedge tiles where the perpendicular neighbor on the
+// SAME side is also hedge. Scan every hedge tile; for runs ≥8, if >70% have
+// the same-side flank, it's a band.
+function hedgeBandProbe(map: GameMap): { runLen: number; bandPct: number }[] {
+  const { w, h } = map;
+  const isHedge = (x: number, y: number): boolean =>
+    x >= 0 && y >= 0 && x < w && y < h && map.terrainKeyAt(x, y) === 'hedge';
+  const runs: { runLen: number; bandPct: number }[] = [];
+  // horizontal runs
+  for (let y = 0; y < h; y++) {
+    let start = -1;
+    for (let x = 0; x <= w; x++) {
+      const hHere = x < w && isHedge(x, y);
+      if (hHere && start < 0) start = x;
+      if (!hHere && start >= 0) {
+        const runLen = x - start;
+        if (runLen >= 8) {
+          let flanked = 0;
+          for (let rx = start; rx < x; rx++) {
+            // check north AND south: if either is hedge, this is a band tile
+            if (isHedge(rx, y - 1) || isHedge(rx, y + 1)) flanked++;
+          }
+          runs.push({ runLen, bandPct: flanked / runLen });
+        }
+        start = -1;
+      }
+    }
+  }
+  // vertical runs
+  for (let x = 0; x < w; x++) {
+    let start = -1;
+    for (let y = 0; y <= h; y++) {
+      const hHere = y < h && isHedge(x, y);
+      if (hHere && start < 0) start = y;
+      if (!hHere && start >= 0) {
+        const runLen = y - start;
+        if (runLen >= 8) {
+          let flanked = 0;
+          for (let ry = start; ry < y; ry++) {
+            // check east AND west
+            if (isHedge(x - 1, ry) || isHedge(x + 1, ry)) flanked++;
+          }
+          runs.push({ runLen, bandPct: flanked / runLen });
+        }
+        start = -1;
+      }
+    }
+  }
+  return runs;
+}
+
+describe('V4-P1 bocage coherence (§5)', () => {
+  const PROBE_SEEDS = Array.from({ length: 13 }, (_, i) => i + 1);
+
+  it('has no 2-wide hedge band on any kind (R-G1)', () => {
+    // R-G1 replaced "any 4-neighbour" with "east/south owner-change only", so
+    // a hedge is now a 1-wide line. A run ≥8 with >70% same-side flank is a
+    // 2-wide band — the audit measured 55-60% of such runs before this change.
+    const KINDS = ['bourg', 'road', 'open', 'woods', 'river', 'bridge'] as const;
+    for (const kind of KINDS)
+      for (const seed of PROBE_SEEDS) {
+        const { map } = generateMap(seed, W, H, kind);
+        const bands = hedgeBandProbe(map).filter((r) => r.bandPct > 0.7);
+        expect([kind, seed, bands.length]).toEqual([kind, seed, 0]);
+      }
+  });
+
+  it('paints every field tile inside a crop-assigned parcel (R-F1 invariant)', () => {
+    // R-F1 assigns land use per site; R-F2 paints fields only where the owner
+    // map says crop. Every field tile must have owner ≥ 0 and landUse[owner] = 1.
+    const KINDS = ['bourg', 'road', 'open', 'woods', 'river', 'bridge'] as const;
+    for (const kind of KINDS)
+      for (const seed of PROBE_SEEDS) {
+        const base = mulberry32((seed ^ 0x51ab3fc7) >>> 0).int(0x7fffffff);
+        const plan = planBourg(base, W, H, PROFILES[kind]);
+        const map = new GameMap(W, H);
+        stampBourg(map, plan);
+        const bad: string[] = [];
+        for (let i = 0; i < map.tiles.length; i++) {
+          if (map.terrainKeyAt(i % W, (i / W) | 0) !== 'field') continue;
+          const ownerIdx = plan.rural.owner[i];
+          if (ownerIdx < 0) {
+            bad.push(`field@${i % W},${(i / W) | 0} has no owner`);
+            continue;
+          }
+          if (plan.rural.landUse[ownerIdx] !== 1) {
+            bad.push(`field@${i % W},${(i / W) | 0} owner=${ownerIdx} landUse=${plan.rural.landUse[ownerIdx]}`);
+          }
+        }
+        expect([kind, seed, bad]).toEqual([kind, seed, []]);
+      }
   });
 });
 

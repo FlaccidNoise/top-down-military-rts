@@ -30,6 +30,8 @@ export interface Rural {
   lanes: number; // farm-track tiles carved into sk.road
   farms: Vec[]; // yard centre of each outlying compound
   gaps: number; // bocage parcel boundaries, one gate punched in each
+  owner: Int32Array; // site index per tile (-1 = no owner); built by bocage, consumed by paintRural
+  landUse: Uint8Array; // per-site: 0=pasture, 1=crop, 2=orchard
 }
 
 const LANE_D = 5; // space-colonisation step
@@ -74,8 +76,19 @@ export function addRuralFabric(sk: Skeleton, land: Landmarks, pc: Parcels, fp: F
 
   const farms = placeFarms(sk, land, pc, fp, r11, inZone);
   const lanes = growFarmLanes(sk, fp, r11, inZone, farms);
-  const { hedge, gaps } = bocage(sk, land, pc, fp, r11, inZone);
-  return { hedge, lanes, farms, gaps };
+  const { hedge, gaps, owner, sites } = bocage(sk, land, pc, fp, r11, inZone);
+
+  // R-F1: per-site land-use assignment in scan order
+  const landUse = new Uint8Array(sites);
+  {
+    const [cropPct, orchPct] = sk.profile.fieldMix;
+    const rLandUse = sk.S(TAG.ORCHARD);
+    for (let i = 0; i < sites; i++) {
+      const k = rLandUse.int(100);
+      landUse[i] = k < cropPct ? 1 : k < cropPct + orchPct ? 2 : 0;
+    }
+  }
+  return { hedge, lanes, farms, gaps, owner, landUse };
 }
 
 // ── outlying farm compounds ──────────────────────────────────────────────────
@@ -294,7 +307,7 @@ function bocage(
   fp: Footprints,
   r: Rng,
   inZone: (x: number, y: number) => boolean,
-): { hedge: Uint8Array; gaps: number } {
+): { hedge: Uint8Array; gaps: number; owner: Int32Array; sites: number } {
   const { w, h } = sk;
   const cell = sk.profile.bocageCell;
   const cols = Math.ceil(w / cell);
@@ -303,8 +316,8 @@ function bocage(
   const sy = new Int32Array(cols * rows);
   for (let cy = 0; cy < rows; cy++)
     for (let cx = 0; cx < cols; cx++) {
-      sx[cy * cols + cx] = Math.min(w - 1, cx * cell + 3 + r.int(16));
-      sy[cy * cols + cx] = Math.min(h - 1, cy * cell + 3 + r.int(16));
+      sx[cy * cols + cx] = Math.min(w - 1, cx * cell + 3 + r.int(cell - 12));
+      sy[cy * cols + cx] = Math.min(h - 1, cy * cell + 3 + r.int(cell - 12));
     }
 
   const owner = new Int32Array(w * h).fill(-1);
@@ -343,8 +356,9 @@ function bocage(
       if (me < 0) continue;
       if (sk.road[i] || land.resv[i] || pc.claimed[i] || fp.occ[i]) continue;
       let other = -1;
-      for (const n of [i - 1, i + 1, i - w, i + w]) {
-        if (owner[n] >= 0 && owner[n] !== me) {
+      // R-G1: single-wide — only east and south edges carry the hedge
+      for (const n of [i + 1, i + w]) {
+        if (n < owner.length && owner[n] >= 0 && owner[n] !== me) {
           other = owner[n];
           break;
         }
@@ -374,7 +388,8 @@ function bocage(
       if (Math.max(dx, dy) <= 1) hedge[i] = 0;
     }
   }
-  return { hedge, gaps: pairs.size };
+  const sites = cols * rows;
+  return { hedge, gaps: pairs.size, owner, sites };
 }
 
 // ── terrain painting ─────────────────────────────────────────────────────────
@@ -482,13 +497,14 @@ export function paintRural(
     for (let y = oy; y < oy + oh; y += 2)
       for (let x = ox + (((y - oy) >> 1) % 2); x < ox + ow; x += 2) if (plantable(x, y)) map.setTerrain(x, y, 'woods');
   }
-  for (let i = 0, n = 4 + r12.int(4); i < n; i++) {
-    const fw = 12 + r12.int(14);
-    const fh = 8 + r12.int(10);
-    const fx = 2 + r12.int(Math.max(1, w - fw - 4));
-    const fy = 2 + r12.int(Math.max(1, h - fh - 4));
-    for (let y = fy; y < fy + fh; y++)
-      for (let x = fx; x < fx + fw; x++) if (plantable(x, y)) map.setTerrain(x, y, 'field');
+  // R-F2: fields painted from the bocage owner map (every tile inside a crop-assigned parcel)
+  for (let i = 0; i < rural.owner.length; i++) {
+    const ownerIdx = rural.owner[i];
+    if (ownerIdx < 0) continue;
+    if (rural.landUse[ownerIdx] !== 1) continue; // 1 = crop
+    const x = i % w;
+    const y = (i / w) | 0;
+    if (!inZone(x, y) && plantable(x, y)) map.setTerrain(x, y, 'field');
   }
 
   // A clearing centre is an anchor like a stand centre is (§2.4), so it joins
