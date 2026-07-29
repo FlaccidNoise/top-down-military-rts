@@ -453,8 +453,11 @@ export class Renderer {
   draw(ctx: CanvasRenderingContext2D, cam: Camera, selectedSquads: number[], now: number, floorFocus = -1): void {
     const cw = view.w;
     const ch = view.h;
-    const dt = Math.min(0.1, (now - this.lastNow) / 1000);
-    this.lastNow = now;
+    // Roof-fade dt uses wall-clock time: a static reveal like interiors must
+    // not depend on the sim clock (fxNow freezes under pause/deployment).
+    const realNow = performance.now();
+    const dt = Math.min(0.1, (realNow - this.lastNow) / 1000);
+    this.lastNow = realNow;
     ctx.fillStyle = '#161510'; // darker desaturated earth tone off-map, replacing the flat void
     ctx.fillRect(0, 0, cw, ch); // backdrop stays unshaken so shake never opens a gap at the map edge
     ctx.imageSmoothingEnabled = true;
@@ -475,7 +478,7 @@ export class Renderer {
     ctx.strokeRect(mx0, my0, mx1 - mx0, my1 - my0);
     this.decals.draw(ctx, cam, cw, ch);
     this.marks.draw(ctx, cam, cw, ch);
-    this.roofs.update(this.sim, cam, dt);
+    this.roofs.update(this.sim, cam, dt || 1 / 60);
     this.roofs.drawShadows(ctx, cam, cw, ch);
     this.roofs.drawWalls(ctx, cam, cw, ch);
     // interior lighting and stair glyphs, only where the roof fade reveals them
