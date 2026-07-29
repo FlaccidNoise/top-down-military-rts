@@ -1,6 +1,7 @@
 import type { TerrainKey } from './data';
 import { EDGE, GameMap } from './map';
 import type { Rng } from './rng';
+import { lerp2 } from './bourg/height';
 
 // Micro-relief: the pure-geometry half of the verticality work (design
 // docs/plans/2026-07-26-verticality-design.md §1). Everything here is a
@@ -144,17 +145,7 @@ export function hedgeBanks(map: GameMap, flatZone: FlatZone): number {
   return raised;
 }
 
-// Deterministic bilinear sample of a value lattice. + − × only.
-function lerp2(L: Float64Array, nx: number, u: number, v: number): number {
-  const x0 = Math.floor(u);
-  const y0 = Math.floor(v);
-  const fx = u - x0;
-  const fy = v - y0;
-  const i = y0 * nx + x0;
-  const top = L[i] + (L[i + 1] - L[i]) * fx;
-  const bot = L[i + nx] + (L[i + nx + 1] - L[i + nx]) * fx;
-  return top + (bot - top) * fy;
-}
+// Deterministic bilinear sample of a value lattice — imported from height.ts.
 
 // R-B · Low-frequency undulation: 2-octave integer value noise on lattices of
 // 48 and 19 tiles, added UNDER the domes (min 255). The lattice is drawn in

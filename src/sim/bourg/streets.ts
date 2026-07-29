@@ -35,6 +35,7 @@ export const TAG = {
   WATER: 15,
   CLEARING: 16,
   SIGHTLINE: 17, // mapgen's per-objective lane pass (sightlines.ts); relief owns 20-29
+  HEIGHT: 18, // V4 S0 — multi-octave value-noise elevation field (height.ts); 19 reserved
 } as const;
 
 // mulberry32 is a 32-bit counter (rng.ts:8-22): two streams seeded 1 apart are
