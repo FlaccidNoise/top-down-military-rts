@@ -5,13 +5,25 @@ import { coach } from './coach';
 export class PauseMenu {
   private el: HTMLDivElement;
   private _open = false;
-  private cb: { onResume(): void; onKeymapChanged(k: Keymap): void; onFieldManual(): void };
+  private cb: {
+    onResume(): void;
+    onKeymapChanged(k: Keymap): void;
+    onFieldManual(): void;
+    tutorialEnabled?(): boolean;
+    onTutorialToggle?(on: boolean): void;
+  };
   private km: Keymap = { bindings: { ...DEFAULTS }, version: 0 };
   private captureActive = false;
   private captureAction: string | null = null;
   private captureHandler: ((e: KeyboardEvent) => void) | null = null;
 
-  constructor(cb: { onResume(): void; onKeymapChanged(k: Keymap): void; onFieldManual(): void }) {
+  constructor(cb: {
+    onResume(): void;
+    onKeymapChanged(k: Keymap): void;
+    onFieldManual(): void;
+    tutorialEnabled?(): boolean;
+    onTutorialToggle?(on: boolean): void;
+  }) {
     this.cb = cb;
     this.el = document.createElement('div');
     this.el.id = 'pausemenu';
@@ -51,6 +63,10 @@ export class PauseMenu {
     // Opens the manual OVER this menu. close() resumes the game, so it must not
     // run here — the player reads while the battle stays stopped.
     this.el.querySelector('#pm-manual')?.addEventListener('click', () => this.cb.onFieldManual());
+    this.el.querySelector('#pm-tutorial')?.addEventListener('click', () => {
+      this.cb.onTutorialToggle?.(!this.cb.tutorialEnabled!());
+      this.render(); // the label IS the state
+    });
   }
 
   private mainView(): string {
@@ -60,7 +76,9 @@ export class PauseMenu {
         <button id="pm-resume" class="primary">Resume</button>
         <button id="pm-keybindings">Keybindings</button>
         <button id="pm-manual">Field Manual</button>
+        ${this.cb.tutorialEnabled ? `<button id="pm-tutorial" aria-pressed="${this.cb.tutorialEnabled()}">Tutorial: ${this.cb.tutorialEnabled() ? 'ON' : 'OFF'}</button>` : ''}
       </div>
+      ${this.cb.tutorialEnabled && !this.cb.tutorialEnabled() ? '<p class="pm-note">Turn the tutorial on from the main menu to replay it from the briefing.</p>' : ''}
     </div></div>`;
   }
 

@@ -4,6 +4,7 @@ import {
   loadState,
   saveState,
   STEPS,
+  Tutorial,
   TUTORIAL_STORAGE_KEY,
   type StepId,
   type TutorialEvent,
@@ -248,5 +249,48 @@ describe('STEPS', () => {
     expect(speed.text!.desktop).toContain('60×');
     const orders = STEPS.find((s) => s.id === 'battle-orders')!;
     expect(orders.text!.desktop).toContain('⇧1–⇧8');
+  });
+});
+
+// ---- the menu switch ----
+
+describe('Tutorial.setEnabled (the menu toggle)', () => {
+  // The Tutorial class touches the DOM only when it PRESENTS a step; the
+  // switch is pure state + storage, so it tests in the node env like the rest.
+  const makeTutorial = (storage: Storage) =>
+    new Tutorial({ hide() {}, showStep() {} } as unknown as ConstructorParameters<typeof Tutorial>[0], false, () => {}, storage);
+
+  it('turning it OFF is exactly Skip, and survives a reload', () => {
+    const storage = makeStorage();
+    const t = makeTutorial(storage);
+    t.setEnabled(false);
+    expect(t.isSkipped).toBe(true);
+    expect(loadState(storage).skipped).toBe(true);
+  });
+
+  it('turning it ON clears the skip AND the progress, so the chain replays from the briefing', () => {
+    const storage = makeStorage();
+    saveState({ skipped: true, done: ['briefing', 'select-force', 'march'] }, storage);
+    const t = makeTutorial(storage);
+    expect(t.isSkipped).toBe(true);
+    t.setEnabled(true);
+    expect(t.isSkipped).toBe(false);
+    // Progress cleared: a finished player showing someone else must see it all
+    // again, and "on but already done" would teach nothing.
+    const reloaded = loadState(storage);
+    expect(reloaded).toEqual({ skipped: false, done: [] });
+    // and the state machine really does re-arm from the first step
+    expect(advance(reloaded, 'campaign-start').show).toBe('briefing');
+  });
+
+  it('is idempotent both ways', () => {
+    const storage = makeStorage();
+    const t = makeTutorial(storage);
+    t.setEnabled(true);
+    t.setEnabled(true);
+    expect(loadState(storage)).toEqual({ skipped: false, done: [] });
+    t.setEnabled(false);
+    t.setEnabled(false);
+    expect(loadState(storage).skipped).toBe(true);
   });
 });

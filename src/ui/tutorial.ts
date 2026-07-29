@@ -239,6 +239,23 @@ export class Tutorial {
     this.notify('briefing-begun');
   }
 
+  /**
+   * The menu switch. Turning it ON clears progress as well as the skip, so the
+   * chain replays from the briefing — which is the whole point of the control:
+   * a player who has finished the tutorial turns it back on to show somebody
+   * else, and "on but already completed" would teach them nothing. Turning it
+   * OFF is exactly the Skip button.
+   */
+  setEnabled(on: boolean): void {
+    if (!on) {
+      this.skip();
+      return;
+    }
+    this.state = { skipped: false, done: [] };
+    this.shown = null;
+    saveState(this.state, this.storage);
+  }
+
   /** Terminal. Nothing tutorial-ish appears again on this profile. */
   skip(): void {
     this.state = { ...this.state, skipped: true };

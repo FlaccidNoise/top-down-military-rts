@@ -453,6 +453,8 @@ button.hbtn.active { background: var(--chip-active-bg); border-color: var(--ambe
 #mainmenu .mm-continue { margin-top: var(--sp-4); }
 #mainmenu .mm-continue-actions { display: flex; gap: 10px; margin-top: var(--sp-2); }
 #mainmenu .mm-msg, #mainmenu .mm-reason, #mainmenu .mm-status { color: var(--muted); margin: 6px 0 0; }
+/* Says where the replay switch lives, when the pause menu can only turn it off. */
+#pausemenu .pm-note { color: var(--muted); margin: 8px 0 0; font-size: var(--fs-sm); text-align: center; }
 #mainmenu .mm-status { color: var(--paper); }
 #mainmenu #mm-storage-banner {
   flex-shrink: 0;

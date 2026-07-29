@@ -19,6 +19,13 @@ export interface MainMenuCallbacks {
   onContinueLegacy(): void;
   onDiscardSave(): void;
   onFieldManual(): void;
+  // The tutorial switch lives HERE and not only in the pause menu because
+  // turning it back on has to happen BEFORE the operation starts: the briefing
+  // card fires on campaign-start, so a player who re-enables mid-campaign
+  // would miss the one step that explains the goal. Absent (?camp= art path)
+  // = no tutorial exists, and the control does not render.
+  tutorialEnabled?(): boolean;
+  onTutorialToggle?(on: boolean): void;
 }
 
 // Save-file strings (detail, clock, theaterName) reach innerHTML; a corrupt
@@ -32,6 +39,7 @@ const CONTINUE_LEGACY_ID = 'mm-continue-legacy';
 const DISCARD_ID = 'mm-discard';
 const NEW_OP_ID = 'mm-new';
 const MANUAL_ID = 'mm-manual';
+const TUTORIAL_ID = 'mm-tutorial';
 
 // Pure — no DOM globals, so the five states are testable without a browser.
 export function renderContinueBlock(probe: SaveProbe): string {
@@ -125,10 +133,15 @@ export class MainMenu {
     <div class="db-actions">
       <button id="${NEW_OP_ID}" class="primary">New Operation</button>
       <button id="${MANUAL_ID}">Field Manual</button>
+      ${this.cb.tutorialEnabled ? `<button id="${TUTORIAL_ID}" aria-pressed="${this.cb.tutorialEnabled()}">Tutorial: ${this.cb.tutorialEnabled() ? 'ON' : 'OFF'}</button>` : ''}
     </div>`;
 
     this.el.querySelector(`#${NEW_OP_ID}`)?.addEventListener('click', () => this.cb.onNewOperation());
     this.el.querySelector(`#${MANUAL_ID}`)?.addEventListener('click', () => this.cb.onFieldManual());
+    this.el.querySelector(`#${TUTORIAL_ID}`)?.addEventListener('click', () => {
+      this.cb.onTutorialToggle?.(!this.cb.tutorialEnabled!());
+      this.render(); // the label IS the state
+    });
     this.el.querySelector(`#${CONTINUE_ID}`)?.addEventListener('click', () => this.cb.onContinue());
     this.el.querySelector(`#${CONTINUE_LEGACY_ID}`)?.addEventListener('click', () => this.cb.onContinueLegacy());
     this.el.querySelector(`#${DISCARD_ID}`)?.addEventListener('click', () => this.cb.onDiscardSave());

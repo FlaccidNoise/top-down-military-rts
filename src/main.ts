@@ -420,6 +420,12 @@ const menu = new PauseMenu({
   },
   onKeymapChanged: (km: Keymap) => { hud.setKeymap(km); },
   onFieldManual: () => { manual.open(); },
+  // Gated on campPinned (declared above) rather than on `tutorial` itself,
+  // which is constructed below: the arrows only READ it and run long after
+  // module init, but the presence test has to be answerable right here. On the
+  // pinned art path there is no tutorial, so the control does not render.
+  tutorialEnabled: campPinned ? undefined : () => (tutorial ? !tutorial.isSkipped : false),
+  onTutorialToggle: campPinned ? undefined : (on) => tutorial?.setEnabled(on),
 });
 menu.setKeymap(loadKeymap(localStorage));
 
@@ -467,6 +473,9 @@ const customize = new CustomizeScreen({
   },
 });
 const mainMenu = new MainMenu({
+  // Read live, never cached: the pause menu can flip the same switch.
+  tutorialEnabled: tutorial ? () => !tutorial.isSkipped : undefined,
+  onTutorialToggle: tutorial ? (on) => tutorial.setEnabled(on) : undefined,
   onNewOperation: () => {
     mainMenu.close();
     customize.open();
