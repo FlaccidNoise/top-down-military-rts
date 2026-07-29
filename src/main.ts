@@ -10,7 +10,7 @@ import { MOBILE, view, viewSize } from './render/view';
 import type { RedCommander } from './sim/ai';
 import { WEAPONS } from './sim/data';
 import { MOVE_FAMILY, type OrderKind, type TeamOrder } from './sim/orders';
-import { DT, fanOffsets, squadClumpOffsets, SQUAD_FAN, type Side, type Sim, type Soldier } from './sim/sim';
+import { DT, fanOffsets, squadClumpOffsets, type Side, type Sim, type Soldier } from './sim/sim';
 import { resolveDeployment } from './sim/spots';
 import { applyEngagementOutcome, makeStrategicBattle, newFront, resolveCoarse, syncStrengths, trivialMismatchWinner } from './strategic/bridge';
 import { StrategicCommander, RED_DEFENDER, BLUE_ATTACKER } from './strategic/command';
@@ -1287,16 +1287,22 @@ function issueShortClick(wx: number, wy: number, squadForce: boolean, l?: number
   // Fire into a plain move (the men walked to the point they should have
   // screened) from M4b until now.
   const kind: OrderKind = armedOrder ?? 'move';
-  const formation = armedOrder !== null && MOVE_FAMILY.includes(armedOrder);
-  const offs = squadClumpOffsets(K);
+  const formation = armedOrder === null || MOVE_FAMILY.includes(armedOrder);
+  // The clump spreads squads so they do not pile onto one tile — right for a
+  // DESTINATION, wrong for a TARGET. For smoke and fire the order point is the
+  // aim point (deploySmoke throws at order.x±1 and range-checks 30 m from the
+  // team; area fire suppresses there), so displacing squad i by ~10·√i m would
+  // scatter one call across three places and could balk the far squads as
+  // out of range. Point tools aim exactly where the player clicked.
+  const offs = formation ? squadClumpOffsets(K) : null;
   const used = new Set<number>();
   const primary = getPrimary();
   for (let i = 0; i < K; i++) {
     const id = selectedSquads[i];
-    const order: TeamOrder = { kind, x: wx + offs[i][0], y: wy + offs[i][1], l };
+    const order: TeamOrder = { kind, x: wx + (offs?.[i][0] ?? 0), y: wy + (offs?.[i][1] ?? 0), l };
     // A formation kind orders the whole squad; a point tool (smoke, fire)
     // respects team narrowing — one team's smoke charge, not the squad's.
-    if (formation || squadForce) {
+    if ((armedOrder !== null && formation) || squadForce) {
       sim.orderSquad(id, order, used);
     } else if (selectedTeam >= 0 && id === primary) {
       sim.orderTeam(selectedTeam, order, used);
@@ -1317,6 +1323,15 @@ function commitOrder(sx: number, sy: number, opts: { squadForce: boolean; floors
   const [wx, wy] = cam.screenToWorld(sx, sy, view.w, view.h);
   if (deployPhase) {
     deployPlace(wx, wy);
+    rmbAnchor = null;
+    return;
+  }
+  // A point tool aims; it never picks a floor. Checked BEFORE the floor menu,
+  // or arming Smoke and clicking a two-storey building opens the floor picker
+  // instead of throwing the grenade.
+  if (armedOrder && !MOVE_FAMILY.includes(armedOrder) && selectedSquads.length > 0) {
+    issueShortClick(wx, wy, opts.squadForce);
+    armedOrder = null;
     rmbAnchor = null;
     return;
   }
@@ -1349,16 +1364,6 @@ function commitOrder(sx: number, sy: number, opts: { squadForce: boolean; floors
   // Move-family kinds that support formation orders (shared with the preview)
   const useArmed = armedOrder !== null && MOVE_FAMILY.includes(armedOrder);
   const kind: OrderKind = useArmed ? armedOrder! : 'move';
-
-  // A non-formation armed kind (smoke, fire) is a point tool: it issues at the
-  // release point whatever the drag length — you aim a throw, you don't draw a
-  // line with it.
-  if (armedOrder && !useArmed) {
-    issueShortClick(wx, wy, opts.squadForce);
-    armedOrder = null;
-    rmbAnchor = null;
-    return;
-  }
 
   if (len < 2) {
     issueShortClick(wx, wy, opts.squadForce);

@@ -120,11 +120,19 @@ describe('resolveDeployment', () => {
     }
   });
 
-  it('faces the deployment at the enemy: the arc midpoint is the bearing passed in', () => {
+  // The contract is the MIDPOINT (it is what threatBearing reads, so it is what
+  // aims the cover) and a forward hemisphere (the arc also gates the ambush
+  // trigger — narrower and a flanked team stands there ignoring the man walking
+  // up on it). Asserted as properties, not as a copy of the constant, so
+  // retuning the half-angle does not need this test edited to stay honest.
+  it('faces the deployment at the enemy, over the forward hemisphere', () => {
     const sim = new Sim(new GameMap(48, 24), 7);
     const sq = addSquadOf(sim, 'blue', 2, 10.5, 12.5);
-    const [plan] = resolveDeployment(sim, [sq], 16, 12.5, ZONE, Math.PI);
-    expect(plan.arc[0]).toBeCloseTo(Math.PI - Math.PI / 4, 6);
-    expect(plan.arc[1]).toBeCloseTo(Math.PI + Math.PI / 4, 6);
+    for (const bearing of [0, Math.PI / 2, Math.PI, -Math.PI / 2]) {
+      const [plan] = resolveDeployment(sim, [sq], 16, 12.5, ZONE, bearing);
+      const mid = (plan.arc[0] + plan.arc[1]) / 2;
+      expect(Math.cos(mid - bearing)).toBeCloseTo(1, 6); // midpoint IS the bearing
+      expect(plan.arc[1] - plan.arc[0]).toBeGreaterThanOrEqual(Math.PI); // at least a hemisphere
+    }
   });
 });

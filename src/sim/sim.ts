@@ -1789,7 +1789,7 @@ export class Sim {
       team.orderState = { order: effective, phase: 'bounding_a', reason };
       const [a, b] = this.teamHalves(team);
       for (const id of b) this.soldiers[id].path = null;
-      this.dispatchLeg(a, effective);
+      this.dispatchLeg(a, effective, used);
     } else if (effective.kind === 'move' || effective.kind === 'fast' || effective.kind === 'sneak' || effective.kind === 'assault') {
       team.orderState = { order: effective, phase: 'executing', reason };
       if (effective.kind === 'sneak') this.sneakBaseline[team.id] = this.woundCount(team);
@@ -1828,7 +1828,13 @@ export class Sim {
     const isMoveKind = order.kind === 'move' || order.kind === 'fast' || order.kind === 'sneak' || order.kind === 'assault';
     this.squadDest[squadId] = isMoveKind ? { x: order.x, y: order.y } : null;
     const n = squad.teamIds.length;
-    if (order.facing === undefined) {
+    // A point tool (smoke, fire) carries a TARGET, not a destination: fanning
+    // it would throw one squad's smoke in as many places as it has teams —
+    // measured 4.1 m of scatter on a two-team squad, and it can push the far
+    // team outside its own throw range. Only destination orders fan.
+    if (!isMoveKind && order.kind !== 'defend' && order.kind !== 'ambush') {
+      squad.teamIds.forEach((teamId) => this.orderTeam(teamId, order, used));
+    } else if (order.facing === undefined) {
       // Legacy: fan teams along y axis only
       const offs = fanOffsets(n, TEAM_FAN);
       squad.teamIds.forEach((teamId, ti) => {
@@ -1873,7 +1879,11 @@ export class Sim {
 
   // Bounding rush: dispatches `ids` toward `order` at most BOUND_LEG meters
   // this leg, from their own centroid.
-  private dispatchLeg(ids: number[], order: TeamOrder): void {
+  // `used` is the commit-wide tile reservation (see orderTeam). A bounding
+  // team that skipped it reserved nothing and respected nothing, which is the
+  // very stacking the shared set exists to stop — and it made preview disagree
+  // with execution for exactly the teams that are cautious or under fire.
+  private dispatchLeg(ids: number[], order: TeamOrder, used?: Set<number>): void {
     const centroid = this.centroidOf(ids);
     if (!centroid) return;
     const dx = order.x - centroid.x;
@@ -1881,7 +1891,7 @@ export class Sim {
     const d = Math.hypot(dx, dy);
     const leg = Math.min(BOUND_LEG, d);
     const target = d < 0.01 ? { x: order.x, y: order.y } : { x: centroid.x + (dx / d) * leg, y: centroid.y + (dy / d) * leg };
-    this.moveSoldiersTo(ids, target.x, target.y);
+    this.moveSoldiersTo(ids, target.x, target.y, 0, undefined, undefined, 'move', undefined, used);
   }
 
   // Alternates the active (rushing) half once its leg completes; the other

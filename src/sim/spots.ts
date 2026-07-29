@@ -316,7 +316,15 @@ export function crawlCoverSpot(sim: Sim, s: Soldier, blocked: Set<number>): { x:
 // 8 > 5 + 2.2, so every resolved tile stays in-zone by construction — the
 // tutorial gate asserts exactly that.
 export const DEPLOY_EDGE_INSET = 8;
-const DEPLOY_ARC_HALF = Math.PI / 4;
+// The deployment's facing arc, as a half-angle. This is NOT just a cover
+// bearing: an ambush order's arc also gates checkAmbushTrigger and the fire
+// discipline behind it, so an untriggered team ignores every enemy outside it.
+// At ±45° a deployed team let a man walk up on its flank without so much as
+// looking — it fired only once someone was hit. A forward HEMISPHERE keeps the
+// cover bearing identical (arcMidpoint is unchanged) while making the trigger
+// answer to anything in front. Behind that line, the casualty trigger is the
+// backstop, which is the right answer for men lying in wait facing one way.
+const DEPLOY_ARC_HALF = Math.PI / 2;
 // A team holds ONE posture, so the prone upgrade is a vote: lie down when at
 // least 1/PRONE_SHARE_DEN of the team's spots gain by it. A third is the
 // loosest share that still means "this team is on that feature" rather than

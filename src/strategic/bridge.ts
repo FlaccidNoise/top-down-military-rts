@@ -311,12 +311,26 @@ export function makeStrategicBattle(
   }
 
   // --- Compute garrison anchors (same for both sides) ---
-  const anchors: Vec[] = [...plan.buildings.map(buildingCenter), ...plan.objectives, ...plan.woodsStands];
-  const sectorAnchors: Vec[][] = plan.objectives.map(() => []);
+  // Anchors and their sectors stop at GARRISON_STANDOFF. An outpost objective
+  // can sit at x=14-30 (open/bourg seeds 1,2,3,7) and pulls every building and
+  // woods stand within GARRISON_RADIUS of it into the garrison — which staged a
+  // Gruppe at x=8 while the attacker fields at x=6-12, enemy men inside the
+  // player's own deployment zone at T+0. Those objectives are already excluded
+  // as attack posts (attackObjectives); this excludes them as garrison ground.
+  const allAnchors: Vec[] = [...plan.buildings.map(buildingCenter), ...plan.objectives, ...plan.woodsStands];
+  const garrisonObjectives = plan.objectives.filter((o) => o.x >= GARRISON_STANDOFF);
+  // A map whose every objective sits in the strip keeps the old behaviour
+  // rather than fielding an ungarrisoned defense. Filtering both lists together
+  // holds the invariant the weights depend on: a sector always contains at
+  // least its own objective, so no sector is ever empty.
+  const clear = garrisonObjectives.length > 0;
+  const anchors: Vec[] = clear ? allAnchors.filter((a) => a.x >= GARRISON_STANDOFF) : allAnchors;
+  const sectorObjectives = clear ? garrisonObjectives : plan.objectives;
+  const sectorAnchors: Vec[][] = sectorObjectives.map(() => []);
   for (const a of anchors) {
     let best = 0;
     let bestD = Infinity;
-    plan.objectives.forEach((o, oi) => {
+    sectorObjectives.forEach((o, oi) => {
       const d = distSq(a, o);
       if (d < bestD) {
         bestD = d;
@@ -496,7 +510,9 @@ export function makeStrategicBattle(
     // the attack can legally take — on that garrison's anchor nearest the
     // approach, laid west like every other prepared position here.
     const firstObj = attackObjectives.reduce((best, o) => (o.x < best.x ? o : best), attackObjectives[0]);
-    const anchor = sortedSectorAnchors[plan.objectives.indexOf(firstObj)]?.[0] ?? firstObj;
+    // Indexed against sectorObjectives, the list sortedSectorAnchors was built
+    // from — plan.objectives drifts from it once an outpost is filtered out.
+    const anchor = sortedSectorAnchors[sectorObjectives.indexOf(firstObj)]?.[0] ?? firstObj;
     const facing = Math.atan2(west.y - anchor.y, west.x - anchor.x);
     const gun = sim.addEmplacement(defenderSide, DEFENDER_AT[defenderSide], anchor.x, anchor.y, facing, 'deployed');
     // The post keeps the crew on the gun under the commander's defend logic,
