@@ -1,7 +1,6 @@
 import { buildObjectives } from './bourg/objectives';
 import { planBourg, stampBourg, type BourgPlan } from './bourg/plan';
 import { PROFILES, type KindProfile } from './bourg/profile';
-import { zoneOf } from './bourg/rural';
 import { partsOf, stampStructure } from './bourg/stamp';
 import { generateHeightField, townWeightField } from './bourg/height';
 import { subStream, TAG } from './bourg/streets';
@@ -347,8 +346,25 @@ function tryGenerateV3(
 /** Build feathered town-weight field (R-H3). Same region as old bourgFlatMask. */
 function buildTownWeight(plan: BourgPlan, w: number, h: number): Uint8Array {
   const binary = new Uint8Array(w * h);
-  const inZone = zoneOf(plan.sk);
-  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) if (inZone(x, y)) binary[y * w + x] = 1;
+  // Inline zoneOf(sk) — two direct rectangle fills instead of 76,800 closure calls.
+  const zx0 = Math.max(0, plan.sk.env.x - 6);
+  const zy0 = Math.max(0, plan.sk.env.y - 6);
+  const zx1 = Math.min(w, plan.sk.env.x + plan.sk.env.w + 6); // +5 in zoneOf is inclusive — +6 for < bound
+  const zy1 = Math.min(h, plan.sk.env.y + plan.sk.env.h + 6);
+  for (let y = zy0; y < zy1; y++) {
+    const row = y * w;
+    for (let x = zx0; x < zx1; x++) binary[row + x] = 1;
+  }
+  if (plan.sk.faubourg) {
+    const fx0 = Math.max(0, plan.sk.faubourg.x - 22);
+    const fy0 = Math.max(0, plan.sk.faubourg.y - 22);
+    const fx1 = Math.min(w, plan.sk.faubourg.x + 23);
+    const fy1 = Math.min(h, plan.sk.faubourg.y + 23);
+    for (let y = fy0; y < fy1; y++) {
+      const row = y * w;
+      for (let x = fx0; x < fx1; x++) binary[row + x] = 1;
+    }
+  }
   for (const c of plan.fp.compounds)
     for (let y = Math.max(0, c.rect.y - 2), y1 = Math.min(h, c.rect.y + c.rect.h + 2); y < y1; y++)
       for (let x = Math.max(0, c.rect.x - 2), x1 = Math.min(w, c.rect.x + c.rect.w + 2); x < x1; x++) binary[y * w + x] = 1;
@@ -372,28 +388,32 @@ function buildTownWeight(plan: BourgPlan, w: number, h: number): Uint8Array {
  * Verges clamp delta vs nearest road to ±1.
  */
 function relaxRoadGrades(map: GameMap): void {
-  const { w, h } = map;
+  const { w, h, tiles } = map;
   const e = map.elev;
   // Each road tile clamps to within ±1 of each 4-neighbour road tile.
   // Alternating scan directions for two-way propagation. Capped at 50
   // passes — with the river valley carving, steep gradients near the
   // band may not fully converge, but the road network remains connected
   // and the game does not depend on perfect grade smoothing.
+  //
+  // Direct tiles[] byte reads replace terrainKeyAt calls throughout.
+  // Tile indices (data.ts stable-order): road=1, water=6, floor=3.
   const maxPasses = 50;
   for (let pass = 0; pass < maxPasses; pass++) {
     const fwd = pass % 2 === 0;
     let changed = false;
     for (let yi = 0; yi < h; yi++) {
       const y = fwd ? yi : h - 1 - yi;
+      const rowBase = y * w;
       for (let xi = 0; xi < w; xi++) {
         const x = fwd ? xi : w - 1 - xi;
-        const i = y * w + x;
-        if (map.terrainKeyAt(x, y) !== 'road') continue;
+        const i = rowBase + x;
+        if (tiles[i] !== 1) continue;
         const nbrs: number[] = [];
-        if (x > 0 && map.terrainKeyAt(x - 1, y) === 'road') nbrs.push(e[i - 1]);
-        if (x + 1 < w && map.terrainKeyAt(x + 1, y) === 'road') nbrs.push(e[i + 1]);
-        if (y > 0 && map.terrainKeyAt(x, y - 1) === 'road') nbrs.push(e[i - w]);
-        if (y + 1 < h && map.terrainKeyAt(x, y + 1) === 'road') nbrs.push(e[i + w]);
+        if (x > 0 && tiles[i - 1] === 1) nbrs.push(e[i - 1]);
+        if (x + 1 < w && tiles[i + 1] === 1) nbrs.push(e[i + 1]);
+        if (y > 0 && tiles[i - w] === 1) nbrs.push(e[i - w]);
+        if (y + 1 < h && tiles[i + w] === 1) nbrs.push(e[i + w]);
         for (const nv of nbrs) {
           if (e[i] > nv + 1) { e[i] = nv + 1; changed = true; }
           if (e[i] < nv - 1) { e[i] = nv - 1; changed = true; }
@@ -405,23 +425,25 @@ function relaxRoadGrades(map: GameMap): void {
 
   // Verge rule: non-road tile 8-adjacent to road clamps delta to ±1.
   const orig = new Uint8Array(e);
-  for (let y = 0; y < h; y++)
+  for (let y = 0; y < h; y++) {
+    const rowBase = y * w;
     for (let x = 0; x < w; x++) {
-      const i = y * w + x;
-      const k = map.terrainKeyAt(x, y);
-      if (k === 'road' || k === 'water' || k === 'floor') continue;
+      const i = rowBase + x;
+      const t = tiles[i];
+      if (t === 1 || t === 6 || t === 3) continue; // road=1, water=6, floor=3
       let minRoad = 255;
       for (let dy = -1; dy <= 1; dy++)
         for (let dx = -1; dx <= 1; dx++) {
           const nx = x + dx; const ny = y + dy;
           if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
-          if (map.terrainKeyAt(nx, ny) === 'road') minRoad = Math.min(minRoad, orig[ny * w + nx]);
+          if (tiles[ny * w + nx] === 1) minRoad = Math.min(minRoad, orig[ny * w + nx]);
         }
       if (minRoad < 255) {
         if (e[i] > minRoad + 1) e[i] = minRoad + 1;
         if (e[i] < minRoad - 1) e[i] = minRoad - 1;
       }
     }
+  }
 }
 
 /**

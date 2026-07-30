@@ -877,13 +877,21 @@ export function paintRural(
             const ny = y + dy;
             if (nx >= 0 && ny >= 0 && nx < w && ny < h) near[ny * w + nx] = 1;
           }
+  const tiles = map.tiles;
   const plantable = (x: number, y: number): boolean => {
     const i = y * w + x;
-    return !sk.road[i] && !land.resv[i] && !pc.claimed[i] && !near[i] && map.terrainKeyAt(x, y) === 'grass';
+    return !sk.road[i] && !land.resv[i] && !pc.claimed[i] && !near[i] && tiles[i] === 0; // grass=0
   };
 
-  for (let i = 0; i < rural.hedge.length; i++)
-    if (rural.hedge[i] && plantable(i % w, (i / w) | 0)) map.setTerrain(i % w, (i / w) | 0, 'hedge');
+  // Hedge stamp: direct tiles[] write (hedge=4) avoids setTerrain + modulo/division.
+  for (let y = 0; y < h; y++) {
+    const row = y * w;
+    for (let x = 0; x < w; x++) {
+      const i = row + x;
+      if (rural.hedge[i] && !sk.road[i] && !land.resv[i] && !pc.claimed[i] && !near[i] && tiles[i] === 0)
+        tiles[i] = 4;
+    }
+  }
 
   // woods stands (tag 13); the first, east of the place, is objectives[1]
   const r13 = sk.S(TAG.WOODS);
@@ -921,7 +929,7 @@ export function paintRural(
         // …and (u·c2 − v·s2, v·c2 + u·s2) is (cos 3θ, sin 3θ).
         const f = STAND_BASE + a2 * c2 + b2 * s2 + a3 * (u * c2 - v * s2) + b3 * (v * c2 + u * s2);
         const rr = rad * f * (STAND_EDGE + r13.next() * (1 - STAND_EDGE));
-        if (d2 < rr * rr && !inZone(x, y) && plantable(x, y)) map.setTerrain(x, y, 'woods');
+        if (d2 < rr * rr && !inZone(x, y) && plantable(x, y)) tiles[y * w + x] = 2;
       }
   };
   // objectives[1] and a red squad's spawn ride on this anchor (scenario.ts:48,
@@ -953,18 +961,25 @@ export function paintRural(
     const ox = clamp(sk.place.x - 40 + r12.int(80), 2, w - ow - 2);
     const oy = clamp(sk.place.y - 34 + r12.int(68), 2, h - oh - 2);
     for (let y = oy; y < oy + oh; y += 2)
-      for (let x = ox + (((y - oy) >> 1) % 2); x < ox + ow; x += 2) if (plantable(x, y)) map.setTerrain(x, y, 'woods');
+      for (let x = ox + (((y - oy) >> 1) % 2); x < ox + ow; x += 2) if (plantable(x, y)) tiles[y * w + x] = 2;
   }
-  // R-F2: fields painted from the bocage owner map (every tile inside a crop-assigned parcel)
-  for (let i = 0; i < rural.owner.length; i++) {
-    const ownerIdx = rural.owner[i];
-    if (ownerIdx < 0) continue;
-    if (rural.landUse[ownerIdx] !== 1) continue; // 1 = crop
-    const x = i % w;
-    const y = (i / w) | 0;
-    // plantable() already requires 'grass', but explicitly guard against
-    // woods-stand overlap as defense-in-depth.
-    if (!inZone(x, y) && plantable(x, y) && map.terrainKeyAt(x, y) !== 'woods') map.setTerrain(x, y, 'field');
+  // R-F2: fields painted from the bocage owner map (every tile inside a crop-assigned parcel).
+  // Direct tiles[] write (field=5) avoids setTerrain + modulo/division.
+  for (let y = 0; y < h; y++) {
+    const row = y * w;
+    for (let x = 0; x < w; x++) {
+      const i = row + x;
+      const ownerIdx = rural.owner[i];
+      if (ownerIdx < 0) continue;
+      if (rural.landUse[ownerIdx] !== 1) continue; // 1 = crop
+      // inZone: env ± 6/5 margin + faubourg radius.
+      if (
+        (x >= sk.env.x - 6 && x <= sk.env.x + sk.env.w + 5 && y >= sk.env.y - 6 && y <= sk.env.y + sk.env.h + 5) ||
+        (sk.faubourg !== null && Math.abs(x - sk.faubourg.x) <= 22 && Math.abs(y - sk.faubourg.y) <= 22)
+      ) continue;
+      if (!sk.road[i] && !land.resv[i] && !pc.claimed[i] && !near[i] && tiles[i] === 0) // plantable + grass=0 check
+        tiles[i] = 5;
+    }
   }
 
   // A clearing centre is an anchor like a stand centre is (§2.4), so it joins
@@ -1002,6 +1017,7 @@ function carveClearings(
   inZone: (x: number, y: number) => boolean,
 ): Vec[] {
   const { w, h } = sk;
+  const tiles = map.tiles;
   const [count, countSpan] = sk.profile.clearings;
   if (count + countSpan === 0) return [];
   const r16 = sk.S(TAG.CLEARING);
@@ -1039,7 +1055,7 @@ function carveClearings(
         const dx = x - cx;
         const dy = y - cy;
         if (dx * dx * ry * ry + dy * dy * rx * rx > rx * rx * ry * ry) continue;
-        if (map.terrainKeyAt(x, y) === 'woods') map.setTerrain(x, y, 'grass');
+        if (tiles[y * w + x] === 2) tiles[y * w + x] = 0; // woods=2 → grass=0
       }
     // Same rule the stands keep: an anchor nothing can stand on is no anchor.
     // The carve leaves grass behind, so this only rejects a centre that was

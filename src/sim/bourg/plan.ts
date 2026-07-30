@@ -75,25 +75,53 @@ function union(a: Uint8Array, b: Uint8Array): Uint8Array {
 
 export function stampBourg(map: GameMap, plan: BourgPlan): BourgStamp {
   const { sk, land, pc, fp, rural } = plan;
+  const { w, h } = sk;
+  const tiles = map.tiles;
+  const water = sk.water;
   // Water FIRST (§2.5). Every rural pass writes only over 'grass' (paintRural
   // plantable), so this one setTerrain is the whole exclusion: no hedge, wood,
   // orchard or field lands in the river, and no pass needs to know it exists.
-  if (sk.profile.water)
-    for (let i = 0; i < sk.water.length; i++) if (sk.water[i]) map.setTerrain(i % sk.w, (i / sk.w) | 0, 'water');
+  // Direct tiles[] write (water=6) avoids setTerrain's TERRAIN_KEYS.indexOf per tile.
+  if (sk.profile.water) {
+    for (let y = 0; y < h; y++) {
+      const row = y * w;
+      for (let x = 0; x < w; x++) {
+        const i = row + x;
+        if (water[i]) tiles[i] = 6;
+      }
+    }
+  }
   // 11b: hedges, woods, orchards, fields — every pass writes only over 'grass'
   const woodsStands = paintRural(map, sk, land, pc, fp, rural);
   // roads next, so they win over the rural passes — and over the water, which
   // is the retired legacy pipeline's deck rule byte for byte: a road tile that
   // overwrites water IS the bridge, and it is recorded before the water is lost.
+  // Road=1, water=6 — direct tiles[] write avoids setTerrain overhead.
   const deck: number[] = [];
-  for (let i = 0; i < sk.road.length; i++)
-    if (sk.road[i]) {
-      map.setTerrain(i % sk.w, (i / sk.w) | 0, 'road');
-      if (sk.water[i]) {
-        map.bridges[i] = 1;
-        deck.push(i);
+  const road = sk.road;
+  if (sk.profile.water) {
+    for (let y = 0; y < h; y++) {
+      const row = y * w;
+      for (let x = 0; x < w; x++) {
+        const i = row + x;
+        if (road[i]) {
+          tiles[i] = 1;
+          if (water[i]) {
+            map.bridges[i] = 1;
+            deck.push(i);
+          }
+        }
       }
     }
+  } else {
+    for (let y = 0; y < h; y++) {
+      const row = y * w;
+      for (let x = 0; x < w; x++) {
+        const i = row + x;
+        if (road[i]) tiles[i] = 1;
+      }
+    }
+  }
   const crossing = deckCentre(deck, sk);
   let maxStories = 0;
   fp.buildings.forEach((b, i) => {
