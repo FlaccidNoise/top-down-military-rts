@@ -306,8 +306,15 @@ function readOpens(b: Building, map: GameMap, opens: Uint8Array[]): void {
 
 /** True when edge (x, y) lies on this footprint's outline — a party wall is on two. */
 export function onOutline(b: Building, x: number, y: number, horiz: boolean): boolean {
-  if (horiz) return (y === b.y || y === b.y + b.h) && x >= b.x && x < b.x + b.w;
-  return (x === b.x || x === b.x + b.w) && y >= b.y && y < b.y + b.h;
+  const parts = b.parts ?? [{ x: b.x, y: b.y, w: b.w, h: b.h }];
+  for (const p of parts) {
+    if (horiz) {
+      if ((y === p.y || y === p.y + p.h) && x >= p.x && x < p.x + p.w) return true;
+    } else {
+      if ((x === p.x || x === p.x + p.w) && y >= p.y && y < p.y + p.h) return true;
+    }
+  }
+  return false;
 }
 
 function partsUnion(b: Building): Rect {
@@ -345,13 +352,16 @@ function sacredRole(role: string): boolean {
 }
 
 function doorSideOf(b: Building, map: GameMap): 'n' | 's' | 'e' | 'w' | null {
-  for (let k = 0; k < b.w; k++) {
-    if (map.hEdge(b.x + k, b.y) === EDGE.DOOR) return 'n';
-    if (map.hEdge(b.x + k, b.y + b.h) === EDGE.DOOR) return 's';
-  }
-  for (let k = 0; k < b.h; k++) {
-    if (map.vEdge(b.x, b.y + k) === EDGE.DOOR) return 'w';
-    if (map.vEdge(b.x + b.w, b.y + k) === EDGE.DOOR) return 'e';
+  const parts = b.parts ?? [{ x: b.x, y: b.y, w: b.w, h: b.h }];
+  for (const p of parts) {
+    for (let k = 0; k < p.w; k++) {
+      if (map.hEdge(p.x + k, p.y) === EDGE.DOOR) return 'n';
+      if (map.hEdge(p.x + k, p.y + p.h) === EDGE.DOOR) return 's';
+    }
+    for (let k = 0; k < p.h; k++) {
+      if (map.vEdge(p.x, p.y + k) === EDGE.DOOR) return 'w';
+      if (map.vEdge(p.x + p.w, p.y + k) === EDGE.DOOR) return 'e';
+    }
   }
   return null;
 }
@@ -362,8 +372,11 @@ function doorSideOf(b: Building, map: GameMap): 'n' | 's' | 'e' | 'w' | null {
 // legacy map, which has no interiors pass and therefore no hearths at all.
 function hearthOf(b: Building, map: GameMap): [number, number] | null {
   if (!map.hasFurniture) return null;
-  for (let y = b.y; y < b.y + b.h; y++) {
-    for (let x = b.x; x < b.x + b.w; x++) if (map.terrainKeyAt(x, y) === 'hearth') return [x + 0.5, y + 0.5];
+  const parts = b.parts ?? [{ x: b.x, y: b.y, w: b.w, h: b.h }];
+  for (const p of parts) {
+    for (let y = p.y; y < p.y + p.h; y++) {
+      for (let x = p.x; x < p.x + p.w; x++) if (map.terrainKeyAt(x, y) === 'hearth') return [x + 0.5, y + 0.5];
+    }
   }
   return null;
 }
@@ -1941,12 +1954,18 @@ export function artContexts(buildings: Building[], stories: number[]): ArtCtx[] 
     const butt: Sides = { n: false, s: false, e: false, w: false };
     for (const o of buildings) {
       if (o === b || !kin(b, o)) continue;
-      const ovX = o.x < b.x + b.w && b.x < o.x + o.w;
-      const ovY = o.y < b.y + b.h && b.y < o.y + o.h;
-      if (ovY && o.x + o.w === b.x) butt.w = true;
-      if (ovY && b.x + b.w === o.x) butt.e = true;
-      if (ovX && o.y + o.h === b.y) butt.n = true;
-      if (ovX && b.y + b.h === o.y) butt.s = true;
+      const bParts = b.parts ?? [{ x: b.x, y: b.y, w: b.w, h: b.h }];
+      const oParts = o.parts ?? [{ x: o.x, y: o.y, w: o.w, h: o.h }];
+      for (const bp of bParts) {
+        for (const op of oParts) {
+          const ovX = op.x < bp.x + bp.w && bp.x < op.x + op.w;
+          const ovY = op.y < bp.y + bp.h && bp.y < op.y + op.h;
+          if (ovY && op.x + op.w === bp.x) butt.w = true;
+          if (ovY && bp.x + bp.w === op.x) butt.e = true;
+          if (ovX && op.y + op.h === bp.y) butt.n = true;
+          if (ovX && bp.y + bp.h === op.y) butt.s = true;
+        }
+      }
     }
     const run = b.terraceRun === undefined ? undefined : info.get(b.terraceRun);
     let alongX: boolean | null = run ? run.along : null;
@@ -2147,15 +2166,20 @@ export class RoofLayer {
     // neighbour, so this heuristic would thatch the whole high street. A
     // terraced unit is a dwelling on the street, never an outbuilding.
     if (b.terraceRun !== undefined) return false;
-    const area = b.w * b.h;
+    const bParts = b.parts ?? [{ x: b.x, y: b.y, w: b.w, h: b.h }];
+    const area = bParts.reduce((s, p) => s + p.w * p.h, 0);
+    const bu = partsUnion(b);
     for (let j = 0; j < this.buildings.length; j++) {
       if (j === i) continue;
       const o = this.buildings[j];
       // …and a church tower is not its own nave's shed
       if (b.groupId !== undefined && o.groupId === b.groupId) continue;
-      const gx = Math.max(0, Math.max(b.x - (o.x + o.w), o.x - (b.x + b.w)));
-      const gy = Math.max(0, Math.max(b.y - (o.y + o.h), o.y - (b.y + b.h)));
-      if (Math.hypot(gx, gy) <= 4 && o.w * o.h > area) return true;
+      const ou = partsUnion(o);
+      const gx = Math.max(0, Math.max(bu.x - (ou.x + ou.w), ou.x - (bu.x + bu.w)));
+      const gy = Math.max(0, Math.max(bu.y - (ou.y + ou.h), ou.y - (bu.y + bu.h)));
+      const oParts = o.parts ?? [{ x: o.x, y: o.y, w: o.w, h: o.h }];
+      const oArea = oParts.reduce((s, p) => s + p.w * p.h, 0);
+      if (Math.hypot(gx, gy) <= 4 && oArea > area) return true;
     }
     return false;
   }
