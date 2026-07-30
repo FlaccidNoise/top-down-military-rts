@@ -1,4 +1,5 @@
 import { EDGE, type GameMap } from '../sim/map';
+import type { BuildingBox } from './patches';
 import type { EnclosureIndex } from './enclos';
 import { AO_ALPHA, shadowOffset, shadowOffsetLegible, sunStepFor, sweptRectPath } from './light';
 import { hash } from './noise';
@@ -142,6 +143,14 @@ const isCereal = (seed: number) => {
 export function propsFor(map: GameMap, patches: PatchIndex, enclos?: EnclosureIndex): Prop[] {
   const p = new Placer(map);
   const roadAt = (x: number, y: number) => map.inBounds(x, y) && map.terrainKeyAt(x, y) === 'road' && !map.isBridge(x, y);
+  const roadNear = (bx: number, by: number, bw: number, bh: number): boolean => {
+    for (let dy = -4; dy <= bh + 4; dy++) {
+      for (let dx = -4; dx <= bw + 4; dx++) {
+        if (roadAt(Math.floor(bx) + dx, Math.floor(by) + dy)) return true;
+      }
+    }
+    return false;
+  };
 
   // (1) Haystacks on cereal parcels, one per 60 tiles, well inside the parcel
   // so a stack never straddles the headland.
@@ -166,7 +175,7 @@ export function propsFor(map: GameMap, patches: PatchIndex, enclos?: EnclosureIn
   // (2-3) Farm courts: the house/barn pair mapgen drops a few metres apart is
   // a working yard, and a working yard has a muck heap, a trough, a cart and
   // a well. Wall-huggers (barrels, crates) go on the shaded N or W face.
-  const yards: [number, number, number][] = []; // cx, cy, seed
+  const yards: [number, number, number][] = []; // ai, bi, seed
   for (let i = 0; i < patches.buildings.length; i++) {
     for (let k = i + 1; k < patches.buildings.length; k++) {
       const a = patches.buildings[i];
@@ -174,7 +183,7 @@ export function propsFor(map: GameMap, patches: PatchIndex, enclos?: EnclosureIn
       const gx = Math.max(0, Math.max(a.minX - b.maxX, b.minX - a.maxX));
       const gy = Math.max(0, Math.max(a.minY - b.maxY, b.minY - a.maxY));
       if (Math.hypot(gx, gy) > 4) continue;
-      yards.push([(a.cx + b.cx) / 2, (a.cy + b.cy) / 2, a.id * 71 + b.id]);
+      yards.push([i, k, a.id * 71 + b.id]);
     }
   }
   // A farm court is mostly roof and door approach, so a single sample almost
@@ -188,11 +197,47 @@ export function propsFor(map: GameMap, patches: PatchIndex, enclos?: EnclosureIn
     }
     return false;
   };
-  for (const [yx, yy, seed] of yards) {
-    near(yx, yy, seed, 261, 'muckheap');
-    near(yx, yy, seed, 262, 'trough', hash(seed, 3, 262) < 0.5 ? 0 : 1);
-    if (hash(seed, 0, 263) < 0.7) near(yx, yy, seed, 263, 'cart', hash(seed, 3, 263) < 0.5 ? 0 : 1);
-    if (hash(seed, 0, 264) < 0.45) near(yx, yy, seed, 264, 'well');
+  const nearWall = (a: BuildingBox, b: BuildingBox, seed: number, salt: number, kind: PropKind, axis: 0 | 1 = 0): boolean => {
+    const placeOnWall = (bld: BuildingBox, face: 'n' | 's' | 'e' | 'w'): boolean => {
+      for (let k = 0; k < 12; k++) {
+        const u = hash(seed, k, salt) * 0.92 + 0.04;
+        let x: number, y: number;
+        if (face === 'n') {
+          x = bld.minX + 0.5 + u * (bld.maxX - bld.minX - 1);
+          y = bld.minY - 0.45;
+        } else if (face === 's') {
+          x = bld.minX + 0.5 + u * (bld.maxX - bld.minX - 1);
+          y = bld.maxY + 0.45;
+        } else if (face === 'w') {
+          x = bld.minX - 0.45;
+          y = bld.minY + 0.5 + u * (bld.maxY - bld.minY - 1);
+        } else { // e
+          x = bld.maxX + 0.45;
+          y = bld.minY + 0.5 + u * (bld.maxY - bld.minY - 1);
+        }
+        if (p.add(x, y, kind, (hash(seed, 2, salt) * 4096) | 0, axis)) return true;
+      }
+      return false;
+    };
+    const ax = a.cx;
+    const ay = a.cy;
+    const bx = b.cx;
+    const by = b.cy;
+    if (Math.abs(ax - bx) > Math.abs(ay - by)) {
+      if (ax < bx) return placeOnWall(a, 'e') || placeOnWall(b, 'w');
+      return placeOnWall(b, 'e') || placeOnWall(a, 'w');
+    } else {
+      if (ay < by) return placeOnWall(a, 's') || placeOnWall(b, 'n');
+      return placeOnWall(b, 's') || placeOnWall(a, 'n');
+    }
+  };
+  for (const [ai, bi, seed] of yards) {
+    const a = patches.buildings[ai];
+    const b = patches.buildings[bi];
+    nearWall(a, b, seed, 261, 'muckheap');
+    nearWall(a, b, seed, 262, 'trough', hash(seed, 3, 262) < 0.5 ? 0 : 1);
+    if (hash(seed, 0, 263) < 0.7) nearWall(a, b, seed, 263, 'cart', hash(seed, 3, 263) < 0.5 ? 0 : 1);
+    if (hash(seed, 0, 264) < 0.45) nearWall(a, b, seed, 264, 'well');
   }
   const wells: [number, number][] = [];
   // (3b) A WALLED yard gets the well. Rules (2-3) read a yard as "two
@@ -250,7 +295,8 @@ export function propsFor(map: GameMap, patches: PatchIndex, enclos?: EnclosureIn
       const u = 0.5 + hash(b.id * 5 + k, 1, 268) * ((west ? b.maxY - b.minY : b.maxX - b.minX) - 1);
       const x = west ? b.minX - 0.45 : b.minX + u;
       const y = west ? b.minY + u : b.minY - 0.45;
-      p.add(x, y, hash(b.id * 5 + k, 2, 268) < 0.55 ? 'barrels' : 'crates', (hash(b.id * 5 + k, 3, 268) * 4096) | 0);
+      if (roadNear(b.minX, b.minY, b.maxX - b.minX, b.maxY - b.minY))
+        p.add(x, y, hash(b.id * 5 + k, 2, 268) < 0.55 ? 'barrels' : 'crates', (hash(b.id * 5 + k, 3, 268) * 4096) | 0);
     }
   }
 

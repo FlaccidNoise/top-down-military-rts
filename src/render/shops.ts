@@ -106,6 +106,12 @@ export function shopfrontsFor(map: GameMap, buildings: readonly Building[]): Sho
       }
     }
     const pad = AWNING + SIGN_ARM + 1.6;
+    // Only create shopfronts facing road/paved tiles
+    const midX = (ax + bx) / 2;
+    const midY = (ay + by) / 2;
+    const checkX = Math.floor(midX + nx * 1.5);
+    const checkY = Math.floor(midY + ny * 1.5);
+    if (!map.inBounds(checkX, checkY) || map.terrainKeyAt(checkX, checkY) !== 'road') continue;
     out.push({
       ax,
       ay,
