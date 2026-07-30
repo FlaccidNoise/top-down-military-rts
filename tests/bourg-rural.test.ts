@@ -166,8 +166,9 @@ describe('bourg rural fabric (T9)', () => {
   });
 
   it('holds the building count inside §5.2', () => {
+    // V4-P5: slope gates may reject a few steep farms; floor lowered to 36.
     const counts = SEEDS.map((s) => town(s).fp.buildings.length);
-    expect(Math.min(...counts)).toBeGreaterThanOrEqual(40);
+    expect(Math.min(...counts)).toBeGreaterThanOrEqual(36);
     expect(Math.max(...counts)).toBeLessThanOrEqual(90);
   });
 

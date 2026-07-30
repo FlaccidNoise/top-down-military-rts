@@ -275,6 +275,17 @@ function placeFarms(
       const { x0, y0, x1, y1 } = bbox(masses);
       if (!clearOf(x0 - 2, y0 - 2, x1 + 2, y1 + 2)) continue;
 
+      // R-H7 · compound slope gate: reject when height range over the
+      // dilated rect exceeds 2 m. Reuses the same 40-try loop draws.
+      let hMin = 255, hMax = 0;
+      for (let hy = Math.max(0, y0 - 2); hy <= Math.min(h - 1, y1 + 2); hy++)
+        for (let hx = Math.max(0, x0 - 2); hx <= Math.min(w - 1, x1 + 2); hx++) {
+          const v = sk.height[hy * w + hx];
+          if (v < hMin) hMin = v;
+          if (v > hMax) hMax = v;
+        }
+      if (hMax - hMin > 2) continue;
+
       // door position on logis: yard-facing edge, centred in the non-wing portion
       const logisDoor: DoorEdge = (() => {
         if (vertical) {
@@ -397,30 +408,44 @@ function growFarmLanes(
   const carve = (a: Vec, b: Vec): boolean => {
     // larger component first: the track leaves the road on its long axis and
     // turns once, which is what a cart track looks like from above
-    const horizontalFirst = Math.abs(b.x - a.x) >= Math.abs(b.y - a.y);
-    const path: Vec[] = [];
-    let x = a.x;
-    let y = a.y;
-    const stepTo = (tx: number, ty: number): void => {
-      while (x !== tx || y !== ty) {
-        x += Math.sign(tx - x);
-        y += Math.sign(ty - y);
-        path.push({ x, y });
+    const makePath = (hFirst: boolean): Vec[] => {
+      const path: Vec[] = [];
+      let px = a.x;
+      let py = a.y;
+      if (hFirst) {
+        while (px !== b.x) { px += Math.sign(b.x - px); path.push({ x: px, y: py }); }
+        while (py !== b.y) { py += Math.sign(b.y - py); path.push({ x: px, y: py }); }
+      } else {
+        while (py !== b.y) { py += Math.sign(b.y - py); path.push({ x: px, y: py }); }
+        while (px !== b.x) { px += Math.sign(b.x - px); path.push({ x: px, y: py }); }
       }
+      return path;
     };
-    if (horizontalFirst) {
-      stepTo(b.x, y);
-      stepTo(b.x, b.y);
-    } else {
-      stepTo(x, b.y);
-      stepTo(b.x, b.y);
-    }
-    for (const p of path) if (!free(p.x, p.y)) return false;
-    for (const p of path) {
-      if (!sk.road[p.y * w + p.x]) carved++;
-      sk.road[p.y * w + p.x] = 1;
-    }
-    return true;
+
+    // R-H7 · slope gate: reject a dogleg whose total ascent exceeds 8 m.
+    // Try the other component order first — both orders are pure functions
+    // of the endpoints (zero extra draws).
+    const horizontalFirst = Math.abs(b.x - a.x) >= Math.abs(b.y - a.y);
+    const tryOrder = (hFirst: boolean): boolean => {
+      const path = makePath(hFirst);
+      let ascent = 0;
+      let prevH = sk.height[a.y * w + a.x];
+      for (const p of path) {
+        const h = sk.height[p.y * w + p.x];
+        if (h > prevH) ascent += h - prevH;
+        prevH = h;
+      }
+      if (ascent > 8) return false;
+      for (const p of path) if (!free(p.x, p.y)) return false;
+      for (const p of path) {
+        if (!sk.road[p.y * w + p.x]) carved++;
+        sk.road[p.y * w + p.x] = 1;
+      }
+      return true;
+    };
+    if (tryOrder(horizontalFirst)) return true;
+    if (tryOrder(!horizontalFirst)) return true;
+    return false;
   };
 
   for (let iter = 0; iter < 80 && nodes.length < LANE_MAX_NODES; iter++) {

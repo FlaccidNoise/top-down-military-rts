@@ -165,8 +165,9 @@ describe('bourg footprints (T7)', () => {
     // T7's own yield, before T9's outlying farms add two to six more. §5.2's
     // ">= 40, <= 90" is asserted post-rural in tests/bourg-rural.test.ts;
     // measured here over 40 seeds the range is 38-77 with maxBuildings at 80.
+    // V4-P5: slope gates may skip a few steep plots; floor lowered to 32.
     const counts = SEEDS.map((seed) => town(seed).fp.buildings.length);
-    expect(Math.min(...counts)).toBeGreaterThanOrEqual(36);
+    expect(Math.min(...counts)).toBeGreaterThanOrEqual(32);
     expect(Math.max(...counts)).toBeLessThanOrEqual(80);
   });
 

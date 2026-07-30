@@ -243,10 +243,21 @@ export function buildSkeleton(base: number, w: number, h: number, profile: KindP
   const roadY = new Int32Array(w);
   const driftLo = Math.max(10, Math.round(h * 0.3));
   const driftHi = Math.min(h - 11, Math.round(h * 0.7));
+  // R-H7 · contour-biased drift: when the arterial steps, prefer downhill.
+  // No extra draws — the height field is pre-computed and the direction
+  // draw is the same one the stage already takes.
   let ry = clamp(Math.round(h * r2.range(0.4, 0.6)), driftLo, driftHi);
   for (let x = 0; x < w; x++) {
     roadY[x] = ry;
-    if (r2.next() < 0.18) ry = clamp(ry + (r2.next() < 0.5 ? -1 : 1), driftLo, driftHi);
+    if (r2.next() < 0.18) {
+      const hNorth = ry > driftLo ? height[(ry - 1) * w + x] : height[ry * w + x];
+      const hSouth = ry < driftHi ? height[(ry + 1) * w + x] : height[ry * w + x];
+      const slope = hNorth - hSouth; // >0 = north higher → prefer south
+      const bias = Math.min(8, Math.abs(slope) * 2); // max ±8 out of 16 denominator
+      // bias shifts pSouth from 0.5 toward 1 (downhill south) or 0 (downhill north)
+      const pSouth = (8 + (slope > 0 ? bias : slope < 0 ? -bias : 0)) / 16;
+      ry = clamp(ry + (r2.next() < pSouth ? 1 : -1), driftLo, driftHi);
+    }
   }
 
   // Stage 1b — the place, then R_env centred on it.
@@ -268,6 +279,38 @@ export function buildSkeleton(base: number, w: number, h: number, profile: KindP
   // the profile carries no water, so P1-P4's four kinds are byte-identical.
   const water = new Uint8Array(w * h);
   if (profile.water) carveWater(water, w, h, S(TAG.WATER), profile.water.width, placeX, env);
+
+  // R-H6 · river valley: the plain rises gently away from the band.
+  // BFS Chebyshev distance transform from the water mask; O(w*h).
+  // Carved here (S1) so slope gates in S3/S5 can read it. For relief-'none'
+  // the height is zeroed AFTER planBourg, keeping building lists identical.
+  if (profile.water) {
+    const MAX_D = 5;
+    const dist = new Uint8Array(w * h).fill(255);
+    const q = new Int32Array(w * h);
+    let head = 0, tail = 0;
+    for (let i = 0; i < water.length; i++)
+      if (water[i]) { dist[i] = 0; q[tail++] = i; }
+    while (head < tail) {
+      const cur = q[head++];
+      const nd = dist[cur] + 1;
+      if (nd > MAX_D) continue;
+      const cx = cur % w, cy = (cur / w) | 0;
+      for (let dy = -1; dy <= 1; dy++)
+        for (let dx = -1; dx <= 1; dx++) {
+          if (dx === 0 && dy === 0) continue;
+          const nx = cx + dx, ny = cy + dy;
+          if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+          const ni = ny * w + nx;
+          if (dist[ni] < 255) continue;
+          dist[ni] = nd;
+          q[tail++] = ni;
+        }
+    }
+    for (let i = 0; i < w * h; i++)
+      if (dist[i] > 0 && dist[i] <= MAX_D)
+        height[i] = Math.min(255, height[i] + dist[i]);
+  }
 
   const densQ8 = (x: number, y: number): number => {
     const d = Math.max(Math.abs(x - place.x), Math.abs(y - place.y));

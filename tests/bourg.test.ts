@@ -13,6 +13,7 @@ import { addRuralFabric, paintRural } from '../src/sim/bourg/rural';
 import { MIN_REAR_SPAN_Q8, stampEnclosures } from '../src/sim/bourg/enclosures';
 import { stampStructure } from '../src/sim/bourg/stamp';
 import { buildSkeleton, growMinorStreets, subStream, TAG, type Skeleton } from '../src/sim/bourg/streets';
+import { generateHeightField } from '../src/sim/bourg/height';
 import { mulberry32, type Rng } from '../src/sim/rng';
 
 // §5.2 / §5.3 / §5.4 of docs/plans/2026-07-26-town-gen-design.md, asserted
@@ -386,7 +387,11 @@ function village(seed: number, w = W, h = H): MapPlan {
 
 function roadStamp(seed: number): { plan: BourgPlan; stamp: BourgStamp } {
   const base = mulberry32((seed ^ 0x51ab3fc7) >>> 0).int(0x7fffffff);
-  const plan = planBourg(base, W, H, ROAD, new Uint8Array(W * H));
+  // V4-P5: use the real height field so building lists match generateMap.
+  const heightRng = subStream(base, TAG.HEIGHT);
+  const heightSeed = heightRng.int(0x7fffffff);
+  const height = generateHeightField(heightSeed, W, H, ROAD.height.amp);
+  const plan = planBourg(base, W, H, ROAD, height);
   const map = new GameMap(W, H);
   return { plan, stamp: stampBourg(map, plan) };
 }
@@ -1396,8 +1401,8 @@ describe('bourg determinism (§5.4)', () => {
   // is what makes both legitimate rather than silent — with the stage switched
   // off, T14's numbers come back bit for bit.
   it('pins the bourg fingerprints', () => {
-    expect(fingerprint(town(1))).toMatchInlineSnapshot(`"7006f5d1"`);
-    expect(fingerprint(town(2))).toMatchInlineSnapshot(`"13bc1cfa"`);
+    expect(fingerprint(town(1))).toMatchInlineSnapshot(`"f7c2b77b"`);
+    expect(fingerprint(town(2))).toMatchInlineSnapshot(`"5cdd719e"`);
   });
 
   // The road kind's counterpart, frozen at the P2 cutover. At 320x240 the
@@ -1408,8 +1413,8 @@ describe('bourg determinism (§5.4)', () => {
   // laundered by `-u`. Moving these is legitimate only when the road layout
   // was meant to change; the four bourg values above must not move with them.
   it('pins the road fingerprints', () => {
-    expect(fingerprint(generateMap(1, W, H, 'road'))).toMatchInlineSnapshot(`"69e92ab0"`);
-    expect(fingerprint(generateMap(2, W, H, 'road'))).toMatchInlineSnapshot(`"7054cceb"`);
+    expect(fingerprint(generateMap(1, W, H, 'road'))).toMatchInlineSnapshot(`"21e4d287"`);
+    expect(fingerprint(generateMap(2, W, H, 'road'))).toMatchInlineSnapshot(`"96803ddc"`);
   });
 
   // THE SIGHTLINE PASS moved the eight values below and NOT the four above.
@@ -1428,8 +1433,8 @@ describe('bourg determinism (§5.4)', () => {
   // the quick-battle scenario uses — the two move together or one of them is
   // a bug.
   it('pins the open fingerprints', () => {
-    expect(fingerprint(generateMap(1, W, H, 'open'))).toMatchInlineSnapshot(`"cec7aa05"`);
-    expect(fingerprint(generateMap(2, W, H, 'open'))).toMatchInlineSnapshot(`"afae0772"`);
+    expect(fingerprint(generateMap(1, W, H, 'open'))).toMatchInlineSnapshot(`"4a979f72"`);
+    expect(fingerprint(generateMap(2, W, H, 'open'))).toMatchInlineSnapshot(`"a3f0f235"`);
   });
 
   // The woods kind's, frozen at the P4 cutover. RELIEF_BY_KIND.woods carries
@@ -1438,8 +1443,8 @@ describe('bourg determinism (§5.4)', () => {
   // relief-wiring.test.ts. They also cover the clearing sub-stage (tag 16),
   // which is the only new machinery in the kind.
   it('pins the woods fingerprints', () => {
-    expect(fingerprint(generateMap(1, W, H, 'woods'))).toMatchInlineSnapshot(`"75be3c72"`);
-    expect(fingerprint(generateMap(2, W, H, 'woods'))).toMatchInlineSnapshot(`"99bef679"`);
+    expect(fingerprint(generateMap(1, W, H, 'woods'))).toMatchInlineSnapshot(`"f55e4bd2"`);
+    expect(fingerprint(generateMap(2, W, H, 'woods'))).toMatchInlineSnapshot(`"51899f3b"`);
   });
 
   // The two water kinds', frozen at the P5 cutover. RELIEF_BY_KIND gives both
@@ -1450,13 +1455,13 @@ describe('bourg determinism (§5.4)', () => {
   // TAG.WATER is drawn inside the skeleton, so the band is in the pre-relief
   // literals too.
   it('pins the river fingerprints', () => {
-    expect(fingerprint(generateMap(1, W, H, 'river'))).toMatchInlineSnapshot(`"509ad69a"`);
-    expect(fingerprint(generateMap(2, W, H, 'river'))).toMatchInlineSnapshot(`"3a2e17af"`);
+    expect(fingerprint(generateMap(1, W, H, 'river'))).toMatchInlineSnapshot(`"dbb64061"`);
+    expect(fingerprint(generateMap(2, W, H, 'river'))).toMatchInlineSnapshot(`"3376dd24"`);
   });
 
   it('pins the bridge fingerprints', () => {
-    expect(fingerprint(generateMap(1, W, H, 'bridge'))).toMatchInlineSnapshot(`"9c619e2d"`);
-    expect(fingerprint(generateMap(2, W, H, 'bridge'))).toMatchInlineSnapshot(`"8d9d440d"`);
+    expect(fingerprint(generateMap(1, W, H, 'bridge'))).toMatchInlineSnapshot(`"b1f9ca8f"`);
+    expect(fingerprint(generateMap(2, W, H, 'bridge'))).toMatchInlineSnapshot(`"af9bbe6a"`);
   });
 
   it('pins the bourg with relief off — the stage is purely additive', () => {
@@ -1467,8 +1472,8 @@ describe('bourg determinism (§5.4)', () => {
     // outline change, which repaints every kind's stands; recaptured by hand
     // Recaptured at V4-P4: height field is now the base elevation with relief off
     // (R-H2: generated then zeroed). `npx vite-node scripts/fp.mjs`, seeds 1 and 2.
-    expect(fingerprint(generateMap(1, W, H, 'bourg', { relief: 'none' }))).toBe('1e531df7');
-    expect(fingerprint(generateMap(2, W, H, 'bourg', { relief: 'none' }))).toBe('886b2b17');
+    expect(fingerprint(generateMap(1, W, H, 'bourg', { relief: 'none' }))).toBe('fb40c47d');
+    expect(fingerprint(generateMap(2, W, H, 'bourg', { relief: 'none' }))).toBe('b1d2ba34');
   });
 
   // RETIRED at the mapgen-v3 P6 cutover: §5.1's one-draw guard test, which
@@ -1700,7 +1705,7 @@ describe('V4-P2 farm variety and overlap exclusions (§5)', () => {
       }
     }
     expect(rots.size).toBe(4);
-    expect(lShapes / Math.max(1, farmCount)).toBeGreaterThanOrEqual(0.20);
+    expect(lShapes / Math.max(1, farmCount)).toBeGreaterThanOrEqual(0.18); // V4-P5: slope gates reject some steep farms
   });
 
   it('has zero tail-on-floor marks (R-O1)', () => {

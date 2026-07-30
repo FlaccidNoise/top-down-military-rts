@@ -251,6 +251,25 @@ export function buildFootprints(sk: Skeleton, land: Landmarks, pc: Parcels): Foo
     if (buildings.length >= maxBuildings) return;
     const avail = p.d - p.setback;
     if (avail < MIN_AVAIL || p.w < MIN_WIDTH) return;
+
+    // R-H7 · plot slope gate: skip the building when height range over
+    // the plot rect exceeds 3 m. The plot stays as garden/orchard only.
+    // Reuses the existing per-plot skip path; no extra draws.
+    {
+      const pr = localRect(p, 0, 0, p.w, p.d);
+      let phMin = 255, phMax = 0;
+      for (let py = Math.max(0, pr.y); py < Math.min(h, pr.y + pr.h); py++)
+        for (let px = Math.max(0, pr.x); px < Math.min(w, pr.x + pr.w); px++) {
+          const v = sk.height[py * w + px];
+          if (v < phMin) phMin = v;
+          if (v > phMax) phMax = v;
+        }
+      if (phMax - phMin > 3) {
+        gardens.push({ rect: pr, plotIndex, runIndex: p.runIndex, indexInRun: p.indexInRun, rear: opposite(frontFace(p)), front: frontFace(p) });
+        return;
+      }
+    }
+
     const core = p.densQ8 > DENS_CORE;
     const mid = !core && p.densQ8 > DENS_FRINGE;
     // A terrace is not a density band, it is a HIGH STREET. dens > 0.60 is only

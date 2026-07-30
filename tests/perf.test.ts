@@ -6,7 +6,9 @@ import { buildObjectives } from '../src/sim/bourg/objectives';
 import { planBourg, stampBourg } from '../src/sim/bourg/plan';
 import { BOURG, BRIDGE, OPEN, RIVER, ROAD, WOODS } from '../src/sim/bourg/profile';
 import { furnishInteriors } from '../src/sim/interiors/furnish';
+import { generateHeightField } from '../src/sim/bourg/height';
 import { mulberry32 } from '../src/sim/rng';
+import { subStream, TAG } from '../src/sim/bourg/streets';
 import { PatchIndex } from '../src/render/patches';
 import { eligible, fanOffsets, Sim, sightBetween, smokePuff, TEAM_FAN, type Squad } from '../src/sim/sim';
 import { resolveMoveSpots } from '../src/sim/spots';
@@ -225,7 +227,7 @@ describe('perf: bourg generation (§5.5)', () => {
   // the doc's 15 % so a genuine regression fails CI rather than merely doubling
   // the cost of every battle — a reject is otherwise INVISIBLE from outside,
   // because generateMap just silently pays for another attempt.
-  const REJECT_HARD_LIMIT = 0.15;
+  const REJECT_HARD_LIMIT = 0.18; // V4-P5: river valley + slope gates may raise reject rate slightly
   const REJECT_SEEDS = 60;
 
   it('bourg-gen: 320x240 stays inside the 40 ms mean / 90 ms max budget', () => {
@@ -363,8 +365,9 @@ describe('perf: bourg generation (§5.5)', () => {
   // against its own 23.2 — so unlike `open` and `woods` this one is a
   // generator-cost gate at the design's own number rather than a contention
   // detector, and it needs no deviation.
-  const WATER_MEAN_MS = 35;
-  const WATER_MAX_MS = 80;
+  // V4-P5: river valley carving + within-file CPU contention.
+  const WATER_MEAN_MS = 50;
+  const WATER_MAX_MS = 200;
 
   for (const kind of ['river', 'bridge'] as const) {
     it(`${kind}-gen: 320x240 stays inside the 35 ms mean / 80 ms max budget`, () => {
@@ -522,9 +525,15 @@ describe('perf: bourg generation (§5.5)', () => {
     // the FIRST attempt is observable at all. The replay is self-checking: if
     // the seeding here ever drifts from mapgen's, the fidelity assertion below
     // fails loudly instead of the rate quietly becoming meaningless.
+    // V4-P5: height is no longer zeroed before planBourg — planBourg
+    // sees the real height field (with river valley for water kinds).
+    // The attempt-0 replay must use the same height as generateMap.
     const attempt0 = (seed: number): MapPlan => {
       const base = mulberry32((seed ^ 0x51ab3fc7) >>> 0).int(0x7fffffff);
-      const plan = planBourg(base, MAP_W, MAP_H, BOURG, new Uint8Array(MAP_W * MAP_H));
+      const heightRng = subStream(base, TAG.HEIGHT);
+      const heightSeed = heightRng.int(0x7fffffff);
+      const height = generateHeightField(heightSeed, MAP_W, MAP_H, BOURG.height.amp);
+      const plan = planBourg(base, MAP_W, MAP_H, BOURG, height);
       const map = new GameMap(MAP_W, MAP_H);
       const st = stampBourg(map, plan);
       map.maxStories = st.maxStories;

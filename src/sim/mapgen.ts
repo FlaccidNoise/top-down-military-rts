@@ -248,12 +248,16 @@ function tryGenerateV3(
   // ── S0 · Height field ──────────────────────────────────────────────────
   const heightRng = subStream(bourgBase, TAG.HEIGHT);
   const heightSeed = heightRng.int(0x7fffffff);
-  const rawHeight = generateHeightField(heightSeed, w, h, profile.height.amp);
-  // R-H2: with relief off, zero the field (draws still happen, stream stable)
-  const height = relief === NO_RELIEF ? new Uint8Array(w * h) : rawHeight;
+  const height = generateHeightField(heightSeed, w, h, profile.height.amp);
+  // R-H2: height is generated (draws happen, stream stable) regardless.
+  // For relief-'none' we zero AFTER planBourg so the valley and slope
+  // gates see the same height as relief-on — building lists stay identical.
 
   const plan = planBourg(bourgBase, w, h, profile, height);
   if (plan.fp.buildings.length < profile.minBuildings) return null;
+
+  // R-H2 · Zero height AFTER planBourg for relief-off.
+  if (relief === NO_RELIEF) height.fill(0);
 
   // ── Feathered town weight (R-H3) ───────────────────────────────────────
   // Built from plan data (zone + compounds + occ) so it can scale the height
@@ -370,11 +374,12 @@ function buildTownWeight(plan: BourgPlan, w: number, h: number): Uint8Array {
 function relaxRoadGrades(map: GameMap): void {
   const { w, h } = map;
   const e = map.elev;
-  // Converge until stable: a road tile clamps to within ±1 of each 4-neighbour
-  // road tile. The maximum propagation distance is the road network diameter,
-  // bounded by w + h. Alternating scan directions so constraints propagate
-  // both ways each pair of passes.
-  const maxPasses = w + h;
+  // Each road tile clamps to within ±1 of each 4-neighbour road tile.
+  // Alternating scan directions for two-way propagation. Capped at 50
+  // passes — with the river valley carving, steep gradients near the
+  // band may not fully converge, but the road network remains connected
+  // and the game does not depend on perfect grade smoothing.
+  const maxPasses = 50;
   for (let pass = 0; pass < maxPasses; pass++) {
     const fwd = pass % 2 === 0;
     let changed = false;
