@@ -37,14 +37,14 @@ function fingerprint(plan: MapPlan): string {
 // the feathered town weight replaces the binary mask. Recapture is `npx vite-node
 // scripts/fp.mjs`.
 const PRE_RELIEF: Record<MapKind, string[]> = {
-  open: ['15f1fbef', 'e701ba28', 'e4049be4', '84de5f96', 'ee8d2b01', '767f66e9', '345317a7', '9d6e6cd2'],
-  road: ['95510c07', 'a027dc54', 'e3b92878', 'c26982e3', '71c38d1', '6c4425ff', 'e00ad50a', 'b77db8e8'],
-  woods: ['5d000498', '808613c5', '6c9f44df', 'f23bd99c', 'ffc7dcf3', '80b98b8f', '770fa90d', '25118bdd'],
+  open: ['1a3393cc', '5ad7546e', 'ff4fbe84', '672d71f7', 'f530e265', '1d0f2f29', 'b7008db5', 'e3b90c2e'],
+  road: ['f36c495c', '7d989845', 'dbf75726', 'a74996c1', 'f2e92d23', '47716c76', 'f391ae70', '9109b7aa'],
+  woods: ['5ccb3f0c', 'ef62577', '45e36a58', 'cbc61930', '8414275f', '241b93cd', '4d2aa9d3', '6d2566b'],
   // The water kinds' rows cover the water stage itself: TAG.WATER's band is
   // carved inside the skeleton, so `relief: 'none'` still has the whole river.
-  river: ['54901294', '41322915', 'e0f3ba11', '29afb3c8', '7a001360', '5275bd8b', 'f93f8e28', 'b4941975'],
-  bridge: ['37e25df5', 'ebb97eb3', '392dbceb', 'a083e9bb', '91a0d9a9', 'e874fbe0', 'c0482450', '146bde6'],
-  bourg: ['723322d2', '6db723e4', 'd7a44045', 'f9a09cc3', '2a469bc4', '7edd30b5', '9c04c43b', '68a33cb2'],
+  river: ['d3a51f25', 'cd89da43', '4ad15f89', '82a3e461', '9a8728d6', 'abe5f54b', 'cca82010', '408b5265'],
+  bridge: ['16a21926', 'c7a6af7d', '70bad84f', '5b9f6c4', 'e440a261', '220d8926', '18c81bc0', '9f554fb8'],
+  bourg: ['8e81a397', '13529414', '6afb219d', 'c002e770', '2f6cc762', '6d075073', '1aad2305', '93d46a04'],
 };
 
 const cache = new Map<string, MapPlan>();

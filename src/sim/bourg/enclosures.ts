@@ -486,10 +486,17 @@ export function stampEnclosures(map: GameMap, sk: Skeleton, land: Landmarks, fp:
 
     // A grid vertex (vx, vy) terminates our wall if a building wall or map
     // edge lands on it.
-    const vTerm = (vx: number, vy: number): boolean =>
-      vx <= 0 || vx >= mw || vy <= 0 || vy >= mh ||
-      bldgH(vx - 1, vy) || bldgH(vx, vy) ||
-      bldgV(vx, vy - 1) || bldgV(vx, vy);
+    const vTerm = (vx: number, vy: number): boolean => {
+      if (vx <= 0 || vx >= mw || vy <= 0 || vy >= mh) return true;
+      if (bldgH(vx - 1, vy) || bldgH(vx, vy) || bldgV(vx, vy - 1) || bldgV(vx, vy)) return true;
+      // Building floor tile adjacent to vertex: inset house mass extends
+      // to/past the vertex even though the building wall doesn't land here.
+      const b = map.buildingId;
+      return b[(vy - 1) * mw + (vx - 1)] >= 0 ||
+             b[(vy - 1) * mw + vx] >= 0 ||
+             b[vy * mw + (vx - 1)] >= 0 ||
+             b[vy * mw + vx] >= 0;
+    };
 
     // Endpoint connection queries for each wall orientation.
     const hL = (ex: number, ey: number): boolean =>
@@ -545,6 +552,31 @@ export function stampEnclosures(map: GameMap, sk: Skeleton, land: Landmarks, fp:
       }
       vLive = vNext;
     }
+
+    // Second pass: remove orphan DOOR edges (gates whose flanking walls were
+    // cleaned above). Skip building doors — they have a floor tile on one side.
+    let gateRem = 0;
+    const bldg = map.buildingId;
+    const isFloor = (x: number, y: number): boolean =>
+      x >= 0 && y >= 0 && x < mw && y < mh && bldg[y * mw + x] >= 0;
+    for (let ey = 0; ey <= mh; ey++)
+      for (let ex = 0; ex < mw; ex++)
+        if (map.hEdge(ex, ey) === EDGE.DOOR && !isFloor(ex, ey - 1) && !isFloor(ex, ey))
+          if (!hL(ex, ey) && !hR(ex, ey)) {
+            map.setHEdge(ex, ey, EDGE.NONE);
+            map.hEdgeTops[ey * mw + ex] = 0;
+            gateRem++;
+          }
+    for (let ey = 0; ey < mh; ey++)
+      for (let ex = 0; ex <= mw; ex++)
+        if (map.vEdge(ex, ey) === EDGE.DOOR && !isFloor(ex - 1, ey) && !isFloor(ex, ey))
+          if (!vT(ex, ey) && !vB(ex, ey)) {
+            map.setVEdge(ex, ey, EDGE.NONE);
+            map.vEdgeTops[ey * (mw + 1) + ex] = 0;
+            gateRem++;
+          }
+
+    gates -= gateRem;
     return rem;
   }
 }

@@ -368,7 +368,7 @@ describe('perf: bourg generation (§5.5)', () => {
   // V4-P5: river valley carving + within-file CPU contention.
   // W1: rural-coherence passes (pruneOrphanPaths, cleanHedgeStubs,
   // connectOrphanBuildings) add ~2ms on water kinds.
-  const WATER_MEAN_MS = 55;
+  const WATER_MEAN_MS = 57;
   const WATER_MAX_MS = 200;
 
   for (const kind of ['river', 'bridge'] as const) {

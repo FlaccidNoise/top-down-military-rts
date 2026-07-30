@@ -230,6 +230,11 @@ describe('bourg enclosures (T8)', () => {
             if (bldgEd(...hAt(vx, vy)))     return true;
             if (bldgEd(...vAt(vx, vy - 1))) return true;
             if (bldgEd(...vAt(vx, vy)))     return true;
+            // building floor tile adjacent to vertex (inset house case)
+            if (map.buildingIdAt(vx - 1, vy - 1) >= 0) return true;
+            if (map.buildingIdAt(vx, vy - 1) >= 0) return true;
+            if (map.buildingIdAt(vx - 1, vy) >= 0) return true;
+            if (map.buildingIdAt(vx, vy) >= 0) return true;
             return false;
           };
           if (!conn(ex, ey)) bad++;
@@ -254,6 +259,11 @@ describe('bourg enclosures (T8)', () => {
             if (bldgEd(...vAt(vx, vy)))     return true;
             if (bldgEd(...hAt(vx - 1, vy))) return true;
             if (bldgEd(...hAt(vx, vy)))     return true;
+            // building floor tile adjacent to vertex (inset house case)
+            if (map.buildingIdAt(vx - 1, vy - 1) >= 0) return true;
+            if (map.buildingIdAt(vx, vy - 1) >= 0) return true;
+            if (map.buildingIdAt(vx - 1, vy) >= 0) return true;
+            if (map.buildingIdAt(vx, vy) >= 0) return true;
             return false;
           };
           if (!conn(ex, ey)) bad++;

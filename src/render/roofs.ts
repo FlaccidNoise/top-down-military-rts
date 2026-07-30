@@ -288,13 +288,19 @@ interface RoofArt {
 // baked against a byte that has since changed is the stale-art bug the version
 // tags below exist to catch.
 function readOpens(b: Building, map: GameMap, opens: Uint8Array[]): void {
-  for (let k = 0; k < b.w; k++) {
-    opens[SIDE_N][k] = map.hEdge(b.x + k, b.y);
-    opens[SIDE_S][k] = map.hEdge(b.x + k, b.y + b.h);
+  const u = partsUnion(b);
+  const parts = b.parts ?? [{ x: b.x, y: b.y, w: b.w, h: b.h }];
+  const onAnyN = (x: number, y: number) => parts.some((p) => p.y === y && x >= p.x && x < p.x + p.w);
+  const onAnyS = (x: number, y: number) => parts.some((p) => p.y + p.h === y && x >= p.x && x < p.x + p.w);
+  const onAnyW = (x: number, y: number) => parts.some((p) => p.x === x && y >= p.y && y < p.y + p.h);
+  const onAnyE = (x: number, y: number) => parts.some((p) => p.x + p.w === x && y >= p.y && y < p.y + p.h);
+  for (let k = 0; k < u.w; k++) {
+    opens[SIDE_N][k] = onAnyN(u.x + k, u.y) ? map.hEdge(u.x + k, u.y) : EDGE.NONE;
+    opens[SIDE_S][k] = onAnyS(u.x + k, u.y + u.h) ? map.hEdge(u.x + k, u.y + u.h) : EDGE.NONE;
   }
-  for (let k = 0; k < b.h; k++) {
-    opens[SIDE_W][k] = map.vEdge(b.x, b.y + k);
-    opens[SIDE_E][k] = map.vEdge(b.x + b.w, b.y + k);
+  for (let k = 0; k < u.h; k++) {
+    opens[SIDE_W][k] = onAnyW(u.x, u.y + k) ? map.vEdge(u.x, u.y + k) : EDGE.NONE;
+    opens[SIDE_E][k] = onAnyE(u.x + u.w, u.y + k) ? map.vEdge(u.x + u.w, u.y + k) : EDGE.NONE;
   }
 }
 
@@ -304,12 +310,25 @@ export function onOutline(b: Building, x: number, y: number, horiz: boolean): bo
   return (x === b.x || x === b.x + b.w) && y >= b.y && y < b.y + b.h;
 }
 
+function partsUnion(b: Building): Rect {
+  const parts = b.parts ?? [{ x: b.x, y: b.y, w: b.w, h: b.h }];
+  let ux = Infinity, uy = Infinity, mx = -Infinity, my = -Infinity;
+  for (const p of parts) {
+    if (p.x < ux) ux = p.x;
+    if (p.y < uy) uy = p.y;
+    if (p.x + p.w > mx) mx = p.x + p.w;
+    if (p.y + p.h > my) my = p.y + p.h;
+  }
+  return { x: ux, y: uy, w: mx - ux, h: my - uy };
+}
+
 function roofRect(b: Building, butt: Sides, oh: number): Rect {
+  const u = partsUnion(b);
   const n = butt.n ? 0 : oh;
   const s = butt.s ? 0 : oh;
   const e = butt.e ? 0 : oh;
   const w = butt.w ? 0 : oh;
-  return { x: b.x - w, y: b.y - n, w: b.w + w + e, h: b.h + n + s };
+  return { x: u.x - w, y: u.y - n, w: u.w + w + e, h: u.h + n + s };
 }
 
 // N8. Roof art is keyed on the FOOTPRINT, not on the array index: the bourg
@@ -388,6 +407,7 @@ function buildArt(b: Building, stories: number, smallOfPair: boolean, map: GameM
   const ridgeAlongX = ctx.alongX ?? b.w >= b.h;
   const loSide: Side = ridgeAlongX ? 'w' : 'n';
   const hiSide: Side = ridgeAlongX ? 'e' : 's';
+  const u = partsUnion(b);
   const { x, y, w, h } = roofRect(b, ctx.butt, sacred ? CHURCH_OVERHANG : OVERHANG);
 
   // A party-wall range was built by one mason in one year: it takes ONE
@@ -583,7 +603,7 @@ function buildArt(b: Building, stories: number, smallOfPair: boolean, map: GameM
   // list was a property of the oblique projection that has just been deleted,
   // and an EDGE.NONE tile (a church arcade, an open barn front) is a real gap
   // in the ring rather than a tile to paint masonry over.
-  const opens: Uint8Array[] = [new Uint8Array(b.w), new Uint8Array(b.w), new Uint8Array(b.h), new Uint8Array(b.h)];
+  const opens: Uint8Array[] = [new Uint8Array(u.w), new Uint8Array(u.w), new Uint8Array(u.h), new Uint8Array(u.h)];
   readOpens(b, map, opens);
 
   // Belfry plus slate spire is ~12 m of stone above the eave the walls stop
