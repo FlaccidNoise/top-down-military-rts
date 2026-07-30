@@ -265,10 +265,13 @@ describe('perf: bourg generation (§5.5)', () => {
   // what it saves on a smaller nucleus (fewer plots, fewer footprints) it pays
   // back painting rural fabric over the country the nucleus no longer covers.
   // The two kinds cost the same because they are the same pipeline.
-  const ROAD_MEAN_MS = 30;
+  // V4 follow-up (2026-07-28): the noise height field, slope gates and rural
+  // coherence passes cost every kind real time. Measured post-V4: quiet box
+  // mean 22.4, full-parallel-suite mean 31.4 — 30 is a contention detector.
+  const ROAD_MEAN_MS = 40;
   const ROAD_MAX_MS = 70;
 
-  it('road-gen: 320x240 stays inside the 30 ms mean / 70 ms max budget', () => {
+  it('road-gen: 320x240 stays inside the 40 ms mean / 70 ms max budget', () => {
     generateMap(1, MAP_W, MAP_H, 'road'); // JIT warmup
     const ts: number[] = [];
     for (let seed = 1; seed <= 20; seed++) {
@@ -303,10 +306,12 @@ describe('perf: bourg generation (§5.5)', () => {
   // 22.0 on the same box, both dominated by the same CCL + BFS + bocage work.
   // Raising a budget a design document set needs saying out loud, and this is
   // that: 40/90, not §4's 25/60, on the evidence above.
-  const OPEN_MEAN_MS = 40;
+  // V4 follow-up (2026-07-28): quiet-box mean 28.5, full-suite mean 40.2 —
+  // 40 sits exactly on the suite measurement. 50 keeps it a cost gate.
+  const OPEN_MEAN_MS = 50;
   const OPEN_MAX_MS = 90;
 
-  it('open-gen: 320x240 stays inside the 40 ms mean / 90 ms max budget', () => {
+  it('open-gen: 320x240 stays inside the 50 ms mean / 90 ms max budget', () => {
     generateMap(1, MAP_W, MAP_H, 'open'); // JIT warmup
     const ts: number[] = [];
     for (let seed = 1; seed <= 20; seed++) {
@@ -332,10 +337,12 @@ describe('perf: bourg generation (§5.5)', () => {
   // is the pass that paints most of the map, and it costs about what a bourg's
   // fifty plots cost. Same 40/90 as the bourg, for the same reason: 25 would be
   // a contention detector, not a generator-cost gate.
-  const WOODS_MEAN_MS = 40;
+  // V4 follow-up (2026-07-28): quiet-box mean 25.1, full-suite mean 36.4 —
+  // 40 was marginal under contention.
+  const WOODS_MEAN_MS = 45;
   const WOODS_MAX_MS = 90;
 
-  it('woods-gen: 320x240 stays inside the 40 ms mean / 90 ms max budget', () => {
+  it('woods-gen: 320x240 stays inside the 45 ms mean / 90 ms max budget', () => {
     generateMap(1, MAP_W, MAP_H, 'woods'); // JIT warmup
     const ts: number[] = [];
     for (let seed = 1; seed <= 20; seed++) {
@@ -368,11 +375,14 @@ describe('perf: bourg generation (§5.5)', () => {
   // V4-P5: river valley carving + within-file CPU contention.
   // W1: rural-coherence passes (pruneOrphanPaths, cleanHedgeStubs,
   // connectOrphanBuildings) add ~2ms on water kinds.
-  const WATER_MEAN_MS = 57;
-  const WATER_MAX_MS = 200;
+  // V4 follow-up (2026-07-28): quiet-box river 40.5 / bridge 42.5, full-suite
+  // 57.7 / 60.4 with suite p95 193-199 — 57/200 made both numbers contention
+  // detectors.
+  const WATER_MEAN_MS = 65;
+  const WATER_MAX_MS = 250;
 
   for (const kind of ['river', 'bridge'] as const) {
-    it(`${kind}-gen: 320x240 stays inside the 55 ms mean / 200 ms max budget`, () => {
+    it(`${kind}-gen: 320x240 stays inside the 65 ms mean / 250 ms max budget`, () => {
       generateMap(1, MAP_W, MAP_H, kind); // JIT warmup
       const ts: number[] = [];
       for (let seed = 1; seed <= 20; seed++) {
@@ -680,7 +690,9 @@ describe('perf: interiors furnishing (§6.5)', () => {
   // The assertion that actually matters, because it is what bridge.ts pays:
   // the WHOLE furnished pipeline against the bourg generator's existing budget.
   // §6.5 predicted ~19 ms/attempt → ~23 ms; the budget is 40/90 and has room.
-  it('furnish-gen: a furnished 320x240 bourg still fits the 40 ms mean / 90 ms max budget', () => {
+  // V4 follow-up (2026-07-28): suite-contention mean 39.9 vs the bourg's own
+  // 31.4-quiet/40-suite — furnishing adds ~8ms; 50/90 keeps it a cost gate.
+  it('furnish-gen: a furnished 320x240 bourg still fits the 50 ms mean / 90 ms max budget', () => {
     for (let r = 0; r < 4; r++) generateMap(r + 1, MAP_W, MAP_H, 'bourg', { interiors: true }); // JIT warmup
     const ts: number[] = [];
     for (let seed = 1; seed <= 20; seed++) {
@@ -693,7 +705,7 @@ describe('perf: interiors furnishing (§6.5)', () => {
       ts.push(best);
     }
     console.log(`[perf] furnish-gen ${JSON.stringify({ mean: round(mean(ts)), p95: round(p95(ts)), max: round(max(ts)) })}`);
-    expect(mean(ts)).toBeLessThan(40);
+    expect(mean(ts)).toBeLessThan(50);
     expect(max(ts)).toBeLessThan(90);
   }, 120_000);
 });
