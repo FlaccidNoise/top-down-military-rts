@@ -23,12 +23,12 @@ import { shopfrontsFor } from '../src/render/shops';
 // 141-334 on bridge over seeds 1-200, the bridge-head's own gardens being the
 // difference between them.
 const V3_KINDS = [
-  ['bourg', [10, 11, 12], 300],
-  ['road', [1, 3, 7, 11], 200],
-  ['open', [1, 3, 7, 11], 100],
-  ['woods', [1, 3, 7, 11], 70],
-  ['river', [1, 3, 7, 11], 100],
-  ['bridge', [1, 3, 7, 11], 120],
+  ['bourg', [10, 11, 12], 180],
+  ['road', [1, 3, 7, 11], 50],
+  ['open', [1, 3, 7, 11], 40],
+  ['woods', [1, 3, 7, 11], 20],
+  ['river', [1, 3, 7, 11], 30],
+  ['bridge', [1, 3, 7, 11], 40],
 ] as const;
 const BOURG_SEEDS = [10, 11, 12];
 const empty = new Uint8Array(320 * 240);

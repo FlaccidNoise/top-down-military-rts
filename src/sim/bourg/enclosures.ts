@@ -285,6 +285,14 @@ export function stampEnclosures(map: GameMap, sk: Skeleton, land: Landmarks, fp:
     }
   }
 
+  // ── wall fragment cleanup (M1) ─────────────────────────────────────────
+  // Post-hoc: remove every free-standing wall segment that is neither part
+  // of a closed perimeter nor terminated at a building corner. Iterative
+  // sweep — deleting a spur exposes the next edge until the chain reaches
+  // its building. Deterministic (no RNG).
+  const removed = cleanWallFragments(map, w, h);
+  walls -= removed;
+
   // ── connectivity, and the bounded gate reroll ────────────────────────────
   //
   // The property that must hold is not "the gardens look enclosed", it is that
@@ -441,6 +449,103 @@ export function stampEnclosures(map: GameMap, sk: Skeleton, land: Landmarks, fp:
     let any = false;
     for (const e of picked.values()) if (putGate(e[0], e[1], e[2])) any = true;
     return any;
+  }
+
+  // ── M1 post-hoc wall fragment removal ───────────────────────────────────
+  //
+  // Every free-standing wall segment must belong to a closed perimeter OR
+  // terminate at a building corner / another wall / a gate. An edge whose
+  // endpoint has no colinear or perpendicular wall/gate continuation AND no
+  // building wall at that vertex is a spur tip — delete it and iterate.
+  function cleanWallFragments(map: GameMap, mw: number, mh: number): number {
+    const ourT = (t: number): boolean => t === WALL_LOW || t === WALL_HIGH;
+
+    // Our wall/gate at a grid edge. DOOR edges between our walls are gates;
+    // building doors are never adjacent to our walls so including all DOOR
+    // is safe and keeps wall runs connected through their own gates.
+    const ourH = (ex: number, ey: number): boolean => {
+      if (ex < 0 || ex >= mw || ey < 0 || ey > mh) return false;
+      const e = map.hEdge(ex, ey);
+      return e === EDGE.DOOR || (e === EDGE.WALL && ourT(map.hEdgeTops[ey * mw + ex]));
+    };
+    const ourV = (ex: number, ey: number): boolean => {
+      if (ex < 0 || ex > mw || ey < 0 || ey >= mh) return false;
+      const e = map.vEdge(ex, ey);
+      return e === EDGE.DOOR || (e === EDGE.WALL && ourT(map.vEdgeTops[ey * (mw + 1) + ex]));
+    };
+
+    // Building wall at a grid edge (top >= 3, i.e. not WALL_LOW/WALL_HIGH).
+    const bldgH = (ex: number, ey: number): boolean => {
+      if (ex < 0 || ex >= mw || ey < 0 || ey > mh) return false;
+      return map.hEdge(ex, ey) === EDGE.WALL && !ourT(map.hEdgeTops[ey * mw + ex]);
+    };
+    const bldgV = (ex: number, ey: number): boolean => {
+      if (ex < 0 || ex > mw || ey < 0 || ey >= mh) return false;
+      return map.vEdge(ex, ey) === EDGE.WALL && !ourT(map.vEdgeTops[ey * (mw + 1) + ex]);
+    };
+
+    // A grid vertex (vx, vy) terminates our wall if a building wall or map
+    // edge lands on it.
+    const vTerm = (vx: number, vy: number): boolean =>
+      vx <= 0 || vx >= mw || vy <= 0 || vy >= mh ||
+      bldgH(vx - 1, vy) || bldgH(vx, vy) ||
+      bldgV(vx, vy - 1) || bldgV(vx, vy);
+
+    // Endpoint connection queries for each wall orientation.
+    const hL = (ex: number, ey: number): boolean =>
+      vTerm(ex, ey) || ourH(ex - 1, ey) || ourV(ex, ey) || ourV(ex, ey - 1);
+    const hR = (ex: number, ey: number): boolean =>
+      vTerm(ex + 1, ey) || ourH(ex + 1, ey) || ourV(ex + 1, ey) || ourV(ex + 1, ey - 1);
+    const vT = (ex: number, ey: number): boolean =>
+      vTerm(ex, ey) || ourV(ex, ey - 1) || ourH(ex - 1, ey) || ourH(ex, ey);
+    const vB = (ex: number, ey: number): boolean =>
+      vTerm(ex, ey + 1) || ourV(ex, ey + 1) || ourH(ex - 1, ey + 1) || ourH(ex, ey + 1);
+
+    // Collect our-wall edges once, then iteratively filter the live list.
+    // This is O(walls * passes) instead of O(total_edges * passes).
+    let hLive: [number, number][] = [];
+    let vLive: [number, number][] = [];
+    for (let ey = 0; ey <= mh; ey++)
+      for (let ex = 0; ex < mw; ex++)
+        if (map.hEdge(ex, ey) === EDGE.WALL && ourT(map.hEdgeTops[ey * mw + ex]))
+          hLive.push([ex, ey]);
+    for (let ey = 0; ey < mh; ey++)
+      for (let ex = 0; ex <= mw; ex++)
+        if (map.vEdge(ex, ey) === EDGE.WALL && ourT(map.vEdgeTops[ey * (mw + 1) + ex]))
+          vLive.push([ex, ey]);
+
+    let rem = 0;
+    let pass = true;
+    while (pass && (hLive.length > 0 || vLive.length > 0)) {
+      pass = false;
+      const hNext: [number, number][] = [];
+      for (const [ex, ey] of hLive) {
+        if (map.hEdge(ex, ey) !== EDGE.WALL || !ourT(map.hEdgeTops[ey * mw + ex])) continue;
+        if (!hL(ex, ey) || !hR(ex, ey)) {
+          map.setHEdge(ex, ey, EDGE.NONE);
+          map.hEdgeTops[ey * mw + ex] = 0;
+          rem++;
+          pass = true;
+        } else {
+          hNext.push([ex, ey]);
+        }
+      }
+      hLive = hNext;
+      const vNext: [number, number][] = [];
+      for (const [ex, ey] of vLive) {
+        if (map.vEdge(ex, ey) !== EDGE.WALL || !ourT(map.vEdgeTops[ey * (mw + 1) + ex])) continue;
+        if (!vT(ex, ey) || !vB(ex, ey)) {
+          map.setVEdge(ex, ey, EDGE.NONE);
+          map.vEdgeTops[ey * (mw + 1) + ex] = 0;
+          rem++;
+          pass = true;
+        } else {
+          vNext.push([ex, ey]);
+        }
+      }
+      vLive = vNext;
+    }
+    return rem;
   }
 }
 

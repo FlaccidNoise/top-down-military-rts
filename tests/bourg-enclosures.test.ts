@@ -194,6 +194,75 @@ describe('bourg enclosures (T8)', () => {
     }
   });
 
+  it('has no wall fragments — every free-standing wall edge connects at both endpoints', () => {
+    // M1: after stampEnclosures (which includes cleanWallFragments), no
+    // our-wall edge should be a singleton, spur, or floating fragment.
+    // Each edge must have at least one of: colinear our-wall/gate,
+    // perpendicular our-wall/gate at either endpoint, building wall at
+    // the vertex, or map edge.
+    for (const seed of SEEDS) {
+      const { map } = town(seed);
+      const { w, h } = map;
+      const ourT = (t: number): boolean => t === WALL_LOW || t === WALL_HIGH;
+
+      const ourEd = (e: number, t: number): boolean =>
+        e === EDGE.DOOR || (e === EDGE.WALL && ourT(t));
+      const bldgEd = (e: number, t: number): boolean =>
+        e === EDGE.WALL && !ourT(t);
+
+      let bad = 0;
+      // horizontal our-wall edges
+      for (let ey = 0; ey <= h; ey++)
+        for (let ex = 0; ex < w; ex++) {
+          if (map.hEdge(ex, ey) !== EDGE.WALL || !ourT(map.hEdgeTops[ey * w + ex])) continue;
+          const hAt = (x: number, y: number) => [map.hEdge(x, y), map.hEdgeTop(x, y)] as const;
+          const vAt = (x: number, y: number) => [map.vEdge(x, y), map.vEdgeTop(x, y)] as const;
+
+          const conn = (vx: number, vy: number): boolean => {
+            if (vx <= 0 || vx >= w || vy <= 0 || vy >= h) return true;
+            // colinear
+            const [he, ht] = hAt(vx - 1, vy); if (ourEd(he, ht)) return true; // our wall/gate colinear
+            // perpendicular
+            const [vu, vuT] = vAt(vx, vy - 1); if (ourEd(vu, vuT)) return true;
+            const [vd, vdT] = vAt(vx, vy);      if (ourEd(vd, vdT)) return true;
+            // building wall at vertex
+            if (bldgEd(...hAt(vx - 1, vy))) return true;
+            if (bldgEd(...hAt(vx, vy)))     return true;
+            if (bldgEd(...vAt(vx, vy - 1))) return true;
+            if (bldgEd(...vAt(vx, vy)))     return true;
+            return false;
+          };
+          if (!conn(ex, ey)) bad++;
+          if (!conn(ex + 1, ey)) bad++;
+        }
+      // vertical our-wall edges
+      for (let ey = 0; ey < h; ey++)
+        for (let ex = 0; ex <= w; ex++) {
+          if (map.vEdge(ex, ey) !== EDGE.WALL || !ourT(map.vEdgeTops[ey * (w + 1) + ex])) continue;
+          const hAt = (x: number, y: number) => [map.hEdge(x, y), map.hEdgeTop(x, y)] as const;
+          const vAt = (x: number, y: number) => [map.vEdge(x, y), map.vEdgeTop(x, y)] as const;
+
+          const conn = (vx: number, vy: number): boolean => {
+            if (vx <= 0 || vx >= w || vy <= 0 || vy >= h) return true;
+            // colinear
+            const [ve, vt] = vAt(vx, vy - 1); if (ourEd(ve, vt)) return true;
+            // perpendicular
+            const [hl, hlT] = hAt(vx - 1, vy); if (ourEd(hl, hlT)) return true;
+            const [hr, hrT] = hAt(vx, vy);     if (ourEd(hr, hrT)) return true;
+            // building wall at vertex
+            if (bldgEd(...vAt(vx, vy - 1))) return true;
+            if (bldgEd(...vAt(vx, vy)))     return true;
+            if (bldgEd(...hAt(vx - 1, vy))) return true;
+            if (bldgEd(...hAt(vx, vy)))     return true;
+            return false;
+          };
+          if (!conn(ex, ey)) bad++;
+          if (!conn(ex, ey + 1)) bad++;
+        }
+      expect([seed, bad]).toEqual([seed, 0]);
+    }
+  });
+
   it('leaves every building door tile reachable on foot from the west arterial', () => {
     for (const seed of SEEDS) {
       const { fp, map, sk } = town(seed);
