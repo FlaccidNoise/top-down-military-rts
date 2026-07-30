@@ -1,12 +1,11 @@
 import type { TerrainKey } from './data';
 import { EDGE, GameMap } from './map';
 import type { Rng } from './rng';
-import { lerp2 } from './bourg/height';
 
 // Micro-relief: the pure-geometry half of the verticality work (design
 // docs/plans/2026-07-26-verticality-design.md §1). Everything here is a
-// function over a GameMap plus a profile, a sub-stream and a flatZone
-// predicate — no mapgen import, no MapPlan knowledge — so the module is
+// function over a GameMap plus a profile, a sub-stream and a townWeight
+// array — no mapgen import, no MapPlan knowledge — so the module is
 // unit-testable against hand-built maps before any generator wiring exists.
 //
 // Determinism: + − × ÷ and Math.round/Math.floor only (no Math.hypot, exp or
@@ -23,26 +22,20 @@ export interface Pt {
   y: number;
 }
 
-// undulation is the amplitude in metres, not a flag. hedgeBanks/rail are
-// on/off; sunken is how many lane runs get raised shoulders.
+// hedgeBanks/rail are on/off; sunken is how many lane runs get raised shoulders.
 export interface ReliefProfile {
-  undulation: 0 | 1 | 2;
   hedgeBanks: boolean;
   rail: boolean;
   sunken: 0 | 1 | 2;
 }
 
-export const NO_RELIEF: ReliefProfile = { undulation: 0, hedgeBanks: false, rail: false, sunken: 0 };
-
-// True where relief must not touch the ground at all (the bourg envelope).
-export type FlatZone = (x: number, y: number) => boolean;
+export const NO_RELIEF: ReliefProfile = { hedgeBanks: false, rail: false, sunken: 0 };
 
 // Everything relief needs to know about the map that is NOT readable off the
 // GameMap itself. Plain data + closures: no mapgen types cross this boundary.
 export interface ReliefContext {
   crossX: number; // village junction column — the railway stays 40 tiles clear of it
   hamletX?: number; // second hamlet junction (large maps only), 30 tiles of clearance
-  nearBuilding: (x: number, y: number) => boolean; // mapgen's own predicate (dome-pass skip set)
   lanes?: readonly (readonly Pt[])[]; // candidate sunken-lane runs, ordered tile lists
   spawns?: { west: Pt; east: Pt }; // vehicle-connectivity check for the embankment revert
 }
@@ -120,79 +113,31 @@ export class ReliefJournal {
 // east, north beats south. A N→S hedge line therefore banks on its west flank
 // and a W→E line on its north flank (its west neighbour is the next hedge tile,
 // which is not grass/field and is skipped).
-export function hedgeBanks(map: GameMap, flatZone: FlatZone): number {
+export function hedgeBanks(map: GameMap, townWeight: Uint8Array): number {
   const { w, h } = map;
   let raised = 0;
-  const lift = (x: number, y: number): void => {
+  const lift = (x: number, y: number, scale: number): void => {
+    if (scale <= 0) return;
     const i = y * w + x;
-    if (map.elev[i] < 1) {
-      map.elev[i] = 1;
-      raised++;
-    }
+    const h = Math.round(1 * scale);
+    if (h > 0 && map.elev[i] < h) { map.elev[i] = h; raised++; }
   };
-  const shoulder = (x: number, y: number): void => {
-    if (x < 0 || y < 0 || x >= w || y >= h || flatZone(x, y)) return;
+  const shoulder = (x: number, y: number, scale: number): void => {
+    if (x < 0 || y < 0 || x >= w || y >= h || scale <= 0) return;
     const k = map.terrainKeyAt(x, y);
-    if (k === 'grass' || k === 'field') lift(x, y);
+    if (k === 'grass' || k === 'field') lift(x, y, scale);
   };
   for (let y = 0; y < h; y++)
     for (let x = 0; x < w; x++) {
-      if (map.terrainKeyAt(x, y) !== 'hedge' || flatZone(x, y)) continue;
-      lift(x, y);
-      shoulder(x - 1, y);
-      shoulder(x, y - 1);
+      if (map.terrainKeyAt(x, y) !== 'hedge') continue;
+      const i = y * w + x;
+      const scale = (256 - townWeight[i]) / 256;
+      if (scale <= 0) continue;
+      lift(x, y, scale);
+      shoulder(x - 1, y, x > 0 ? (256 - townWeight[y * w + (x - 1)]) / 256 : 0);
+      shoulder(x, y - 1, y > 0 ? (256 - townWeight[(y - 1) * w + x]) / 256 : 0);
     }
   return raised;
-}
-
-// Deterministic bilinear sample of a value lattice — imported from height.ts.
-
-// R-B · Low-frequency undulation: 2-octave integer value noise on lattices of
-// 48 and 19 tiles, added UNDER the domes (min 255). The lattice is drawn in
-// full before any tile is tested, so the draw count is a pure function of map
-// size — a skipped tile never moves the stream.
-//
-// Skips match the dome pass (road/water/floor, near a building) plus rail, and
-// feathers to at most 1 m beside a road or a building floor: a 1 m step at the
-// verge is a roadside ditch a prone man can use, a 2 m step there is a wall.
-export function undulate(map: GameMap, amp: number, S: Rng, flatZone: FlatZone, nearBuilding: (x: number, y: number) => boolean): void {
-  const { w, h } = map;
-  const n48x = Math.ceil(w / 48) + 2;
-  const n48y = Math.ceil(h / 48) + 2;
-  const n19x = Math.ceil(w / 19) + 2;
-  const n19y = Math.ceil(h / 19) + 2;
-  const L48 = new Float64Array(n48x * n48y);
-  for (let i = 0; i < L48.length; i++) L48[i] = S.next();
-  const L19 = new Float64Array(n19x * n19y);
-  for (let i = 0; i < L19.length; i++) L19[i] = S.next();
-
-  // Feather mask: 1 where an 8-neighbour is road or floor.
-  const verge = new Uint8Array(w * h);
-  for (let y = 0; y < h; y++)
-    for (let x = 0; x < w; x++) {
-      const k = map.terrainKeyAt(x, y);
-      if (k !== 'road' && k !== 'floor') continue;
-      for (let dy = -1; dy <= 1; dy++)
-        for (let dx = -1; dx <= 1; dx++) {
-          const nx = x + dx;
-          const ny = y + dy;
-          if (nx >= 0 && ny >= 0 && nx < w && ny < h) verge[ny * w + nx] = 1;
-        }
-    }
-
-  for (let y = 0; y < h; y++)
-    for (let x = 0; x < w; x++) {
-      if (flatZone(x, y)) continue;
-      const k = map.terrainKeyAt(x, y);
-      if (k === 'road' || k === 'water' || k === 'floor' || k === 'rail') continue;
-      if (nearBuilding(x, y)) continue;
-      const i = y * w + x;
-      let u = Math.round(amp * (0.7 * lerp2(L48, n48x, x / 48, y / 48) + 0.3 * lerp2(L19, n19x, x / 19, y / 19)));
-      if (verge[i] === 1 && u > 1) u = 1;
-      if (u <= 0) continue;
-      const e = map.elev[i] + u;
-      map.elev[i] = e < 255 ? e : 255;
-    }
 }
 
 // R-D · Sunken lanes (H2: raised shoulders, the lane itself left at elev 0).
@@ -203,7 +148,7 @@ export function undulate(map: GameMap, amp: number, S: Rng, flatZone: FlatZone, 
 // The shoulder is raised with max(), never set: the lane may run across ground
 // the undulation pass already lifted, and lowering it would dig a hole into the
 // hillside rather than throw up a bank.
-export function sunkenLane(map: GameMap, run: readonly Pt[], Hs: number, flatZone: FlatZone): void {
+export function sunkenLane(map: GameMap, run: readonly Pt[], Hs: number, townWeight: Uint8Array): void {
   if (run.length < 2 || Hs < 1) return;
   const { w, h } = map;
   // One perpendicular for the whole run: mapgen's lanes are straight column or
@@ -217,11 +162,15 @@ export function sunkenLane(map: GameMap, run: readonly Pt[], Hs: number, flatZon
       for (let k = 1; k <= Hs; k++) {
         const x = t.x + px * s * k;
         const y = t.y + py * s * k;
-        if (x < 0 || y < 0 || x >= w || y >= h || flatZone(x, y)) continue;
+        if (x < 0 || y < 0 || x >= w || y >= h) continue;
+        const tw = townWeight[y * w + x];
+        if (tw === 255) continue;
+        const scale = (256 - tw) / 256;
+        if (scale <= 0) continue;
         const key = map.terrainKeyAt(x, y);
         if (key === 'road' || key === 'water' || key === 'floor' || key === 'rail') continue;
         const i = y * w + x;
-        const e = Hs + 1 - k;
+        const e = Math.round((Hs + 1 - k) * scale);
         if (map.elev[i] < e) map.elev[i] = e;
         if (key !== 'hedge') map.setTerrain(x, y, 'bank');
       }
@@ -240,7 +189,7 @@ export function sunkenLane(map: GameMap, run: readonly Pt[], Hs: number, flatZon
 // A dogleg's corner tile fails the rule on both axes, so a bent track comes out
 // as its two straight legs. That matters: sunkenLane takes ONE perpendicular
 // per run and would fray a shoulder across a kink.
-export function laneRuns(map: GameMap, flatZone: FlatZone, minLen = 8): Pt[][] {
+export function laneRuns(map: GameMap, townWeight: Uint8Array, minLen = 8): Pt[][] {
   const { w, h } = map;
   const road = (x: number, y: number): boolean =>
     x >= 0 && y >= 0 && x < w && y < h && map.terrainKeyAt(x, y) === 'road';
@@ -250,7 +199,7 @@ export function laneRuns(map: GameMap, flatZone: FlatZone, minLen = 8): Pt[][] {
       let run: Pt[] = [];
       for (let b = 0; b <= m; b++) {
         const p = b < m ? at(a, b) : null;
-        if (p && road(p.x, p.y) && thin(p) && !flatZone(p.x, p.y)) {
+        if (p && road(p.x, p.y) && thin(p) && townWeight[p.y * map.w + p.x] < 255) {
           run.push(p);
           continue;
         }
@@ -306,7 +255,7 @@ export function vehicleReaches(map: GameMap, from: Pt, to: Pt): boolean {
 export function embankment(
   map: GameMap,
   S: Rng,
-  flatZone: FlatZone,
+  townWeight: Uint8Array,
   ctx: ReliefContext,
   journal: ReliefJournal,
 ): { rail: RailLine | null; reverted: boolean } {
@@ -317,13 +266,13 @@ export function embankment(
   if (w < 2 * pad + 26 || h < 8) return { rail: null, reverted: false };
 
   // A column is unusable if it holds water (no rail bridges), a building floor,
-  // or any flatZone tile. Dilated by 1 to match "building rects inflated by 1".
+  // or any townWeight===255 tile. Dilated by 1 to match "building rects inflated by 1".
   const raw = new Uint8Array(w);
   for (let y = 0; y < h; y++)
     for (let x = 0; x < w; x++) {
       if (raw[x]) continue;
       const k = map.terrainKeyAt(x, y);
-      if (k === 'water' || k === 'floor' || flatZone(x, y)) raw[x] = 1;
+      if (k === 'water' || k === 'floor' || townWeight[y * w + x] === 255) raw[x] = 1;
     }
   const blocked = new Uint8Array(w);
   for (let x = 0; x < w; x++)
@@ -355,10 +304,23 @@ export function embankment(
     centreline[y] = cx;
     const left = cx - half;
     const right = left + Wt - 1;
-    for (let x = left; x <= right; x++) carve(map, journal, x, y, H, 'rail');
+    for (let x = left; x <= right; x++) {
+      const tw = townWeight[y * w + x];
+      const scale = (256 - tw) / 256;
+      carve(map, journal, x, y, H, 'rail', scale);
+    }
     for (let k = 1; k < H; k++) {
-      carve(map, journal, left - k, y, H - k, 'bank');
-      carve(map, journal, right + k, y, H - k, 'bank');
+      const eh = H - k;
+      let bx = left - k;
+      if (bx >= 0) {
+        const tw = townWeight[y * w + bx];
+        carve(map, journal, bx, y, eh, 'bank', (256 - tw) / 256);
+      }
+      bx = right + k;
+      if (bx < w) {
+        const tw = townWeight[y * w + bx];
+        carve(map, journal, bx, y, eh, 'bank', (256 - tw) / 256);
+      }
     }
     // A railway is straighter than the arterial (which wanders at p=0.18 per
     // column): p=0.08 per row, and clamped to ±2 of the seed column so the
@@ -381,34 +343,36 @@ export function embankment(
 // terrain and becomes a level crossing — but takes the terrace elevation
 // anyway, which is the one place relief deliberately departs from the dome
 // pass's unconditional road skip (design §2.2).
-function carve(map: GameMap, journal: ReliefJournal, x: number, y: number, elev: number, key: 'rail' | 'bank'): void {
+function carve(map: GameMap, journal: ReliefJournal, x: number, y: number, elev: number, key: 'rail' | 'bank', scale: number): void {
+  if (scale <= 0) return;
+  const e = Math.round(elev * scale);
+  if (e === 0) return;
   if (!map.inBounds(x, y)) return;
   const i = y * map.w + x;
-  if (map.terrainKeyAt(x, y) === 'road') journal.write(i, null, elev, true);
-  else journal.write(i, key, elev);
+  if (map.terrainKeyAt(x, y) === 'road') journal.write(i, null, e, true);
+  else journal.write(i, key, e);
 }
 
 // The whole stage, in the order the geometry requires:
-//   undulation (additive swell) → hedge banks (max 1 m) → sunken lanes (max
-//   shoulders) → embankment (ABSOLUTE terrace, journaled, revertible).
+//   hedge banks (max 1 m) → sunken lanes (max shoulders) → embankment
+//   (ABSOLUTE terrace, journaled, revertible).
 // The embankment writes absolute elevations, so it must run last or the terrace
 // invariant (every bank tile exactly 1 m below its inward neighbour) would be
 // broken by a later additive pass.
-export function applyRelief(map: GameMap, profile: ReliefProfile, S: (tag: number) => Rng, flatZone: FlatZone, ctx: ReliefContext): ReliefResult {
+export function applyRelief(map: GameMap, profile: ReliefProfile, S: (tag: number) => Rng, townWeight: Uint8Array, ctx: ReliefContext): ReliefResult {
   const journal = new ReliefJournal(map);
-  if (profile.undulation > 0) undulate(map, profile.undulation, S(20), flatZone, ctx.nearBuilding);
-  if (profile.hedgeBanks) hedgeBanks(map, flatZone);
+  if (profile.hedgeBanks) hedgeBanks(map, townWeight);
   if (profile.sunken > 0 && ctx.lanes && ctx.lanes.length > 0) {
     const s22 = S(22);
     const pool = ctx.lanes.slice();
     for (let n = 0; n < profile.sunken && pool.length > 0; n++) {
       const run = pool.splice(s22.int(pool.length), 1)[0];
-      sunkenLane(map, run, 1 + s22.int(2), flatZone);
+      sunkenLane(map, run, 1 + s22.int(2), townWeight);
     }
   }
   let rail: RailLine | null = null;
   let reverted = false;
-  if (profile.rail) ({ rail, reverted } = embankment(map, S(21), flatZone, ctx, journal));
+  if (profile.rail) ({ rail, reverted } = embankment(map, S(21), townWeight, ctx, journal));
   return { rail, reverted, writes: journal.length };
 }
 
@@ -441,7 +405,7 @@ export interface Halt {
 // is tested, the qualifying starts are collected, and ONE draw picks among
 // them. An empty list returns null without touching the stream — S.int(0) still
 // burns a draw (rng.ts).
-export function planHalt(map: GameMap, rail: RailLine, townX: number, S: Rng, flatZone: FlatZone): Halt | null {
+export function planHalt(map: GameMap, rail: RailLine, townX: number, S: Rng, townWeight: Uint8Array): Halt | null {
   const { w, h } = map;
   const { H, Wt, centreline } = rail;
   const half = (Wt - 1) >> 1;
@@ -453,7 +417,7 @@ export function planHalt(map: GameMap, rail: RailLine, townX: number, S: Rng, fl
   };
   const clear = (x: number, y: number): boolean => {
     if (x < 1 || y < 1 || x >= w - 1 || y >= h - 1) return false;
-    if (flatZone(x, y) || map.buildingId[y * w + x] >= 0) return false;
+    if (townWeight[y * w + x] === 255 || map.buildingId[y * w + x] >= 0) return false;
     const k = map.terrainKeyAt(x, y);
     // road excludes the level crossing (a platform across the arterial is a
     // level crossing with a building on it); water/floor exclude anything the

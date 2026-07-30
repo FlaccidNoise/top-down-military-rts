@@ -386,7 +386,7 @@ function village(seed: number, w = W, h = H): MapPlan {
 
 function roadStamp(seed: number): { plan: BourgPlan; stamp: BourgStamp } {
   const base = mulberry32((seed ^ 0x51ab3fc7) >>> 0).int(0x7fffffff);
-  const plan = planBourg(base, W, H, ROAD);
+  const plan = planBourg(base, W, H, ROAD, new Uint8Array(W * H));
   const map = new GameMap(W, H);
   return { plan, stamp: stampBourg(map, plan) };
 }
@@ -558,7 +558,7 @@ function hamlet(seed: number, w = W, h = H): MapPlan {
 
 function openStamp(seed: number): { plan: BourgPlan; stamp: BourgStamp } {
   const base = mulberry32((seed ^ 0x51ab3fc7) >>> 0).int(0x7fffffff);
-  const plan = planBourg(base, W, H, OPEN);
+  const plan = planBourg(base, W, H, OPEN, new Uint8Array(W * H));
   const map = new GameMap(W, H);
   return { plan, stamp: stampBourg(map, plan) };
 }
@@ -759,7 +759,7 @@ function wood(seed: number, w = W, h = H): MapPlan {
 
 function woodsStamp(seed: number): { plan: BourgPlan; stamp: BourgStamp } {
   const base = mulberry32((seed ^ 0x51ab3fc7) >>> 0).int(0x7fffffff);
-  const plan = planBourg(base, W, H, WOODS);
+  const plan = planBourg(base, W, H, WOODS, new Uint8Array(W * H));
   const map = new GameMap(W, H);
   return { plan, stamp: stampBourg(map, plan) };
 }
@@ -1067,7 +1067,7 @@ function ford(kind: 'river' | 'bridge', seed: number, w = W, h = H): MapPlan {
 
 function waterStamp(kind: 'river' | 'bridge', seed: number): { plan: BourgPlan; stamp: BourgStamp } {
   const base = mulberry32((seed ^ 0x51ab3fc7) >>> 0).int(0x7fffffff);
-  const plan = planBourg(base, W, H, kind === 'river' ? RIVER : BRIDGE);
+  const plan = planBourg(base, W, H, kind === 'river' ? RIVER : BRIDGE, new Uint8Array(W * H));
   const map = new GameMap(W, H);
   return { plan, stamp: stampBourg(map, plan) };
 }
@@ -1396,8 +1396,8 @@ describe('bourg determinism (§5.4)', () => {
   // is what makes both legitimate rather than silent — with the stage switched
   // off, T14's numbers come back bit for bit.
   it('pins the bourg fingerprints', () => {
-    expect(fingerprint(town(1))).toMatchInlineSnapshot(`"6ec43ea3"`);
-    expect(fingerprint(town(2))).toMatchInlineSnapshot(`"b70bf6dd"`);
+    expect(fingerprint(town(1))).toMatchInlineSnapshot(`"7006f5d1"`);
+    expect(fingerprint(town(2))).toMatchInlineSnapshot(`"13bc1cfa"`);
   });
 
   // The road kind's counterpart, frozen at the P2 cutover. At 320x240 the
@@ -1408,8 +1408,8 @@ describe('bourg determinism (§5.4)', () => {
   // laundered by `-u`. Moving these is legitimate only when the road layout
   // was meant to change; the four bourg values above must not move with them.
   it('pins the road fingerprints', () => {
-    expect(fingerprint(generateMap(1, W, H, 'road'))).toMatchInlineSnapshot(`"6175f1c8"`);
-    expect(fingerprint(generateMap(2, W, H, 'road'))).toMatchInlineSnapshot(`"4e3020f0"`);
+    expect(fingerprint(generateMap(1, W, H, 'road'))).toMatchInlineSnapshot(`"69e92ab0"`);
+    expect(fingerprint(generateMap(2, W, H, 'road'))).toMatchInlineSnapshot(`"7054cceb"`);
   });
 
   // THE SIGHTLINE PASS moved the eight values below and NOT the four above.
@@ -1428,8 +1428,8 @@ describe('bourg determinism (§5.4)', () => {
   // the quick-battle scenario uses — the two move together or one of them is
   // a bug.
   it('pins the open fingerprints', () => {
-    expect(fingerprint(generateMap(1, W, H, 'open'))).toMatchInlineSnapshot(`"adb9e452"`);
-    expect(fingerprint(generateMap(2, W, H, 'open'))).toMatchInlineSnapshot(`"e025686f"`);
+    expect(fingerprint(generateMap(1, W, H, 'open'))).toMatchInlineSnapshot(`"cec7aa05"`);
+    expect(fingerprint(generateMap(2, W, H, 'open'))).toMatchInlineSnapshot(`"afae0772"`);
   });
 
   // The woods kind's, frozen at the P4 cutover. RELIEF_BY_KIND.woods carries
@@ -1438,8 +1438,8 @@ describe('bourg determinism (§5.4)', () => {
   // relief-wiring.test.ts. They also cover the clearing sub-stage (tag 16),
   // which is the only new machinery in the kind.
   it('pins the woods fingerprints', () => {
-    expect(fingerprint(generateMap(1, W, H, 'woods'))).toMatchInlineSnapshot(`"cd6bb5c4"`);
-    expect(fingerprint(generateMap(2, W, H, 'woods'))).toMatchInlineSnapshot(`"2eef97a4"`);
+    expect(fingerprint(generateMap(1, W, H, 'woods'))).toMatchInlineSnapshot(`"75be3c72"`);
+    expect(fingerprint(generateMap(2, W, H, 'woods'))).toMatchInlineSnapshot(`"99bef679"`);
   });
 
   // The two water kinds', frozen at the P5 cutover. RELIEF_BY_KIND gives both
@@ -1450,13 +1450,13 @@ describe('bourg determinism (§5.4)', () => {
   // TAG.WATER is drawn inside the skeleton, so the band is in the pre-relief
   // literals too.
   it('pins the river fingerprints', () => {
-    expect(fingerprint(generateMap(1, W, H, 'river'))).toMatchInlineSnapshot(`"f14eb240"`);
-    expect(fingerprint(generateMap(2, W, H, 'river'))).toMatchInlineSnapshot(`"4b5c4071"`);
+    expect(fingerprint(generateMap(1, W, H, 'river'))).toMatchInlineSnapshot(`"509ad69a"`);
+    expect(fingerprint(generateMap(2, W, H, 'river'))).toMatchInlineSnapshot(`"3a2e17af"`);
   });
 
   it('pins the bridge fingerprints', () => {
-    expect(fingerprint(generateMap(1, W, H, 'bridge'))).toMatchInlineSnapshot(`"dde3e10d"`);
-    expect(fingerprint(generateMap(2, W, H, 'bridge'))).toMatchInlineSnapshot(`"20f5193"`);
+    expect(fingerprint(generateMap(1, W, H, 'bridge'))).toMatchInlineSnapshot(`"9c619e2d"`);
+    expect(fingerprint(generateMap(2, W, H, 'bridge'))).toMatchInlineSnapshot(`"8d9d440d"`);
   });
 
   it('pins the bourg with relief off — the stage is purely additive', () => {
@@ -1465,9 +1465,10 @@ describe('bourg determinism (§5.4)', () => {
     // pipeline moves. They are deliberately NOT inline snapshots — an `-u` run
     // must never be able to "fix" them. Held T14's values until the woods-stand
     // outline change, which repaints every kind's stands; recaptured by hand
-    // from `npx vite-node scripts/fp.mjs --kind bourg`, seeds 1 and 2.
-    expect(fingerprint(generateMap(1, W, H, 'bourg', { relief: 'none' }))).toBe('f367ec03');
-    expect(fingerprint(generateMap(2, W, H, 'bourg', { relief: 'none' }))).toBe('74a3b973');
+    // Recaptured at V4-P4: height field is now the base elevation with relief off
+    // (R-H2: generated then zeroed). `npx vite-node scripts/fp.mjs`, seeds 1 and 2.
+    expect(fingerprint(generateMap(1, W, H, 'bourg', { relief: 'none' }))).toBe('1e531df7');
+    expect(fingerprint(generateMap(2, W, H, 'bourg', { relief: 'none' }))).toBe('886b2b17');
   });
 
   // RETIRED at the mapgen-v3 P6 cutover: §5.1's one-draw guard test, which
@@ -1508,7 +1509,7 @@ describe('bourg determinism (§5.4)', () => {
     // D2 is only real if S(tag) restarts. If it returned a memoised generator,
     // a stage that took one extra draw would shift every LATER consumer of the
     // same tag — which is exactly the coupling the sub-streams exist to remove.
-    const sk = buildSkeleton(mulberry32(7).int(0x7fffffff), W, H, BOURG);
+    const sk = buildSkeleton(mulberry32(7).int(0x7fffffff), W, H, BOURG, new Uint8Array(W * H));
     for (const tag of Object.values(TAG)) {
       const a = sk.S(tag);
       const first = [a.next(), a.next(), a.next()];
@@ -1619,7 +1620,7 @@ describe('V4-P1 bocage coherence (§5)', () => {
     for (const kind of KINDS)
       for (const seed of PROBE_SEEDS) {
         const base = mulberry32((seed ^ 0x51ab3fc7) >>> 0).int(0x7fffffff);
-        const plan = planBourg(base, W, H, PROFILES[kind]);
+        const plan = planBourg(base, W, H, PROFILES[kind], new Uint8Array(W * H));
         const map = new GameMap(W, H);
         stampBourg(map, plan);
         const bad: string[] = [];
@@ -1650,7 +1651,7 @@ function countKey(map: GameMap, key: string): number {
 // and tests/bourg-objectives.test.ts already asserts plan.ts's own ordering.
 function pipeline(seed: number, perturb?: number): { map: GameMap; buildings: Building[]; stands: Vec[] } {
   const base = mulberry32((seed ^ 0x51ab3fc7) >>> 0).int(0x7fffffff);
-  const sk = buildSkeleton(base, W, H, BOURG);
+  const sk = buildSkeleton(base, W, H, BOURG, new Uint8Array(W * H));
   if (perturb !== undefined) {
     const alt = (base ^ 0x5bf03635) >>> 0;
     (sk as { S: (tag: number) => Rng }).S = (tag: number) => subStream(tag === perturb ? alt : base, tag);
@@ -1679,7 +1680,7 @@ describe('V4-P2 farm variety and overlap exclusions (§5)', () => {
     let farmCount = 0;
     for (const seed of FARM_SEEDS) {
       const base = mulberry32((seed ^ 0x51ab3fc7) >>> 0).int(0x7fffffff);
-      const plan = planBourg(base, W, H, PROFILES['open']);
+      const plan = planBourg(base, W, H, PROFILES['open'], new Uint8Array(W * H));
       const { rural, fp } = plan;
       // Re-derive rotations from farm building positions
       for (let fi = 0; fi < rural.farms.length; fi++) {
@@ -1715,7 +1716,7 @@ describe('V4-P2 farm variety and overlap exclusions (§5)', () => {
     for (const kind of KINDS)
       for (const seed of [1, 2, 3, 7, 13]) {
         const base = mulberry32((seed ^ 0x51ab3fc7) >>> 0).int(0x7fffffff);
-        const plan = planBourg(base, W, H, PROFILES[kind]);
+        const plan = planBourg(base, W, H, PROFILES[kind], new Uint8Array(W * H));
         const gmap = new GameMap(W, H);
         stampBourg(gmap, plan);
         // Check: no garden WALL_HIGH (top 2) edge has fp.occ on BOTH sides.

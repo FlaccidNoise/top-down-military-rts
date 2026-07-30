@@ -32,28 +32,19 @@ function fingerprint(plan: MapPlan): string {
 // relief.ts but no call to it. Plain literals, never inline snapshots: an
 // `-u` run must not be able to launder a regression into a new baseline.
 //
-// EVERY row was recaptured together at the woods-stand outline change
-// (rural.ts `stand`: the disc became a two-harmonic outline, and its rng draws
-// moved from per-tile to per-stand). Each kind paints stands, so each kind's
-// terrain and its tag-13 stream position moved, and nothing else in the change
-// touches the generator. Recapture is `npx vite-node scripts/fp.mjs`.
-//
-// FOUR rows moved again for the sightline pass (sim/sightlines.ts): it thins
-// canopy on the bearing out of an objective that has no lane, so a kind whose
-// objectives sit in woods moves and a kind whose objectives do not, does not.
-// `road` and `bourg` are byte-identical — the pass measured them and wrote
-// nothing — and THAT is the control that makes the other four legitimate.
-// Recaptured by hand from `npx vite-node scripts/fp.mjs`; seeds 4 and 6 of
-// `open` and seed 6 of `woods` held their old values on their own.
+// EVERY row was recaptured at V4-P4: the height field (TAG.HEIGHT) is generated
+// then zeroed per R-H2, so the base elevation changes; undulation is retired;
+// the feathered town weight replaces the binary mask. Recapture is `npx vite-node
+// scripts/fp.mjs`.
 const PRE_RELIEF: Record<MapKind, string[]> = {
-  open: ['64015bbe', '671ee536', 'b9a0ebb8', 'b676572f', 'ad6ab21d', '8726b5df', '23e8bafc', '3c2f25ed'],
-  road: ['a1b48ae0', '296ece7f', 'ba5dccf', '74d3b3a7', 'ff923a26', '3326fcf6', '3c1fdc23', '9d70d72e'],
-  woods: ['b7a0bd1', '23d62d0b', 'b17505af', 'ae800889', '195aa423', '7bb86099', '53367ffc', 'fc2e86cd'],
+  open: ['4057349a', '40a05461', '44391ab2', '412807af', 'b941f470', '34a0c087', 'f2709de4', 'b5d46239'],
+  road: ['8926d3a4', '728105a7', '22616f60', 'c14889ab', '8b9ff78a', 'e294de02', '7b43f7d6', '412e019e'],
+  woods: ['29d8f91', '7a51a1a0', 'cffc1267', 'e68329a9', '5595935b', 'fe8f13f1', '7741f0e0', '651b7e99'],
   // The water kinds' rows cover the water stage itself: TAG.WATER's band is
   // carved inside the skeleton, so `relief: 'none'` still has the whole river.
-  river: ['6da6a83e', '443479ea', 'd17a146f', '712b1221', 'c6c3fc69', '8d377a22', 'dcef3cf1', 'a4c46ad6'],
-  bridge: ['f16c92dc', 'cd7a36b5', '6972c2b5', '9bd644af', '203c4f57', 'd80d751e', '5152a07b', '38f413c3'],
-  bourg: ['f367ec03', '74a3b973', 'a2312fe6', '4051907e', 'a6428b60', 'e93645f1', '99ecf16f', 'd3b7edbe'],
+  river: ['6fa68cdc', '7467b035', '395ec709', 'ed36d851', 'ab6f9104', '77c8eaa1', '13024d05', '9cbf5be6'],
+  bridge: ['95ddfd62', 'f93d0131', 'b69546af', '121f71f2', 'a871c433', 'aa07058d', '4ac1ce87', '2e574e73'],
+  bourg: ['1e531df7', '886b2b17', 'dc95129a', '977a06bc', '97c3e50b', '48b0eca', 'fb05c642', 'fc416c3a'],
 };
 
 const cache = new Map<string, MapPlan>();

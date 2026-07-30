@@ -17,7 +17,7 @@ const base = (seed: number): number => (seed * 0x9e3779b1) >>> 1;
 const SEEDS = Array.from({ length: 20 }, (_, i) => i + 1);
 
 function town(seed: number, w = 320, h = 240, resv?: Uint8Array): Skeleton {
-  const sk = buildSkeleton(base(seed), w, h, BOURG);
+  const sk = buildSkeleton(base(seed), w, h, BOURG, new Uint8Array(w * h));
   const mask = resv ?? new Uint8Array(w * h);
   growMinorStreets(sk, { resv: mask, blocked: mask });
   return sk;
@@ -92,7 +92,7 @@ describe('bourg streets (T4)', () => {
   // the envelope and the place must come out bit-identical anyway.
   it('stage 5 cannot move stage 3 (sub-stream independence)', () => {
     for (const seed of SEEDS) {
-      const plain = buildSkeleton(base(seed), 320, 240, BOURG);
+      const plain = buildSkeleton(base(seed), 320, 240, BOURG, new Uint8Array(320 * 240));
       const grande = JSON.stringify(plain.grandeRue);
       const rank0 = JSON.stringify(plain.segs.filter((s) => s.rank === 0));
       const blocked = new Uint8Array(320 * 240);
@@ -174,7 +174,7 @@ describe('bourg streets (T4)', () => {
 
   it('produces all four archetypes at roughly the documented weights', () => {
     const count: Record<string, number> = { carrefour: 0, bourgRue: 0, enclos: 0, faubourg: 0 };
-    for (let seed = 1; seed <= 200; seed++) count[buildSkeleton(base(seed), 320, 240, BOURG).archetype]++;
+    for (let seed = 1; seed <= 200; seed++) count[buildSkeleton(base(seed), 320, 240, BOURG, new Uint8Array(320 * 240)).archetype]++;
     for (const k of Object.keys(count)) expect(count[k]).toBeGreaterThan(0);
     expect(count.carrefour + count.bourgRue).toBeGreaterThan(100); // 0.70 of 200
     expect(count.faubourg).toBeLessThan(40); // 0.10 of 200

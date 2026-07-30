@@ -23,7 +23,7 @@ interface Town {
 }
 
 function build(seed: number, w = W, h = H): Town {
-  const plan = planBourg(base(seed), w, h, BOURG);
+  const plan = planBourg(base(seed), w, h, BOURG, new Uint8Array(w * h));
   const map = new GameMap(w, h);
   const stamp = stampBourg(map, plan);
   map.maxStories = stamp.maxStories;

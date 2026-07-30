@@ -26,6 +26,7 @@ import { buildSkeleton, growMinorStreets, type Skeleton } from './streets';
 // stands), the elevation pass and validation. Everything else is here.
 
 export interface BourgPlan {
+  height: Uint8Array;
   sk: Skeleton;
   land: Landmarks;
   pc: Parcels;
@@ -45,8 +46,8 @@ export interface BourgStamp {
   crossing: Vec | null;
 }
 
-export function planBourg(base: number, w: number, h: number, profile: KindProfile): BourgPlan {
-  const sk = buildSkeleton(base, w, h, profile); // stages 1, 2, 3
+export function planBourg(base: number, w: number, h: number, profile: KindProfile, height: Uint8Array): BourgPlan {
+  const sk = buildSkeleton(base, w, h, profile, height); // stages 1, 2, 3
   const land = reserveLandmarks(sk); // stage 4 — mutates sk.road (the place widening)
   // Stage 4's reservations and the river are the same fact to every stage
   // after this line — ground the town may not take — and each of those stages
@@ -63,7 +64,7 @@ export function planBourg(base: number, w: number, h: number, profile: KindProfi
   const pc = buildParcels(sk, blocked); // stages 6, 7, 8
   const fp = buildFootprints(sk, land, pc); // stage 9
   const rural = addRuralFabric(sk, land, pc, fp); // stage 11a — mutates sk.road and fp
-  return { sk, land, pc, fp, rural, spawns: bourgSpawns(sk) };
+  return { sk, land, pc, fp, rural, spawns: bourgSpawns(sk), height };
 }
 
 function union(a: Uint8Array, b: Uint8Array): Uint8Array {

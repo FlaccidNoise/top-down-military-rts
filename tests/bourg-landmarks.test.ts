@@ -11,7 +11,7 @@ const base = (seed: number): number => (seed * 0x9e3779b1) >>> 1;
 const SEEDS = Array.from({ length: 20 }, (_, i) => i + 1);
 
 function reserve(seed: number, w = 320, h = 240): { sk: Skeleton; land: Landmarks } {
-  const sk = buildSkeleton(base(seed), w, h, BOURG);
+  const sk = buildSkeleton(base(seed), w, h, BOURG, new Uint8Array(w * h));
   const land = reserveLandmarks(sk);
   return { sk, land };
 }

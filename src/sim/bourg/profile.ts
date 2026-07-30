@@ -66,6 +66,8 @@ export interface KindProfile {
   // no river at all and takes no draw, which is what keeps every dry kind
   // byte-identical. `width` is the band's span in tiles before its ±3 walk.
   water: { width: number } | null;
+  /** S0 height-field amplitude: bourg/road=4, open/river/bridge=6, woods=7 */
+  height: { amp: number };
   /** S4 per-site land-use assignment: [cropPct, orchPct] out of 100; remainder is pasture. */
   fieldMix: [number, number];
 }
@@ -96,6 +98,7 @@ export const BOURG: KindProfile = {
   standRadius: [6, 5],
   clearings: [0, 0],
   water: null,
+  height: { amp: 4 },
   fieldMix: [35, 10],
 };
 
@@ -140,6 +143,7 @@ export const ROAD: KindProfile = {
   standRadius: [6, 5],
   clearings: [0, 0],
   water: null,
+  height: { amp: 4 },
   fieldMix: [40, 10],
 };
 
@@ -197,6 +201,7 @@ export const OPEN: KindProfile = {
   standRadius: [6, 5],
   clearings: [0, 0],
   water: null,
+  height: { amp: 6 },
   fieldMix: [45, 10],
 };
 
@@ -256,6 +261,7 @@ export const WOODS: KindProfile = {
   standRadius: [40, 18],
   clearings: [2, 3],
   water: null,
+  height: { amp: 7 },
   fieldMix: [15, 5],
 };
 
@@ -294,6 +300,7 @@ export const RIVER: KindProfile = {
   standRadius: [6, 5],
   clearings: [0, 0],
   water: { width: 5 },
+  height: { amp: 6 },
   fieldMix: [45, 10],
 };
 
@@ -342,6 +349,7 @@ export const BRIDGE: KindProfile = {
   standRadius: [6, 5],
   clearings: [0, 0],
   water: { width: 3 },
+  height: { amp: 6 },
   fieldMix: [45, 10],
 };
 

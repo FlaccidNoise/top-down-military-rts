@@ -2,11 +2,12 @@ import { buildObjectives } from './bourg/objectives';
 import { planBourg, stampBourg, type BourgPlan } from './bourg/plan';
 import { PROFILES, type KindProfile } from './bourg/profile';
 import { zoneOf } from './bourg/rural';
-import { stampStructure } from './bourg/stamp';
+import { partsOf, stampStructure } from './bourg/stamp';
+import { generateHeightField, townWeightField } from './bourg/height';
 import { subStream, TAG } from './bourg/streets';
 import { furnishInteriors } from './interiors/furnish';
 import { EDGE, GameMap } from './map';
-import { applyRelief, laneRuns, NO_RELIEF, planHalt, stampHalt, type FlatZone, type ReliefProfile } from './relief';
+import { applyRelief, laneRuns, NO_RELIEF, planHalt, stampHalt, type ReliefProfile } from './relief';
 import { mulberry32, type Rng } from './rng';
 import { openSightlines } from './sightlines';
 
@@ -140,19 +141,12 @@ export type MapKind = 'open' | 'woods' | 'river' | 'bridge' | 'road' | 'bourg';
 // relief writes — which is what keeps the two inline fingerprints in
 // tests/mapgen.test.ts byte-identical with no argument.
 export const RELIEF_BY_KIND: Record<MapKind, ReliefProfile> = {
-  open: { undulation: 2, hedgeBanks: true, rail: true, sunken: 0 },
-  road: { undulation: 1, hedgeBanks: true, rail: false, sunken: 0 },
-  woods: { undulation: 2, hedgeBanks: true, rail: false, sunken: 2 },
-  river: { undulation: 1, hedgeBanks: true, rail: false, sunken: 0 },
-  bridge: { undulation: 1, hedgeBanks: true, rail: false, sunken: 0 },
-  // DEVIATION from §1.4, which asks for sunken: 1 here. The bourg's farm tracks
-  // are recoverable off the finished map by relief's laneRuns() exactly as
-  // mapgen's are, so the wiring is identical — but a bourg's tracks run right up
-  // to the outlying compounds' yards, and a bank thrown against a barn wall is
-  // the seam the flat zone exists to prevent. Left at 0 until the bourg's own
-  // lane inventory (rural.ts growFarmLanes) is exposed with its compound
-  // approaches trimmed. Everything else in the profile is as specified.
-  bourg: { undulation: 2, hedgeBanks: true, rail: true, sunken: 0 },
+  open:   { hedgeBanks: true, rail: true,  sunken: 0 },
+  road:   { hedgeBanks: true, rail: false, sunken: 0 },
+  woods:  { hedgeBanks: true, rail: false, sunken: 2 },
+  river:  { hedgeBanks: true, rail: false, sunken: 0 },
+  bridge: { hedgeBanks: true, rail: false, sunken: 0 },
+  bourg:  { hedgeBanks: true, rail: true,  sunken: 0 },
 };
 
 // H7's size gate. 320x240 is the design scale; 240x180 is the smallest map that
@@ -178,7 +172,7 @@ export interface GenerateOpts {
   interiors?: boolean;
 }
 
-const reliefActive = (p: ReliefProfile): boolean => p.undulation > 0 || p.hedgeBanks || p.rail || p.sunken > 0;
+const reliefActive = (p: ReliefProfile): boolean => p.hedgeBanks || p.rail || p.sunken > 0;
 
 function reliefFor(kind: MapKind, w: number, h: number, opts?: GenerateOpts): ReliefProfile {
   if (opts?.relief === 'none') return NO_RELIEF;
@@ -250,90 +244,90 @@ function tryGenerateV3(
   interiors: boolean,
 ): MapPlan | null {
   const bourgBase = rng.int(0x7fffffff);
-  const plan = planBourg(bourgBase, w, h, profile); // stages 1-11a, pure — no GameMap yet
-  // The legacy pipeline's own floor (`if (buildings.length < 4) return null`),
-  // carried onto the profiles: a hamlet that came out as three sheds is not a
-  // hamlet, and scenario.ts destructures `[b0, , b2]` out of this list. Placed
-  // here rather than in validate() because it is a per-KIND expectation and
-  // validate is the shared gate; rejecting before the stamp also makes the
-  // reroll free. profile.minBuildings 0 disables it, which is what keeps every
-  // kind frozen before its own cutover.
+
+  // ── S0 · Height field ──────────────────────────────────────────────────
+  const heightRng = subStream(bourgBase, TAG.HEIGHT);
+  const heightSeed = heightRng.int(0x7fffffff);
+  const rawHeight = generateHeightField(heightSeed, w, h, profile.height.amp);
+  // R-H2: with relief off, zero the field (draws still happen, stream stable)
+  const height = relief === NO_RELIEF ? new Uint8Array(w * h) : rawHeight;
+
+  const plan = planBourg(bourgBase, w, h, profile, height);
   if (plan.fp.buildings.length < profile.minBuildings) return null;
+
+  // ── Feathered town weight (R-H3) ───────────────────────────────────────
+  // Built from plan data (zone + compounds + occ) so it can scale the height
+  // field BEFORE stamp. The wall check from the old bourgFlatMask is dropped —
+  // with feathered scaling (not binary skip) a wall on the boundary gets
+  // partial scaling and the square cliff is gone by construction.
+  const townW = buildTownWeight(plan, w, h);
+
+  // ── Scale height by town weight ─────────────────────────────────────────
+  // Inside the town core (townW[i]=255), height → 0 (R-H3: core stays flat).
+  // Outside (townW[i]=0), height unchanged. The ~8-tile feathered band blends.
+  if (relief !== NO_RELIEF) {
+    for (let i = 0; i < w * h; i++) {
+      height[i] = Math.round(height[i] * (256 - townW[i]) / 256);
+    }
+  }
+
   const map = new GameMap(w, h);
-  const st = stampBourg(map, plan); // terrain → roads → buildings → enclosures
-  // stampBourg RETURNS the story count rather than writing it. map.ts:156 gates
-  // the entire slab-occlusion path on maxStories, so leaving it at 0 silently
-  // disables occlusion for a map whose set-piece is a 4-storey tower.
+
+  // ── Write height field into the GameMap ─────────────────────────────────
+  for (let i = 0; i < w * h; i++) {
+    if (height[i] > map.elev[i]) map.elev[i] = height[i];
+  }
+
+  const st = stampBourg(map, plan);
   map.maxStories = st.maxStories;
   const { objectives, objectiveKinds } = buildObjectives(plan.sk, plan.land, plan.fp, st.woodsStands);
-  // The flat mask is hoisted out of elevateBourg so the dome pass and the
-  // relief stage share ONE definition of where the town is (§1.3's rule, read
-  // onto this pipeline: T11's `expand(R_env, 4)` is not what the bourg
-  // actually built — see bourgFlatMask). Two consumers, one region.
-  const flat = bourgFlatMask(map, plan);
-  elevateBourg(map, bourgBase, flat); // stage 13 — last, always
+
+  // ── R-H4 · Road grade relaxation ────────────────────────────────────────
+  relaxRoadGrades(map);
+
+  // ── R-H5 · Per-building local flatten ───────────────────────────────────
   let buildings = plan.fp.buildings;
+  flattenBuildings(map, buildings);
 
   if (reliefActive(relief)) {
-    const reliefBase = rng.int(0x7fffffff); // ONE draw on the shared stream (§1.5)
+    const reliefBase = rng.int(0x7fffffff);
     const S = reliefStreams(reliefBase);
-    const flatZone: FlatZone = (x, y) => flat[y * w + x] === 1;
-    const res = applyRelief(map, relief, S, flatZone, {
-      // The place is the bourg's junction; the railway keeps its 40 tiles of
-      // clearance from it exactly as it does from a legacy village crossroads.
-      // nearBuilding is already folded into `flat` (buildings dilated by 1),
-      // so a second per-tile rect scan would be dead weight.
+    const res = applyRelief(map, relief, S, townW, {
       crossX: Math.round(plan.sk.place.x),
-      nearBuilding: () => false,
-      lanes: relief.sunken > 0 ? laneRuns(map, flatZone) : undefined,
+      lanes: relief.sunken > 0 ? laneRuns(map, townW) : undefined,
       spawns: plan.spawns,
     });
-    // V5 · the halt. Strictly optional: no embankment or no candidate band
-    // leaves the map exactly as the relief stage left it.
     if (res.rail) {
-      const halt = planHalt(map, res.rail, plan.sk.env.x + plan.sk.env.w / 2, S(23), flatZone);
+      const halt = planHalt(map, res.rail, plan.sk.env.x + plan.sk.env.w / 2, S(23), townW);
       if (halt) {
         stampHalt(map, halt);
         const b: Building = {
           ...halt.rect,
           role: 'halt',
-          frontage: halt.side < 0 ? 'e' : 'w', // the booking hall faces its own platform
+          frontage: halt.side < 0 ? 'e' : 'w',
         };
-        // Appended AFTER every bourg building, so the bourg's own emission
-        // order — and therefore every buildingId it stamped — is untouched.
         map.maxStories = Math.max(map.maxStories, stampStructure(map, b, buildings.length));
         buildings = [...buildings, b];
         objectives.push(halt.centre);
         objectiveKinds.push('halt');
       }
     }
+    // Relief (especially the embankment's level-crossing writes to road tiles)
+    // can break road grades. Re-run road grade relaxation after relief.
+    relaxRoadGrades(map);
   }
 
-  // §2.5 · the crossing, appended LAST — after the relief block, so V5's halt
-  // can never end up behind it. Tooling reads the TAG and not an index
-  // (stage.mjs deriveTargets), but "the last objective is the crossing" is a
-  // contract of its own: the garrison splits by objective (bridge.ts), so the
-  // bridge gets its own sector for free by being on the list at all.
-  //
-  // A water profile that recorded no deck is a layout with no crossing on it:
-  // reroll, exactly as the legacy pipeline did rather than emit an objective
-  // nothing can stand on.
+  // §2.5 · the crossing (unchanged)
   if (plan.sk.profile.water) {
     if (!st.crossing) return null;
     objectives.push(st.crossing);
     objectiveKinds.push('bridge');
   }
 
-  // §  · sightlines. After EVERYTHING that writes terrain or elevation, and
-  // after the last objective is on the list, because it measures a standing
-  // eye-line and a standing eye-line is blocked by ground as much as by walls.
-  // sightlines.ts says what it does and does not touch; on a bourg or a road
-  // map it measures, finds every objective already covered, and writes nothing.
+  // Sightlines (unchanged)
   openSightlines(map, objectives, subStream(bourgBase, TAG.SIGHTLINE));
 
-  // Interiors: LAST. After the relief block rather than inside it, because V5's
-  // halt is APPENDED to `buildings` in there — furnishing before it would leave
-  // the one building on the map that most wants a second door without one.
+  // Interiors (unchanged)
   furnishHere(interiors, rng, map, buildings, objectives[0]);
 
   return {
@@ -346,81 +340,157 @@ function tryGenerateV3(
   };
 }
 
-// Stage 13 · tag 14. Structurally the dome pass above, with one added skip mask.
-//
-// §2.2 specifies `flatZone = expand(R_env, 4)` and that number is wrong for
-// this pipeline. The parcel zone is R_env + 6, so plots, gardens and their
-// walls reach two tiles OUTSIDE a +4 box, and T9's outlying farms have walled
-// yards in open country far beyond it. A 5 m dome running under a 2 m garden
-// wall next to a floor tile at elev 0 is exactly the seam and the LOS anomaly
-// the flat zone exists to prevent.
-//
-// The mask is therefore: the parcel zone itself (rural.ts's own zoneOf, so the
-// flat region and the region rural fabric refuses to enter cannot drift apart);
-// every compound rect dilated by 2, which is what catches the outlying farms;
-// every building mass dilated by 1, which is mapgen's `nearBuilding` rule read
-// off the authoritative footprint mask instead of an O(n) rect scan per tile;
-// and, as a backstop for anything the first three miss, every tile carrying a
-// free-standing wall edge. Region-shaped rather than per-wall on purpose:
-// skipping only the wall tiles would leave each garden's interior domed and its
-// own boundary flat, i.e. a cliff inside every garden.
-function elevateBourg(map: GameMap, base: number, flat: Uint8Array): void {
-  const { w, h } = map;
-  const r14 = subStream(base, TAG.ELEV);
-  for (let i = 0, n = 2 + r14.int(3); i < n; i++) {
-    const cx = r14.int(w);
-    const cy = r14.int(h);
-    const r = 8 + r14.int(12);
-    const peak = 3 + r14.int(6);
-    const r2 = r * r;
-    for (let y = Math.max(0, cy - r); y <= Math.min(h - 1, cy + r); y++)
-      for (let x = Math.max(0, cx - r); x <= Math.min(w - 1, cx + r); x++) {
-        const d2 = (x - cx) * (x - cx) + (y - cy) * (y - cy);
-        if (d2 > r2 || flat[y * w + x]) continue;
-        const k = map.terrainKeyAt(x, y);
-        if (k === 'road' || k === 'water' || k === 'floor') continue;
-        const e = Math.round(peak * 0.5 * (1 + Math.cos(Math.PI * Math.min(1, Math.sqrt(d2) / r))));
-        if (e > map.elev[y * w + x]) map.elev[y * w + x] = e;
-      }
-  }
-}
-
-function bourgFlatMask(map: GameMap, plan: BourgPlan): Uint8Array {
-  const { w, h } = map;
-  const flat = new Uint8Array(w * h);
+/** Build feathered town-weight field (R-H3). Same region as old bourgFlatMask. */
+function buildTownWeight(plan: BourgPlan, w: number, h: number): Uint8Array {
+  const binary = new Uint8Array(w * h);
   const inZone = zoneOf(plan.sk);
-  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) if (inZone(x, y)) flat[y * w + x] = 1;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) if (inZone(x, y)) binary[y * w + x] = 1;
   for (const c of plan.fp.compounds)
     for (let y = Math.max(0, c.rect.y - 2), y1 = Math.min(h, c.rect.y + c.rect.h + 2); y < y1; y++)
-      for (let x = Math.max(0, c.rect.x - 2), x1 = Math.min(w, c.rect.x + c.rect.w + 2); x < x1; x++) flat[y * w + x] = 1;
+      for (let x = Math.max(0, c.rect.x - 2), x1 = Math.min(w, c.rect.x + c.rect.w + 2); x < x1; x++) binary[y * w + x] = 1;
   const occ = plan.fp.occ;
   for (let y = 0; y < h; y++)
     for (let x = 0; x < w; x++) {
       if (!occ[y * w + x]) continue;
       for (let dy = -1; dy <= 1; dy++)
         for (let dx = -1; dx <= 1; dx++) {
-          const nx = x + dx;
-          const ny = y + dy;
-          if (nx >= 0 && ny >= 0 && nx < w && ny < h) flat[ny * w + nx] = 1;
+          const nx = x + dx; const ny = y + dy;
+          if (nx >= 0 && ny >= 0 && nx < w && ny < h) binary[ny * w + nx] = 1;
         }
     }
-  // A free-standing wall is WALL with a top of 1 or 2 (§3.2); a building wall
-  // is stories*FLOOR_H, i.e. >= 3. Four edge reads per tile, once.
-  const freeTop = (t: number) => t === 1 || t === 2;
+  return townWeightField(binary, w, h);
+}
+
+/**
+ * R-H4 · Road grade relaxation.
+ * After roads are stamped: iterative scan-order passes clamp each road tile
+ * to within ±1 of EACH 4-neighbour road tile. Repeated until stable (max 6 passes).
+ * Verges clamp delta vs nearest road to ±1.
+ */
+function relaxRoadGrades(map: GameMap): void {
+  const { w, h } = map;
+  const e = map.elev;
+  // Converge until stable: a road tile clamps to within ±1 of each 4-neighbour
+  // road tile. The maximum propagation distance is the road network diameter,
+  // bounded by w + h. Alternating scan directions so constraints propagate
+  // both ways each pair of passes.
+  const maxPasses = w + h;
+  for (let pass = 0; pass < maxPasses; pass++) {
+    const fwd = pass % 2 === 0;
+    let changed = false;
+    for (let yi = 0; yi < h; yi++) {
+      const y = fwd ? yi : h - 1 - yi;
+      for (let xi = 0; xi < w; xi++) {
+        const x = fwd ? xi : w - 1 - xi;
+        const i = y * w + x;
+        if (map.terrainKeyAt(x, y) !== 'road') continue;
+        const nbrs: number[] = [];
+        if (x > 0 && map.terrainKeyAt(x - 1, y) === 'road') nbrs.push(e[i - 1]);
+        if (x + 1 < w && map.terrainKeyAt(x + 1, y) === 'road') nbrs.push(e[i + 1]);
+        if (y > 0 && map.terrainKeyAt(x, y - 1) === 'road') nbrs.push(e[i - w]);
+        if (y + 1 < h && map.terrainKeyAt(x, y + 1) === 'road') nbrs.push(e[i + w]);
+        for (const nv of nbrs) {
+          if (e[i] > nv + 1) { e[i] = nv + 1; changed = true; }
+          if (e[i] < nv - 1) { e[i] = nv - 1; changed = true; }
+        }
+      }
+    }
+    if (!changed) break;
+  }
+
+  // Verge rule: non-road tile 8-adjacent to road clamps delta to ±1.
+  const orig = new Uint8Array(e);
   for (let y = 0; y < h; y++)
     for (let x = 0; x < w; x++) {
       const i = y * w + x;
-      if (flat[i]) continue;
-      const vRow = y * (w + 1);
-      if (
-        (map.hEdge(x, y) === EDGE.WALL && freeTop(map.hEdgeTops[i])) ||
-        (map.hEdge(x, y + 1) === EDGE.WALL && freeTop(map.hEdgeTops[i + w])) ||
-        (map.vEdge(x, y) === EDGE.WALL && freeTop(map.vEdgeTops[vRow + x])) ||
-        (map.vEdge(x + 1, y) === EDGE.WALL && freeTop(map.vEdgeTops[vRow + x + 1]))
-      )
-        flat[i] = 1;
+      const k = map.terrainKeyAt(x, y);
+      if (k === 'road' || k === 'water' || k === 'floor') continue;
+      let minRoad = 255;
+      for (let dy = -1; dy <= 1; dy++)
+        for (let dx = -1; dx <= 1; dx++) {
+          const nx = x + dx; const ny = y + dy;
+          if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+          if (map.terrainKeyAt(nx, ny) === 'road') minRoad = Math.min(minRoad, orig[ny * w + nx]);
+        }
+      if (minRoad < 255) {
+        if (e[i] > minRoad + 1) e[i] = minRoad + 1;
+        if (e[i] < minRoad - 1) e[i] = minRoad - 1;
+      }
     }
-  return flat;
+}
+
+/**
+ * R-H5 · Building/compound flatten.
+ * Per structure: find min height over the footprint + 1-tile border,
+ * write that to footprint + border, blend linearly to field height over 2 tiles.
+ */
+function flattenBuildings(map: GameMap, buildings: readonly Building[]): void {
+  const { w, h } = map;
+  const e = map.elev;
+  const done = new Uint8Array(w * h);
+
+  for (const b of buildings) {
+    const parts = partsOf(b);
+    // Compute bbox with 2-tile border for the blend zone
+    let bx0 = Infinity, by0 = Infinity, bx1 = -Infinity, by1 = -Infinity;
+    for (const p of parts) {
+      if (p.x < bx0) bx0 = p.x;
+      if (p.y < by0) by0 = p.y;
+      if (p.x + p.w > bx1) bx1 = p.x + p.w;
+      if (p.y + p.h > by1) by1 = p.y + p.h;
+    }
+    const fx0 = Math.max(0, bx0 - 1);
+    const fy0 = Math.max(0, by0 - 1);
+    const fx1 = Math.min(w, bx1 + 1);
+    const fy1 = Math.min(h, by1 + 1);
+
+    // Find min elevation over footprint + 1-border
+    let e0 = 255;
+    for (let y = fy0; y < fy1; y++)
+      for (let x = fx0; x < fx1; x++) {
+        const v = e[y * w + x];
+        if (v < e0) e0 = v;
+      }
+
+    // Write flat elevation to footprint
+    for (const p of parts)
+      for (let y = p.y; y < p.y + p.h; y++)
+        for (let x = p.x; x < p.x + p.w; x++) {
+          e[y * w + x] = e0;
+          done[y * w + x] = 1;
+        }
+    // Write flat elevation to 1-tile border (skip infrastructure tiles)
+    const skipBorder = (x: number, y: number): boolean => {
+      const k = map.terrainKeyAt(x, y);
+      return k === 'road' || k === 'water' || k === 'floor' || k === 'rail' || k === 'hedge';
+    };
+    for (let y = fy0; y < fy1; y++)
+      for (let x = fx0; x < fx1; x++) {
+        const i = y * w + x;
+        if (!done[i] && !skipBorder(x, y)) { e[i] = e0; done[i] = 1; }
+      }
+
+    // Blend zone: next 2 tiles outside the 1-tile border, ramp from e0 to field.
+    // Skip infrastructure tiles (roads, water, etc.).
+    const bz0 = Math.max(0, fx0 - 2);
+    const bz1 = Math.min(w, fx1 + 2);
+    const bzY0 = Math.max(0, fy0 - 2);
+    const bzY1 = Math.min(h, fy1 + 2);
+    for (let y = bzY0; y < bzY1; y++)
+      for (let x = bz0; x < bz1; x++) {
+        const i = y * w + x;
+        if (done[i]) continue;
+        if (skipBorder(x, y)) continue;
+        const dx = x < fx0 ? fx0 - x : x >= fx1 ? x - fx1 + 1 : 0;
+        const dy = y < fy0 ? fy0 - y : y >= fy1 ? y - fy1 + 1 : 0;
+        const d = Math.max(dx, dy);
+        if (d <= 0 || d > 3) continue;
+        const t = (d - 1) / 2;
+        const fieldH = e[i];
+        e[i] = Math.round(e0 + (fieldH - e0) * t);
+        done[i] = 1;
+      }
+  }
 }
 
 // Ground-level reachability field: one 8-connected BFS from (sx,sy) whose step

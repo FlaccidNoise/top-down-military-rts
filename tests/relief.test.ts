@@ -7,7 +7,6 @@ import {
   NO_RELIEF,
   ReliefJournal,
   sunkenLane,
-  undulate,
   vehicleReaches,
   type ReliefContext,
   type ReliefProfile,
@@ -19,8 +18,17 @@ import { mulberry32, type Rng } from '../src/sim/rng';
 // map, so every element is tested standalone before any generator wiring
 // exists (V3). Nothing in this file touches generateMap.
 
-const never = () => false;
-const noBuildings = () => false;
+function zeroWt(w: number, h: number): Uint8Array {
+  return new Uint8Array(w * h);
+}
+
+function townMask(w: number, h: number, pred: (x: number, y: number) => boolean): Uint8Array {
+  const tw = new Uint8Array(w * h);
+  for (let y = 0, i = 0; y < h; y++)
+    for (let x = 0; x < w; x++, i++)
+      if (pred(x, y)) tw[i] = 255;
+  return tw;
+}
 
 function subStreams(base: number): (tag: number) => Rng {
   return (tag) => mulberry32((base ^ Math.imul(tag, 0x9e3779b1)) >>> 0);
@@ -73,7 +81,6 @@ function stagedMap(): GameMap {
 
 const stagedCtx: ReliefContext = {
   crossX: 160,
-  nearBuilding: (x, y) => x >= 149 && x < 161 && y >= 59 && y < 69,
   spawns: { west: { x: 3, y: 120 }, east: { x: 316, y: 120 } },
 };
 
@@ -81,7 +88,7 @@ describe('R-A hedge banks', () => {
   it('lifts every hedge tile to 1 m and banks exactly one flank', () => {
     const map = new GameMap(12, 12);
     for (let y = 2; y < 10; y++) map.setTerrain(6, y, 'hedge');
-    hedgeBanks(map, never);
+    hedgeBanks(map, zeroWt(map.w, map.h));
     for (let y = 2; y < 10; y++) {
       expect(map.elevAt(6, y), `hedge (6,${y})`).toBe(1);
       expect(map.elevAt(5, y), `west shoulder (5,${y})`).toBe(1);
@@ -92,7 +99,7 @@ describe('R-A hedge banks', () => {
   it('a W→E line banks its north flank (its west neighbour is the next hedge tile)', () => {
     const map = new GameMap(12, 12);
     for (let x = 2; x < 10; x++) map.setTerrain(x, 6, 'hedge');
-    hedgeBanks(map, never);
+    hedgeBanks(map, zeroWt(map.w, map.h));
     for (let x = 3; x < 10; x++) {
       expect(map.elevAt(x, 5), `north shoulder (${x},5)`).toBe(1);
       expect(map.elevAt(x, 7), `south flank (${x},7)`).toBe(0);
@@ -104,7 +111,7 @@ describe('R-A hedge banks', () => {
     map.setTerrain(6, 6, 'hedge');
     map.setTerrain(5, 6, 'road');
     map.setTerrain(6, 5, 'field');
-    hedgeBanks(map, never);
+    hedgeBanks(map, zeroWt(map.w, map.h));
     expect(map.elevAt(6, 6)).toBe(1);
     expect(map.elevAt(5, 6)).toBe(0); // road untouched
     expect(map.elevAt(6, 5)).toBe(1); // field takes the bank
@@ -115,7 +122,7 @@ describe('R-A hedge banks', () => {
     map.setTerrain(6, 6, 'hedge');
     map.elev[6 * 12 + 6] = 4;
     map.elev[6 * 12 + 5] = 3;
-    hedgeBanks(map, never);
+    hedgeBanks(map, zeroWt(map.w, map.h));
     expect(map.elevAt(6, 6)).toBe(4);
     expect(map.elevAt(5, 6)).toBe(3);
   });
@@ -123,7 +130,7 @@ describe('R-A hedge banks', () => {
   it('skips the flat zone entirely', () => {
     const map = new GameMap(12, 12);
     for (let y = 2; y < 10; y++) map.setTerrain(6, y, 'hedge');
-    hedgeBanks(map, (x, y) => y >= 5 && y < 8);
+    hedgeBanks(map, townMask(map.w, map.h, (x, y) => y >= 5 && y < 8));
     expect(map.elevAt(6, 4)).toBe(1);
     expect(map.elevAt(6, 6)).toBe(0);
     expect(map.elevAt(5, 6)).toBe(0);
@@ -132,81 +139,10 @@ describe('R-A hedge banks', () => {
   it('draws nothing (zero rng, one pass)', () => {
     const map = stagedMap();
     const before = snap(map);
-    hedgeBanks(map, never);
+    hedgeBanks(map, zeroWt(map.w, map.h));
     expect(snap(map)).not.toBe(before); // it did something...
     const again = new GameMap(320, 240);
     expect(again.elev.some((v) => v !== 0)).toBe(false); // ...without a stream to perturb
-  });
-});
-
-describe('R-B undulation', () => {
-  it('stays inside 0..amp and never touches road, water, floor or the flat zone', () => {
-    const map = stagedMap();
-    undulate(map, 2, mulberry32(11), (x) => x > 300, stagedCtx.nearBuilding);
-    for (let y = 0; y < 240; y++)
-      for (let x = 0; x < 320; x++) {
-        const k = map.terrainKeyAt(x, y);
-        const e = map.elevAt(x, y);
-        if (k === 'road' || k === 'water' || k === 'floor') expect(e, `${k} at ${x},${y}`).toBe(0);
-        else if (x > 300) expect(e, `flatZone at ${x},${y}`).toBe(0);
-        else if (stagedCtx.nearBuilding(x, y)) expect(e, `nearBuilding at ${x},${y}`).toBe(0);
-        else expect(e).toBeLessThanOrEqual(2);
-      }
-  });
-
-  it('feathers to at most 1 m against a road or a building wall', () => {
-    const map = stagedMap();
-    undulate(map, 2, mulberry32(11), never, stagedCtx.nearBuilding);
-    for (let x = 0; x < 320; x++) {
-      expect(map.elevAt(x, 118), `verge above the road at ${x}`).toBeLessThanOrEqual(1);
-      expect(map.elevAt(x, 122), `verge below the road at ${x}`).toBeLessThanOrEqual(1);
-    }
-    for (let y = 58; y < 70; y++) {
-      expect(map.elevAt(148, y)).toBeLessThanOrEqual(1);
-      expect(map.elevAt(161, y)).toBeLessThanOrEqual(1);
-    }
-  });
-
-  it('actually undulates — the field is not all zero and not all one value', () => {
-    const map = new GameMap(320, 240);
-    undulate(map, 2, mulberry32(11), never, noBuildings);
-    const seen = new Set<number>();
-    for (let i = 0; i < map.elev.length; i++) seen.add(map.elev[i]);
-    expect([...seen].sort()).toEqual([0, 1, 2]);
-  });
-
-  it('adds to the existing field instead of replacing it (runs under the domes)', () => {
-    const map = new GameMap(320, 240);
-    const flat = new GameMap(320, 240);
-    for (let i = 0; i < map.elev.length; i++) map.elev[i] = 5;
-    undulate(map, 2, mulberry32(11), never, noBuildings);
-    undulate(flat, 2, mulberry32(11), never, noBuildings);
-    for (let i = 0; i < map.elev.length; i++) expect(map.elev[i]).toBe(5 + flat.elev[i]);
-  });
-
-  it('draws a pure function of map size — a skipped tile never moves the stream', () => {
-    const expected = (w: number, h: number) =>
-      (Math.ceil(w / 48) + 2) * (Math.ceil(h / 48) + 2) + (Math.ceil(w / 19) + 2) * (Math.ceil(h / 19) + 2);
-    for (const [w, h] of [
-      [320, 240],
-      [240, 180],
-      [61, 41],
-    ]) {
-      const open = countingRng(mulberry32(3));
-      undulate(new GameMap(w, h), 2, open.rng, never, noBuildings);
-      const masked = countingRng(mulberry32(3));
-      undulate(stagedMap(), 2, masked.rng, (x) => x < 200, stagedCtx.nearBuilding);
-      expect(open.draws(), `${w}x${h}`).toBe(expected(w, h));
-      if (w === 320) expect(masked.draws()).toBe(expected(320, 240));
-    }
-  });
-
-  it('is deterministic for a given sub-stream', () => {
-    const a = new GameMap(200, 160);
-    const b = new GameMap(200, 160);
-    undulate(a, 2, mulberry32(77), never, noBuildings);
-    undulate(b, 2, mulberry32(77), never, noBuildings);
-    expect(snap(a)).toBe(snap(b));
   });
 });
 
@@ -218,7 +154,7 @@ describe('R-D sunken lanes', () => {
       map.setTerrain(15, y, 'road');
       run.push({ x: 15, y });
     }
-    sunkenLane(map, run, 2, never);
+    sunkenLane(map, run, 2, zeroWt(map.w, map.h));
     for (let y = 6; y < 24; y++) {
       expect(map.elevAt(15, y), 'the lane itself').toBe(0);
       expect(map.elevAt(14, y)).toBe(2);
@@ -234,7 +170,7 @@ describe('R-D sunken lanes', () => {
     const map = new GameMap(30, 30);
     const run = Array.from({ length: 30 }, (_, i) => ({ x: 15, y: i }));
     for (const t of run) map.setTerrain(t.x, t.y, 'road');
-    sunkenLane(map, run, 1, never);
+    sunkenLane(map, run, 1, zeroWt(map.w, map.h));
     expect(map.canStep(13, 15, 14, 15, 'vehicle')).toBe(false);
     expect(map.canStep(13, 15, 14, 15, 'foot')).toBe(true);
     // the point of the feature: armour can neither follow the lane nor cross it
@@ -249,7 +185,7 @@ describe('R-D sunken lanes', () => {
     map.setTerrain(14, 10, 'water');
     map.setTerrain(16, 11, 'floor');
     map.elev[12 * 30 + 14] = 6;
-    sunkenLane(map, run, 2, never);
+    sunkenLane(map, run, 2, zeroWt(map.w, map.h));
     expect(map.terrainKeyAt(14, 10)).toBe('water');
     expect(map.elevAt(14, 10)).toBe(0);
     expect(map.terrainKeyAt(16, 11)).toBe('floor');
@@ -260,7 +196,7 @@ describe('R-D sunken lanes', () => {
     const map = new GameMap(30, 30);
     const run = Array.from({ length: 20 }, (_, i) => ({ x: 5 + i, y: 15 }));
     for (const t of run) map.setTerrain(t.x, t.y, 'road');
-    sunkenLane(map, run, 1, never);
+    sunkenLane(map, run, 1, zeroWt(map.w, map.h));
     expect(map.elevAt(10, 14)).toBe(1);
     expect(map.elevAt(10, 16)).toBe(1);
     expect(map.elevAt(10, 15)).toBe(0);
@@ -270,7 +206,7 @@ describe('R-D sunken lanes', () => {
 describe('R-C embankment', () => {
   const carve = (seedTag: number, map = stagedMap(), ctx = stagedCtx) => {
     const journal = new ReliefJournal(map);
-    const out = embankment(map, mulberry32(seedTag), never, ctx, journal);
+    const out = embankment(map, mulberry32(seedTag), zeroWt(map.w, map.h), ctx, journal);
     return { map, journal, ...out };
   };
 
@@ -372,7 +308,7 @@ describe('R-C embankment', () => {
     const map = new GameMap(320, 240);
     for (let y = 0; y < 240; y++) for (let x = 0; x < 320; x++) map.setTerrain(x, y, 'water');
     const counted = countingRng(mulberry32(5));
-    const out = embankment(map, counted.rng, never, stagedCtx, new ReliefJournal(map));
+    const out = embankment(map, counted.rng, zeroWt(map.w, map.h), stagedCtx, new ReliefJournal(map));
     expect(out.rail).toBeNull();
     expect(out.reverted).toBe(false);
     expect(counted.draws()).toBe(2); // H and Wt only — never int(0) on an empty candidate list
@@ -381,7 +317,7 @@ describe('R-C embankment', () => {
 
   it('is skipped on a map too small to hold a footprint', () => {
     const small = new GameMap(60, 40);
-    const out = embankment(small, mulberry32(5), never, { crossX: 30, nearBuilding: noBuildings }, new ReliefJournal(small));
+    const out = embankment(small, mulberry32(5), zeroWt(small.w, small.h), { crossX: 30 }, new ReliefJournal(small));
     expect(out.rail).toBeNull();
     expect(snap(small)).toBe(snap(new GameMap(60, 40)));
   });
@@ -393,7 +329,7 @@ describe('R-C embankment', () => {
     for (let x = 0; x < 320; x++) for (let dy = -1; dy <= 1; dy++) map.setTerrain(x, 120 + dy, 'grass');
     const before = snap(map);
     const journal = new ReliefJournal(map);
-    const out = embankment(map, mulberry32(5), never, stagedCtx, journal);
+    const out = embankment(map, mulberry32(5), zeroWt(map.w, map.h), stagedCtx, journal);
     expect(out.rail).toBeNull();
     expect(out.reverted).toBe(true);
     expect(snap(map)).toBe(before);
@@ -446,7 +382,7 @@ describe('vehicleReaches', () => {
 });
 
 describe('applyRelief', () => {
-  const profile: ReliefProfile = { undulation: 2, hedgeBanks: true, rail: true, sunken: 2 };
+  const profile: ReliefProfile = { hedgeBanks: true, rail: true, sunken: 2 };
   const lanes = [
     Array.from({ length: 20 }, (_, i) => ({ x: 250, y: 150 + i })),
     Array.from({ length: 20 }, (_, i) => ({ x: 270, y: 150 + i })),
@@ -456,7 +392,7 @@ describe('applyRelief', () => {
   it('the null profile is inert', () => {
     const map = stagedMap();
     const before = snap(map);
-    const out = applyRelief(map, NO_RELIEF, subStreams(1234), never, stagedCtx);
+    const out = applyRelief(map, NO_RELIEF, subStreams(1234), zeroWt(map.w, map.h), stagedCtx);
     expect(out.rail).toBeNull();
     expect(snap(map)).toBe(before);
   });
@@ -464,8 +400,8 @@ describe('applyRelief', () => {
   it('is deterministic for a given base seed', () => {
     const a = stagedMap();
     const b = stagedMap();
-    applyRelief(a, profile, subStreams(1234), never, { ...stagedCtx, lanes });
-    applyRelief(b, profile, subStreams(1234), never, { ...stagedCtx, lanes });
+    applyRelief(a, profile, subStreams(1234), zeroWt(a.w, a.h), { ...stagedCtx, lanes });
+    applyRelief(b, profile, subStreams(1234), zeroWt(b.w, b.h), { ...stagedCtx, lanes });
     expect(snap(a)).toBe(snap(b));
   });
 
@@ -475,8 +411,8 @@ describe('applyRelief', () => {
     const base = 1234;
     const S21 = (seed: number) => (tag: number) =>
       tag === 21 ? mulberry32(seed) : mulberry32((base ^ Math.imul(tag, 0x9e3779b1)) >>> 0);
-    const ra = applyRelief(a, profile, S21(1), never, { ...stagedCtx, lanes });
-    const rb = applyRelief(b, profile, S21(2), never, { ...stagedCtx, lanes });
+    const ra = applyRelief(a, profile, S21(1), zeroWt(a.w, a.h), { ...stagedCtx, lanes });
+    const rb = applyRelief(b, profile, S21(2), zeroWt(b.w, b.h), { ...stagedCtx, lanes });
     expect(ra.rail!.railX).not.toBe(rb.rail!.railX); // the perturbation really landed
     // everything outside both footprints — the undulation field, the hedge
     // banks and the sunken lanes — is bit-identical
@@ -493,7 +429,7 @@ describe('applyRelief', () => {
 
   it('hedge banks survive the embankment and the undulation (the stance payload is 1 m)', () => {
     const map = stagedMap();
-    applyRelief(map, profile, subStreams(1234), never, { ...stagedCtx, lanes });
+    applyRelief(map, profile, subStreams(1234), zeroWt(map.w, map.h), { ...stagedCtx, lanes });
     let banked = 0;
     for (let y = 0; y < 240; y++)
       for (let x = 0; x < 320; x++)
@@ -506,7 +442,7 @@ describe('applyRelief', () => {
     const flat = (x: number, y: number) => x >= 230 && x < 260 && y >= 30 && y < 60;
     const before = new GameMap(320, 240);
     for (let i = 0; i < map.tiles.length; i++) before.tiles[i] = map.tiles[i];
-    applyRelief(map, profile, subStreams(1234), flat, { ...stagedCtx, lanes });
+    applyRelief(map, profile, subStreams(1234), townMask(map.w, map.h, flat), { ...stagedCtx, lanes });
     for (let y = 30; y < 60; y++)
       for (let x = 230; x < 260; x++) {
         expect(map.elevAt(x, y), `elev at ${x},${y}`).toBe(0);

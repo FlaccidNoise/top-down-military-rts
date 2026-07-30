@@ -403,7 +403,7 @@ describe('perf: bourg generation (§5.5)', () => {
       const rejected: number[] = [];
       for (let seed = 1; seed <= REJECT_SEEDS; seed++) {
         const base = mulberry32((seed ^ 0x51ab3fc7) >>> 0).int(0x7fffffff);
-        const plan = planBourg(base, MAP_W, MAP_H, profile);
+        const plan = planBourg(base, MAP_W, MAP_H, profile, new Uint8Array(MAP_W * MAP_H));
         if (plan.fp.buildings.length < profile.minBuildings) {
           floorHits++;
           rejects++;
@@ -444,7 +444,7 @@ describe('perf: bourg generation (§5.5)', () => {
     const rejected: number[] = [];
     for (let seed = 1; seed <= REJECT_SEEDS; seed++) {
       const base = mulberry32((seed ^ 0x51ab3fc7) >>> 0).int(0x7fffffff);
-      const plan = planBourg(base, MAP_W, MAP_H, WOODS);
+      const plan = planBourg(base, MAP_W, MAP_H, WOODS, new Uint8Array(MAP_W * MAP_H));
       if (plan.fp.buildings.length < WOODS.minBuildings) {
         floorHits++;
         rejects++;
@@ -476,7 +476,7 @@ describe('perf: bourg generation (§5.5)', () => {
     const rejected: number[] = [];
     for (let seed = 1; seed <= REJECT_SEEDS; seed++) {
       const base = mulberry32((seed ^ 0x51ab3fc7) >>> 0).int(0x7fffffff);
-      const plan = planBourg(base, MAP_W, MAP_H, OPEN);
+      const plan = planBourg(base, MAP_W, MAP_H, OPEN, new Uint8Array(MAP_W * MAP_H));
       if (plan.fp.buildings.length < OPEN.minBuildings) {
         floorHits++;
         rejects++;
@@ -503,7 +503,7 @@ describe('perf: bourg generation (§5.5)', () => {
     const rejected: number[] = [];
     for (let seed = 1; seed <= REJECT_SEEDS; seed++) {
       const base = mulberry32((seed ^ 0x51ab3fc7) >>> 0).int(0x7fffffff);
-      const plan = planBourg(base, MAP_W, MAP_H, ROAD);
+      const plan = planBourg(base, MAP_W, MAP_H, ROAD, new Uint8Array(MAP_W * MAP_H));
       const map = new GameMap(MAP_W, MAP_H);
       const st = stampBourg(map, plan);
       map.maxStories = st.maxStories;
@@ -524,7 +524,7 @@ describe('perf: bourg generation (§5.5)', () => {
     // fails loudly instead of the rate quietly becoming meaningless.
     const attempt0 = (seed: number): MapPlan => {
       const base = mulberry32((seed ^ 0x51ab3fc7) >>> 0).int(0x7fffffff);
-      const plan = planBourg(base, MAP_W, MAP_H, BOURG);
+      const plan = planBourg(base, MAP_W, MAP_H, BOURG, new Uint8Array(MAP_W * MAP_H));
       const map = new GameMap(MAP_W, MAP_H);
       const st = stampBourg(map, plan);
       map.maxStories = st.maxStories;

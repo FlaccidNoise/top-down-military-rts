@@ -34,7 +34,7 @@ function bankMap(mirror = false): GameMap {
   const m = new GameMap(W, H);
   const mx = (x: number) => (mirror ? W - 1 - x : x);
   for (let y = 0; y < H; y++) m.setTerrain(mx(HEDGE_X), y, 'hedge');
-  hedgeBanks(m, () => false);
+  hedgeBanks(m, new Uint8Array(W * H));
   return m;
 }
 

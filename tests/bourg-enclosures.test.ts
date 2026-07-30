@@ -30,7 +30,7 @@ interface Town {
 }
 
 function build(seed: number, w = W, h = H): Town {
-  const sk = buildSkeleton(base(seed), w, h, BOURG);
+  const sk = buildSkeleton(base(seed), w, h, BOURG, new Uint8Array(w * h));
   const land = reserveLandmarks(sk);
   growMinorStreets(sk, { resv: land.resv, blocked: land.resv });
   const pc = buildParcels(sk, land.resv);
