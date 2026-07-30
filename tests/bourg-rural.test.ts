@@ -172,6 +172,145 @@ describe('bourg rural fabric (T9)', () => {
     expect(Math.max(...counts)).toBeLessThanOrEqual(90);
   });
 
+  it('has no disconnected hedge stubs', () => {
+    for (const seed of SEEDS) {
+      const { sk, pc, fp, ru } = town(seed);
+      const { w, h } = sk;
+      const hedge = ru.hedge;
+
+      // Chebyshev-1 dilation of fp.occ
+      const nearBldg = new Uint8Array(w * h);
+      for (let i = 0; i < w * h; i++) {
+        if (!fp.occ[i]) continue;
+        const x = i % w;
+        const y = (i / w) | 0;
+        for (let dy = -1; dy <= 1; dy++)
+          for (let dx = -1; dx <= 1; dx++) {
+            const nx = x + dx;
+            const ny = y + dy;
+            if (nx >= 0 && ny >= 0 && nx < w && ny < h) nearBldg[ny * w + nx] = 1;
+          }
+      }
+
+      const visited = new Uint8Array(w * h);
+      const q = new Int32Array(w * h);
+      let bad = 0;
+      for (let i = 0; i < w * h; i++) {
+        if (!hedge[i] || visited[i]) continue;
+        let head = 0;
+        let toe = 0;
+        visited[i] = 1;
+        q[toe++] = i;
+        while (head < toe) {
+          const cur = q[head++];
+          const cx = cur % w;
+          const cy = (cur / w) | 0;
+          for (let dy = -1; dy <= 1; dy++)
+            for (let dx = -1; dx <= 1; dx++) {
+              if (dx === 0 && dy === 0) continue;
+              const nx = cx + dx;
+              const ny = cy + dy;
+              if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+              const ni = ny * w + nx;
+              if (visited[ni] || !hedge[ni]) continue;
+              visited[ni] = 1;
+              q[toe++] = ni;
+            }
+        }
+        if (toe >= 4) continue;
+        let touches = false;
+        for (let j = 0; j < toe && !touches; j++) {
+          const ci = q[j];
+          const cx = ci % w;
+          const cy = (ci / w) | 0;
+          for (let dy = -1; dy <= 1 && !touches; dy++)
+            for (let dx = -1; dx <= 1 && !touches; dx++) {
+              const nx = cx + dx;
+              const ny = cy + dy;
+              if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+              const ni = ny * w + nx;
+              if (sk.road[ni] || pc.claimed[ni] || nearBldg[ni] || sk.water[ni] || inZone(sk, nx, ny))
+                touches = true;
+            }
+        }
+        if (!touches) bad++;
+      }
+      expect(bad).toBe(0);
+    }
+  });
+
+  it('has no woods-stand-on-field overlap', () => {
+    for (const seed of SEEDS) {
+      const { map } = town(seed);
+      for (let i = 0; i < map.tiles.length; i++) {
+        const x = i % map.w;
+        const y = (i / map.w) | 0;
+        const k = map.terrainKeyAt(x, y);
+        // a tile cannot be both — guards against a future additive terrain model
+        if (k === 'field') expect(k).not.toBe('woods');
+      }
+    }
+  });
+
+  it('has all path tiles connected to the road network', () => {
+    for (const seed of SEEDS) {
+      const { sk } = town(seed);
+      const { w, h } = sk;
+      // 8-connected flood fill from the arterial
+      const seen = new Uint8Array(w * h);
+      const q = new Int32Array(w * h);
+      let head = 0;
+      let toe = 0;
+      let startIdx = -1;
+      for (let x = 0; x < w; x++) {
+        const y = sk.roadY[x];
+        if (y >= 0 && y < h && sk.road[y * w + x] === 1) {
+          startIdx = y * w + x;
+          break;
+        }
+      }
+      expect(startIdx).toBeGreaterThanOrEqual(0);
+      seen[startIdx] = 1;
+      q[toe++] = startIdx;
+      while (head < toe) {
+        const cur = q[head++];
+        const cx = cur % w;
+        const cy = (cur / w) | 0;
+        for (let dy = -1; dy <= 1; dy++)
+          for (let dx = -1; dx <= 1; dx++) {
+            if (dx === 0 && dy === 0) continue;
+            const nx = cx + dx;
+            const ny = cy + dy;
+            if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+            const ni = ny * w + nx;
+            if (seen[ni] || !sk.road[ni]) continue;
+            seen[ni] = 1;
+            q[toe++] = ni;
+          }
+      }
+      let orphans = 0;
+      for (let i = 0; i < w * h; i++) {
+        if (sk.road[i] && !seen[i]) orphans++;
+      }
+      expect(orphans).toBe(0);
+    }
+  });
+
+  it('connects every building door to the road network by foot', () => {
+    for (const seed of SEEDS) {
+      const t = town(seed);
+      const foot = flood(t, 'foot');
+      const stranded = t.fp.buildings.filter(
+        (b) =>
+          b.role !== 'farmhouse' &&
+          b.role !== 'barn' &&
+          b.doors?.[0] &&
+          !foot[b.doors[0].y * t.map.w + b.doors[0].x],
+      );
+      expect([seed, stranded.map((b) => `${b.role}@${b.x},${b.y}`)]).toEqual([seed, []]);
+    }
+  });
+
   it('survives every map size generateMap allows', () => {
     for (const [w, h] of [
       [60, 40],

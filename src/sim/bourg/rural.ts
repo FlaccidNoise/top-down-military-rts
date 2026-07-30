@@ -69,6 +69,241 @@ export function zoneOf(sk: Skeleton): (x: number, y: number) => boolean {
     (x >= x0 && x <= x1 && y >= y0 && y <= y1) || (f !== null && Math.abs(x - f.x) <= 22 && Math.abs(y - f.y) <= 22);
 }
 
+// ── M7: prune orphan road fragments ─────────────────────────────────────────
+//
+// 8-connected flood-fill from the arterial — any road tile not in the main
+// connected component is deleted. Runs AFTER bocage (hedge may have severed
+// lane tips) and BEFORE connectOrphanBuildings, so orphan buildings connect to
+// a clean network.
+function pruneOrphanPaths(
+  sk: Skeleton,
+  _fp: Footprints,
+  _inZone: (x: number, y: number) => boolean,
+): void {
+  const { w, h } = sk;
+  // seed: first arterial column where both roadY is valid AND road is set
+  let seed = -1;
+  for (let x = 0; x < w; x++) {
+    const y = sk.roadY[x];
+    if (y >= 0 && y < h && sk.road[y * w + x] === 1) {
+      seed = y * w + x;
+      break;
+    }
+  }
+  if (seed < 0) return;
+
+  const seen = new Uint8Array(w * h);
+  const q = new Int32Array(w * h);
+  let head = 0;
+  let toe = 0;
+  seen[seed] = 1;
+  q[toe++] = seed;
+  while (head < toe) {
+    const cur = q[head++];
+    const cx = cur % w;
+    const cy = (cur / w) | 0;
+    for (let dy = -1; dy <= 1; dy++)
+      for (let dx = -1; dx <= 1; dx++) {
+        if (dx === 0 && dy === 0) continue;
+        const nx = cx + dx;
+        const ny = cy + dy;
+        if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+        const ni = ny * w + nx;
+        if (seen[ni] || !sk.road[ni]) continue;
+        seen[ni] = 1;
+        q[toe++] = ni;
+      }
+  }
+  for (let i = 0; i < w * h; i++) {
+    if (sk.road[i] && !seen[i]) sk.road[i] = 0;
+  }
+}
+
+// ── M4: clean orphan hedge stubs ────────────────────────────────────────────
+//
+// 8-connected components of fewer than K tiles are deleted UNLESS they touch a
+// road, claimed parcel, building (or dilated-1), water, or the town zone.
+// Content cleanup — zero draws.
+function cleanHedgeStubs(
+  sk: Skeleton,
+  pc: Parcels,
+  fp: Footprints,
+  hedge: Uint8Array,
+  inZone: (x: number, y: number) => boolean,
+): void {
+  const { w, h } = sk;
+  const K = 4;
+
+  // Chebyshev-1 dilation of fp.occ — a hedge tile within 1 of any building is
+  // treated as touching a building.
+  const nearBldg = new Uint8Array(w * h);
+  for (let i = 0; i < w * h; i++) {
+    if (!fp.occ[i]) continue;
+    const x = i % w;
+    const y = (i / w) | 0;
+    for (let dy = -1; dy <= 1; dy++)
+      for (let dx = -1; dx <= 1; dx++) {
+        const nx = x + dx;
+        const ny = y + dy;
+        if (nx >= 0 && ny >= 0 && nx < w && ny < h) nearBldg[ny * w + nx] = 1;
+      }
+  }
+
+  const visited = new Uint8Array(w * h);
+  const q = new Int32Array(w * h);
+
+  for (let i = 0; i < w * h; i++) {
+    if (!hedge[i] || visited[i]) continue;
+
+    let head = 0;
+    let toe = 0;
+    visited[i] = 1;
+    q[toe++] = i;
+    while (head < toe) {
+      const cur = q[head++];
+      const cx = cur % w;
+      const cy = (cur / w) | 0;
+      for (let dy = -1; dy <= 1; dy++)
+        for (let dx = -1; dx <= 1; dx++) {
+          if (dx === 0 && dy === 0) continue;
+          const nx = cx + dx;
+          const ny = cy + dy;
+          if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+          const ni = ny * w + nx;
+          if (visited[ni] || !hedge[ni]) continue;
+          visited[ni] = 1;
+          q[toe++] = ni;
+        }
+    }
+
+    if (toe >= K) continue;
+
+    // small component — check if it touches any protected feature
+    let touches = false;
+    for (let j = 0; j < toe && !touches; j++) {
+      const ci = q[j];
+      const cx = ci % w;
+      const cy = (ci / w) | 0;
+      for (let dy = -1; dy <= 1 && !touches; dy++)
+        for (let dx = -1; dx <= 1 && !touches; dx++) {
+          const nx = cx + dx;
+          const ny = cy + dy;
+          if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+          const ni = ny * w + nx;
+          if (sk.road[ni] || pc.claimed[ni] || nearBldg[ni] || sk.water[ni] || inZone(nx, ny))
+            touches = true;
+        }
+    }
+
+    if (!touches) {
+      for (let j = 0; j < toe; j++) hedge[q[j]] = 0;
+    }
+  }
+}
+
+// ── M3: connect orphan buildings to the road network ────────────────────────
+//
+// 4-connected flood-fill from all road tiles (avoiding water) builds a
+// reachability mask. Every building with a door that is NOT in the mask gets a
+// straight L-shaped path carved to the nearest reached tile. No random draws —
+// larger-component-first heuristic (same as growFarmLanes).
+function connectOrphanBuildings(
+  sk: Skeleton,
+  fp: Footprints,
+  _r: Rng,
+  inZone: (x: number, y: number) => boolean,
+): void {
+  const { w, h } = sk;
+
+  // reachability mask: 4-connected from every road tile, avoiding water
+  const reached = new Uint8Array(w * h);
+  const q = new Int32Array(w * h);
+  let head = 0;
+  let toe = 0;
+  for (let i = 0; i < w * h; i++) {
+    if (sk.road[i] && !sk.water[i]) {
+      reached[i] = 1;
+      q[toe++] = i;
+    }
+  }
+  while (head < toe) {
+    const cur = q[head++];
+    const cx = cur % w;
+    const cy = (cur / w) | 0;
+    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as [number, number][]) {
+      const nx = cx + dx;
+      const ny = cy + dy;
+      if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+      const ni = ny * w + nx;
+      if (reached[ni] || sk.water[ni]) continue;
+      reached[ni] = 1;
+      q[toe++] = ni;
+    }
+  }
+
+  for (const b of fp.buildings) {
+    if (!b.doors || b.doors.length === 0) continue;
+    const door = b.doors[0];
+    const di = door.y * w + door.x;
+    if (reached[di]) continue;
+
+    // nearest reached tile by Chebyshev distance, ties on index
+    let bestI = -1;
+    let bestDist = Infinity;
+    for (let i = 0; i < w * h; i++) {
+      if (!reached[i]) continue;
+      const d = Math.max(Math.abs((i % w) - door.x), Math.abs(((i / w) | 0) - door.y));
+      if (d < bestDist) {
+        bestDist = d;
+        bestI = i;
+      }
+    }
+    if (bestI < 0) continue;
+
+    const tx = bestI % w;
+    const ty = (bestI / w) | 0;
+
+    const tryOrder = (hFirst: boolean): boolean => {
+      const tiles: number[] = [];
+      let px = door.x;
+      let py = door.y;
+      if (hFirst) {
+        while (px !== tx) {
+          px += Math.sign(tx - px);
+          const ni = py * w + px;
+          if (fp.occ[ni] || sk.water[ni] || inZone(px, py)) return false;
+          tiles.push(ni);
+        }
+        while (py !== ty) {
+          py += Math.sign(ty - py);
+          const ni = py * w + px;
+          if (fp.occ[ni] || sk.water[ni] || inZone(px, py)) return false;
+          tiles.push(ni);
+        }
+      } else {
+        while (py !== ty) {
+          py += Math.sign(ty - py);
+          const ni = py * w + px;
+          if (fp.occ[ni] || sk.water[ni] || inZone(px, py)) return false;
+          tiles.push(ni);
+        }
+        while (px !== tx) {
+          px += Math.sign(tx - px);
+          const ni = py * w + px;
+          if (fp.occ[ni] || sk.water[ni] || inZone(px, py)) return false;
+          tiles.push(ni);
+        }
+      }
+      for (const i of tiles) sk.road[i] = 1;
+      return true;
+    };
+
+    const hFirst = Math.abs(tx - door.x) >= Math.abs(ty - door.y);
+    if (tryOrder(hFirst)) continue;
+    tryOrder(!hFirst);
+  }
+}
+
 export function addRuralFabric(sk: Skeleton, land: Landmarks, pc: Parcels, fp: Footprints): Rural {
   const { w, h } = sk;
   const r11 = sk.S(TAG.RURAL);
@@ -77,6 +312,10 @@ export function addRuralFabric(sk: Skeleton, land: Landmarks, pc: Parcels, fp: F
   const farms = placeFarms(sk, land, pc, fp, r11, inZone);
   const lanes = growFarmLanes(sk, fp, r11, inZone, farms);
   const { hedge, gaps, owner, sites } = bocage(sk, land, pc, fp, r11, inZone);
+
+  pruneOrphanPaths(sk, fp, inZone);
+  cleanHedgeStubs(sk, pc, fp, hedge, inZone);
+  connectOrphanBuildings(sk, fp, r11, inZone);
 
   // R-F1: per-site land-use assignment in scan order
   const landUse = new Uint8Array(sites);
@@ -723,7 +962,9 @@ export function paintRural(
     if (rural.landUse[ownerIdx] !== 1) continue; // 1 = crop
     const x = i % w;
     const y = (i / w) | 0;
-    if (!inZone(x, y) && plantable(x, y)) map.setTerrain(x, y, 'field');
+    // plantable() already requires 'grass', but explicitly guard against
+    // woods-stand overlap as defense-in-depth.
+    if (!inZone(x, y) && plantable(x, y) && map.terrainKeyAt(x, y) !== 'woods') map.setTerrain(x, y, 'field');
   }
 
   // A clearing centre is an anchor like a stand centre is (§2.4), so it joins

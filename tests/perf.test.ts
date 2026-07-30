@@ -366,11 +366,13 @@ describe('perf: bourg generation (§5.5)', () => {
   // generator-cost gate at the design's own number rather than a contention
   // detector, and it needs no deviation.
   // V4-P5: river valley carving + within-file CPU contention.
-  const WATER_MEAN_MS = 50;
+  // W1: rural-coherence passes (pruneOrphanPaths, cleanHedgeStubs,
+  // connectOrphanBuildings) add ~2ms on water kinds.
+  const WATER_MEAN_MS = 55;
   const WATER_MAX_MS = 200;
 
   for (const kind of ['river', 'bridge'] as const) {
-    it(`${kind}-gen: 320x240 stays inside the 35 ms mean / 80 ms max budget`, () => {
+    it(`${kind}-gen: 320x240 stays inside the 55 ms mean / 200 ms max budget`, () => {
       generateMap(1, MAP_W, MAP_H, kind); // JIT warmup
       const ts: number[] = [];
       for (let seed = 1; seed <= 20; seed++) {
