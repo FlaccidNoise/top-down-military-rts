@@ -7,7 +7,7 @@ import { TERRAIN } from '../../src/sim/data';
 
 const W = 320, H = 240;
 const HEDGE = Object.keys(TERRAIN).indexOf('hedge');
-const base = mulberry32((11 ^ 0x51ab3fc7) >>> 0).int(0x7fffffff);
+const base = mulberry32(((Number(process.argv[2])||11) ^ 0x51ab3fc7) >>> 0).int(0x7fffffff);
 const plan = planBourg(base, W, H, ROAD, new Uint8Array(W * H));
 const map = new GameMap(W, H);
 stampBourg(map, plan);
@@ -35,6 +35,7 @@ for (let i = 0; i < W * H; i++) {
       }
   }
   // report components intersecting x 180-220, y 120-150
-  if (x1 >= 180 && x0 <= 220 && y1 >= 120 && y0 <= 150)
+  const X0=Number(process.argv[3])||180,X1=Number(process.argv[4])||220,Y0=Number(process.argv[5])||120,Y1=Number(process.argv[6])||150;
+  if (x1 >= X0 && x0 <= X1 && y1 >= Y0 && y0 <= Y1)
     console.log(`comp len=${toe} bbox x${x0}-${x1} y${y0}-${y1}`);
 }

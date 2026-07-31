@@ -18,9 +18,12 @@ const H = 240;
 const HEDGE = Object.keys(TERRAIN).indexOf('hedge');
 
 const totals = {};
+const ONLYK=process.argv[2], ONLYSEED=Number(process.argv[3]);
 for (const kind of KINDS) {
+  if (ONLYK && kind!==ONLYK) continue;
   const agg = { comps: 0, small: 0, isolated: 0, prot: { road: 0, claimed: 0, bldg: 0, water: 0, zone: 0 } };
   for (let seed = 1; seed <= 13; seed++) {
+    if (ONLYSEED && seed!==ONLYSEED) continue;
     const base = mulberry32((seed ^ 0x51ab3fc7) >>> 0).int(0x7fffffff);
     const plan = planBourg(base, W, H, PROFILES[kind], new Uint8Array(W * H));
     const map = new GameMap(W, H);
@@ -66,6 +69,11 @@ for (const kind of KINDS) {
           }
       }
       agg.comps++;
+      if (ONLYK && toe < 12) {
+        let x0=1e9,x1=-1,y0=1e9,y1=-1;
+        for (let j=0;j<toe;j++){const cx=q[j]%W,cy=(q[j]/W)|0;x0=Math.min(x0,cx);x1=Math.max(x1,cx);y0=Math.min(y0,cy);y1=Math.max(y1,cy);}
+        console.log('  comp len='+toe+' bbox x'+x0+'-'+x1+' y'+y0+'-'+y1+' prot: road='+tRoad+' bldg='+tBldg+' water='+tWater+' zone='+tZone);
+      }
       if (toe < 8) {
         agg.small++;
         const prot = tBldg || tWater; // mirror cleanHedgeStubs: only building + water protect
