@@ -857,22 +857,33 @@ function gardenInto(
 ): void {
   const beds = Math.max(1, Math.min(4, Math.floor(e.tiles / 26)));
   const wide = e.maxX - e.minX >= e.maxY - e.minY;
-  const bw = wide ? 2.5 : 1.4;
-  const bh = wide ? 1.4 : 2.5;
   for (let i = 0; i < beds; i++) {
     const k = e.seed * 13 + i;
     let cx = 0;
     let cy = 0;
+    let bw = 0;
+    let bh = 0;
     let ok = false;
-    for (let attempt = 0; attempt < 10 && !ok; attempt++) {
-      cx = e.minX + 1 + hash(k, attempt, 336) * Math.max(0.001, e.maxX - e.minX - 2);
-      cy = e.minY + 1 + hash(k, attempt + 30, 336) * Math.max(0.001, e.maxY - e.minY - 2);
-      ok =
-        clearAt(map, idx, id, cx - bw / 2, cy - bh / 2, 0) &&
-        clearAt(map, idx, id, cx + bw / 2, cy - bh / 2, 0) &&
-        clearAt(map, idx, id, cx - bw / 2, cy + bh / 2, 0) &&
-        clearAt(map, idx, id, cx + bw / 2, cy + bh / 2, 0) &&
-        clearAt(map, idx, id, cx, cy, 0);
+    // A big bourg garden is often a winding strip round the block interior,
+    // where the full-size bed fits nowhere (measured 2026-07-31: a 423-tile
+    // garden on road seed 3 grew zero beds). The ladder steps down to a
+    // cabbage patch before giving up. The first size keeps the exact
+    // (k, attempt, 336) probe sequence, so every bed that used to land is
+    // bit-identical; only beds that used to fail see the smaller sizes.
+    for (const [sw, sh] of [[wide ? 2.5 : 1.4, wide ? 1.4 : 2.5], [1.8, 1.2], [1.2, 1.2]] as [number, number][]) {
+      for (let attempt = 0; attempt < 10 && !ok; attempt++) {
+        cx = e.minX + 1 + hash(k, attempt, 336) * Math.max(0.001, e.maxX - e.minX - 2);
+        cy = e.minY + 1 + hash(k, attempt + 30, 336) * Math.max(0.001, e.maxY - e.minY - 2);
+        bw = sw;
+        bh = sh;
+        ok =
+          clearAt(map, idx, id, cx - bw / 2, cy - bh / 2, 0) &&
+          clearAt(map, idx, id, cx + bw / 2, cy - bh / 2, 0) &&
+          clearAt(map, idx, id, cx - bw / 2, cy + bh / 2, 0) &&
+          clearAt(map, idx, id, cx + bw / 2, cy + bh / 2, 0) &&
+          clearAt(map, idx, id, cx, cy, 0);
+      }
+      if (ok) break;
     }
     if (!ok || cx + bw < tx0 || cx - bw > tx1 || cy + bh < ty0 || cy - bh > ty1) continue;
     g.fillStyle = 'rgba(72,58,38,0.44)';
