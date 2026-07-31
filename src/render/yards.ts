@@ -72,20 +72,21 @@ function py(b: BuildingBox, side: Side, u: number, t: number): number {
 // Ground a yard feature may paint on. Roads, water, interiors and floors are
 // out — a wall across the arterial would imply a block the sim's canStep does
 // not have, and the village square owns its own cobbles.
-function paintable(map: GameMap, patches: PatchIndex, wx: number, wy: number): boolean {
+function paintable(map: GameMap, patches: PatchIndex, wx: number, wy: number, enclosedKind?: (wx: number, wy: number) => EnclosureKind | null): boolean {
   const tx = Math.floor(wx);
   const ty = Math.floor(wy);
   if (!map.inBounds(tx, ty)) return false;
   if (map.buildingIdAt(tx, ty) >= 0) return false;
   const k = map.terrainKeyAt(tx, ty);
   if (k !== 'grass' && k !== 'field') return false;
+  if (enclosedKind && enclosedKind(wx, wy) !== null) return false;
   return patches.pavedAt(tx, ty) <= 0.3;
 }
 
 // Walk a leg in STEP samples and keep the stretches whose ground is legal and
 // which are not inside the gate gap. Splitting rather than skipping is what
 // lets a wall stop cleanly at a road instead of jumping it.
-function legalise(map: GameMap, patches: PatchIndex, b: BuildingBox, side: Side, u0: number, t0: number, u1: number, t1: number, gateAt: number | null, out: Seg[]): void {
+function legalise(map: GameMap, patches: PatchIndex, b: BuildingBox, side: Side, u0: number, t0: number, u1: number, t1: number, gateAt: number | null, out: Seg[], enclosedKind?: (wx: number, wy: number) => EnclosureKind | null): void {
   const n = Math.max(1, Math.round(Math.hypot(u1 - u0, t1 - t0) / STEP));
   const uAt = (f: number) => u0 + (u1 - u0) * f;
   const tAt = (f: number) => t0 + (t1 - t0) * f;
@@ -94,7 +95,7 @@ function legalise(map: GameMap, patches: PatchIndex, b: BuildingBox, side: Side,
   let start = -1;
   for (let i = 0; i <= n; i++) {
     const mid = (i + 0.5) / n;
-    let ok = i < n && paintable(map, patches, wx(mid), wy(mid));
+    let ok = i < n && paintable(map, patches, wx(mid), wy(mid), enclosedKind);
     if (ok && gateAt !== null && Math.abs(uAt(mid) - gateAt) < GATE_HALF) ok = false;
     if (ok && start < 0) start = i;
     if (!ok && start >= 0) {
@@ -121,18 +122,19 @@ export function buildYards(map: GameMap, patches: PatchIndex, enclosedKind: (wx:
     // whichever side the scan's door pick landed is what put pale wall pens
     // on the back of every garden building and doubled the brown rail next
     // to every enclosure wall.
-    let insideEnclosure = false;
+    // A building belongs to an enclosure if at least 3 of 8 perimeter probes
+    // land inside one. Four probes at 0.5 m outside each face handle the
+    // common case; four at the corners catch buildings flush against an
+    // enclosure wall where the face probe lands outside.
+    let enclosureHits = 0;
     for (const [sx, sy] of [
-      [b.cx, b.minY - 0.5],
-      [b.cx, b.maxY + 0.5],
-      [b.minX - 0.5, b.cy],
-      [b.maxX + 0.5, b.cy],
+      [b.cx, b.minY - 0.5], [b.cx, b.maxY + 0.5],
+      [b.minX - 0.5, b.cy], [b.maxX + 0.5, b.cy],
+      [b.minX - 0.5, b.minY - 0.5], [b.maxX + 0.5, b.minY - 0.5],
+      [b.minX - 0.5, b.maxY + 0.5], [b.maxX + 0.5, b.maxY + 0.5],
     ] as [number, number][])
-      if (enclosedKind(sx, sy) !== null) {
-        insideEnclosure = true;
-        break;
-      }
-    if (insideEnclosure) continue;
+      if (enclosedKind(sx, sy) !== null) enclosureHits++;
+    if (enclosureHits >= 3) continue;
     const [doorSide, door] = dr;
     const wall = hash(b.id, 0, 300) < 0.5;
     const uOf = (s: Side, lo: boolean) => (s === 0 || s === 1 ? (lo ? b.minX : b.maxX) : lo ? b.minY : b.maxY);
@@ -159,7 +161,7 @@ export function buildYards(map: GameMap, patches: PatchIndex, enclosedKind: (wx:
           const u = u0 + ((i + 0.5) / 9) * (u1 - u0);
           const wx = px(b, s, u, t);
           const wy = py(b, s, u, t);
-          if (paintable(map, patches, wx, wy) && !enclosedKind(wx, wy)) ok++;
+          if (paintable(map, patches, wx, wy, enclosedKind)) ok++;
         }
         if (ok >= 7) return t;
       }
@@ -183,9 +185,9 @@ export function buildYards(map: GameMap, patches: PatchIndex, enclosedKind: (wx:
     const gateU = side === doorSide ? door : (u0 + u1) / 2;
     const runs: Seg[] = [];
     if (depth > 0) {
-      legalise(map, patches, b, side, u0, 0.1, u0, depth, null, runs);
-      legalise(map, patches, b, side, u0, depth, u1, depth, gateU, runs);
-      legalise(map, patches, b, side, u1, depth, u1, 0.1, null, runs);
+      legalise(map, patches, b, side, u0, 0.1, u0, depth, null, runs, enclosedKind);
+      legalise(map, patches, b, side, u0, depth, u1, depth, gateU, runs, enclosedKind);
+      legalise(map, patches, b, side, u1, depth, u1, 0.1, null, runs, enclosedKind);
     }
     // Gate posts only where the front run actually reached the gap — a wall
     // that stopped at a road never had a gate to hang.
@@ -193,7 +195,7 @@ export function buildYards(map: GameMap, patches: PatchIndex, enclosedKind: (wx:
     for (const s of runs.length ? [-1, 1] : []) {
       const gu = gateU + s * GATE_HALF;
       if (gu < u0 || gu > u1) continue;
-      if (!paintable(map, patches, px(b, side, gu, depth), py(b, side, gu, depth))) continue;
+      if (!paintable(map, patches, px(b, side, gu, depth), py(b, side, gu, depth), enclosedKind)) continue;
       gate.push([px(b, side, gu, depth), py(b, side, gu, depth)]);
     }
     // Open leaf swung back along the shared wind, into the yard.
