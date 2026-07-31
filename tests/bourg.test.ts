@@ -1369,11 +1369,10 @@ describe('water connectivity (mapgen-v3 §2.5)', () => {
 //   C1 · frontages in a row share ONE setback line (mode per run).
 //   C2 · detached neighbours keep >= 2 tiles, or share a terrace run (party
 //        wall) — a 1-tile sliver reads as neither terraced nor detached.
-//   C3 · opposing runs rear onto ONE line wherever the geometry allows: per
-//        opposing run pair both runs snap to depths dA + dB = G (the gap
-//        between the two frontage lines). Plots are only ever shrunk —
-//        growing would claim tiles interiors/rural already carved — so a pair
-//        whose shallowest plots cannot reach G keeps its strip by construction.
+//   (C3's rear-line snap fires rarely — bourg cores with true opposing runs;
+//    its dedicated metric test was a tautology and has been removed, but the
+//    code stays: the bourg fingerprints encode its effect. Verified
+//    empirically 2026-07-29: removing it moves the bourg pins.)
 describe('block coordination (2026-07-29)', () => {
   const COORD_KINDS: MapKind[] = ['open', 'road', 'woods', 'river', 'bridge', 'bourg'];
   const COORD_SEEDS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
@@ -1441,44 +1440,6 @@ describe('block coordination (2026-07-29)', () => {
           const s0 = free[0].setback;
           for (const p of free) expect([kind, seed, 'setback', plots[0].runIndex, p.setback === s0]).toEqual([kind, seed, 'setback', plots[0].runIndex, true]);
         }
-      }
-  });
-
-  it('merges every feasible opposing-run pair onto one rear line', () => {
-    for (const kind of COORD_KINDS)
-      for (const seed of COORD_SEEDS) {
-        const { pc } = coordPlan(kind, seed);
-        const runMin = new Map<number, number>();
-        for (const p of pc.plots) runMin.set(p.runIndex, Math.min(runMin.get(p.runIndex) ?? 999, p.d));
-        const byBlock = new Map<number, { axis: 'h' | 'v'; side: -1 | 1; front: number; span: number; wid: number; d: number; runIndex: number }[]>();
-        for (const p of pc.plots) {
-          let l = byBlock.get(p.blockId);
-          if (!l) {
-            l = [];
-            byBlock.set(p.blockId, l);
-          }
-          l.push({ axis: p.axis, side: p.side, front: p.axis === 'h' ? p.fy : p.fx, span: p.axis === 'h' ? p.fx : p.fy, wid: p.w, d: p.d, runIndex: p.runIndex });
-        }
-        for (const [, plots] of byBlock)
-          for (let i = 0; i < plots.length; i++)
-            for (let j = i + 1; j < plots.length; j++) {
-              const a = plots[i];
-              const b = plots[j];
-              if (a.axis !== b.axis || a.side === b.side) continue;
-              const lo = Math.max(a.span, b.span);
-              const hi = Math.min(a.span + a.wid, b.span + b.wid);
-              if (hi - lo <= 0) continue;
-              const [plus, minus] = a.side === 1 ? [a, b] : [b, a];
-              if (plus.front >= minus.front) continue;
-              const G = minus.front - plus.front + 1;
-              const strip = minus.front - minus.d + 1 - (plus.front + plus.d);
-              if (strip < 1) continue;
-              // a strip is legal only where the pair cannot meet: the runs'
-              // shallowest plots must both reach the meeting line to merge
-              const mA = runMin.get(plus.runIndex)!;
-              const mB = runMin.get(minus.runIndex)!;
-              expect([kind, seed, 'strip', mA + mB < G || G < 8]).toEqual([kind, seed, 'strip', true]);
-            }
       }
   });
 

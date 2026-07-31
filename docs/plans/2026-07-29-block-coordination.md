@@ -31,13 +31,13 @@ Residual gaps this layer owns (measured before the fix, 72 maps):
   independently, so a row's front walls zigzagged.
 - **(e) house orientation** — NOT a gap; verified, all plots on a run agree.
 
-## Rules (C1-C3)
+## Rules (C1-C2)
 
 ### C1 · Frontage setback alignment
 Within a run, all plots share the same setback. Take the **mode** setback
 (most common; ties to the larger) so one outlier can't pull the whole row,
 then clamp each plot's setback to `d - 4` (a shallow plot's wall sits at the
-line its depth forces). Runs AFTER C3 so the clamp sees the snapped depths.
+line its depth forces).
 Measured result: **setback spread within every run = 0**.
 
 ### C2 · Detached minimum gap
@@ -53,21 +53,15 @@ nor detached. Rules, in `footprints.ts`:
   Never a 1-tile sliver, never a 0-gap pair without a shared run.
 Measured result: **0 same-row slivers, 0 unshared 0-gap pairs** over 72 maps.
 
-### C3 · Rear yard boundary snapping
-Back-to-back plots across a block share ONE rear boundary line. Per opposing
-run pair (same blockId, same axis, opposite sides), snap every plot in both
-runs to depths `dA + dB = G`, where `G` is the distance between the two
-frontage lines. Both runs' rear lines then coincide; R-O2 writes one wall.
-- Shrinking only: a plot's `d` is never grown, because `claimed` was built
-  from the original rects and interiors/rural carve around it — growing would
-  claim tiles those stages treat as free.
-- Each run participates in at most one snap (blocks with three runs on one
-  axis leave the extra run alone rather than double-snap a partner).
-- Depth choice: closest feasible value to the block's middle (`G >> 1`),
-  clamped so neither side drops below 4 or exceeds its shallowest plot; the
-  shallow side wins when one run can't reach halfway.
-- Zero draws: every decision is a pure function of plot data.
-Measured result: **0 feasible-but-unmerged rear strips** — every remaining
+### C3 · Rear-line snap — RARE but load-bearing (corrected 2026-07-29)
+C3 snaps opposing runs' rear depths onto one line (`dA + dB = G`). An
+adversarial verifier first reported it a provable no-op (parcel extraction
+bounds opposing depth columns) and its dedicated metric test was indeed a
+tautology — but deleting it MOVED the bourg fingerprints, so the snap does
+fire on bourg cores with true opposing runs and the no-op proof had a hole.
+The code stays (the pins encode its effect); the tautological test was
+removed. What remains of the intent: **0 feasible-but-unmerged rear strips**
+— every remaining
 strip is geometrically forced.
 
 ## What This Deliberately Does NOT Do
