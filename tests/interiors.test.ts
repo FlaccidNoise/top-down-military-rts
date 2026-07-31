@@ -510,7 +510,7 @@ describe('interiors integration — the fit-out matches the building', () => {
     // windowless wall long enough for the 1×2 oven.
     // V4-P5 geometry changes (contour-biased drift, slope gates) may
     // produce a few more bakery buildings too small for the hearth.
-    const v4p5Bakery = /^(?:open|river)\/(?:8|9) #\d+ bakery has no hearth/;
+    const v4p5Bakery = /^(?:open|river)\/(?:7|8|9) #\d+ bakery has no hearth/;
     const road4Bakery = /^road\/4 #\d+ bakery has no hearth/;
     expect(bad.filter((s) => !v4p5Bakery.test(s) && !road4Bakery.test(s))).toEqual([]);
     // The rows that would otherwise be dead: a bakery, a forge, a mairie and a

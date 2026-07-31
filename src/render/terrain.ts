@@ -1914,7 +1914,10 @@ export class TerrainLayer {
       }
       this.apron = a;
     }
-    this.yards = buildYards(map, this.patches, (wx, wy) => this.enclos.enclosureIdAt(Math.floor(wx), Math.floor(wy)) >= 0);
+    this.yards = buildYards(map, this.patches, (wx, wy) => {
+      const id = this.enclos.enclosureIdAt(Math.floor(wx), Math.floor(wy));
+      return id >= 0 ? this.enclos.enclosures[id].kind : null;
+    });
     for (const p of propsFor(map, this.patches, this.enclos)) {
       const [ex0, ey0, ex1, ey1] = propExtent(p);
       for (let cy = Math.floor(ey0 / CHUNK); cy <= Math.floor(ey1 / CHUNK); cy++) {

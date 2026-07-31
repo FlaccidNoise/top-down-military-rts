@@ -1399,8 +1399,8 @@ describe('bourg determinism (§5.4)', () => {
   // is what makes both legitimate rather than silent — with the stage switched
   // off, T14's numbers come back bit for bit.
   it('pins the bourg fingerprints', () => {
-    expect(fingerprint(town(1))).toMatchInlineSnapshot(`"7858df51"`);
-    expect(fingerprint(town(2))).toMatchInlineSnapshot(`"9cfcbd4e"`);
+    expect(fingerprint(town(1))).toMatchInlineSnapshot(`"8094d796"`);
+    expect(fingerprint(town(2))).toMatchInlineSnapshot(`"b02eccbb"`);
   });
 
   // The road kind's counterpart, frozen at the P2 cutover. At 320x240 the
@@ -1411,8 +1411,8 @@ describe('bourg determinism (§5.4)', () => {
   // laundered by `-u`. Moving these is legitimate only when the road layout
   // was meant to change; the four bourg values above must not move with them.
   it('pins the road fingerprints', () => {
-    expect(fingerprint(generateMap(1, W, H, 'road'))).toMatchInlineSnapshot(`"5660e8bf"`);
-    expect(fingerprint(generateMap(2, W, H, 'road'))).toMatchInlineSnapshot(`"d2833ebb"`);
+    expect(fingerprint(generateMap(1, W, H, 'road'))).toMatchInlineSnapshot(`"5733fb7d"`);
+    expect(fingerprint(generateMap(2, W, H, 'road'))).toMatchInlineSnapshot(`"33ff6c8"`);
   });
 
   // THE SIGHTLINE PASS moved the eight values below and NOT the four above.
@@ -1431,8 +1431,8 @@ describe('bourg determinism (§5.4)', () => {
   // the quick-battle scenario uses — the two move together or one of them is
   // a bug.
   it('pins the open fingerprints', () => {
-    expect(fingerprint(generateMap(1, W, H, 'open'))).toMatchInlineSnapshot(`"a1c53c34"`);
-    expect(fingerprint(generateMap(2, W, H, 'open'))).toMatchInlineSnapshot(`"a5dadc2e"`);
+    expect(fingerprint(generateMap(1, W, H, 'open'))).toMatchInlineSnapshot(`"e9f4f11a"`);
+    expect(fingerprint(generateMap(2, W, H, 'open'))).toMatchInlineSnapshot(`"919407b6"`);
   });
 
   // The woods kind's, frozen at the P4 cutover. RELIEF_BY_KIND.woods carries
@@ -1441,8 +1441,8 @@ describe('bourg determinism (§5.4)', () => {
   // relief-wiring.test.ts. They also cover the clearing sub-stage (tag 16),
   // which is the only new machinery in the kind.
   it('pins the woods fingerprints', () => {
-    expect(fingerprint(generateMap(1, W, H, 'woods'))).toMatchInlineSnapshot(`"cb68b8d"`);
-    expect(fingerprint(generateMap(2, W, H, 'woods'))).toMatchInlineSnapshot(`"656c5ef7"`);
+    expect(fingerprint(generateMap(1, W, H, 'woods'))).toMatchInlineSnapshot(`"442600f2"`);
+    expect(fingerprint(generateMap(2, W, H, 'woods'))).toMatchInlineSnapshot(`"54201be6"`);
   });
 
   // The two water kinds', frozen at the P5 cutover. RELIEF_BY_KIND gives both
@@ -1453,13 +1453,13 @@ describe('bourg determinism (§5.4)', () => {
   // TAG.WATER is drawn inside the skeleton, so the band is in the pre-relief
   // literals too.
   it('pins the river fingerprints', () => {
-    expect(fingerprint(generateMap(1, W, H, 'river'))).toMatchInlineSnapshot(`"f47206f4"`);
-    expect(fingerprint(generateMap(2, W, H, 'river'))).toMatchInlineSnapshot(`"d93ceb6f"`);
+    expect(fingerprint(generateMap(1, W, H, 'river'))).toMatchInlineSnapshot(`"994e06e2"`);
+    expect(fingerprint(generateMap(2, W, H, 'river'))).toMatchInlineSnapshot(`"8e9df8fa"`);
   });
 
   it('pins the bridge fingerprints', () => {
-    expect(fingerprint(generateMap(1, W, H, 'bridge'))).toMatchInlineSnapshot(`"a9026b8f"`);
-    expect(fingerprint(generateMap(2, W, H, 'bridge'))).toMatchInlineSnapshot(`"42468ce0"`);
+    expect(fingerprint(generateMap(1, W, H, 'bridge'))).toMatchInlineSnapshot(`"6fc066c7"`);
+    expect(fingerprint(generateMap(2, W, H, 'bridge'))).toMatchInlineSnapshot(`"a585b9a5"`);
   });
 
   it('pins the bourg with relief off — the stage is purely additive', () => {
@@ -1470,8 +1470,8 @@ describe('bourg determinism (§5.4)', () => {
     // outline change, which repaints every kind's stands; recaptured by hand
     // Recaptured at V4-P4: height field is now the base elevation with relief off
     // (R-H2: generated then zeroed). `npx vite-node scripts/fp.mjs`, seeds 1 and 2.
-    expect(fingerprint(generateMap(1, W, H, 'bourg', { relief: 'none' }))).toBe('8e81a397');
-    expect(fingerprint(generateMap(2, W, H, 'bourg', { relief: 'none' }))).toBe('13529414');
+    expect(fingerprint(generateMap(1, W, H, 'bourg', { relief: 'none' }))).toBe('44b12230');
+    expect(fingerprint(generateMap(2, W, H, 'bourg', { relief: 'none' }))).toBe('cd8dc94b');
   });
 
   // RETIRED at the mapgen-v3 P6 cutover: §5.1's one-draw guard test, which

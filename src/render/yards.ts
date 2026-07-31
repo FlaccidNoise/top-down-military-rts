@@ -1,5 +1,6 @@
 import { EDGE, type GameMap } from '../sim/map';
 import { AO_ALPHA, WIND, shadowAlpha, shadowOffset, shadowOffsetLegible, shadowSoftAlpha, sweptStrokePath } from './light';
+import type { EnclosureKind } from './enclos';
 import { hash } from './noise';
 import type { BuildingBox, PatchIndex } from './patches';
 import type { Detail } from './terrain';
@@ -103,17 +104,37 @@ function legalise(map: GameMap, patches: PatchIndex, b: BuildingBox, side: Side,
   }
 }
 
-// `enclosed` vetoes ground that a generator-authored enclosure already walls
-// (src/render/enclos.ts). Without it a bourg garden gets two boundaries — the
-// map's own 1 m wall and this module's guessed one — crossing each other in
-// the same tail, and a farm cour gets pale wall stubs standing in the middle
-// of its beaten earth. Legacy kinds have no enclosures, so the predicate never
-// fires there and their yards are unchanged.
-export function buildYards(map: GameMap, patches: PatchIndex, enclosed: (wx: number, wy: number) => boolean = () => false): Yard[] {
+// `enclosedKind` reports which kind of generator-authored enclosure pocket a
+// world point falls in (src/render/enclos.ts), or null outside every pocket.
+// Without it a bourg garden gets two boundaries — the map's own 1 m wall and
+// this module's guessed one — crossing each other in the same tail, and a
+// farm cour gets pale wall stubs standing in the middle of its beaten earth.
+// Legacy kinds have no enclosures, so the callback returns null everywhere
+// there and their yards are unchanged.
+export function buildYards(map: GameMap, patches: PatchIndex, enclosedKind: (wx: number, wy: number) => EnclosureKind | null = () => null): Yard[] {
   const out: Yard[] = [];
   for (const b of patches.buildings) {
     const dr = doorOf(map, b);
     if (!dr) continue;
+    // A building that abuts a generator-built WORKING yard (a farm cour,
+    // town or rural) belongs to that enclosure: the walls and the trodden
+    // ground are already there. Guessing a second yard on whichever side the
+    // scan's door pick landed is what put pale wall pens on the back of every
+    // compound building — the generator owns this building's yard, so this
+    // module adds nothing. (Gardens and churchyards are not working yards;
+    // buildings abutting those keep their guessed yards.)
+    let abutsYard = false;
+    for (const [sx, sy] of [
+      [b.cx, b.minY - 0.5],
+      [b.cx, b.maxY + 0.5],
+      [b.minX - 0.5, b.cy],
+      [b.maxX + 0.5, b.cy],
+    ] as [number, number][])
+      if (enclosedKind(sx, sy) === 'yard') {
+        abutsYard = true;
+        break;
+      }
+    if (abutsYard) continue;
     const [doorSide, door] = dr;
     const wall = hash(b.id, 0, 300) < 0.5;
     const uOf = (s: Side, lo: boolean) => (s === 0 || s === 1 ? (lo ? b.minX : b.maxX) : lo ? b.minY : b.maxY);
@@ -140,7 +161,7 @@ export function buildYards(map: GameMap, patches: PatchIndex, enclosed: (wx: num
           const u = u0 + ((i + 0.5) / 9) * (u1 - u0);
           const wx = px(b, s, u, t);
           const wy = py(b, s, u, t);
-          if (paintable(map, patches, wx, wy) && !enclosed(wx, wy)) ok++;
+          if (paintable(map, patches, wx, wy) && !enclosedKind(wx, wy)) ok++;
         }
         if (ok >= 7) return t;
       }

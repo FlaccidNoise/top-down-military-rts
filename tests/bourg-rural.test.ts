@@ -4,10 +4,10 @@ import { buildFootprints, type Footprints } from '../src/sim/bourg/footprints';
 import { reserveLandmarks, type Landmarks } from '../src/sim/bourg/landmarks';
 import { buildParcels, type Parcels } from '../src/sim/bourg/parcels';
 import { BOURG } from '../src/sim/bourg/profile';
-import { addRuralFabric, paintRural, type Rural } from '../src/sim/bourg/rural';
+import { addRuralFabric, gateOutsideTile, paintRural, type Rural } from '../src/sim/bourg/rural';
 import { stampStructure } from '../src/sim/bourg/stamp';
 import { buildSkeleton, growMinorStreets, type Skeleton } from '../src/sim/bourg/streets';
-import { GameMap } from '../src/sim/map';
+import { EDGE, GameMap } from '../src/sim/map';
 import type { Vec } from '../src/sim/mapgen';
 
 // T9: farm lanes, jittered-grid bocage, woods/orchards/fields. This is also the
@@ -145,6 +145,131 @@ describe('bourg rural fabric (T9)', () => {
       const { map, stands } = town(seed);
       expect(stands.length).toBeGreaterThanOrEqual(3);
       for (const s of stands) expect(map.terrainAt(s.x, s.y).passable).toBe(true);
+    }
+  });
+
+  it('closes every rural compound flush against its masses', () => {
+    // The yard rect is what the enclosure walls; a yard that runs past BOTH
+    // gables on the cross axis leaves a walled pen dangling in the field.
+    // The wall must close flush against at least one mass: cross extent ==
+    // the deeper mass's extent.
+    for (const seed of SEEDS) {
+      const { sk, fp } = town(seed);
+      for (const c of fp.compounds) {
+        const r = c.rect;
+        if (inZone(sk, r.x + (r.w >> 1), r.y + (r.h >> 1))) continue;
+        const flank = fp.buildings.filter((b) => {
+          if (b.role !== 'farmhouse' && b.role !== 'barn') return false;
+          // a flanking mass ADJOINS the yard (shares the boundary edge); a
+          // mass contained inside it (the étable) is not a flanker
+          if (b.x >= r.x && b.x + b.w <= r.x + r.w && b.y >= r.y && b.y + b.h <= r.y + r.h) return false;
+          const dx = Math.max(0, Math.max(r.x - (b.x + b.w), b.x - (r.x + r.w)));
+          const dy = Math.max(0, Math.max(r.y - (b.y + b.h), b.y - (r.y + r.h)));
+          return dx + dy === 0;
+        });
+        // the étable can occupy the full yard width on one lateral face;
+        // only masses disjoint from the yard on the stack axis count
+        const west = flank.some((b) => b.x + b.w <= r.x);
+        const east = flank.some((b) => b.x >= r.x + r.w);
+        const north = flank.some((b) => b.y + b.h <= r.y);
+        const south = flank.some((b) => b.y >= r.y + r.h);
+        if (west && east) {
+          const want = Math.max(...flank.filter((b) => b.x + b.w <= r.x || b.x >= r.x + r.w).map((b) => b.h));
+          expect([seed, `yard@${r.x},${r.y}`, r.h]).toEqual([seed, `yard@${r.x},${r.y}`, want]);
+        } else if (north && south) {
+          const want = Math.max(...flank.filter((b) => b.y + b.h <= r.y || b.y >= r.y + r.h).map((b) => b.w));
+          expect([seed, `yard@${r.x},${r.y}`, r.w]).toEqual([seed, `yard@${r.x},${r.y}`, want]);
+        } else throw new Error(`seed ${seed}: compound ${JSON.stringify(r)} has no flanking pair`);
+      }
+    }
+  });
+
+  it('reaches every rural compound gate with the lane network', () => {
+    // M7 for the cour: the gate DOOR in the yard's boundary walls (neither
+    // side a building tile — building doors on the boundary are the house's
+    // own) must open onto a road tile or one 4-adjacent to it.
+    for (const seed of SEEDS) {
+      const { sk, fp, map } = town(seed);
+      for (const c of fp.compounds) {
+        const r = c.rect;
+        if (inZone(sk, r.x + (r.w >> 1), r.y + (r.h >> 1))) continue;
+        const roadNear = (x: number, y: number): boolean => {
+          if (x >= 0 && y >= 0 && x < sk.w && y < sk.h && sk.road[y * sk.w + x]) return true;
+          for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as [number, number][]) {
+            const nx = x + dx;
+            const ny = y + dy;
+            if (nx >= 0 && ny >= 0 && nx < sk.w && ny < sk.h && sk.road[ny * sk.w + nx]) return true;
+          }
+          return false;
+        };
+        const free = (x: number, y: number): boolean =>
+          x >= 0 && y >= 0 && x < sk.w && y < sk.h && map.buildingIdAt(x, y) < 0;
+        let gated = false;
+        for (let x = r.x; x < r.x + r.w; x++) {
+          if (map.hEdge(x, r.y) === EDGE.DOOR && free(x, r.y) && free(x, r.y - 1) && roadNear(x, r.y - 1)) gated = true;
+          if (map.hEdge(x, r.y + r.h) === EDGE.DOOR && free(x, r.y + r.h - 1) && free(x, r.y + r.h) && roadNear(x, r.y + r.h)) gated = true;
+        }
+        for (let y = r.y; y < r.y + r.h; y++) {
+          if (map.vEdge(r.x, y) === EDGE.DOOR && free(r.x, y) && free(r.x - 1, y) && roadNear(r.x - 1, y)) gated = true;
+          if (map.vEdge(r.x + r.w, y) === EDGE.DOOR && free(r.x + r.w - 1, y) && free(r.x + r.w, y) && roadNear(r.x + r.w, y)) gated = true;
+        }
+        // an unserved gate is legal only when NO road tile on the map offers
+        // a legal L-dogleg to it (waterlocked, townlocked) — the carve is an
+        // uncapped ring search, so anything reachable is connected
+        if (!gated) {
+          const g = gateOutsideTile(c, fp, sk.w, sk.h);
+          expect(g).not.toBeNull();
+          const inCompound = (x: number, y: number): boolean =>
+            fp.compounds.some(
+              (c2) => x >= c2.rect.x && x < c2.rect.x + c2.rect.w && y >= c2.rect.y && y < c2.rect.y + c2.rect.h,
+            );
+          const legal = (x: number, y: number): boolean =>
+            x >= 1 && y >= 1 && x < sk.w - 1 && y < sk.h - 1 &&
+            !fp.occ[y * sk.w + x] && !sk.water[y * sk.w + x] && !inZone(sk, x, y) && !inCompound(x, y);
+          let carvable = false;
+          for (let i = 0; i < sk.road.length && !carvable; i++) {
+            if (!sk.road[i]) continue;
+            const tx = i % sk.w;
+            const ty = (i / sk.w) | 0;
+            if (Math.max(Math.abs(tx - g!.x), Math.abs(ty - g!.y)) > 96) continue;
+            for (const hf of [true, false]) {
+              let px = g!.x;
+              let py = g!.y;
+              let ok = legal(px, py);
+              const legs = hf
+                ? [[Math.sign(tx - px), 0, Math.abs(tx - px)], [0, Math.sign(ty - py), Math.abs(ty - py)]]
+                : [[0, Math.sign(ty - py), Math.abs(ty - py)], [Math.sign(tx - px), 0, Math.abs(tx - px)]];
+              for (const [dx, dy, n] of legs as [number, number, number][])
+                for (let s = 0; s < n && ok; s++) {
+                  px += dx;
+                  py += dy;
+                  if (px === tx && py === ty) break;
+                  if (!legal(px, py)) ok = false;
+                }
+              if (ok) {
+                carvable = true;
+                break;
+              }
+            }
+          }
+          expect([seed, `yard@${r.x},${r.y}`, carvable]).toEqual([seed, `yard@${r.x},${r.y}`, false]);
+        }
+      }
+    }
+  });
+
+  it('keeps the cour bare of hedge and crop', () => {
+    for (const seed of SEEDS) {
+      const { sk, fp, map } = town(seed);
+      for (const c of fp.compounds) {
+        const r = c.rect;
+        if (inZone(sk, r.x + (r.w >> 1), r.y + (r.h >> 1))) continue;
+        for (let y = r.y; y < r.y + r.h; y++)
+          for (let x = r.x; x < r.x + r.w; x++) {
+            const k = map.terrainKeyAt(x, y);
+            expect([seed, x, y, k]).toEqual([seed, x, y, k === 'hedge' || k === 'field' ? 'bad' : k]);
+          }
+      }
     }
   });
 

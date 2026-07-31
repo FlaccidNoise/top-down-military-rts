@@ -1,7 +1,7 @@
 import type { GameMap } from '../map';
 import type { Building, DoorEdge, Rect, Vec } from '../mapgen';
 import type { Rng } from '../rng';
-import type { Face, Footprints } from './footprints';
+import type { Compound, Face, Footprints } from './footprints';
 import type { Landmarks } from './landmarks';
 import type { Parcels } from './parcels';
 import { TAG, type Skeleton } from './streets';
@@ -310,10 +310,11 @@ export function addRuralFabric(sk: Skeleton, land: Landmarks, pc: Parcels, fp: F
   const inZone = zoneOf(sk);
 
   const farms = placeFarms(sk, land, pc, fp, r11, inZone);
-  const lanes = growFarmLanes(sk, fp, r11, inZone, farms);
+  const lanes = growFarmLanes(sk, pc, fp, r11, inZone, farms);
   const { hedge, gaps, owner, sites } = bocage(sk, land, pc, fp, r11, inZone);
 
   pruneOrphanPaths(sk, fp, inZone);
+  connectCompoundGates(sk, fp, inZone, hedge);
   cleanHedgeStubs(sk, pc, fp, hedge, inZone);
   connectOrphanBuildings(sk, fp, r11, inZone);
 
@@ -445,6 +446,16 @@ function placeFarms(
         grangeFrontage = 'e';
       }
 
+      // The yard never outgrows its masses on the cross axis. fw is the
+      // compound's overall span and is often deeper than BOTH buildings; the
+      // enclosure walls the yard rect on all four faces, so a yard that runs
+      // past both gables leaves a walled pen dangling in the field off the
+      // far corners. Clamp to the deeper mass: the wall then closes flush
+      // against at least one gable, and jogs round the deeper one if the two
+      // differ — which is how a yard wall round a big barn is actually built.
+      if (vertical) yard.w = Math.max(logisW, grangeW);
+      else yard.h = Math.max(logisW, grangeW);
+
       // R-V2: nearest arterial tile sets yard open face
       const ycx = yard.x + (yard.w >> 1);
       const ycy = yard.y + (yard.h >> 1);
@@ -493,14 +504,16 @@ function placeFarms(
         logisParts.push(wingRect);
       }
 
-      // R-V4: 3-mass étable on the remaining yard face
+      // R-V4: 3-mass étable on the remaining yard face — anchored to the
+      // (clamped) yard rect, so it always lands INSIDE the wall the
+      // enclosure builds.
       let etable: Rect | null = null;
       if (ETABLE_ROLL < 0.25) {
         const etCandidate: Rect =
-          rot === 0 ? { x: fx, y: fy + logisH, w: etW, h: yardH }
-          : rot === 1 ? { x: fx + fw - etW, y: fy + grangeH, w: etW, h: yardH }
-          : rot === 2 ? { x: fx + logisH, y: fy, w: yardH, h: etW }
-          : { x: fx + grangeH, y: fy + fw - etW, w: yardH, h: etW };
+          rot === 0 ? { x: yard.x, y: yard.y, w: etW, h: yard.h }
+          : rot === 1 ? { x: yard.x + yard.w - etW, y: yard.y, w: etW, h: yard.h }
+          : rot === 2 ? { x: yard.x, y: yard.y, w: yard.w, h: etW }
+          : { x: yard.x, y: yard.y + yard.h - etW, w: yard.w, h: etW };
         // skip if wing and étable would overlap (same side or tight yard width)
         const overlaps = wingRect !== null &&
           wingRect.x < etCandidate.x + etCandidate.w && wingRect.x + wingRect.w > etCandidate.x &&
@@ -527,20 +540,41 @@ function placeFarms(
 
       // door position on logis: yard-facing edge, centred in the non-wing portion
       const logisDoor: DoorEdge = (() => {
-        if (vertical) {
-          const avail0 = fx + (wingPresent && !wingOnHigh ? wingW : 0);
-          const avail1 = fx + logisW - 1 - (wingPresent && wingOnHigh ? wingW : 0);
-          const mx = avail0 + ((avail1 - avail0 + 1) >> 1);
-          return logisFrontage === 's'
-            ? { x: mx, y: logis.y + logis.h - 1, side: 's', width: 1 as const }
-            : { x: mx, y: logis.y, side: 'n', width: 1 as const };
+        // The door must open onto yard ground. A column the wing covers
+        // throws at the stamp (same structure), and one the étable covers is
+        // silently sealed by its shared wall (stamp.ts classify → B_SHARED;
+        // the grange door's etW skip predates this by a wave). Centre-biased
+        // scan of the yard-facing span for a column whose outside tile is
+        // open ground — pure function of the rects, zero draws.
+        const blockedAt = (u: number): boolean => {
+          const x = vertical ? u : logisFrontage === 'e' ? logis.x + logis.w : logis.x - 1;
+          const y = vertical ? (logisFrontage === 's' ? logis.y + logis.h : logis.y - 1) : u;
+          for (const m of [wingRect, etable])
+            if (m && x >= m.x && x < m.x + m.w && y >= m.y && y < m.y + m.h) return true;
+          return false;
+        };
+        const span0 = vertical ? logis.x : logis.y;
+        const span1 = vertical ? logis.x + logis.w - 1 : logis.y + logis.h - 1;
+        const mid = span0 + ((span1 - span0) >> 1);
+        for (let k = 0; k <= span1 - span0; k++) {
+          const u = mid + (k % 2 === 0 ? k >> 1 : -((k + 1) >> 1));
+          if (u < span0 || u > span1 || blockedAt(u)) continue;
+          if (vertical)
+            return logisFrontage === 's'
+              ? { x: u, y: logis.y + logis.h - 1, side: 's', width: 1 as const }
+              : { x: u, y: logis.y, side: 'n', width: 1 as const };
+          return logisFrontage === 'e'
+            ? { x: logis.x + logis.w - 1, y: u, side: 'e', width: 1 as const }
+            : { x: logis.x, y: u, side: 'w', width: 1 as const };
         }
-        const avail0 = fy + (wingPresent && !wingOnHigh ? wingW : 0);
-        const avail1 = fy + logis.h - 1 - (wingPresent && wingOnHigh ? wingW : 0);
-        const my = avail0 + ((avail1 - avail0 + 1) >> 1);
+        // every yard-facing column is covered: out the back instead
+        if (vertical)
+          return logisFrontage === 's'
+            ? { x: mid, y: logis.y, side: 'n', width: 1 as const }
+            : { x: mid, y: logis.y + logis.h - 1, side: 's', width: 1 as const };
         return logisFrontage === 'e'
-          ? { x: logis.x + logis.w - 1, y: my, side: 'e', width: 1 as const }
-          : { x: logis.x, y: my, side: 'w', width: 1 as const };
+          ? { x: logis.x, y: mid, side: 'w', width: 1 as const }
+          : { x: logis.x + logis.w - 1, y: mid, side: 'e', width: 1 as const };
       })();
 
       emitRural(fp, sk, {
@@ -582,6 +616,12 @@ function placeFarms(
         }
       }
       fp.compounds.push({ rect: yard, open: yardOpen, gateWidth: 2 });
+      // The cour is claimed ground, exactly like a town plot: the bocage must
+      // not run a hedge line through it, the field pass must not crop it, the
+      // lanes must end at its wall rather than pave it, and no later compound
+      // may interlock with this one.
+      for (let yy = yard.y; yy < yard.y + yard.h; yy++)
+        for (let xx = yard.x; xx < yard.x + yard.w; xx++) pc.claimed[yy * w + xx] = 1;
       out.push({ x: ycx, y: ycy });
       break;
     }
@@ -603,6 +643,135 @@ function emitRural(fp: Footprints, sk: Skeleton, b: Building): void {
   fp.buildings.push(b);
 }
 
+// ── compound gates meet the lane ─────────────────────────────────────────
+//
+// growFarmLanes aims at yard CENTRES and gives up 7 tiles short, so a lane
+// can die in open field on the far side of the yard wall — and nothing else
+// ever checks the gate: connectOrphanBuildings' flood is edge-blind, so every
+// door on dry land "reaches" a road without a tile of track existing. M7's
+// rule for the cour: the lane reaches the gate or there is no lane. Zero
+// draws — the gate face and the dogleg are pure functions of the plan.
+
+const oppositeFace = (f: Face): Face => (f === 'n' ? 's' : f === 's' ? 'n' : f === 'e' ? 'w' : 'e');
+const lateralFaces = (f: Face): [Face, Face] => (f === 'n' || f === 's' ? ['w', 'e'] : ['n', 's']);
+
+// Where stampEnclosures will punch the cart gate: the first face of
+// [open, opposite, laterals...] carrying a writable edge, at the mid of that
+// face's writable run (gateOneOf's pick; widenGate takes the next edge, so
+// the lane only has to reach this one). An edge is writable iff neither side
+// is a building tile — putWall refuses the building walls the stamper wrote,
+// which is the same test one stage earlier. Returns the tile OUTSIDE the
+// gate: the one the lane must reach.
+// Where stampEnclosures will punch the cart gate: the first face of
+// [open, opposite, laterals...] carrying a writable edge, at the mid of that
+// face's writable run (gateOneOf's pick; widenGate takes the next edge, so
+// the lane only has to reach this one). An edge is writable iff the stamper
+// leaves it NONE: it walls the building PERIMETER (one side floor, one side
+// not) AND seams between two DIFFERENT buildings, leaving only open edges
+// (two free tiles) and same-building part seams (logis against its own wing)
+// for the enclosure (stamp.ts classify: B_SHARED between two tiles of one
+// building is EDGE.NONE). Returns the tile OUTSIDE that edge — the one the
+// lane must reach.
+export function gateOutsideTile(c: Compound, fp: Footprints, w: number, h: number): Vec | null {
+  const r = c.rect;
+  const owner = new Int32Array(w * h).fill(-1);
+  fp.buildings.forEach((b, bi) => {
+    for (const p of b.parts ?? [b])
+      for (let y = p.y; y < p.y + p.h; y++)
+        for (let x = p.x; x < p.x + p.w; x++) if (x >= 0 && y >= 0 && x < w && y < h) owner[y * w + x] = bi;
+  });
+  const own = (x: number, y: number): number => (x >= 0 && y >= 0 && x < w && y < h ? owner[y * w + x] : -1);
+  const writable = (ix: number, iy: number, ox: number, oy: number): boolean => own(ix, iy) === own(ox, oy);
+  for (const f of [c.open, oppositeFace(c.open), ...lateralFaces(c.open)]) {
+    const outs: Vec[] = [];
+    if (f === 'n') for (let x = r.x; x < r.x + r.w; x++) { if (writable(x, r.y, x, r.y - 1)) outs.push({ x, y: r.y - 1 }); }
+    else if (f === 's') for (let x = r.x; x < r.x + r.w; x++) { if (writable(x, r.y + r.h - 1, x, r.y + r.h)) outs.push({ x, y: r.y + r.h }); }
+    else if (f === 'w') for (let y = r.y; y < r.y + r.h; y++) { if (writable(r.x, y, r.x - 1, y)) outs.push({ x: r.x - 1, y }); }
+    else for (let y = r.y; y < r.y + r.h; y++) { if (writable(r.x + r.w - 1, y, r.x + r.w, y)) outs.push({ x: r.x + r.w, y }); }
+    if (outs.length > 0) return outs[outs.length >> 1];
+  }
+  return null;
+}
+
+function connectCompoundGates(sk: Skeleton, fp: Footprints, inZone: (x: number, y: number) => boolean, hedge: Uint8Array): void {
+  const { w, h } = sk;
+  const inCompound = (x: number, y: number): boolean => {
+    for (const c of fp.compounds)
+      if (x >= c.rect.x && x < c.rect.x + c.rect.w && y >= c.rect.y && y < c.rect.y + c.rect.h) return true;
+    return false;
+  };
+  const legal = (x: number, y: number): boolean =>
+    x >= 1 && y >= 1 && x < w - 1 && y < h - 1 &&
+    !fp.occ[y * w + x] && !sk.water[y * w + x] && !inZone(x, y) && !inCompound(x, y);
+  // Multi-pass: a later compound's dogleg is new network an earlier,
+  // then-unserved gate can hang off. Monotone (only adds road) and bounded.
+  for (let pass = 0; pass < fp.compounds.length; pass++) {
+    let progress = false;
+    for (const c of fp.compounds) {
+      if (inZone(c.rect.x + (c.rect.w >> 1), c.rect.y + (c.rect.h >> 1))) continue; // a town cour meets the street, not a farm lane
+      const gate = gateOutsideTile(c, fp, w, h);
+      if (!gate) continue;
+      let served = sk.road[gate.y * w + gate.x] === 1;
+      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as [number, number][]) {
+        const nx = gate.x + dx;
+        const ny = gate.y + dy;
+        if (nx >= 0 && ny >= 0 && nx < w && ny < h && sk.road[ny * w + nx]) served = true;
+      }
+      if (served) continue;
+
+    // Walk Chebyshev rings of road tiles out from the gate and take the first
+    // one an L-shaped dogleg can legally reach — the nearest road tile is not
+    // always a reachable one (a river, the town or another compound can sit
+    // on both dogleg corners), and a gate deserves the nearest WORKING
+    // connection, not the nearest impossible one. No distance cap, M3's
+    // rule: a track that runs sixty tiles to a ferme isolée is legal
+    // pavement; a gate the track never reaches is not.
+    const legalTarget = (x: number, y: number): boolean => x >= 0 && y >= 0 && x < w && y < h && sk.road[y * w + x] === 1;
+    const carve = (tx: number, ty: number): boolean => {
+      const tryOrder = (hFirst: boolean): boolean => {
+        const tiles: number[] = [];
+        let px = gate.x;
+        let py = gate.y;
+        const push = (x: number, y: number): boolean => {
+          if (x === tx && y === ty) return true; // the road tile itself
+          if (!legal(x, y)) return false;
+          tiles.push(y * w + x);
+          return true;
+        };
+        if (!push(px, py)) return false;
+        if (hFirst) {
+          while (px !== tx) { px += Math.sign(tx - px); if (!push(px, py)) return false; }
+          while (py !== ty) { py += Math.sign(ty - py); if (!push(px, py)) return false; }
+        } else {
+          while (py !== ty) { py += Math.sign(ty - py); if (!push(px, py)) return false; }
+          while (px !== tx) { px += Math.sign(tx - px); if (!push(px, py)) return false; }
+        }
+        for (const i of tiles) {
+          sk.road[i] = 1;
+          hedge[i] = 0; // the mask must agree with the network the paint passes see
+        }
+        return true;
+      };
+      const hFirst = Math.abs(tx - gate.x) >= Math.abs(ty - gate.y);
+      return tryOrder(hFirst) || tryOrder(!hFirst);
+    };
+      let done = false;
+      const maxD = Math.max(w, h);
+      for (let d = 1; d <= maxD && !done; d++) {
+        for (let k = -d; k <= d && !done; k++) {
+          if (legalTarget(gate.x + k, gate.y - d)) done = carve(gate.x + k, gate.y - d);
+          if (!done && legalTarget(gate.x + k, gate.y + d)) done = carve(gate.x + k, gate.y + d);
+          if (k === -d || k === d) continue; // corners already done
+          if (!done && legalTarget(gate.x - d, gate.y + k)) done = carve(gate.x - d, gate.y + k);
+          if (!done && legalTarget(gate.x + d, gate.y + k)) done = carve(gate.x + d, gate.y + k);
+        }
+      }
+      if (done) progress = true;
+    }
+    if (!progress) return;
+  }
+}
+
 // ── farm lanes ───────────────────────────────────────────────────────────────
 //
 // Space colonisation, integer-only and rectilinear. Nodes are seeded on the
@@ -617,6 +786,7 @@ function emitRural(fp: Footprints, sk: Skeleton, b: Building): void {
 // Parish & Müller instead.
 function growFarmLanes(
   sk: Skeleton,
+  pc: Parcels,
   fp: Footprints,
   r: Rng,
   inZone: (x: number, y: number) => boolean,
@@ -641,7 +811,7 @@ function growFarmLanes(
   // the bank for the whole growth budget. Both draws happen either way, so
   // neither test moves the stream on a dry kind.
   const free = (x: number, y: number): boolean =>
-    x >= 2 && y >= 2 && x < w - 2 && y < h - 2 && !inZone(x, y) && !fp.occ[y * w + x] && !sk.water[y * w + x];
+    x >= 2 && y >= 2 && x < w - 2 && y < h - 2 && !inZone(x, y) && !fp.occ[y * w + x] && !pc.claimed[y * w + x] && !sk.water[y * w + x];
 
   let carved = 0;
   const carve = (a: Vec, b: Vec): boolean => {

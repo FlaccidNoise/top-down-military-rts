@@ -526,16 +526,41 @@ function buildArt(b: Building, stories: number, smallOfPair: boolean, map: GameM
   let lean: (Rect & { side: 'n' | 's' | 'e' | 'w' }) | null = null;
   if (!sacred && !terraced && hash(i, 244) < 0.3) {
     const doorSide = doorSideOf(b, map);
-    const sides: ('n' | 's' | 'e' | 'w')[] = (['n', 's', 'e', 'w'] as const).filter((sd) => sd !== doorSide);
-    const side = sides[(hash(i, 246) * sides.length) | 0];
-    const d = 1.4 + hash(i, 245) * 0.8;
-    const horiz = side === 'n' || side === 's';
-    const along = horiz ? rr.w : rr.h;
-    const ll = along * (0.5 + hash(i, 247) * 0.4);
-    const l0 = (horiz ? rr.x : rr.y) + (along - ll) * hash(i, 248);
-    lean = horiz
-      ? { x: l0, y: side === 'n' ? rr.y - d : rr.y + rr.h, w: ll, h: d, side }
-      : { x: side === 'w' ? rr.x - d : rr.x + rr.w, y: l0, w: d, h: ll, side };
+    let sides: ('n' | 's' | 'e' | 'w')[] = (['n', 's', 'e', 'w'] as const).filter((sd) => sd !== doorSide);
+    // A multi-mass farm (logis with its L-wing) already HAS the annex the
+    // lean-to imitates; a second shed roof over the wing reads as mush.
+    // And on an isolated farm the shed only ever stands where the working
+    // ground is: facing the yard's other mass (the drawPaving pair test,
+    // ≤ 4 m) or a lane. Rolled onto open pasture it is a paved-looking slab
+    // floating on grass with no walls under it — pavement that leads
+    // nowhere, which M7 forbids.
+    if ((b.parts?.length ?? 1) > 1) {
+      sides = [];
+    } else if (b.role === 'farmhouse' || b.role === 'barn') {
+      sides = sides.filter((sd) => {
+        // the wall-to-wall strip (≤ 4 m) a neighbouring mass or lane may
+        // stand in, spanning the building's own extent on the other axis
+        const x0 = sd === 'w' ? b.x - 5 : sd === 'e' ? b.x + b.w : b.x;
+        const x1 = sd === 'w' ? b.x - 1 : sd === 'e' ? b.x + b.w + 4 : b.x + b.w - 1;
+        const y0 = sd === 'n' ? b.y - 5 : sd === 's' ? b.y + b.h : b.y;
+        const y1 = sd === 'n' ? b.y - 1 : sd === 's' ? b.y + b.h + 4 : b.y + b.h - 1;
+        for (let y = Math.max(0, y0); y <= Math.min(map.h - 1, y1); y++)
+          for (let x = Math.max(0, x0); x <= Math.min(map.w - 1, x1); x++)
+            if (map.terrainKeyAt(x, y) === 'road' || map.buildingIdAt(x, y) >= 0) return true;
+        return false;
+      });
+    }
+    if (sides.length > 0) {
+      const side = sides[(hash(i, 246) * sides.length) | 0];
+      const d = 1.4 + hash(i, 245) * 0.8;
+      const horiz = side === 'n' || side === 's';
+      const along = horiz ? rr.w : rr.h;
+      const ll = along * (0.5 + hash(i, 247) * 0.4);
+      const l0 = (horiz ? rr.x : rr.y) + (along - ll) * hash(i, 248);
+      lean = horiz
+        ? { x: l0, y: side === 'n' ? rr.y - d : rr.y + rr.h, w: ll, h: d, side }
+        : { x: side === 'w' ? rr.x - d : rr.x + rr.w, y: l0, w: d, h: ll, side };
+    }
   }
 
   // dormers on the sun slope, where a real one would be
