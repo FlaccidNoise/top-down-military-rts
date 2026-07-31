@@ -17,7 +17,7 @@ import type { Detail } from './terrain';
 // Chunks cull by bounds and let the canvas clip the rest.
 
 type Ctx = CanvasRenderingContext2D;
-type Seg = [number, number, number, number];
+export type Seg = [number, number, number, number];
 
 // 0 = N, 1 = S, 2 = W, 3 = E — the side of the building the door is on, and
 // therefore the side the yard is on. `side ^ 1` is the opposite side.
@@ -112,8 +112,38 @@ function legalise(map: GameMap, patches: PatchIndex, b: BuildingBox, side: Side,
 // farm cour gets pale wall stubs standing in the middle of its beaten earth.
 // Legacy kinds have no enclosures, so the callback returns null everywhere
 // there and their yards are unchanged.
-export function buildYards(map: GameMap, patches: PatchIndex, enclosedKind: (wx: number, wy: number) => EnclosureKind | null = () => null): Yard[] {
+// Segment conflict test: proper crossing (X) or collinear overlap. Endpoint
+// touches are legal (corners meet). Used to keep any two boundary systems —
+// enclosure walls, another yard's wall/fence — from occupying the same tile.
+function segConflict(a: Seg, b: Seg): boolean {
+  const [ax, ay, bx, by] = a;
+  const [cx, cy, dx, dy] = b;
+  const d1x = bx - ax;
+  const d1y = by - ay;
+  const d2x = dx - cx;
+  const d2y = dy - cy;
+  const cross = d1x * d2y - d1y * d2x;
+  if (Math.abs(cross) > 1e-9) {
+    const t = ((cx - ax) * d2y - (cy - ay) * d2x) / cross;
+    const u = ((cx - ax) * d1y - (cy - ay) * d1x) / cross;
+    return t > 1e-6 && t < 1 - 1e-6 && u > 1e-6 && u < 1 - 1e-6;
+  }
+  if (Math.abs((cx - ax) * d1y - (cy - ay) * d1x) > 1e-6) return false;
+  const len2 = d1x * d1x + d1y * d1y;
+  if (len2 < 1e-12) return false;
+  const t0 = ((cx - ax) * d1x + (cy - ay) * d1y) / len2;
+  const t1 = ((dx - ax) * d1x + (dy - ay) * d1y) / len2;
+  return Math.min(1, Math.max(t0, t1)) > Math.max(0, Math.min(t0, t1)) + 1e-6;
+}
+
+export function buildYards(map: GameMap, patches: PatchIndex, enclosedKind: (wx: number, wy: number) => EnclosureKind | null = () => null, blockers: Seg[] = []): Yard[] {
   const out: Yard[] = [];
+  // First-writer-wins over every boundary already standing: the generator's
+  // enclosure walls (blockers) and each yard accepted so far. Two garden
+  // fences that would cross are one fence too many; the later yard drops the
+  // conflicting segment whole (a gap reads as a way through, a crossing reads
+  // as a bug).
+  const accepted: Seg[] = [...blockers];
   for (const b of patches.buildings) {
     const dr = doorOf(map, b);
     if (!dr) continue;
@@ -183,7 +213,7 @@ export function buildYards(map: GameMap, patches: PatchIndex, enclosedKind: (wx:
     // gate on the door column when the boundary is the door's own; otherwise
     // a garden gate at the middle of the back wall
     const gateU = side === doorSide ? door : (u0 + u1) / 2;
-    const runs: Seg[] = [];
+    let runs: Seg[] = [];
     if (depth > 0) {
       legalise(map, patches, b, side, u0, 0.1, u0, depth, null, runs, enclosedKind);
       legalise(map, patches, b, side, u0, depth, u1, depth, gateU, runs, enclosedKind);
@@ -210,6 +240,23 @@ export function buildYards(map: GameMap, patches: PatchIndex, enclosedKind: (wx:
       const len = Math.max(0.5, Math.min(1.15, Math.abs(runEnd - hu) - 0.1));
       leaf = [px(b, side, hu, depth - 0.12), py(b, side, hu, depth - 0.12), px(b, side, hu + s * len, depth - 0.12), py(b, side, hu + s * len, depth - 0.12)];
     }
+    // Drop segments that conflict with an already-standing boundary, then
+    // re-derive the gate: piers only where a surviving run actually reaches
+    // them (a dropped front run leaves no wall to hang a gate on).
+    let kept = runs;
+    if (accepted.length > 0 && runs.length > 0) {
+      kept = runs.filter((r) => !accepted.some((a) => segConflict(r, a)));
+      if (kept.length !== runs.length) {
+        runs = kept;
+        for (let gi = gate.length - 1; gi >= 0; gi--) {
+          const [gx, gy] = gate[gi];
+          const reached = runs.some(([ax, ay, bx, by]) => Math.hypot(gx - ax, gy - ay) < 0.35 || Math.hypot(gx - bx, gy - by) < 0.35);
+          if (!reached) gate.splice(gi, 1);
+        }
+        if (gate.length < 2) leaf = null;
+      }
+    }
+    accepted.push(...runs);
     // Tight reach, not the blanket YARD_REACH: the chunk loop tests every
     // footprint on the map, and in a village that decides whether eight yards
     // or three get painted into a chunk that only shows three.
