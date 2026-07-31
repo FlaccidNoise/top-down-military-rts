@@ -42,14 +42,14 @@ function fingerprint(plan: MapPlan): string {
 // Recaptured 2026-07-31: D1 hedge-stub wave — bocage mask excludes
 // building-dilated tiles, orphan-path carve clears the mask, stub prune K=8.
 const PRE_RELIEF: Record<MapKind, string[]> = {
-  open: ['3d41d398', 'c8a0a539', '1c9e6575', 'dc7d4056', '4ac05752', 'abcb6157', 'db795b4c', 'ebbd27dd'],
-  road: ['e00dc4ca', 'a29d3a09', 'ee7ca4fe', '26ef54eb', '1d2f7bd1', 'c5810733', '1017a69e', 'c0a69adf'],
-  woods: ['813034a2', '15a82131', '2f8f65c1', '20f97de2', '6e722869', 'c4a5127d', '1f238b77', '2f736b51'],
+  open: ['289b82b2', 'a517d39b', 'a77febd5', 'f35597fb', '5b831bed', 'ca5d3faf', 'd2d37804', 'e2384ea8'],
+  road: ['40059980', 'bbd20bd3', '7c434275', 'c97f3f7b', 'f99352d9', '31696925', 'e3ce03c9', 'a1bdde8c'],
+  woods: ['61b12af4', '8da467df', 'feff7d06', 'b8c6393c', 'd8929f2f', '79c83e13', 'dc10a844', '145acc50'],
   // The water kinds' rows cover the water stage itself: TAG.WATER's band is
   // carved inside the skeleton, so `relief: 'none'` still has the whole river.
-  river: ['c9bd6634', 'c4d51400', '350dd4e9', 'baf41521', 'ec221461', '36d27d25', '22865c7d', 'b6c5ba73'],
-  bridge: ['9b50f9cc', 'c390541c', 'e8658589', 'cb1dbd20', '23187625', 'c7a87579', '362f04d5', 'fc2f8663'],
-  bourg: ['4523bfcf', '4c9d9ace', 'd7938596', 'aefe41e5', 'd98edf8c', '7536108e', '13b88901', 'd9b3b758'],
+  river: ['e22681c8', '20904eb9', '1a43f8cc', '77c9fae8', 'a06655bb', '5042d183', '40b08e5c', '1068cd92'],
+  bridge: ['7d892004', '77560a73', '3533c296', '291d043', '8a278409', '1731a588', '9000df86', '80889e37'],
+  bourg: ['9ca817f3', 'd02bee4c', '7ca5690b', 'd8a96acb', 'a1a234a2', '57a9a5a7', 'cb55e293', '3a2e5740'],
 };
 
 const cache = new Map<string, MapPlan>();

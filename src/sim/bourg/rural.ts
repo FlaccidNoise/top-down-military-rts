@@ -1163,6 +1163,21 @@ export function paintRural(
   }
   // R-F2: fields painted from the bocage owner map (every tile inside a crop-assigned parcel).
   // Direct tiles[] write (field=5) avoids setTerrain + modulo/division.
+  // D3 (2026-07-31): never plow against trees — a field tile 8-adjacent to a
+  // woods tile is what put stands dead-center in plowed fields (bridge seed
+  // 4). The grass skirt reads as the untilled margin a copse actually keeps.
+  // Pure mask, zero draws.
+  const nearWoods = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++)
+    for (let x = 0; x < w; x++) {
+      if (tiles[y * w + x] !== 2) continue;
+      for (let dy = -1; dy <= 1; dy++)
+        for (let dx = -1; dx <= 1; dx++) {
+          const nx = x + dx;
+          const ny = y + dy;
+          if (nx >= 0 && ny >= 0 && nx < w && ny < h) nearWoods[ny * w + nx] = 1;
+        }
+    }
   for (let y = 0; y < h; y++) {
     const row = y * w;
     for (let x = 0; x < w; x++) {
@@ -1175,7 +1190,7 @@ export function paintRural(
         (x >= sk.env.x - 6 && x <= sk.env.x + sk.env.w + 5 && y >= sk.env.y - 6 && y <= sk.env.y + sk.env.h + 5) ||
         (sk.faubourg !== null && Math.abs(x - sk.faubourg.x) <= 22 && Math.abs(y - sk.faubourg.y) <= 22)
       ) continue;
-      if (!sk.road[i] && !land.resv[i] && !pc.claimed[i] && !near[i] && tiles[i] === 0) // plantable + grass=0 check
+      if (!sk.road[i] && !land.resv[i] && !pc.claimed[i] && !near[i] && !nearWoods[i] && tiles[i] === 0) // plantable + grass=0 check
         tiles[i] = 5;
     }
   }
