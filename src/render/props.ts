@@ -29,6 +29,10 @@ export interface Prop {
   // rails and telegraph wires are drawn forward from a post, and without this
   // the last post of a run trails a rail into empty grass.
   link?: boolean;
+  // Rail/wire endpoint when it is NOT exactly one spacing ahead: fence posts
+  // are jittered off the lattice (2026-07-31, the mechanical dot-line), so
+  // the rail must run to the next post's jittered spot, stored at placement.
+  to?: [number, number];
 }
 
 type Ctx = CanvasRenderingContext2D;
@@ -108,7 +112,7 @@ class Placer {
 
   constructor(private map: GameMap) {}
 
-  add(x: number, y: number, kind: PropKind, seed: number, axis: 0 | 1 = 0, link = false): boolean {
+  add(x: number, y: number, kind: PropKind, seed: number, axis: 0 | 1 = 0, link = false, to?: [number, number]): boolean {
     if (!canPlace(this.map, x, y)) return false;
     const cx = Math.floor(x);
     const cy = Math.floor(y);
@@ -123,7 +127,7 @@ class Placer {
     const arr = this.cells.get(key) ?? [];
     arr.push([x, y]);
     this.cells.set(key, arr);
-    this.out.push(link ? { x, y, kind, seed, axis, link } : { x, y, kind, seed, axis });
+    this.out.push(link ? { x, y, kind, seed, axis, link, to } : { x, y, kind, seed, axis });
     return true;
   }
 }
@@ -336,10 +340,22 @@ export function propsFor(map: GameMap, patches: PatchIndex, enclos?: EnclosureIn
         const slot = Math.ceil(u / POST_SPACING) * POST_SPACING;
         if (slot >= u + 1) continue;
         const t = dy < 0 || dx < 0 ? 0.08 : 0.92;
-        const px2 = axis === 0 ? slot : x + t;
-        const py2 = axis === 0 ? y + t : slot;
+        // Posts jitter off the lattice (+/-0.12 m along the run, +/-0.08
+        // across): a fence is regular, but a mathematically perfect 1.6 m
+        // lattice reads as a dotted RULE at close zoom, not as posts.
+        const row = axis === 0 ? y : x;
+        const j1 = (hash(Math.round(slot), row, 272) - 0.5) * 0.24;
+        const j2 = (hash(Math.round(slot), row, 273) - 0.5) * 0.16;
+        const px2 = axis === 0 ? slot + j1 : x + t + j2;
+        const py2 = axis === 0 ? y + t + j2 : slot + j1;
         const kind: PropKind = hash(Math.round(slot), axis === 0 ? y : x, 269) < 0.06 ? 'gate' : 'fencepost';
-        p.add(px2, py2, kind, (hash(Math.round(slot), axis === 0 ? y : x, 270) * 4096) | 0, axis, true);
+        // The rail runs to the NEXT slot's post, jittered by the same rule,
+        // so the panel follows the posts instead of the lattice.
+        const nslot = slot + POST_SPACING;
+        const nj1 = (hash(Math.round(nslot), row, 272) - 0.5) * 0.24;
+        const nj2 = (hash(Math.round(nslot), row, 273) - 0.5) * 0.16;
+        const to: [number, number] = axis === 0 ? [nslot + nj1, y + t + nj2] : [x + t + nj2, nslot + nj1];
+        p.add(px2, py2, kind, (hash(Math.round(slot), axis === 0 ? y : x, 270) * 4096) | 0, axis, true, to);
       }
     }
   }
@@ -697,8 +713,8 @@ export function drawProp(g: Ctx, p: Prop, band: number, d: Detail): void {
     case 'fencepost':
     case 'gate': {
       if (p.link) {
-        const ex = x + ax * POST_SPACING;
-        const ey = y + ay * POST_SPACING;
+        const ex = p.to ? p.to[0] : x + ax * POST_SPACING;
+        const ey = p.to ? p.to[1] : y + ay * POST_SPACING;
         // Two rails at two heights, and a gate's diagonal brace, all live in
         // the fence's vertical plane — from directly above they project onto
         // the SAME line. One rail band plus the run's own shadow, then; the
