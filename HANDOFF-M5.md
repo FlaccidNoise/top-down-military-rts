@@ -84,7 +84,8 @@ task commits, stop and run that handoff first.
 4. Map the plan's 6 batches into an execution schedule and run them
    subagent-driven: one builder agent per batch (tasks sequential within it),
    each paired with a separate fresh-context validator agent that runs
-   `npm run check && npm test` and reviews the diff against the task text
+   `npm run check && npm run test:quick` (full `npm test` only pre-merge — see
+   AGENTS.md#testing) and reviews the diff against the task text
    before the next batch launches. Never let a builder self-validate.
 5. Commit after every task; verify each agent completes before the next batch.
 ```

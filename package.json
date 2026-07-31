@@ -6,7 +6,8 @@
     "dev": "vite",
     "build": "vite build",
     "check": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:quick": "vitest run --config vitest.quick.config.ts"
   },
   "devDependencies": {
     "playwright": "^1.61.1",
