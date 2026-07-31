@@ -246,15 +246,52 @@ export function buildYards(map: GameMap, patches: PatchIndex, enclosedKind: (wx:
     let kept = runs;
     if (accepted.length > 0 && runs.length > 0) {
       kept = runs.filter((r) => !accepted.some((a) => segConflict(r, a)));
-      if (kept.length !== runs.length) {
-        runs = kept;
-        for (let gi = gate.length - 1; gi >= 0; gi--) {
-          const [gx, gy] = gate[gi];
-          const reached = runs.some(([ax, ay, bx, by]) => Math.hypot(gx - ax, gy - ay) < 0.35 || Math.hypot(gx - bx, gy - by) < 0.35);
-          if (!reached) gate.splice(gi, 1);
+    }
+    // Orphan rule (2026-07-31, owner's 'walls terminate at corners/walls/
+    // gates'): every surviving run must terminate at BOTH ends — at the
+    // building, at another surviving run of this yard, at a gate pier, or at
+    // a standing enclosure wall. legalise truncation and conflict dropping
+    // otherwise leave lone segments floating mid-lawn (the white stubs at
+    // 24-48 px/m). Iterate: dropping a side run can orphan the front.
+    {
+      let changed = true;
+      while (changed) {
+        changed = false;
+        const next = kept.filter((r) => {
+          // a run anchored to itself is no anchor — test against the others
+          const others = kept.filter((s) => s !== r);
+          const ends: [number, number][] = [[r[0], r[1]], [r[2], r[3]]];
+          return ends.every(([x, y]) => {
+            const dx = Math.max(b.minX - x, 0, x - b.maxX);
+            const dy = Math.max(b.minY - y, 0, y - b.maxY);
+            if (Math.hypot(dx, dy) <= 0.45) return true;
+            for (const [gx, gy] of gate) if (Math.hypot(gx - x, gy - y) <= 0.45) return true;
+            for (const s of [...accepted, ...others]) {
+              const [ax, ay, bx2, by2] = s;
+              const vx = bx2 - ax;
+              const vy = by2 - ay;
+              const len2 = vx * vx + vy * vy;
+              if (len2 < 1e-12) continue;
+              const t = Math.max(0, Math.min(1, ((x - ax) * vx + (y - ay) * vy) / len2));
+              if (Math.hypot(ax + t * vx - x, ay + t * vy - y) <= 0.45) return true;
+            }
+            return false;
+          });
+        });
+        if (next.length !== kept.length) {
+          kept = next;
+          changed = true;
         }
-        if (gate.length < 2) leaf = null;
       }
+    }
+    if (kept.length !== runs.length) {
+      runs = kept;
+      for (let gi = gate.length - 1; gi >= 0; gi--) {
+        const [gx, gy] = gate[gi];
+        const reached = runs.some(([ax, ay, bx, by]) => Math.hypot(gx - ax, gy - ay) < 0.35 || Math.hypot(gx - bx, gy - by) < 0.35);
+        if (!reached) gate.splice(gi, 1);
+      }
+      if (gate.length < 2) leaf = null;
     }
     accepted.push(...runs);
     // Tight reach, not the blanket YARD_REACH: the chunk loop tests every

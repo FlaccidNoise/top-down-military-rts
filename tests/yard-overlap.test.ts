@@ -84,4 +84,46 @@ describe('outdoor wall/fence coherence', () => {
       }
     }
   }, 120_000);
+
+  it('every yard run terminates at a building, another run, a gate pier, or an enclosure wall — no floating stubs', () => {
+    // The 2026-07-31 orphan rule, recomputed independently: at BOTH ends a
+    // run must touch (<=0.45 m) its building's rect, a gate pier, or any
+    // other boundary segment (enclosure blocker or another yard's run).
+    // legalise truncation and first-writer-wins conflict dropping otherwise
+    // leave lone segments floating mid-lawn — the white stubs at 24-48 px/m.
+    const ptSeg = (x: number, y: number, [ax, ay, bx, by]: Seg): number => {
+      const vx = bx - ax;
+      const vy = by - ay;
+      const len2 = vx * vx + vy * vy;
+      if (len2 < 1e-12) return Infinity;
+      const t = Math.max(0, Math.min(1, ((x - ax) * vx + (y - ay) * vy) / len2));
+      return Math.hypot(ax + t * vx - x, ay + t * vy - y);
+    };
+    for (const kind of KINDS) {
+      for (let seed = 1; seed <= 5; seed++) {
+        const plan = generateMap(seed, 320, 240, kind, { interiors: true });
+        const { map } = plan;
+        const patches = new PatchIndex(map);
+        const enc = new EnclosureIndex(map, new Uint8Array(map.w * map.h));
+        const encKind = (wx: number, wy: number) => {
+          const id = enc.enclosureIdAt(Math.floor(wx), Math.floor(wy));
+          return id >= 0 ? enc.enclosures[id].kind : null;
+        };
+        const blockers: Seg[] = enc.runs.map((r) => [r.ax, r.ay, r.bx, r.by]);
+        const yards = buildYards(map, patches, encKind, blockers);
+        const others = yards.flatMap((y) => y.runs);
+        for (const yd of yards)
+          for (const r of yd.runs)
+            for (const [x, y] of [[r[0], r[1]], [r[2], r[3]]] as [number, number][]) {
+              const dx = Math.max(yd.b.minX - x, 0, x - yd.b.maxX);
+              const dy = Math.max(yd.b.minY - y, 0, y - yd.b.maxY);
+              const anchored =
+                Math.hypot(dx, dy) <= 0.45 ||
+                yd.gate.some(([gx, gy]) => Math.hypot(gx - x, gy - y) <= 0.45) ||
+                [...blockers, ...others].some((s) => s !== r && ptSeg(x, y, s) <= 0.45);
+              expect(anchored, `${kind} seed ${seed} yard@${yd.b.id} run ${r} end ${x},${y} floats`).toBe(true);
+            }
+      }
+    }
+  }, 120_000);
 });
