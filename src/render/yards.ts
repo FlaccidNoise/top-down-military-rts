@@ -198,12 +198,17 @@ export function buildYards(map: GameMap, patches: PatchIndex, enclosedKind: (wx:
       if (!paintable(map, patches, px(b, side, gu, depth), py(b, side, gu, depth), enclosedKind)) continue;
       gate.push([px(b, side, gu, depth), py(b, side, gu, depth)]);
     }
-    // Open leaf swung back along the shared wind, into the yard.
+    // Open leaf swung flat back against the INSIDE of the boundary — a gate
+    // opened all the way lies along the fence line. The old swing (0.42 along,
+    // 1.1 deep) jutted into the yard at a diagonal and read as a stray brown
+    // rail crisscrossing the fences at close zoom.
     let leaf: Seg | null = null;
     if (gate.length === 2 && hash(b.id, 0, 303) < 0.5) {
       const s = (along ? WIND.dx : WIND.dy) >= 0 ? 1 : -1;
       const hu = gateU + s * GATE_HALF;
-      leaf = [px(b, side, hu, depth), py(b, side, hu, depth), px(b, side, hu - s * 0.42, depth - 1.1), py(b, side, hu - s * 0.42, depth - 1.1)];
+      const runEnd = s > 0 ? u1 : u0;
+      const len = Math.max(0.5, Math.min(1.15, Math.abs(runEnd - hu) - 0.1));
+      leaf = [px(b, side, hu, depth - 0.12), py(b, side, hu, depth - 0.12), px(b, side, hu + s * len, depth - 0.12), py(b, side, hu + s * len, depth - 0.12)];
     }
     // Tight reach, not the blanket YARD_REACH: the chunk loop tests every
     // footprint on the map, and in a village that decides whether eight yards
