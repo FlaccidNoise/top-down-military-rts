@@ -292,19 +292,29 @@ export function buildFootprints(sk: Skeleton, land: Landmarks, pc: Parcels): Foo
     const rear = opposite(front);
 
     // width: a terrace unit fills its plot (party walls, margin 0); anything
-    // else is inset where the plot can spare it, which is the doc's margin-2
-    // policy wherever a 5-tile burgage does not veto it.
+    // else is inset where the plot can spare it. The inset is 2, never 1: a
+    // 1-tile inset next to a flush terrace neighbour is a 1-tile sliver gap
+    // (C2 — reads as neither terraced nor detached). A plot too narrow for
+    // gap + body + two insets flush-fills instead and joins the terrace chain
+    // (party wall), so no detached house ever ends up 0 or 1 tiles from its
+    // neighbour.
     let gap = 0;
-    if (!terrace && mid && r9.int(256) >= p.densQ8) gap = 1 + r9.int(2);
-    const inset = terrace ? 0 : p.w >= 7 ? 1 : 0;
+    if (!terrace && mid && r9.int(256) >= p.densQ8) gap = 2 + r9.int(1);
+    const inset = terrace ? 0 : p.w >= 9 ? 2 : 0;
     let a0 = gap + inset;
     let aw = p.w - a0 - inset;
-    if (aw < MIN_WIDTH) {
-      a0 = gap;
-      aw = p.w - gap;
+    // A plot too narrow for gap + body + insets flushes instead (joins the
+    // terrace chain, party wall). A w<9 plot has no right-hand inset, so a
+    // gap there would push its right wall onto the neighbour — an abutting
+    // pair with mismatched runs. Never a 1-tile sliver, never a 0-gap pair
+    // without a shared run.
+    if (aw < MIN_WIDTH || (gap > 0 && inset === 0)) {
+      a0 = 0;
+      aw = p.w;
+      gap = 0;
     }
     if (aw < MIN_WIDTH) return;
-    const flush = terrace && gap === 0 && inset === 0;
+    const flush = gap === 0 && inset === 0;
 
     const bd = clampTo(core ? 6 + r9.int(5) : mid ? 5 + r9.int(5) : 5 + r9.int(3), MIN_BODY, avail - 2);
     const tail = avail - bd;

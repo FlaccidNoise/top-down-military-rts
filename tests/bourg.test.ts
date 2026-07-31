@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { generateMap, reachField, type Building, type MapPlan, type Vec } from '../src/sim/mapgen';
+import { generateMap, reachField, type Building, type MapKind, type MapPlan, type Vec } from '../src/sim/mapgen';
 import { EDGE, GameMap } from '../src/sim/map';
 import { astar } from '../src/sim/path';
 import { GARRISON_RADIUS } from '../src/sim/bourg/objectives';
 import { partsOf } from '../src/sim/bourg/stamp';
 import { buildFootprints } from '../src/sim/bourg/footprints';
 import { reserveLandmarks } from '../src/sim/bourg/landmarks';
-import { buildParcels } from '../src/sim/bourg/parcels';
+import { buildParcels, plotRect } from '../src/sim/bourg/parcels';
 import { planBourg, stampBourg, type BourgPlan, type BourgStamp } from '../src/sim/bourg/plan';
 import { BOURG, BRIDGE, OPEN, PROFILES, RIVER, ROAD, WOODS } from '../src/sim/bourg/profile';
 import { addRuralFabric, paintRural } from '../src/sim/bourg/rural';
@@ -1363,6 +1363,215 @@ describe('water connectivity (mapgen-v3 §2.5)', () => {
   });
 });
 
+// ── block coordination (2026-07-29) ────────────────────────────────────────
+// docs/plans/2026-07-29-block-coordination.md. The layer adjusts WHERE houses
+// go, never how they are built:
+//   C1 · frontages in a row share ONE setback line (mode per run).
+//   C2 · detached neighbours keep >= 2 tiles, or share a terrace run (party
+//        wall) — a 1-tile sliver reads as neither terraced nor detached.
+//   C3 · opposing runs rear onto ONE line wherever the geometry allows: per
+//        opposing run pair both runs snap to depths dA + dB = G (the gap
+//        between the two frontage lines). Plots are only ever shrunk —
+//        growing would claim tiles interiors/rural already carved — so a pair
+//        whose shallowest plots cannot reach G keeps its strip by construction.
+describe('block coordination (2026-07-29)', () => {
+  const COORD_KINDS: MapKind[] = ['open', 'road', 'woods', 'river', 'bridge', 'bourg'];
+  const COORD_SEEDS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+  const PLOT_ROLES = new Set(['townhouse', 'farmhouse', 'shop', 'bakery', 'forge']);
+
+  function coordPlan(kind: MapKind, seed: number): BourgPlan {
+    const base = mulberry32((seed ^ 0x51ab3fc7) >>> 0).int(0x7fffffff);
+    const heightRng = subStream(base, TAG.HEIGHT);
+    const height = generateHeightField(heightRng.int(0x7fffffff), W, H, PROFILES[kind].height.amp);
+    return planBourg(base, W, H, PROFILES[kind], height);
+  }
+
+  it('keeps same-run houses at >=2 tile gaps or on a shared terrace run', () => {
+    for (const kind of COORD_KINDS)
+      for (const seed of COORD_SEEDS) {
+        const { pc, fp } = coordPlan(kind, seed);
+        const masses: { x: number; y: number; w: number; h: number; run: number; tr: number | undefined }[] = [];
+        for (const b of fp.buildings) {
+          if (!b.role || !PLOT_ROLES.has(b.role)) continue;
+          const r = b.parts?.[0] ?? b;
+          const pr = pc.plots.find((p) => {
+            const q = plotRect(p);
+            return r.x >= q.x && r.y >= q.y && r.x + r.w <= q.x + q.w && r.y + r.h <= q.y + q.h;
+          });
+          if (!pr) continue;
+          for (const p of b.parts ?? [b]) masses.push({ x: p.x, y: p.y, w: p.w, h: p.h, run: pr.runIndex, tr: b.terraceRun });
+        }
+        for (let i = 0; i < masses.length; i++)
+          for (let j = i + 1; j < masses.length; j++) {
+            const a = masses[i];
+            const b = masses[j];
+            if (a.run !== b.run) continue;
+            if (a.x + a.w <= b.x && a.y < b.y + b.h && b.y < a.y + a.h) {
+              const gap = b.x - (a.x + a.w);
+              expect([kind, seed, 'sliver', gap === 0 || gap >= 2]).toEqual([kind, seed, 'sliver', true]);
+              if (gap === 0) expect([kind, seed, 'abut', a.tr === b.tr]).toEqual([kind, seed, 'abut', true]);
+            }
+            if (a.y + a.h <= b.y && a.x < b.x + b.w && b.x < a.x + a.w) {
+              const gap = b.y - (a.y + a.h);
+              expect([kind, seed, 'sliver', gap === 0 || gap >= 2]).toEqual([kind, seed, 'sliver', true]);
+              if (gap === 0) expect([kind, seed, 'abut', a.tr === b.tr]).toEqual([kind, seed, 'abut', true]);
+            }
+          }
+      }
+  });
+
+  it('shares one setback line per run', () => {
+    for (const kind of COORD_KINDS)
+      for (const seed of COORD_SEEDS) {
+        const { pc } = coordPlan(kind, seed);
+        const runs = new Map<number, typeof pc.plots>();
+        for (const p of pc.plots) {
+          let l = runs.get(p.runIndex);
+          if (!l) {
+            l = [];
+            runs.set(p.runIndex, l);
+          }
+          l.push(p);
+        }
+        for (const [, plots] of runs) {
+          // plots whose setback was not clamped by d-4 (a shallow plot's wall
+          // legitimately sits at the line its depth forces)
+          const free = plots.filter((p) => p.setback <= p.d - 5);
+          if (free.length < 2) continue;
+          const s0 = free[0].setback;
+          for (const p of free) expect([kind, seed, 'setback', plots[0].runIndex, p.setback === s0]).toEqual([kind, seed, 'setback', plots[0].runIndex, true]);
+        }
+      }
+  });
+
+  it('merges every feasible opposing-run pair onto one rear line', () => {
+    for (const kind of COORD_KINDS)
+      for (const seed of COORD_SEEDS) {
+        const { pc } = coordPlan(kind, seed);
+        const runMin = new Map<number, number>();
+        for (const p of pc.plots) runMin.set(p.runIndex, Math.min(runMin.get(p.runIndex) ?? 999, p.d));
+        const byBlock = new Map<number, { axis: 'h' | 'v'; side: -1 | 1; front: number; span: number; wid: number; d: number; runIndex: number }[]>();
+        for (const p of pc.plots) {
+          let l = byBlock.get(p.blockId);
+          if (!l) {
+            l = [];
+            byBlock.set(p.blockId, l);
+          }
+          l.push({ axis: p.axis, side: p.side, front: p.axis === 'h' ? p.fy : p.fx, span: p.axis === 'h' ? p.fx : p.fy, wid: p.w, d: p.d, runIndex: p.runIndex });
+        }
+        for (const [, plots] of byBlock)
+          for (let i = 0; i < plots.length; i++)
+            for (let j = i + 1; j < plots.length; j++) {
+              const a = plots[i];
+              const b = plots[j];
+              if (a.axis !== b.axis || a.side === b.side) continue;
+              const lo = Math.max(a.span, b.span);
+              const hi = Math.min(a.span + a.wid, b.span + b.wid);
+              if (hi - lo <= 0) continue;
+              const [plus, minus] = a.side === 1 ? [a, b] : [b, a];
+              if (plus.front >= minus.front) continue;
+              const G = minus.front - plus.front + 1;
+              const strip = minus.front - minus.d + 1 - (plus.front + plus.d);
+              if (strip < 1) continue;
+              // a strip is legal only where the pair cannot meet: the runs'
+              // shallowest plots must both reach the meeting line to merge
+              const mA = runMin.get(plus.runIndex)!;
+              const mB = runMin.get(minus.runIndex)!;
+              expect([kind, seed, 'strip', mA + mB < G || G < 8]).toEqual([kind, seed, 'strip', true]);
+            }
+      }
+  });
+
+  it('writes no 1-tile-apart wall pairs between two different gardens', () => {
+    for (const kind of COORD_KINDS)
+      for (const seed of COORD_SEEDS) {
+        const plan = coordPlan(kind, seed);
+        const map = new GameMap(W, H);
+        stampBourg(map, plan);
+        const { pc, fp } = plan;
+        // garden tail ownership, mirroring enclosures.ts
+        const tail = new Int32Array(W * H).fill(-1);
+        fp.gardens.forEach((g, gi) => {
+          for (let y = g.rect.y; y < g.rect.y + g.rect.h; y++)
+            for (let x = g.rect.x; x < g.rect.x + g.rect.w; x++)
+              if (x >= 0 && y >= 0 && x < W && y < H && !fp.occ[y * W + x]) tail[y * W + x] = gi;
+        });
+        const runMin = new Map<number, number>();
+        for (const p of pc.plots) runMin.set(p.runIndex, Math.min(runMin.get(p.runIndex) ?? 999, p.d));
+        // the plots of two gardens are an opposing infeasible pair when their
+        // rear lines cannot meet (no-grow law) — the only legal garden↔garden
+        // double wall
+        const forcedStrip = (giA: number, giB: number): boolean => {
+          const pA = pc.plots[fp.gardens[giA].plotIndex];
+          const pB = pc.plots[fp.gardens[giB].plotIndex];
+          if (!pA || !pB || pA.axis !== pB.axis || pA.side === pB.side) return false;
+          const [plus, minus] = pA.side === 1 ? [pA, pB] : [pB, pA];
+          const frontOf = (p: typeof pA): number => (p.axis === 'h' ? p.fy : p.fx);
+          if (frontOf(plus) >= frontOf(minus)) return false;
+          const G = frontOf(minus) - frontOf(plus) + 1;
+          return runMin.get(plus.runIndex)! + runMin.get(minus.runIndex)! < G || G < 8;
+        };
+        const ourT = (t: number): boolean => t === 1 || t === 2;
+        // collect maximal our-wall runs per grid line, then pair adjacent lines
+        const hLines: [number, number][][] = [];
+        for (let ey = 0; ey <= H; ey++) {
+          const runs: [number, number][] = [];
+          let s = -1;
+          for (let ex = 0; ex < W; ex++) {
+            if (map.hEdge(ex, ey) === EDGE.WALL && ourT(map.hEdgeTops[ey * W + ex])) {
+              if (s < 0) s = ex;
+            } else if (s >= 0) {
+              runs.push([s, ex - 1]);
+              s = -1;
+            }
+          }
+          if (s >= 0) runs.push([s, W - 1]);
+          hLines.push(runs);
+        }
+        const vLines: [number, number][][] = [];
+        for (let ex = 0; ex <= W; ex++) {
+          const runs: [number, number][] = [];
+          let s = -1;
+          for (let ey = 0; ey < H; ey++) {
+            if (map.vEdge(ex, ey) === EDGE.WALL && ourT(map.vEdgeTops[ey * (W + 1) + ex])) {
+              if (s < 0) s = ey;
+            } else if (s >= 0) {
+              runs.push([s, ey - 1]);
+              s = -1;
+            }
+          }
+          if (s >= 0) runs.push([s, H - 1]);
+          vLines.push(runs);
+        }
+        const check = (ey1: number, ey2: number, x0: number, x1: number, horiz: boolean): void => {
+          const gardensOf = (ey: number, x: number): number[] => {
+            const out: number[] = [];
+            if (horiz) {
+              for (const yy of [ey - 1, ey]) if (yy >= 0 && yy < H && tail[yy * W + x] >= 0) out.push(tail[yy * W + x]);
+            } else {
+              for (const xx of [ey - 1, ey]) if (xx >= 0 && xx < W && tail[ey * W + xx] >= 0) out.push(tail[ey * W + xx]);
+            }
+            return out;
+          };
+          const g1 = gardensOf(ey1, x0);
+          const g2 = gardensOf(ey2, x1);
+          for (const gi1 of g1)
+            for (const gi2 of g2)
+              if (gi1 !== gi2)
+                expect([kind, seed, 'double wall', forcedStrip(gi1, gi2)]).toEqual([kind, seed, 'double wall', true]);
+        };
+        for (let ey = 0; ey < H; ey++)
+          for (const rA of hLines[ey])
+            for (const rB of hLines[ey + 1])
+              if (rA[0] <= rB[1] && rB[0] <= rA[1]) check(ey, ey + 1, rA[0], rB[1], true);
+        for (let ex = 0; ex < W; ex++)
+          for (const rA of vLines[ex])
+            for (const rB of vLines[ex + 1])
+              if (rA[0] <= rB[1] && rB[0] <= rA[1]) check(ex, ex + 1, rA[0], rB[1], false);
+      }
+  });
+});
+
 // ── §5.4 determinism ────────────────────────────────────────────────────────
 
 describe('bourg determinism (§5.4)', () => {
@@ -1399,8 +1608,8 @@ describe('bourg determinism (§5.4)', () => {
   // is what makes both legitimate rather than silent — with the stage switched
   // off, T14's numbers come back bit for bit.
   it('pins the bourg fingerprints', () => {
-    expect(fingerprint(town(1))).toMatchInlineSnapshot(`"8094d796"`);
-    expect(fingerprint(town(2))).toMatchInlineSnapshot(`"b02eccbb"`);
+    expect(fingerprint(town(1))).toMatchInlineSnapshot(`"8bbb50c4"`);
+    expect(fingerprint(town(2))).toMatchInlineSnapshot(`"3afb0fa9"`);
   });
 
   // The road kind's counterpart, frozen at the P2 cutover. At 320x240 the
@@ -1411,8 +1620,8 @@ describe('bourg determinism (§5.4)', () => {
   // laundered by `-u`. Moving these is legitimate only when the road layout
   // was meant to change; the four bourg values above must not move with them.
   it('pins the road fingerprints', () => {
-    expect(fingerprint(generateMap(1, W, H, 'road'))).toMatchInlineSnapshot(`"5733fb7d"`);
-    expect(fingerprint(generateMap(2, W, H, 'road'))).toMatchInlineSnapshot(`"33ff6c8"`);
+    expect(fingerprint(generateMap(1, W, H, 'road'))).toMatchInlineSnapshot(`"cdb4b19"`);
+    expect(fingerprint(generateMap(2, W, H, 'road'))).toMatchInlineSnapshot(`"b2c90b9e"`);
   });
 
   // THE SIGHTLINE PASS moved the eight values below and NOT the four above.
@@ -1431,8 +1640,8 @@ describe('bourg determinism (§5.4)', () => {
   // the quick-battle scenario uses — the two move together or one of them is
   // a bug.
   it('pins the open fingerprints', () => {
-    expect(fingerprint(generateMap(1, W, H, 'open'))).toMatchInlineSnapshot(`"e9f4f11a"`);
-    expect(fingerprint(generateMap(2, W, H, 'open'))).toMatchInlineSnapshot(`"919407b6"`);
+    expect(fingerprint(generateMap(1, W, H, 'open'))).toMatchInlineSnapshot(`"73d278d8"`);
+    expect(fingerprint(generateMap(2, W, H, 'open'))).toMatchInlineSnapshot(`"e58b1a1"`);
   });
 
   // The woods kind's, frozen at the P4 cutover. RELIEF_BY_KIND.woods carries
@@ -1441,8 +1650,8 @@ describe('bourg determinism (§5.4)', () => {
   // relief-wiring.test.ts. They also cover the clearing sub-stage (tag 16),
   // which is the only new machinery in the kind.
   it('pins the woods fingerprints', () => {
-    expect(fingerprint(generateMap(1, W, H, 'woods'))).toMatchInlineSnapshot(`"442600f2"`);
-    expect(fingerprint(generateMap(2, W, H, 'woods'))).toMatchInlineSnapshot(`"54201be6"`);
+    expect(fingerprint(generateMap(1, W, H, 'woods'))).toMatchInlineSnapshot(`"193866ec"`);
+    expect(fingerprint(generateMap(2, W, H, 'woods'))).toMatchInlineSnapshot(`"5035166d"`);
   });
 
   // The two water kinds', frozen at the P5 cutover. RELIEF_BY_KIND gives both
@@ -1453,8 +1662,8 @@ describe('bourg determinism (§5.4)', () => {
   // TAG.WATER is drawn inside the skeleton, so the band is in the pre-relief
   // literals too.
   it('pins the river fingerprints', () => {
-    expect(fingerprint(generateMap(1, W, H, 'river'))).toMatchInlineSnapshot(`"994e06e2"`);
-    expect(fingerprint(generateMap(2, W, H, 'river'))).toMatchInlineSnapshot(`"8e9df8fa"`);
+    expect(fingerprint(generateMap(1, W, H, 'river'))).toMatchInlineSnapshot(`"b9fd1878"`);
+    expect(fingerprint(generateMap(2, W, H, 'river'))).toMatchInlineSnapshot(`"56a8ad31"`);
   });
 
   it('pins the bridge fingerprints', () => {
@@ -1470,8 +1679,9 @@ describe('bourg determinism (§5.4)', () => {
     // outline change, which repaints every kind's stands; recaptured by hand
     // Recaptured at V4-P4: height field is now the base elevation with relief off
     // (R-H2: generated then zeroed). `npx vite-node scripts/fp.mjs`, seeds 1 and 2.
-    expect(fingerprint(generateMap(1, W, H, 'bourg', { relief: 'none' }))).toBe('44b12230');
-    expect(fingerprint(generateMap(2, W, H, 'bourg', { relief: 'none' }))).toBe('cd8dc94b');
+    // Recaptured 2026-07-29: block coordination (C1-C3) adjusted plot setbacks/depths.
+    expect(fingerprint(generateMap(1, W, H, 'bourg', { relief: 'none' }))).toBe('8fdcff56');
+    expect(fingerprint(generateMap(2, W, H, 'bourg', { relief: 'none' }))).toBe('4260556');
   });
 
   // RETIRED at the mapgen-v3 P6 cutover: §5.1's one-draw guard test, which

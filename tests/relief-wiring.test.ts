@@ -36,15 +36,18 @@ function fingerprint(plan: MapPlan): string {
 // then zeroed per R-H2, so the base elevation changes; undulation is retired;
 // the feathered town weight replaces the binary mask. Recapture is `npx vite-node
 // scripts/fp.mjs`.
+// Recaptured 2026-07-29: block coordination (C1-C3) adjusted plot setbacks/depths.
+// Recaptured again 2026-07-29: C3 exact rear-line merge + C2 min-gap rules
+// (inset 2 / narrow plots flush onto the terrace chain).
 const PRE_RELIEF: Record<MapKind, string[]> = {
-  open: ['c388d463', 'e79c8af5', '81be3b7a', 'dbb5a1c4', '28633943', '92025994', 'c5bdc001', '3e003222'],
-  road: ['e5002a75', 'ffb6872d', '2eb38e91', '102e27de', 'f803146a', '7b710a28', 'd815479e', '479a9297'],
-  woods: ['b6196876', '51118144', '29a8add0', '8ab54eed', '5f5f7f9c', 'fc22df15', '7acc137f', '5cfa32d1'],
+  open: ['3bb1eafd', '8fcfcea2', 'baa8951a', '37022aa3', '572d3c2a', '92025994', '33841d7f', '83a373c'],
+  road: ['93229391', '7c9a0db0', '9913b12', '102e27de', 'aede4ab8', '990c2013', 'c531a945', '479a9297'],
+  woods: ['cd77c1b0', 'f211ef5f', 'd43014fd', '8c67f896', '5290e918', 'fc22df15', 'e55f286c', '4ded421a'],
   // The water kinds' rows cover the water stage itself: TAG.WATER's band is
   // carved inside the skeleton, so `relief: 'none'` still has the whole river.
-  river: ['3093b98a', '3a08131b', 'f1ea3bfc', 'a95ca656', 'f860867e', 'd6ab005e', 'e714e5d6', 'ce62f8e2'],
-  bridge: ['4a90d452', '328042ce', 'd42cbe17', 'db375c8c', '1e850a78', '35c92ef5', 'e87449cb', '8ce6b955'],
-  bourg: ['44b12230', 'cd8dc94b', '6f91efb2', '31656037', 'b5e12e3d', '2da9319f', '28f29c39', '1de59304'],
+  river: ['3edb4704', '7d003020', '10f7b04c', 'a80f083d', 'a59ea4d5', 'd6ab005e', 'c882a0a0', '68ee4a38'],
+  bridge: ['4a90d452', '328042ce', 'd42cbe17', 'db375c8c', 'b6661f2f', '7f286b5', '58e788c8', '8b408694'],
+  bourg: ['8fdcff56', '4260556', '6f91efb2', 'c5d7923', '7cf0000', 'a7c25b67', '43f96359', '5457e69a'],
 };
 
 const cache = new Map<string, MapPlan>();

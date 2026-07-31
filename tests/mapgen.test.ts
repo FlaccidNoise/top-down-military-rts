@@ -63,8 +63,8 @@ describe('mapgen', () => {
   // and tests/bourg.test.ts's 8607a31f / 6e8a0239 / c81d25a5 / e44efdd6 holding
   // is the control that says so.
   it('matches known snapshots (catches accidental generator drift)', () => {
-    expect(fingerprint(1)).toMatchInlineSnapshot(`"f6a19cf3"`);
-    expect(fingerprint(2)).toMatchInlineSnapshot(`"b4961684"`);
+    expect(fingerprint(1)).toMatchInlineSnapshot(`"e879a546"`);
+    expect(fingerprint(2)).toMatchInlineSnapshot(`"61f6c1ef"`);
   });
 
   // I12 · interiors §6.2. The answer to "you only fingerprint the config you do
@@ -95,10 +95,10 @@ describe('mapgen', () => {
     // BOURG lines did not, because the pass measured the bourg and wrote
     // nothing — so this pair is now the leak control in the other direction,
     // and they agree tile for tile with the flag-off pins in bourg.test.ts.
-    expect(furnishedFingerprint(1, 160, 120, 'open')).toMatchInlineSnapshot(`"f9251d8c"`);
-    expect(furnishedFingerprint(2, 160, 120, 'open')).toMatchInlineSnapshot(`"a11447f5"`);
-    expect(furnishedFingerprint(1, 320, 240, 'bourg')).toMatchInlineSnapshot(`"8dedaa99"`);
-    expect(furnishedFingerprint(2, 320, 240, 'bourg')).toMatchInlineSnapshot(`"c7884d6c"`);
+    expect(furnishedFingerprint(1, 160, 120, 'open')).toMatchInlineSnapshot(`"e27a628"`);
+    expect(furnishedFingerprint(2, 160, 120, 'open')).toMatchInlineSnapshot(`"b6c833cb"`);
+    expect(furnishedFingerprint(1, 320, 240, 'bourg')).toMatchInlineSnapshot(`"9f8eacde"`);
+    expect(furnishedFingerprint(2, 320, 240, 'bourg')).toMatchInlineSnapshot(`"1f13b35c"`);
   });
 
   // The validation gate inlines canStep (mapgen.ts reachField) for speed, so it

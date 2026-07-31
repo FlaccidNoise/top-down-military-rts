@@ -4,6 +4,7 @@ import { stampEnclosures, type Enclosures } from './enclosures';
 import { buildFootprints, type Footprints } from './footprints';
 import { reserveLandmarks, type Landmarks } from './landmarks';
 import { buildParcels, type Parcels } from './parcels';
+import { coordinateBlocks } from './coord';
 import type { KindProfile } from './profile';
 import { bourgSpawns } from './objectives';
 import { addRuralFabric, paintRural, type Rural } from './rural';
@@ -62,6 +63,7 @@ export function planBourg(base: number, w: number, h: number, profile: KindProfi
   const blocked = profile.water ? union(land.resv, sk.water) : land.resv;
   growMinorStreets(sk, { resv: land.resv, blocked }); // stage 5 — mutates sk.road and sk.segs
   const pc = buildParcels(sk, blocked); // stages 6, 7, 8
+  coordinateBlocks(sk, pc); // block coordination: C1-C3
   const fp = buildFootprints(sk, land, pc); // stage 9
   const rural = addRuralFabric(sk, land, pc, fp); // stage 11a — mutates sk.road and fp
   return { sk, land, pc, fp, rural, spawns: bourgSpawns(sk), height };
