@@ -39,15 +39,17 @@ function fingerprint(plan: MapPlan): string {
 // Recaptured 2026-07-29: block coordination (C1-C3) adjusted plot setbacks/depths.
 // Recaptured again 2026-07-29: C3 exact rear-line merge + C2 min-gap rules
 // (inset 2 / narrow plots flush onto the terrace chain).
+// Recaptured 2026-07-31: D1 hedge-stub wave — bocage mask excludes
+// building-dilated tiles, orphan-path carve clears the mask, stub prune K=8.
 const PRE_RELIEF: Record<MapKind, string[]> = {
-  open: ['3bb1eafd', '8fcfcea2', 'baa8951a', '37022aa3', '572d3c2a', '92025994', '33841d7f', '83a373c'],
-  road: ['93229391', '7c9a0db0', '9913b12', '102e27de', 'aede4ab8', '990c2013', 'c531a945', '479a9297'],
-  woods: ['cd77c1b0', 'f211ef5f', 'd43014fd', '8c67f896', '5290e918', 'fc22df15', 'e55f286c', '4ded421a'],
+  open: ['3d41d398', 'c8a0a539', '1c9e6575', 'dc7d4056', '4ac05752', 'abcb6157', 'db795b4c', 'ebbd27dd'],
+  road: ['e00dc4ca', 'a29d3a09', 'ee7ca4fe', '26ef54eb', '1d2f7bd1', 'c5810733', '1017a69e', 'c0a69adf'],
+  woods: ['813034a2', '15a82131', '2f8f65c1', '20f97de2', '6e722869', 'c4a5127d', '1f238b77', '2f736b51'],
   // The water kinds' rows cover the water stage itself: TAG.WATER's band is
   // carved inside the skeleton, so `relief: 'none'` still has the whole river.
-  river: ['3edb4704', '7d003020', '10f7b04c', 'a80f083d', 'a59ea4d5', 'd6ab005e', 'c882a0a0', '68ee4a38'],
-  bridge: ['4a90d452', '328042ce', 'd42cbe17', 'db375c8c', 'b6661f2f', '7f286b5', '58e788c8', '8b408694'],
-  bourg: ['8fdcff56', '4260556', '6f91efb2', 'c5d7923', '7cf0000', 'a7c25b67', '43f96359', '5457e69a'],
+  river: ['c9bd6634', 'c4d51400', '350dd4e9', 'baf41521', 'ec221461', '36d27d25', '22865c7d', 'b6c5ba73'],
+  bridge: ['9b50f9cc', 'c390541c', 'e8658589', 'cb1dbd20', '23187625', 'c7a87579', '362f04d5', 'fc2f8663'],
+  bourg: ['4523bfcf', '4c9d9ace', 'd7938596', 'aefe41e5', 'd98edf8c', '7536108e', '13b88901', 'd9b3b758'],
 };
 
 const cache = new Map<string, MapPlan>();

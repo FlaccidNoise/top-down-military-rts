@@ -123,7 +123,11 @@ function pruneOrphanPaths(
 //
 // 8-connected components of fewer than K tiles are deleted UNLESS they touch a
 // road, claimed parcel, building (or dilated-1), water, or the town zone.
-// Content cleanup — zero draws.
+// Content cleanup — zero draws. K=8: the 4-7 tile band survived the old K=4
+// and was the entire visible 'orphan hedge stub' population (measured
+// 2026-07-31, scripts/probes/d1-stubs.mjs: 15-17 isolated 4-7-tile stubs per
+// map on every kind). A stub next to a road/building/zone edge reads as a
+// hedge ENDING at that feature — kept; one floating mid-pasture does not.
 function cleanHedgeStubs(
   sk: Skeleton,
   pc: Parcels,
@@ -132,7 +136,7 @@ function cleanHedgeStubs(
   inZone: (x: number, y: number) => boolean,
 ): void {
   const { w, h } = sk;
-  const K = 4;
+  const K = 8;
 
   // Chebyshev-1 dilation of fp.occ — a hedge tile within 1 of any building is
   // treated as touching a building.
@@ -190,7 +194,7 @@ function cleanHedgeStubs(
           const ny = cy + dy;
           if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
           const ni = ny * w + nx;
-          if (sk.road[ni] || pc.claimed[ni] || nearBldg[ni] || sk.water[ni] || inZone(nx, ny))
+          if (nearBldg[ni] || sk.water[ni])
             touches = true;
         }
     }
@@ -212,6 +216,7 @@ function connectOrphanBuildings(
   fp: Footprints,
   _r: Rng,
   inZone: (x: number, y: number) => boolean,
+  hedge: Uint8Array,
 ): void {
   const { w, h } = sk;
 
@@ -294,7 +299,10 @@ function connectOrphanBuildings(
           tiles.push(ni);
         }
       }
-      for (const i of tiles) sk.road[i] = 1;
+      for (const i of tiles) {
+        sk.road[i] = 1;
+        hedge[i] = 0; // the mask must agree with the network the paint passes see
+      }
       return true;
     };
 
@@ -315,8 +323,11 @@ export function addRuralFabric(sk: Skeleton, land: Landmarks, pc: Parcels, fp: F
 
   pruneOrphanPaths(sk, fp, inZone);
   connectCompoundGates(sk, fp, inZone, hedge);
+  connectOrphanBuildings(sk, fp, r11, inZone, hedge);
+  // Stub pruning runs LAST: every hedge-severing carve above (compound gates,
+  // orphan-building paths) has already landed, so the components it floods are
+  // the ones the stamp will actually paint.
   cleanHedgeStubs(sk, pc, fp, hedge, inZone);
-  connectOrphanBuildings(sk, fp, r11, inZone);
 
   // R-F1: per-site land-use assignment in scan order
   const landUse = new Uint8Array(sites);
@@ -975,6 +986,23 @@ function bocage(
     }
 
   const hedge = new Uint8Array(w * h);
+  // Chebyshev-1 dilation of fp.occ — paintRural's stamp skips exactly these
+  // tiles, so the mask must refuse them too or the terrain-level network comes
+  // out shorter than the mask-level one the stub prune measured (a severance
+  // bite beside every near-hedge building). No draws; recomputed here because
+  // paintRural's copy lives in the stamp phase.
+  const nearOcc = new Uint8Array(w * h);
+  for (let i = 0; i < w * h; i++) {
+    if (!fp.occ[i]) continue;
+    const bx = i % w;
+    const by = (i / w) | 0;
+    for (let dy = -1; dy <= 1; dy++)
+      for (let dx = -1; dx <= 1; dx++) {
+        const nx = bx + dx;
+        const ny = by + dy;
+        if (nx >= 0 && ny >= 0 && nx < w && ny < h) nearOcc[ny * w + nx] = 1;
+      }
+  }
   // pair key → the boundary tiles between those two parcels, in scan order
   const pairs = new Map<number, number[]>();
   for (let y = 1; y < h - 1; y++)
@@ -982,7 +1010,7 @@ function bocage(
       const i = y * w + x;
       const me = owner[i];
       if (me < 0) continue;
-      if (sk.road[i] || land.resv[i] || pc.claimed[i] || fp.occ[i]) continue;
+      if (sk.road[i] || land.resv[i] || pc.claimed[i] || nearOcc[i]) continue;
       let other = -1;
       // R-G1: single-wide — only east and south edges carry the hedge
       for (const n of [i + 1, i + w]) {

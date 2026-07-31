@@ -9,7 +9,7 @@ import { reserveLandmarks } from '../src/sim/bourg/landmarks';
 import { buildParcels, plotRect } from '../src/sim/bourg/parcels';
 import { planBourg, stampBourg, type BourgPlan, type BourgStamp } from '../src/sim/bourg/plan';
 import { BOURG, BRIDGE, OPEN, PROFILES, RIVER, ROAD, WOODS } from '../src/sim/bourg/profile';
-import { addRuralFabric, paintRural } from '../src/sim/bourg/rural';
+import { addRuralFabric, paintRural, zoneOf } from '../src/sim/bourg/rural';
 import { MIN_REAR_SPAN_Q8, stampEnclosures } from '../src/sim/bourg/enclosures';
 import { stampStructure } from '../src/sim/bourg/stamp';
 import { buildSkeleton, growMinorStreets, subStream, TAG, type Skeleton } from '../src/sim/bourg/streets';
@@ -1533,6 +1533,87 @@ describe('block coordination (2026-07-29)', () => {
   });
 });
 
+// ── D1 hedge structure (2026-07-31) ─────────────────────────────────────────
+// Hedges must be network, not noise. The invariant mirrors cleanHedgeStubs
+// (rural.ts, K=8) on the STAMPED terrain: every 8-connected hedge component
+// shorter than 8 tiles must touch a protected feature (road, claimed parcel,
+// building-dilated-1, water, town zone) — a short run next to one reads as a
+// hedge ENDING there; one floating mid-pasture reads as a paint daub.
+// Measured pre-fix (scripts/probes/d1-stubs.mjs): 15-17 isolated stubs/map on
+// every kind. Two deliberate amendments to the first draft of this battery:
+// (a) 8-connectivity, not 4 — R-G1's east/south single-wide rule makes
+// diagonal joints inherent at staircase corners, and they read connected at
+// 24 px/m; (b) protected-feature carve-out replaces the 'pairs >= 2' rule,
+// which overcounted legitimate gate remnants.
+describe('D1 hedge structure (2026-07-31)', () => {
+  const D1_KINDS: MapKind[] = ['open', 'road', 'woods', 'river', 'bridge', 'bourg'];
+  const D1_SEEDS = Array.from({ length: 13 }, (_, i) => i + 1);
+
+  function d1Map(kind: MapKind, seed: number): { map: GameMap; plan: BourgPlan } {
+    const base = mulberry32((seed ^ 0x51ab3fc7) >>> 0).int(0x7fffffff);
+    const plan = planBourg(base, W, H, PROFILES[kind], new Uint8Array(W * H));
+    const map = new GameMap(W, H);
+    stampBourg(map, plan);
+    return { map, plan };
+  }
+
+  it('has no isolated hedge stub (<8 tiles, no protected neighbour)', () => {
+    const isHedge = (m: GameMap, x: number, y: number): boolean =>
+      x >= 0 && y >= 0 && x < m.w && y < m.h && m.terrainKeyAt(x, y) === 'hedge';
+    for (const kind of D1_KINDS)
+      for (const seed of D1_SEEDS) {
+        const { map, plan } = d1Map(kind, seed);
+        const { sk, pc, fp } = plan;
+        const inZone = zoneOf(sk);
+        const nearBldg = new Uint8Array(W * H);
+        for (let i = 0; i < W * H; i++) {
+          if (!fp.occ[i]) continue;
+          const bx = i % W;
+          const by = (i / W) | 0;
+          for (let dy = -1; dy <= 1; dy++)
+            for (let dx = -1; dx <= 1; dx++) {
+              const nx = bx + dx;
+              const ny = by + dy;
+              if (nx >= 0 && ny >= 0 && nx < W && ny < H) nearBldg[ny * W + nx] = 1;
+            }
+        }
+        const seen = new Uint8Array(W * H);
+        const bad: string[] = [];
+        for (let sy = 0; sy < H; sy++)
+          for (let sx = 0; sx < W; sx++) {
+            const si = sy * W + sx;
+            if (seen[si] || !isHedge(map, sx, sy)) continue;
+            // flood the maximal 8-connected component
+            const stack = [si];
+            seen[si] = 1;
+            let len = 0;
+            let prot = false;
+            while (stack.length) {
+              const i = stack.pop()!;
+              len++;
+              const cx = i % W;
+              const cy = (i / W) | 0;
+              for (let dy = -1; dy <= 1; dy++)
+                for (let dx = -1; dx <= 1; dx++) {
+                  if (!dx && !dy) continue;
+                  const nx = cx + dx;
+                  const ny = cy + dy;
+                  if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
+                  const ni = ny * W + nx;
+                  if (nearBldg[ni] || sk.water[ni]) prot = true;
+                  if (!seen[ni] && isHedge(map, nx, ny)) {
+                    seen[ni] = 1;
+                    stack.push(ni);
+                  }
+                }
+            }
+            if (len < 8 && !prot) bad.push(`stub@${sx},${sy} len=${len}`);
+          }
+        expect([kind, seed, bad]).toEqual([kind, seed, []]);
+      }
+  });
+});
+
 // ── §5.4 determinism ────────────────────────────────────────────────────────
 
 describe('bourg determinism (§5.4)', () => {
@@ -1569,8 +1650,8 @@ describe('bourg determinism (§5.4)', () => {
   // is what makes both legitimate rather than silent — with the stage switched
   // off, T14's numbers come back bit for bit.
   it('pins the bourg fingerprints', () => {
-    expect(fingerprint(town(1))).toMatchInlineSnapshot(`"8bbb50c4"`);
-    expect(fingerprint(town(2))).toMatchInlineSnapshot(`"3afb0fa9"`);
+    expect(fingerprint(town(1))).toMatchInlineSnapshot(`"b691cbb"`);
+    expect(fingerprint(town(2))).toMatchInlineSnapshot(`"a31f22bd"`);
   });
 
   // The road kind's counterpart, frozen at the P2 cutover. At 320x240 the
@@ -1581,8 +1662,8 @@ describe('bourg determinism (§5.4)', () => {
   // laundered by `-u`. Moving these is legitimate only when the road layout
   // was meant to change; the four bourg values above must not move with them.
   it('pins the road fingerprints', () => {
-    expect(fingerprint(generateMap(1, W, H, 'road'))).toMatchInlineSnapshot(`"cdb4b19"`);
-    expect(fingerprint(generateMap(2, W, H, 'road'))).toMatchInlineSnapshot(`"b2c90b9e"`);
+    expect(fingerprint(generateMap(1, W, H, 'road'))).toMatchInlineSnapshot(`"eb42ed72"`);
+    expect(fingerprint(generateMap(2, W, H, 'road'))).toMatchInlineSnapshot(`"d9988a17"`);
   });
 
   // THE SIGHTLINE PASS moved the eight values below and NOT the four above.
@@ -1601,8 +1682,8 @@ describe('bourg determinism (§5.4)', () => {
   // the quick-battle scenario uses — the two move together or one of them is
   // a bug.
   it('pins the open fingerprints', () => {
-    expect(fingerprint(generateMap(1, W, H, 'open'))).toMatchInlineSnapshot(`"73d278d8"`);
-    expect(fingerprint(generateMap(2, W, H, 'open'))).toMatchInlineSnapshot(`"e58b1a1"`);
+    expect(fingerprint(generateMap(1, W, H, 'open'))).toMatchInlineSnapshot(`"545dbae9"`);
+    expect(fingerprint(generateMap(2, W, H, 'open'))).toMatchInlineSnapshot(`"7f10b5ee"`);
   });
 
   // The woods kind's, frozen at the P4 cutover. RELIEF_BY_KIND.woods carries
@@ -1611,8 +1692,8 @@ describe('bourg determinism (§5.4)', () => {
   // relief-wiring.test.ts. They also cover the clearing sub-stage (tag 16),
   // which is the only new machinery in the kind.
   it('pins the woods fingerprints', () => {
-    expect(fingerprint(generateMap(1, W, H, 'woods'))).toMatchInlineSnapshot(`"193866ec"`);
-    expect(fingerprint(generateMap(2, W, H, 'woods'))).toMatchInlineSnapshot(`"5035166d"`);
+    expect(fingerprint(generateMap(1, W, H, 'woods'))).toMatchInlineSnapshot(`"a6688ac5"`);
+    expect(fingerprint(generateMap(2, W, H, 'woods'))).toMatchInlineSnapshot(`"ebc99ae8"`);
   });
 
   // The two water kinds', frozen at the P5 cutover. RELIEF_BY_KIND gives both
@@ -1623,13 +1704,13 @@ describe('bourg determinism (§5.4)', () => {
   // TAG.WATER is drawn inside the skeleton, so the band is in the pre-relief
   // literals too.
   it('pins the river fingerprints', () => {
-    expect(fingerprint(generateMap(1, W, H, 'river'))).toMatchInlineSnapshot(`"b9fd1878"`);
-    expect(fingerprint(generateMap(2, W, H, 'river'))).toMatchInlineSnapshot(`"56a8ad31"`);
+    expect(fingerprint(generateMap(1, W, H, 'river'))).toMatchInlineSnapshot(`"6754a80a"`);
+    expect(fingerprint(generateMap(2, W, H, 'river'))).toMatchInlineSnapshot(`"a1e20e11"`);
   });
 
   it('pins the bridge fingerprints', () => {
-    expect(fingerprint(generateMap(1, W, H, 'bridge'))).toMatchInlineSnapshot(`"6fc066c7"`);
-    expect(fingerprint(generateMap(2, W, H, 'bridge'))).toMatchInlineSnapshot(`"a585b9a5"`);
+    expect(fingerprint(generateMap(1, W, H, 'bridge'))).toMatchInlineSnapshot(`"14a8985d"`);
+    expect(fingerprint(generateMap(2, W, H, 'bridge'))).toMatchInlineSnapshot(`"7fd841c0"`);
   });
 
   it('pins the bourg with relief off — the stage is purely additive', () => {
@@ -1641,8 +1722,9 @@ describe('bourg determinism (§5.4)', () => {
     // Recaptured at V4-P4: height field is now the base elevation with relief off
     // (R-H2: generated then zeroed). `npx vite-node scripts/fp.mjs`, seeds 1 and 2.
     // Recaptured 2026-07-29: block coordination (C1-C3) adjusted plot setbacks/depths.
-    expect(fingerprint(generateMap(1, W, H, 'bourg', { relief: 'none' }))).toBe('8fdcff56');
-    expect(fingerprint(generateMap(2, W, H, 'bourg', { relief: 'none' }))).toBe('4260556');
+    // Recaptured 2026-07-31: D1 hedge wave (match the PRE_RELIEF bourg row, seeds 1-2).
+    expect(fingerprint(generateMap(1, W, H, 'bourg', { relief: 'none' }))).toBe('4523bfcf');
+    expect(fingerprint(generateMap(2, W, H, 'bourg', { relief: 'none' }))).toBe('4c9d9ace');
   });
 
   // RETIRED at the mapgen-v3 P6 cutover: §5.1's one-draw guard test, which
