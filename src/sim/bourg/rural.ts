@@ -122,18 +122,20 @@ function pruneOrphanPaths(
 // ── M4: clean orphan hedge stubs ────────────────────────────────────────────
 //
 // 8-connected components of fewer than K tiles are deleted UNLESS they touch a
-// road, claimed parcel, building (or dilated-1), water, or the town zone.
-// Content cleanup — zero draws. K=8: the 4-7 tile band survived the old K=4
-// and was the entire visible 'orphan hedge stub' population (measured
-// 2026-07-31, scripts/probes/d1-stubs.mjs: 15-17 isolated 4-7-tile stubs per
-// map on every kind). A stub next to a road/building/zone edge reads as a
-// hedge ENDING at that feature — kept; one floating mid-pasture does not.
+// building (dilated-1) or water. Content cleanup — zero draws. K=8: the 4-7
+// tile band survived the old K=4 and was the entire visible 'orphan hedge
+// stub' population (measured 2026-07-31, scripts/probes/d1-stubs.mjs: 15-17
+// isolated 4-7-tile stubs per map on every kind). The protection list is
+// deliberately short: a hedge that ENDS at a road, claimed plot or the town
+// edge belongs to a long boundary component, so a SMALL component touching
+// one of those is never an ending — it is lane-carve debris (road seed 11
+// left 2-5 tile fragments beside the farm lane at x189-197 y134-137). A
+// remnant beside a building reads as a pen wall, and one at the riverbank as
+// a hedge growing down to the water — those two stay.
 function cleanHedgeStubs(
   sk: Skeleton,
-  pc: Parcels,
   fp: Footprints,
   hedge: Uint8Array,
-  inZone: (x: number, y: number) => boolean,
 ): void {
   const { w, h } = sk;
   const K = 8;
@@ -327,7 +329,7 @@ export function addRuralFabric(sk: Skeleton, land: Landmarks, pc: Parcels, fp: F
   // Stub pruning runs LAST: every hedge-severing carve above (compound gates,
   // orphan-building paths) has already landed, so the components it floods are
   // the ones the stamp will actually paint.
-  cleanHedgeStubs(sk, pc, fp, hedge, inZone);
+  cleanHedgeStubs(sk, fp, hedge);
 
   // R-F1: per-site land-use assignment in scan order
   const landUse = new Uint8Array(sites);
