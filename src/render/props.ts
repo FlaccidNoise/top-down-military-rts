@@ -326,9 +326,11 @@ export function propsFor(map: GameMap, patches: PatchIndex, enclos?: EnclosureIn
         let lane = false;
         for (let i = 0; i <= 3 && !lane; i++) lane = roadAt(nx + dx * i, ny + dy * i);
         if (!lane) continue;
-        // a pasture only counts as enclosed if a hedge run stands behind it —
-        // otherwise every metre of open verge on the map grows a fence
-        if (!parcel && !(hedgeAt(x - dx * 2, y - dy * 2) || hedgeAt(x - dx * 3, y - dy * 3) || hedgeAt(x - dx * 4, y - dy * 4))) continue;
+        // A parcel or pasture only counts as enclosed if a hedge run stands
+        // behind it — otherwise every metre of open verge on the map grows a
+        // fence. V4-P1's R-F2 painted field on every crop-assigned site, so
+        // the old parcel exemption multiplied fenceposts 9× onto bare fields.
+        if (!(hedgeAt(x - dx * 2, y - dy * 2) || hedgeAt(x - dx * 3, y - dy * 3) || hedgeAt(x - dx * 4, y - dy * 4))) continue;
         const axis: 0 | 1 = dy ? 0 : 1;
         const u = axis === 0 ? x : y;
         const slot = Math.ceil(u / POST_SPACING) * POST_SPACING;

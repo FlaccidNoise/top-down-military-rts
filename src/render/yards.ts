@@ -116,25 +116,23 @@ export function buildYards(map: GameMap, patches: PatchIndex, enclosedKind: (wx:
   for (const b of patches.buildings) {
     const dr = doorOf(map, b);
     if (!dr) continue;
-    // A building that abuts a generator-built WORKING yard (a farm cour,
-    // town or rural) belongs to that enclosure: the walls and the trodden
-    // ground are already there. Guessing a second yard on whichever side the
-    // scan's door pick landed is what put pale wall pens on the back of every
-    // compound building — the generator owns this building's yard, so this
-    // module adds nothing. (Gardens and churchyards are not working yards;
-    // buildings abutting those keep their guessed yards.)
-    let abutsYard = false;
+    // A building inside ANY generator-built enclosure belongs to that
+    // enclosure: the walls are already there. Guessing a second yard on
+    // whichever side the scan's door pick landed is what put pale wall pens
+    // on the back of every garden building and doubled the brown rail next
+    // to every enclosure wall.
+    let insideEnclosure = false;
     for (const [sx, sy] of [
       [b.cx, b.minY - 0.5],
       [b.cx, b.maxY + 0.5],
       [b.minX - 0.5, b.cy],
       [b.maxX + 0.5, b.cy],
     ] as [number, number][])
-      if (enclosedKind(sx, sy) === 'yard') {
-        abutsYard = true;
+      if (enclosedKind(sx, sy) !== null) {
+        insideEnclosure = true;
         break;
       }
-    if (abutsYard) continue;
+    if (insideEnclosure) continue;
     const [doorSide, door] = dr;
     const wall = hash(b.id, 0, 300) < 0.5;
     const uOf = (s: Side, lo: boolean) => (s === 0 || s === 1 ? (lo ? b.minX : b.maxX) : lo ? b.minY : b.maxY);
