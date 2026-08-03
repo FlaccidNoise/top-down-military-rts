@@ -3,7 +3,10 @@ import type { WeaponKey } from '../sim/data';
 import { Front, type FrontSave } from './front';
 import { makeDefaultSector } from './sector';
 
-const KEY = 'ccg-save-v3'; // v3: SquadInstance campaign schema (teams) — v2 saves are unreachable and fall back to newCampaign
+// v3: SquadInstance campaign schema (teams). Key is distinct from the frozen
+// pre-V2 artifact 'ccg-save-v3', which save2.ts owns (roster adoption +
+// discard) — a V1 write there would collide with it (#138).
+const KEY = 'ccg-save-v3-grid';
 type Store = Pick<Storage, 'getItem' | 'setItem'>;
 
 // Old saves carry pre-M5 generic weapon keys; map them onto their national

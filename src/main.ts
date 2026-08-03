@@ -15,7 +15,7 @@ import { resolveDeployment } from './sim/spots';
 import { applyEngagementOutcome, makeStrategicBattle, newFront, resolveCoarse, syncStrengths, trivialMismatchWinner } from './strategic/bridge';
 import { StrategicCommander, RED_DEFENDER, BLUE_ATTACKER } from './strategic/command';
 import { operationStatus, REINFORCE_CYCLE_DAYS, REINFORCE_PER_COMPANY, type Chit, type Engagement, type Front } from './strategic/front';
-import { loadGame, saveGame } from './strategic/save';
+import { saveGame } from './strategic/save';
 import { makeDefaultSector } from './strategic/sector';
 import { emplacementOf, Hud, infantrySquads, type HudState } from './ui/hud';
 import { StratHud } from './ui/strat-hud';

@@ -22,7 +22,7 @@ export interface CommanderSaveV2 {
 export type AiSave = Partial<Record<'blue' | 'red', CommanderSaveV2>>;
 
 const KEY_V4 = 'ccg-save-v4';
-const KEY_V3 = 'ccg-save-v3';
+const KEY_V3 = 'ccg-save-v3'; // frozen pre-V2 artifact, sole owner — V1 writes 'ccg-save-v3-grid' (#138)
 
 export interface SaveV4 {
   schema: 4;
