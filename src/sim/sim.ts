@@ -2291,7 +2291,11 @@ export class Sim {
           eligibleIds.some((id) => {
             const m = this.soldiers[id];
             return this.assaultDefenders(m, order).some((e) => {
-              const p = astar(this.map, Math.floor(m.x), Math.floor(m.y), Math.floor(e.x), Math.floor(e.y));
+              // Level-aware (#130): path to the defender's own storey. The
+              // level-blind form pathed to the ground tile UNDER an upstairs
+              // holdout — always reachable inside a building — so the order
+              // hung "blocked" forever while nobody could climb to him.
+              const p = astar(this.map, Math.floor(m.x), Math.floor(m.y), Math.floor(e.x), Math.floor(e.y), 'foot', m.level, e.level);
               return p !== null && p.length > 1;
             });
           });
@@ -3881,29 +3885,34 @@ export class Sim {
 
   // One assault redirect: path onto the nearest visible defender (the melee
   // lock takes over inside 2m); with none in sight, close on the point itself.
+  // Floor-aware (#130): each goal carries its defender's storey, so a charge
+  // onto an upstairs garrison paths through the door and up the stairs instead
+  // of settling on the street tile under the window — which is what left the
+  // AI unable to crack a fortress town whose garrison holds the top floor.
   private assaultRepath(s: Soldier, order: TeamOrder): void {
     const defenders = this.assaultDefenders(s, order);
-    const candidates: { x: number; y: number }[] = defenders
+    const candidates: { x: number; y: number; l: number }[] = defenders
       .map((e) => ({ e, d: Math.hypot(e.x - s.x, e.y - s.y) }))
       .sort((a, b) => a.d - b.d || a.e.id - b.e.id)
-      .map((c) => c.e);
+      .map((c) => ({ x: c.e.x, y: c.e.y, l: c.e.level }));
     if (
       candidates.length > 0 &&
+      candidates[0].l === s.level &&
       Math.hypot(candidates[0].x - s.x, candidates[0].y - s.y) <= MELEE_ENGAGE &&
       this.meleeReachable(s.x, s.y, candidates[0].x, candidates[0].y)
     ) {
       return; // true contact — the melee lock owns him now (a man 1.5m away
-      // through a window is NOT contact; keep working the reachable ones)
+      // through a window, or one storey up, is NOT contact; keep closing)
     }
     // Nearest REACHABLE defender wins; a visible-but-unreachable one (window,
     // water) must not stall the charge — fall through to the next man, then
     // to the ground itself, rather than reselecting the same dead end forever.
     if (candidates.length === 0) {
       if (s.path || Math.hypot(order.x - s.x, order.y - s.y) <= 4) return;
-      candidates.push(order); // nobody left in sight: take the ground
+      candidates.push({ x: order.x, y: order.y, l: order.l ?? 0 }); // nobody left in sight: take the ground
     }
     for (const goal of candidates) {
-      const path = astar(this.map, Math.floor(s.x), Math.floor(s.y), Math.floor(goal.x), Math.floor(goal.y));
+      const path = astar(this.map, Math.floor(s.x), Math.floor(s.y), Math.floor(goal.x), Math.floor(goal.y), 'foot', s.level, goal.l);
       if (path && path.length > 1) {
         s.path = path.slice(1).map((p) => ({ x: p.x + 0.5, y: p.y + 0.5, l: p.l }));
         s.pathI = 0;
@@ -3912,7 +3921,7 @@ export class Sim {
     }
     // every defender unreachable: at least stand on the objective
     if (!s.path && Math.hypot(order.x - s.x, order.y - s.y) > 4) {
-      const path = astar(this.map, Math.floor(s.x), Math.floor(s.y), Math.floor(order.x), Math.floor(order.y));
+      const path = astar(this.map, Math.floor(s.x), Math.floor(s.y), Math.floor(order.x), Math.floor(order.y), 'foot', s.level, order.l ?? 0);
       if (path && path.length > 1) {
         s.path = path.slice(1).map((p) => ({ x: p.x + 0.5, y: p.y + 0.5, l: p.l }));
         s.pathI = 0;
@@ -4003,7 +4012,9 @@ export class Sim {
     let best: Soldier | null = null;
     let bestD = Infinity;
     for (const e of this.soldiers) {
-      if (!e.alive || e.downed || e.captured || e.side === s.side || e.inVehicle >= 0) continue;
+      // Same storey only (#130): 2D distance locked a charger into a phantom
+      // fight through the floor slab with the garrison one level up.
+      if (!e.alive || e.downed || e.captured || e.side === s.side || e.inVehicle >= 0 || e.level !== s.level) continue;
       const d = Math.hypot(e.x - s.x, e.y - s.y);
       if (d > MELEE_ENGAGE || d >= bestD) continue;
       if (!this.meleeReachable(s.x, s.y, e.x, e.y)) continue;
@@ -4074,7 +4085,7 @@ export class Sim {
     const d = Math.hypot(t.x - s.x, t.y - s.y);
     // A routing opponent already out of strike reach can't be caught (equal
     // speeds) — break off and let the rifle take over, no futile jogging.
-    if (!t.alive || t.downed || t.captured || t.inVehicle >= 0 || d > MELEE_BREAK || (t.mental === 'broken' && d > MELEE_STRIKE_RANGE)) {
+    if (!t.alive || t.downed || t.captured || t.inVehicle >= 0 || t.level !== s.level || d > MELEE_BREAK || (t.mental === 'broken' && d > MELEE_STRIKE_RANGE)) {
       s.meleeId = -1;
       return false;
     }
