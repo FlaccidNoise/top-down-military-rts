@@ -425,7 +425,14 @@ export class RedCommander {
         // suppressionEstablished is a global attempt-gate; the real per-team
         // check is orderTeam's compliance ladder (dangerScore × the assault
         // mult), which downgrades a team that shouldn't charge to a move.
-        sim.orderTeam(teamId, { kind: 'assault', x: post.x, y: post.y });
+        // Floor-aware town assault (#130): defend/ambush auto-garrisons the
+        // TOP storey of the post tile (orderLevel, spots.ts), so a charge onto
+        // a multi-storey post is briefed at that same storey — the men path in
+        // the door and up the stairs, and the soldier-level grenade doctrine
+        // (maybeThrowGrenade on the assault cadence) clears the rooms they
+        // enter. storiesAt is map knowledge, not an intel read.
+        const stories = sim.map.storiesAt(Math.floor(post.x), Math.floor(post.y));
+        sim.orderTeam(teamId, { kind: 'assault', x: post.x, y: post.y, l: stories >= 2 ? stories - 1 : 0 });
       } else if (suppressed || cleared) {
         sim.orderTeam(teamId, { kind: 'fast', x: post.x, y: post.y });
       } else {
