@@ -310,6 +310,7 @@ const urlSeed = new URLSearchParams(location.search).get('seed'); // debug: ?see
 if (urlSeed !== null && !Number.isFinite(Number(urlSeed))) console.warn(`?seed=${urlSeed} is not a number; ignoring`);
 const fowOff = new URLSearchParams(location.search).get('fow') === '0'; // debug: ?fow=0 disables fog of war (render-only; never touches sim outcomes)
 const hazeOff = new URLSearchParams(location.search).get('haze') === '0'; // debug: ?haze=0 drops the ambient haze bands so the art sweep can shoot both
+const flickerOff = new URLSearchParams(location.search).get('flicker') === '0'; // debug: ?flicker=0 pins the hearth-glow clock so the art sweep's settle loop can converge
 // debug: ?hour=HHMM sets the campaign clock at boot (day 1), so a battle can be
 // staged at any sun. Same contract as ?fow: a boot-time staging switch, never
 // read by step() — the clock it sets flows through the normal startMin path.
@@ -627,6 +628,7 @@ function bootBattle(staged: { sim: Sim; commander: RedCommander; blueCommander: 
   battleCompany = staged.companyIndex;
   renderer = new Renderer(sim);
   renderer.hazeOn = !hazeOff;
+  renderer.flickerOn = !flickerOff;
   battleTitle = title;
   if (MOBILE) {
     // Pinching out to the whole 320m map needs ~1.2 px/m, which the desktop
