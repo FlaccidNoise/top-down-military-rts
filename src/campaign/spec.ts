@@ -30,13 +30,19 @@ export interface TheaterConfig {
   woodsShare: 1 | 2 | 3 | 4; // 0 cannot satisfy the forest area band
 }
 
+// The runtime list the customize screen offers, and the ONE owner of the war
+// lengths: WarDays derives from it, so a new choice cannot reach the type
+// without reaching the screen.
+export const WAR_DAYS_CHOICES = [7, 14, 21, 30] as const;
+export type WarDays = (typeof WAR_DAYS_CHOICES)[number];
+
 export type VictoryPreset = 'objectives' | 'majority';
 export type RedDoctrine = 'defensive' | 'offensive';
 export type ReconMode = 'omniscient' | 'contacts';
 
 // Structurally unable to reach the generator: makeTheater takes TheaterConfig only.
 export interface CampaignConfig {
-  warDays: 7 | 14 | 21 | 30; // what OP_DEADLINE_DAYS becomes
+  warDays: WarDays; // what OP_DEADLINE_DAYS becomes
   victory: VictoryPreset;
   blueCompanies: 2 | 3 | 4;
   redStrength: 0 | 1 | 2 | 3 | 4;

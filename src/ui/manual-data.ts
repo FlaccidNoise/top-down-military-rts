@@ -14,8 +14,11 @@ import { CONTACT_TTL, DT, hideFloorOf, SPOT_INTERVAL, SPOT_RANGE, spotCapOf } fr
 import { GARRISON_RADIUS, TRIVIAL_RATIO } from '../strategic/bridge';
 import { DEPLOY_ATK_DEPTH, DEPLOY_DEF_DEFAULT, DEPLOY_DEF_LINE } from '../strategic/deploy';
 import { REINFORCE_CYCLE_DAYS, REINFORCE_PER_COMPANY } from '../strategic/front';
+import { DETECT_FORCE_M, DETECT_NODE_M, STRAT_CONTACT_TTL } from '../strategic/intel';
 import { MOVE_MPM, REGION_PACE_MULT } from '../strategic/theater';
 import { BRIDGE_DWELL_MIN, CONTACT_M, FORD_CROSS_MIN } from '../strategic/theater/force';
+import { NIGHT_MARCH_FATIGUE_MULT } from '../strategic/theater/step';
+import { SUPPLY_AMMO_MULT, SUPPLY_LOW_MIN, SUPPLY_OUT_MIN } from '../strategic/theater/supply';
 import { battleDuration, INFILTRATE_MIN, RETREAT_SETBACK_M } from '../strategic/theater/war';
 import { DEFAULTS, formatBinding, LABEL, type ActionId } from './keymap';
 import { ORDER_AFFORDANCE } from './order-data';
@@ -51,6 +54,12 @@ const DEF_LINES = Object.entries(DEPLOY_DEF_LINE)
   .join(', ');
 
 const PRESET_LIST = PRESETS.map((p) => `${p.name} (${p.campaign.warDays} days)`).join(', ');
+
+// Supply and intel both read in hours on the strategic clock; the constants
+// are minutes, so convert here and never in the prose.
+const hours = (min: number): number => Math.round((min / 60) * 10) / 10;
+const pct = (mult: number): string => `${Math.round(mult * 100)}%`;
+const km = (m: number): number => Math.round((m / 1000) * 10) / 10;
 
 // The largest theater and the shortest war it can hold — the example the
 // customize screen's feasibility card most often shows.
@@ -161,8 +170,32 @@ export const MANUAL: ManualChapter[] = [
         heading: 'Knobs',
         body:
           'The basic knobs set theater size, rivers, roads, towns, war length and enemy strength. ' +
-          'Advanced opens the rest — crossing scarcity, rail, town spacing, terrain mix, woods share, victory rule, companies and enemy doctrine. ' +
+          'Advanced opens the rest — crossing scarcity, rail, town spacing, terrain mix, woods share, victory rule, companies, enemy doctrine, and the three realism toggles below. ' +
           'Bigger and longer is not harder. Enemy strength is the knob that decides the fight.',
+      },
+      {
+        heading: 'Supply lines',
+        body:
+          'On, every force traces a route back to its own supply source. ' +
+          `Untraced for ${hours(SUPPLY_LOW_MIN)} hours it drops to low and fights on ${pct(SUPPLY_AMMO_MULT.low)} ammunition. ` +
+          `Untraced for ${hours(SUPPLY_OUT_MIN)} hours it is out, on ${pct(SUPPLY_AMMO_MULT.out)}, and it hits softer in every battle. ` +
+          'The map hatches a cut line and the force card tags the tier, so you can see the trouble before the battle. ' +
+          'Off, every force fights fully supplied wherever it stands.',
+      },
+      {
+        heading: 'Enemy intel',
+        body:
+          'Omniscient lets the enemy commander plan against your true positions, and shows you his. ' +
+          `Contacts fogs both sides: a force is seen within ${km(DETECT_FORCE_M)} km of a live enemy force or ${km(DETECT_NODE_M)} km of a node they hold, ` +
+          `and the mark it leaves fades over ${hours(STRAT_CONTACT_TTL)} hours. ` +
+          'What you see of red is then a ghost — where it was, not where it is. With nothing in contact the map says NO CONTACT.',
+      },
+      {
+        heading: 'Night tempo',
+        body:
+          'On, marches slow in the dark and recover their pace at first light, so an attack timed for dawn arrives with the light. ' +
+          'Off, a company marches at one pace around the clock. ' +
+          `Fatigue is not part of this toggle: marching in the dark always wears men ${NIGHT_MARCH_FATIGUE_MULT}× faster, and only rest recovers it.`,
       },
       {
         heading: 'The preview is the real map',
@@ -382,11 +415,11 @@ export const MANUAL: ManualChapter[] = [
       {
         heading: 'Buildings and floors',
         body:
-          'Buildings have floors, and floors matter. F cycles the floor focus so you can see one storey at a time. ' +
+          `Buildings have floors, and floors matter. ${key('floorFocus')} cycles the floor focus so you can see one storey at a time. ` +
           'Alt and right-click opens the floor picker and sends the order upstairs. ' +
           'Defend and ambush garrison the top storey on their own. Every other order goes to the ground floor. ' +
           'The preview dots always show the floor the order will land on.',
-        keys: { desktop: 'F cycles floors, Alt+right-click picks a floor', touch: `Floor chip cycles, ${HOLD} on a tall building picks` },
+        keys: { desktop: `${key('floorFocus')} cycles floors, Alt+right-click picks a floor`, touch: `Floor chip cycles, ${HOLD} on a tall building picks` },
       },
       {
         heading: 'Ammunition',
@@ -493,7 +526,7 @@ export const MANUAL: ManualChapter[] = [
       {
         heading: 'Floors',
         body: 'Tap the floor chip to cycle the floor focus. Holding on a building of two storeys or more opens the floor picker.',
-        keys: { desktop: 'F, or Alt+right-click', touch: `Floor chip, or ${HOLD} a tall building` },
+        keys: { desktop: `${key('floorFocus')}, or Alt+right-click`, touch: `Floor chip, or ${HOLD} a tall building` },
       },
       {
         heading: 'The roster',

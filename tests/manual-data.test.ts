@@ -8,6 +8,9 @@ import { CONTACT_TTL, DT, hideFloorOf, SPOT_INTERVAL, SPOT_RANGE } from '../src/
 import { GARRISON_RADIUS, TRIVIAL_RATIO } from '../src/strategic/bridge';
 import { DEPLOY_ATK_DEPTH, DEPLOY_DEF_DEFAULT, DEPLOY_DEF_LINE } from '../src/strategic/deploy';
 import { REINFORCE_CYCLE_DAYS, REINFORCE_PER_COMPANY } from '../src/strategic/front';
+import { DETECT_FORCE_M, DETECT_NODE_M, STRAT_CONTACT_TTL } from '../src/strategic/intel';
+import { NIGHT_MARCH_FATIGUE_MULT } from '../src/strategic/theater/step';
+import { SUPPLY_AMMO_MULT, SUPPLY_LOW_MIN, SUPPLY_OUT_MIN } from '../src/strategic/theater/supply';
 import { MOVE_MPM, REGION_PACE_MULT } from '../src/strategic/theater';
 import { BRIDGE_DWELL_MIN, CONTACT_M, FORD_CROSS_MIN } from '../src/strategic/theater/force';
 import { battleDuration, INFILTRATE_MIN, RETREAT_SETBACK_M } from '../src/strategic/theater/war';
@@ -102,6 +105,16 @@ describe('MANUAL — the numbers are live', () => {
     has(CONTACT_TTL * DT, 'the ghost lifetime in seconds');
     has(hideFloorOf(1), 'the daylight hide range');
     has(hideFloorOf(0), 'the night hide range');
+  });
+
+  it('quotes the realism toggles from their live constants', () => {
+    has(SUPPLY_LOW_MIN / 60, 'the low-supply delay in hours');
+    has(SUPPLY_OUT_MIN / 60, 'the out-of-supply delay in hours');
+    has(`${SUPPLY_AMMO_MULT.out * 100}%`, 'the out-of-supply ammunition share');
+    has(DETECT_FORCE_M / 1000, 'the force detection range in km');
+    has(DETECT_NODE_M / 1000, 'the node detection range in km');
+    has(STRAT_CONTACT_TTL / 60, 'the contact lifetime in hours');
+    has(`${NIGHT_MARCH_FATIGUE_MULT}×`, 'the night march fatigue multiplier');
   });
 
   it('quotes the touch grammar constants', () => {
