@@ -11,8 +11,8 @@
 // Measured baseline (V2 playable core, 2026-07-27): red retook >= 1 objective
 // on 7/8 seeds; V1 grid baseline ZERO on every seed. Gates (--gate): 100%
 // termination, both winners occur, > 1 distinct tuple, red retakes on a
-// majority of seeds. Prints `PIN seed N {status, day, logLen}` — the S59
-// source line.
+// majority of seeds. Prints `PIN seed N {status, day, logLen}` — the source
+// line tests/war-pin.test.ts is refrozen from (S59).
 import { DEFAULT_PRESET } from '../src/campaign/presets';
 import { makeHeadlessWorld, runHeadlessWar } from '../src/strategic/headless';
 import { BLUE_V2, RED_V2 } from '../src/strategic/planner';

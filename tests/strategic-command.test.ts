@@ -235,16 +235,11 @@ describe('StrategicCommander', () => {
       expect(runWar(42)).toEqual(runWar(42));
     }, 60000);
 
-    it('the coarse night hook at 1.0 reproduces the pre-hook wars bit-for-bit', () => {
-      // Tuples captured on the tree BEFORE the resolveCoarse night hook landed
-      // (N11, 2026-07-27, scripts/warsweep.mjs seeds 1-3). The hook multiplies
-      // terrainMult by exactly 1.0 below civil-dusk light and draws no RNG, so
-      // not one battle of any of these wars may move. If this pin goes red,
-      // someone changed a tuned constant without re-running warsweep.mjs.
-      expect(runWar(1)).toEqual({ status: 'lost', day: 15, logLen: 51 });
-      expect(runWar(2)).toEqual({ status: 'lost', day: 15, logLen: 81 });
-      expect(runWar(3)).toEqual({ status: 'won', day: 4, logLen: 20 });
-    }, 60000);
+    // DELETED (S57): the bit-for-bit {status, day, logLen} tuple pin. It froze
+    // the V1 grid war, which is no longer the war representation — the theater
+    // graph is. THE war pin now lives in tests/war-pin.test.ts, frozen from
+    // scripts/warsweep2.mjs over the V2 headless loop. What stays here are
+    // property gates over the grid, which ?camp=N still boots (src/main.ts:985).
 
     it('war terminates, varies with the campaign seed, and can go either way', () => {
       const outcomes = [0, 1, 7, 42, 99, 500, 1000, 9999].map(runWar);
