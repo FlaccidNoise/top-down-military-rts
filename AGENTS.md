@@ -14,6 +14,11 @@ Three tiers, measured 2026-07-31:
 NEVER run `npm test` during dev iteration. Use `test:quick` or single-file runs.
 `tsc --noEmit` (`npm run check`) stays in every gate — it's fast.
 
+The jtbug runner's merge gate always runs the full `npm test` before it merges
+an agent's branch to main (set in `packages/runner/runner.config.json` in the
+jtBugTracking repo). So an agent-dispatched change is full-suite verified even
+though this guide tells you to iterate with `test:quick`.
+
 Quick tier excludes 10 slow files (>5s each), listed with their timings in
 `vitest.quick.config.ts`. `doctrine.test.ts` alone is 112s (commander soak
 sims, 6k–80k ticks); `perf.test.ts` 64s; `bourg.test.ts` 36s (map regen).
