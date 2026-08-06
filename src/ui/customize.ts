@@ -6,7 +6,7 @@
 // campaign; the same values persist in the save and reproduce the theater.
 import { DEFAULT_PRESET, PRESETS, type Preset } from '../campaign/presets';
 import { feasible, makeTheater, TheaterGenError } from '../strategic/theatergen';
-import type { CampaignConfig, TheaterConfig } from '../campaign/spec';
+import { WAR_DAYS_CHOICES, type CampaignConfig, type TheaterConfig } from '../campaign/spec';
 import { parseSeed, rollSeed } from './seed';
 import { TheaterView } from '../render/theater-view';
 import type { FrontV2 } from '../strategic/theater/force';
@@ -25,7 +25,7 @@ const BASIC_THEATER: [keyof TheaterConfig, string, (number | string)[]][] = [
   ['townDensity', 'Towns', [1, 2, 3, 4, 5, 6]],
 ];
 const BASIC_CAMPAIGN: [keyof CampaignConfig, string, (number | string | boolean)[]][] = [
-  ['warDays', 'War length (days)', [7, 14, 21, 30]],
+  ['warDays', 'War length (days)', [...WAR_DAYS_CHOICES]],
   ['redStrength', 'Enemy strength', [0, 1, 2, 3, 4]],
 ];
 const ADV_THEATER: [keyof TheaterConfig, string, (number | string)[]][] = [

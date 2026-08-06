@@ -7,7 +7,7 @@ export type ActionId =
   | 'panUp' | 'panDown' | 'panLeft' | 'panRight'    // battle camera
   | 'squad1' | 'squad2' | 'squad3' | 'squad4' | 'squad5' | 'squad6' | 'squad7' | 'squad8' | 'squad9'  // battle
   | 'order1' | 'order2' | 'order3' | 'order4' | 'order5' | 'order6' | 'order7' | 'order8'              // battle
-  | 'aiControl'                                       // battle
+  | 'aiControl' | 'floorFocus'                      // battle
   | 'speed1' | 'speed2' | 'speed3';                 // strategic
 
 export interface Binding { code: string; shift?: boolean }
@@ -37,6 +37,7 @@ export const DEFAULTS: Record<ActionId, Binding> = {
   order7:    { code: 'Digit7', shift: true }, order8: { code: 'Digit8', shift: true },
   speed1:    { code: 'Digit1' }, speed2: { code: 'Digit2' }, speed3: { code: 'Digit3' },
   aiControl: { code: 'KeyP' },
+  floorFocus: { code: 'KeyF' },
 };
 
 export const CONTEXT: Record<ActionId, 'global' | 'battle' | 'strategic'> = {
@@ -48,7 +49,7 @@ export const CONTEXT: Record<ActionId, 'global' | 'battle' | 'strategic'> = {
   order1: 'battle', order2: 'battle', order3: 'battle', order4: 'battle',
   order5: 'battle', order6: 'battle', order7: 'battle', order8: 'battle',
   speed1: 'strategic', speed2: 'strategic', speed3: 'strategic',
-  aiControl: 'battle',
+  aiControl: 'battle', floorFocus: 'battle',
 };
 
 const ORDER_KINDS_LABEL = ['Move', 'Fast', 'Sneak', 'Fire', 'Smoke', 'Defend', 'Ambush', 'Assault'];
@@ -66,6 +67,7 @@ export const LABEL: Record<ActionId, string> = {
   order7: `Order: ${ORDER_KINDS_LABEL[6]}`, order8: `Order: ${ORDER_KINDS_LABEL[7]}`,
   speed1: 'Speed 1×', speed2: 'Speed 10×', speed3: 'Speed 60×',
   aiControl: 'AI auto-command',
+  floorFocus: 'Cycle floor focus',
 };
 
 const STORAGE_KEY = 'rts.keymap.v1';

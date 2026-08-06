@@ -1678,6 +1678,7 @@ window.addEventListener('keydown', (e) => {
   
   // Battle mode
   if (action === 'aiControl') { aiControl = !aiControl; if (aiControl) { armedOrder = null; setTargetMode(''); } return; }
+  if (action === 'floorFocus') { cycleFloorFocus(); return; }
   if (action === 'barrage' && !aiControl && sim.barragesLeft.blue > 0) setTargetMode(targetMode === 'barrage' ? '' : 'barrage');
   if (action === 'airstrike' && !aiControl && sim.airstrikesLeft.blue > 0) setTargetMode(targetMode === 'air' ? '' : 'air');
   
@@ -1693,23 +1694,14 @@ window.addEventListener('keydown', (e) => {
   }
 });
 
-// Floor-focus filter (Height E2): All → Ground → Floor 2 → … → All. The F key
-// drives it on desktop and the touch bar's ⬒ chip on a phone — one function, so
-// the two surfaces cannot drift.
+// Floor-focus filter (Height E2): All → Ground → Floor 2 → … → All. The
+// rebindable floorFocus action drives it on desktop and the touch bar's ⬒ chip
+// on a phone — one function, so the two surfaces cannot drift.
 function cycleFloorFocus(): void {
   const maxStories = sim.map.maxStories;
   if (maxStories <= 0) return;
   floorFocus = floorFocus >= maxStories - 1 ? -1 : floorFocus + 1;
 }
-
-// Plain keydown listener — migrates into keymap.ts when the controls pass lands.
-window.addEventListener('keydown', (e) => {
-  if (e.key !== 'f' && e.key !== 'F') return;
-  if (mode !== 'battle' || menu.isOpen) return;
-  const t = e.target;
-  if (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement || (t instanceof HTMLElement && t.isContentEditable)) return;
-  cycleFloorFocus();
-});
 
 // debug/automation handle
 (window as unknown as { __game: object }).__game = {
