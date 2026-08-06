@@ -24,7 +24,7 @@ const BANDS = [8, 16, 32, 48];
 const REPS = 5;
 
 const { browser, page } = await launch();
-await page.goto(`http://[::1]:${PORT}/?seed=${SEED}&camp=42&fow=0`, { waitUntil: 'domcontentloaded' });
+await page.goto(`http://[::1]:${PORT}/?seed=${SEED}&camp=42&fow=0&flicker=0`, { waitUntil: 'domcontentloaded' });
 await page.waitForFunction(() => '__game' in window, null, { timeout: 5000 }).catch(() => {
   throw new Error(`__game never appeared — is the dev server running? (npm run dev -- --port ${PORT} --strictPort)`);
 });

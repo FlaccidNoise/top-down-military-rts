@@ -73,8 +73,15 @@ export const fmtHour = (min) => `${String(Math.floor(min / 60)).padStart(2, '0')
 //
 // This is why the HUD title of every art baseline reads "Day 1 1400". If it
 // ever reads 0600 again, the pin is broken.
-export async function gotoStaged(page, { port, seed, camp = 42, fow = 0, haze = null, forceKind = null, hour = null }) {
-  const q = `seed=${seed}&camp=${camp}&fow=${fow}${haze === null ? '' : `&haze=${haze}`}`;
+//
+// THE FLICKER PIN. `flicker=0` freezes the hearth glow (furniture.ts I15) at
+// one frame. It runs off wall-clock `now`, so any crop with a lit hearth in it
+// repaints forever, place() below cannot settle, and the crop differs between
+// two captures of the SAME code — which is why three sweep crops were excluded
+// from byte-identity comparison instead of trusted. Pinned by default for the
+// same reason the hour is: a staged scene must be reproducible.
+export async function gotoStaged(page, { port, seed, camp = 42, fow = 0, haze = null, flicker = 0, forceKind = null, hour = null }) {
+  const q = `seed=${seed}&camp=${camp}&fow=${fow}&flicker=${flicker}${haze === null ? '' : `&haze=${haze}`}`;
   await page.goto(`http://[::1]:${port}/?${q}`, { waitUntil: 'domcontentloaded' });
   await page
     .waitForFunction(() => '__game' in window, null, { timeout: 5000 })
@@ -348,17 +355,17 @@ export function stageEmplacements(page, { x, y }) {
 //
 // MEASURED, 2026-07-27, because §8 of the day/night design asks whether this
 // cap still holds: most crops settle in 2-4 frames, but some crops NEVER
-// settle, and raising the cap makes them strictly worse. Seed 10's `enemy`
+// settled, and raising the cap made them strictly worse. Seed 10's `enemy`
 // crop (bourg interiors) was still repainting 120-200 px/frame at delta ~14
-// after 300 frames. The cause is furniture.ts drawHearthGlow — I15 firelight,
+// after 300 frames. The cause was furniture.ts drawHearthGlow — I15 firelight,
 // deliberately in the frame loop with two incommensurate sine rates off
 // wall-clock `now` so the flicker never reads as a loop. A scene with a
-// visible lit hearth cannot be pixel-stable, so `place()` cannot converge on
-// it and the baseline is not reproducible: two back-to-back captures differed
-// by 221 px at cap 120, and by 18,626 px at cap 400 — a longer settle just
-// lets the flicker phase drift further apart. Hence 120 stays. The fix is to
-// pin the flicker clock for the gate (a staging switch in the ?fow=0 / ?haze=0
-// family), NOT to settle longer.
+// visible lit hearth could not be pixel-stable, so `place()` never converged
+// on it and the baseline was not reproducible: two back-to-back captures
+// differed by 221 px at cap 120, and by 18,626 px at cap 400 — a longer settle
+// just let the flicker phase drift further apart. FIXED (2026-08-05, jtbug
+// #134): gotoStaged pins the flicker clock with ?flicker=0, so hearth crops now
+// settle like every other one. 120 stays; a longer cap was never the answer.
 export const SETTLE_CAP = 120;
 export async function place(page, x, y, scale) {
   const r = await page.evaluate(
@@ -406,7 +413,7 @@ export async function place(page, x, y, scale) {
   );
   if (!r.quiesced)
     console.warn(
-      `  WARNING: place(${x.toFixed(1)}, ${y.toFixed(1)} @ ${scale}) never went still in ${SETTLE_CAP} frames — this crop is NOT a reproducible baseline; it will differ between captures. Usual cause: a frame-loop animation on wall-clock \`now\` in view (furniture.ts drawHearthGlow flickers forever by design). Do not raise SETTLE_CAP — that makes the drift worse. Pin the animation clock, or move the crop off it.`
+      `  WARNING: place(${x.toFixed(1)}, ${y.toFixed(1)} @ ${scale}) never went still in ${SETTLE_CAP} frames — this crop is NOT a reproducible baseline; it will differ between captures. Usual cause: a frame-loop animation on wall-clock \`now\` in view. First check the page was staged through gotoStaged (it pins ?flicker=0 for the hearth glow). Do not raise SETTLE_CAP — that makes the drift worse. Pin the animation clock, or move the crop off it.`
     );
   return r;
 }

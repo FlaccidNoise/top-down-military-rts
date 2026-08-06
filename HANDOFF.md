@@ -93,7 +93,7 @@ Spec: docs/plans/2026-07-27-movement-cover-design.md. M1 merged; the frozen inte
 
 ## Open debts (small, tracked)
 
-- drawHearthGlow flicker: art-baseline instability; fix = staging pin in furniture.ts/main.ts (diagnosed in the wave-4 manifests).
+- ~~drawHearthGlow flicker~~ FIXED (jtbug #134): `?flicker=0` pins the glow clock, `gotoStaged` passes it by default. Measured in the s10 `enemy` crop: live = 226,256 px drifting per 400 ms (Δ≤3), pinned = 0 px.
 - fx pock/debris stamps not sun-step-keyed (cosmetic stale sprite if the sun moves mid-battle).
 - Towns-v2: owner wants towns "improved" — waiting for specifics after they play a live bourg cell (t/T on the sector map, e.g. St-Aubin).
 - Worktree wf_6ff3010c-f4c-1 (shadow fix, merged) is removable now; lane-b/lane-m after their merges.

@@ -242,6 +242,13 @@ export class Renderer {
   private boomSeq = 0;
   private haze: { x: number; y: number; len: number; hgt: number; a: number }[];
   hazeOn = true; // ?haze=0, matching the ?fow=0 debug-switch pattern
+  // ?flicker=0 pins the hearth-glow clock, same debug-switch pattern. A scene
+  // with a lit hearth in it can never go pixel-still (two incommensurate sine
+  // rates off wall-clock `now`), so the art gate's settle loop cannot converge
+  // and those crops are not reproducible baselines. Pinned, the fire is still
+  // lit and still varies hearth-to-hearth (the phase is a position hash) — it
+  // just holds one frame.
+  flickerOn = true;
   selectedVehicle = -1;
 
   constructor(private sim: Sim) {
@@ -482,7 +489,7 @@ export class Renderer {
     this.roofs.drawShadows(ctx, cam, cw, ch);
     this.roofs.drawWalls(ctx, cam, cw, ch);
     // interior lighting and stair glyphs, only where the roof fade reveals them
-    this.terrain.drawHearthGlow(ctx, cam, cw, ch, now, (x, y) => this.roofs.interiorVisibleAt(x, y));
+    this.terrain.drawHearthGlow(ctx, cam, cw, ch, this.flickerOn ? now : 0, (x, y) => this.roofs.interiorVisibleAt(x, y));
     this.terrain.drawStairs(ctx, cam, cw, ch, (x, y) => this.roofs.interiorVisibleAt(x, y));
     // One sun (U2): cast shadows go down after the decals they fall across and
     // before every unit, so no man's shadow lands on another man's back.
