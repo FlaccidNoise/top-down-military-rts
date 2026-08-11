@@ -8,6 +8,7 @@ import { EDGE, GameMap } from '../src/sim/map';
 import { SPOT_INTERVAL, Sim } from '../src/sim/sim';
 import { makeStrategicBattle, newFront } from '../src/strategic/bridge';
 import { makeDefaultSector } from '../src/strategic/sector';
+import { ASSAULT_DANGER_MULT, compliance, dangerScore } from '../src/sim/orders';
 
 function mean(xs: number[]): number {
   return xs.reduce((a, b) => a + b, 0) / xs.length;
@@ -184,7 +185,7 @@ describe('AI commander doctrine', () => {
     expect(mgShotsBeforeFast).toBeGreaterThan(0); // the base of fire actually shot near the post first
   });
 
-  it('assault adoption: a maneuver team already close to a live post charges (assault order) only after the base of fire has been shooting', () => {
+  it('appraisal: a close maneuver team does not charge a covered post on suppressive fire alone', () => {
     const map = new GameMap(140, 60);
     const sim = new Sim(map, 102);
     const post = { x: 120, y: 30 };
@@ -192,12 +193,9 @@ describe('AI commander doctrine', () => {
       { name: 'G', weapon: 'mg42', x: 60.5, y: 30.5 },
       { name: 'A1', weapon: 'kar98k', x: 61.5, y: 29.5 },
     ]);
-    // rifle team starts ~24m from the post — inside the AI's charge range,
-    // so the ONLY thing standing between it and an assault order is the
-    // suppression gate. Ammo zeroed: at this range a live rifle team shoots
-    // the garrison dead before 10s of suppression can even accrue, and a dead
-    // garrison means no live threat to charge (the gate correctly picks
-    // plain 'fast' for empty ground).
+    // Rifle team starts inside charge range. Under #216, base-of-fire activity
+    // unlocks appraisal but does not make a still-covered frontal acceptable;
+    // smoke or a feasible flank must change the danger reading.
     const rifle = sim.addSquad(
       'red',
       'Rifle',
@@ -226,9 +224,84 @@ describe('AI commander doctrine', () => {
       }
       if (sim.teams[rifle.teamIds[0]].orderState.order?.kind === 'assault') assaultAtTick = sim.tick;
     }
-    expect(assaultAtTick).toBeGreaterThan(300); // never before 10s of suppressive fire could even exist
-    expect(mgShotsBeforeAssault).toBeGreaterThan(0); // and the base of fire really was shooting first
+    expect(assaultAtTick).toBe(-1); // suppression alone does not excuse a covered frontal
+    expect(mgShotsBeforeAssault).toBeGreaterThan(0); // appraisal happened after real supporting fire
   });
+
+  it('natural re-feed: a balking charge inside assault range is diverted to move or held defend, never re-issued as assault every eval (#216)', () => {
+    // Regression for the re-feed bug: when a maneuver team is inside assault
+    // range of a covered live post with suppression established, the charge's
+    // danger forecast balks. The old code issued the assault unconditionally
+    // every eval, so the team sat on a balked 'assault' order and was fed into
+    // the frontal lane over and over until transient danger decayed. The fix
+    // forecasts the same ladder orderTeam runs and, on a balk, diverts the
+    // team to a flank move or holds it on defend instead (#216).
+    //
+    // Same shape as the assault-adoption test: MG base of fire + ammo-zeroed
+    // maneuver team (so only the commander's suppression/assault gates govern
+    // and the garrison stays a live, covered objective) + live garrison at the
+    // post. No order-state is forced - only deterministic stamina/morale as
+    // the nearby tests do.
+    const seeds = [102, 3, 11];
+    for (const seed of seeds) {
+      const map = new GameMap(140, 60);
+      const sim = new Sim(map, seed);
+      const post = { x: 120, y: 30 };
+      const mg = sim.addSquad('red', 'MG', [
+        { name: 'G', weapon: 'mg42', x: 40.5, y: 30.5 },
+        { name: 'A1', weapon: 'kar98k', x: 41.5, y: 29.5 },
+      ]);
+      const rifle = sim.addSquad(
+        'red',
+        'Rifle',
+        Array.from({ length: 6 }, (_, i) => ({ name: `R${i}`, weapon: 'kar98k' as const, x: 96.5, y: 27.5 + i, xp: 20 })),
+      );
+      rifle.soldierIds.forEach((id) => {
+        sim.soldiers[id].morale = 1; // deterministic, as existing tests do
+        sim.soldiers[id].ammo = {};
+        sim.soldiers[id].magLeft = 0;
+      });
+      sim.soldiers[rifle.soldierIds[0]].role = 'leader';
+      sim.addSquad('blue', 'Garrison', [
+        { name: 'B1', weapon: 'garand', x: 122.5, y: 29.5 },
+        { name: 'B2', weapon: 'garand', x: 122.5, y: 30.5 },
+        { name: 'B3', weapon: 'garand', x: 122.5, y: 31.5 },
+      ]);
+      const commander = new RedCommander({ side: 'red', stance: 'attack', posts: { [mg.id]: post, [rifle.id]: post } });
+
+      let refedAssault = 0; // evals where a non-charging (balked) assault order is held
+      let withinRangeBalk = 0; // evals the same balk forecast holds while team is in assault range
+      let divertMove = 0; // within-range balk evals held on a flank 'move'
+      let heldDefend = 0; // within-range balk evals held on 'defend'
+      for (let i = 0; i < 12000; i++) {
+        commander.update(sim);
+        sim.step();
+        sim.takeEvents();
+        const team = sim.teams[rifle.teamIds[0]];
+        const order = team.orderState.order;
+        const alive = rifle.soldierIds.filter((id) => sim.soldiers[id].alive).map((id) => sim.soldiers[id]);
+        if (alive.length === 0) break;
+        const cx = alive.reduce((a, s) => a + s.x, 0) / alive.length;
+        const cy = alive.reduce((a, s) => a + s.y, 0) / alive.length;
+        const dist = Math.hypot(cx - post.x, cy - post.y);
+        // The exact forecast the commander's assault gate runs before issuing.
+        if (compliance(sim, team, dangerScore(sim, team, post) * ASSAULT_DANGER_MULT) === 'balk' && dist <= 30) {
+          withinRangeBalk++;
+          if (order?.kind === 'move') divertMove++;
+          else if (order?.kind === 'defend') heldDefend++;
+        }
+        // A re-feed is an assault order that is not an executing charge (a
+        // balked assault the commander keeps re-issuing). An 'executing'
+        // assault is the legitimate charge that eventually steps off.
+        if (order?.kind === 'assault' && team.orderState.phase !== 'executing') refedAssault++;
+      }
+      expect(withinRangeBalk).toBeGreaterThan(0); // non-vacuous: the balk really persists in range
+      expect(refedAssault).toBe(0); // the balked charge was never re-issued as assault
+      expect(divertMove).toBeGreaterThan(0); // the team was diverted to a flank move
+      expect(heldDefend).toBeGreaterThan(0); // and/or held on defend, not fed into the frontal
+    }
+  });
+
 
   it('reserve still commits when a maneuver team bleeds out mid-assault (the executing-assault guard must not skip the loss check)', () => {
     // Regression: the "an executing charge owns its team" continue-guard sits

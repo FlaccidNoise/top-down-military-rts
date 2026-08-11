@@ -1,6 +1,6 @@
 import { EMPLACEMENTS, WEAPONS, type WeaponDef } from './data';
 import { crewNear, friendlyHasLos, type Emplacement } from './emplacement';
-import { dangerScore } from './orders';
+import { ASSAULT_DANGER_MULT, compliance, dangerScore } from './orders';
 import { CONTACT_TTL, EYE_CROUCH, EYE_STAND, SPOT_INTERVAL, sightBetween, type Side, type Sim, type Team } from './sim';
 
 // Red commander: issues squad orders through the same public order API the
@@ -145,7 +145,7 @@ export class RedCommander {
   private fireStartTick = new Map<number, number>(); // base teamId -> tick its fire order began
   private startStrength = new Map<number, number>(); // maneuver teamId -> eligible count at classification
   private postOverride = new Map<number, { x: number; y: number }>(); // teamId -> objective it rolled onto after taking its briefed one
-  private teamPost = new Map<number, { x: number; y: number }>(); // teamId -> objective it is working this eval (briefed or rolled-onto)
+  private teamPost = new Map<number, { x: number; y: number }>(); // teamId -> objective it is working this pass (briefed or rolled-onto)
   private takenPosts: { x: number; y: number }[] = []; // posts the attack has stood on and found clear
   private reserveCommitted = false;
   private forceStart = 0; // committed effectives at classification: the culmination denominator
@@ -420,17 +420,15 @@ export class RedCommander {
       // post balks by construction).
       if (pressing && dist <= SMOKE_RANGE) this.maybeSmokeObjective(sim, post);
       if (pressing && dist <= ASSAULT_RANGE) {
-        // suppression established, live threat on the post, close enough to
-        // charge home: the 8th order, through the same API the player uses.
-        // suppressionEstablished is a global attempt-gate; the real per-team
-        // check is orderTeam's compliance ladder (dangerScore × the assault
-        // mult), which downgrades a team that shouldn't charge to a move.
+        // Forecast the same ladder orderTeam will run. A balked charge used to
+        // be re-issued every eval until transient danger decayed and fed the
+        // team into an unchanged defended lane (#216).
+        if (compliance(sim, team, dangerScore(sim, team, post) * ASSAULT_DANGER_MULT) === 'balk') {
+          this.divertRefusedAssault(sim, team, post);
+          continue;
+        }
         // Floor-aware town assault (#130): defend/ambush auto-garrisons the
-        // TOP storey of the post tile (orderLevel, spots.ts), so a charge onto
-        // a multi-storey post is briefed at that same storey — the men path in
-        // the door and up the stairs, and the soldier-level grenade doctrine
-        // (maybeThrowGrenade on the assault cadence) clears the rooms they
-        // enter. storiesAt is map knowledge, not an intel read.
+        // top storey, so brief the charge to that same storey.
         const stories = sim.map.storiesAt(Math.floor(post.x), Math.floor(post.y));
         sim.orderTeam(teamId, { kind: 'assault', x: post.x, y: post.y, l: stories >= 2 ? stories - 1 : 0 });
       } else if (suppressed || cleared) {
@@ -655,6 +653,17 @@ export class RedCommander {
     const left = { x: c.x + dx * 0.5 + nx * FLANK_OFFSET, y: c.y + dy * 0.5 + ny * FLANK_OFFSET };
     const right = { x: c.x + dx * 0.5 - nx * FLANK_OFFSET, y: c.y + dy * 0.5 - ny * FLANK_OFFSET };
     return dangerScore(sim, team, left) <= dangerScore(sim, team, right) ? left : right;
+  }
+
+  // A refused frontal becomes a feasible flank bound or a crouched hold while
+  // smoke or new geometry changes the same danger reading. No hidden intel or RNG.
+  private divertRefusedAssault(sim: Sim, team: Team, post: { x: number; y: number }): void {
+    const flank = this.pickFlank(sim, team, post);
+    if (compliance(sim, team, dangerScore(sim, team, flank)) !== 'balk') {
+      sim.orderTeam(team.id, { kind: 'move', x: flank.x, y: flank.y });
+    } else {
+      this.consolidate(sim, team);
+    }
   }
 
   // ---- defend stance: each squad holds its own post, counterattacking the

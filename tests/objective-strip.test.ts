@@ -23,6 +23,11 @@ describe('objectiveStripText', () => {
     expect(r.condition).toContain('⌊25⌋'); // red floor
   });
 
+  it('attack: condition mentions staying at or above own floor', () => {
+    const r = objectiveStripText(BASE, 100, 60, 30, 25)!;
+    expect(r.condition).toContain('staying at or above ⌊30⌋'); // blue floor
+  });
+
   it('attack: no star when not objective', () => {
     const r = objectiveStripText({ ...BASE, isObjective: false }, 100, 60, 30, 25)!;
     expect(r.label).toBe('ASSAULT C4');

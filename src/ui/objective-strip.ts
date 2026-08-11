@@ -41,8 +41,8 @@ export function objectiveStripText(
   const label = `${objective.isObjective ? '★ ' : ''}${objective.kind === 'attack' ? 'ASSAULT' : 'DEFEND'} ${objective.cellLabel}`;
   const condition =
     objective.kind === 'attack'
-      ? `Break the defense — reduce enemy below ⌊${redFloor}⌋ or wipe them`
-      : `Hold — keep your force above ⌊${blueFloor}⌋`;
+      ? `Break the defense — reduce enemy below ⌊${redFloor}⌋ while staying at or above ⌊${blueFloor}⌋, or wipe them`
+      : `Hold — keep your force at or above ⌊${blueFloor}⌋`;
   return {
     label,
     condition,

@@ -21,20 +21,31 @@ export const arg = (name, dflt) => {
 // Device profiles. `desktop` is the historical default and must stay exactly
 // 1280x800 @ dpr 1 with no touch: every sweep / vfx / shot / demo baseline was
 // captured against it, and a silently reshot baseline is an invisible art
-// regression. The phone profiles are opt-in and are the only thing that makes
-// matchMedia('(pointer: coarse)') + '(hover: none)' true, i.e. the only thing
-// that turns MOBILE (src/render/view.ts) on.
+// regression. Phone profiles also need a mobile UA: Chrome 151 ignores
+// isMobile/hasTouch without one, silently running desktop pointer media at a
+// phone viewport. Together these options make pointer:coarse + hover:none true
+// and turn MOBILE (src/render/view.ts) on.
+const PHONE_UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148';
 export const DEVICES = {
   desktop: { viewport: { width: 1280, height: 800 }, deviceScaleFactor: 1, isMobile: false, hasTouch: false },
-  phone: { viewport: { width: 390, height: 844 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true },
-  'phone-landscape': { viewport: { width: 844, height: 390 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true },
+  phone: { viewport: { width: 390, height: 844 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true, userAgent: PHONE_UA },
+  'phone-landscape': { viewport: { width: 844, height: 390 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true, userAgent: PHONE_UA },
 };
 
 export async function launch({ device = 'desktop' } = {}) {
   const profile = DEVICES[device];
   if (!profile) throw new Error(`unknown device "${device}" — one of: ${Object.keys(DEVICES).join(', ')}`);
   const browser = await chromium.launch({ channel: 'chrome', headless: true });
-  const page = await browser.newPage(profile);
+  // Chrome 151's first incognito context ignores touch/mobile emulation while
+  // still applying its viewport. Burn that context so the phone gate cannot
+  // silently exercise desktop controls at 390 px.
+  if (profile.hasTouch) {
+    const warm = await browser.newContext();
+    await (await warm.newPage()).goto('data:text/html,warm');
+    await warm.close();
+  }
+  const context = await browser.newContext({ ...profile });
+  const page = await context.newPage();
   page.on('pageerror', (e) => console.error(`  pageerror: ${e.message}`));
   return { browser, page };
 }
@@ -343,12 +354,11 @@ export function stageEmplacements(page, { x, y }) {
   );
 }
 
-// Point the camera and settle until the frame stops changing. Two frames used
-// to be enough, but bake work is now amortized across frames (terrain chunks
-// rebake on a band change), so a fixed settle captures a half-drawn world.
-// Poll a downscaled centre crop — UI chrome excluded — and stop once two
-// consecutive frames are pixel-identical. Static scenes reach that in a few
-// frames; the cap bounds a scene that never quiesces.
+// Point the camera and settle until the full canvas stops changing. Two frames
+// used to be enough, but bake work is amortized across frames and roof fades
+// can continue after a downscaled centre probe appears still. Compare every
+// native pixel exactly: the screenshot is full-frame, so the settle gate must
+// cover that same frame and tolerate no one-level drift (#278).
 //
 // Returns { frames, quiesced }, and SHOUTS when it hits the cap instead of
 // returning a half-settled world in silence.
@@ -375,39 +385,25 @@ export async function place(page, x, y, scale) {
       g.cam.y = y;
       g.cam.scale = scale;
       const canvas = document.querySelector('canvas');
+      const ctx = canvas.getContext('2d');
       const raf = () => new Promise((r) => requestAnimationFrame(r));
-      const roi = 0.6;
-      const probe = document.createElement('canvas');
-      probe.width = 220;
-      probe.height = 140;
-      const pg = probe.getContext('2d', { willReadFrequently: true });
-      const sw = Math.round(canvas.width * roi);
-      const sh = Math.round(canvas.height * roi);
-      const sx = Math.round((canvas.width - sw) / 2);
-      const sy = Math.round((canvas.height - sh) / 2);
-      const snap = () => {
-        pg.drawImage(canvas, sx, sy, sw, sh, 0, 0, probe.width, probe.height);
-        return pg.getImageData(0, 0, probe.width, probe.height).data;
-      };
+      const snap = () => new Uint32Array(ctx.getImageData(0, 0, canvas.width, canvas.height).data.buffer);
       await raf();
       await raf();
       let prev = snap();
       let i = 0;
       let stable = 0;
-      for (; i < cap && stable < 2; i++) {
+      for (; i < cap && stable < 6; i++) {
         await raf();
         const cur = snap();
-        let same = true;
-        for (let k = 0; k < cur.length; k += 4) {
-          if (Math.abs(cur[k] - prev[k]) > 1 || Math.abs(cur[k + 1] - prev[k + 1]) > 1 || Math.abs(cur[k + 2] - prev[k + 2]) > 1) {
-            same = false;
-            break;
-          }
+        let same = cur.length === prev.length;
+        for (let k = 0; same && k < cur.length; k++) {
+          if (cur[k] !== prev[k]) same = false;
         }
         stable = same ? stable + 1 : 0;
         prev = cur;
       }
-      return { frames: i, quiesced: stable >= 2 };
+      return { frames: i, quiesced: stable >= 6 };
     },
     { x, y, scale, cap: SETTLE_CAP }
   );

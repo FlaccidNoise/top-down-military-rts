@@ -147,3 +147,32 @@ describe('computeShot floor-blocked cue', () => {
     expect(shot?.reason).toBe('no-los');
   });
 });
+
+// Regression: AP preview truth. The UI must show two distinct numbers — a
+// penetration chance and a strictly-smaller conditional destruction chance (its
+// own capture-kill multiplier) — never collapse them into one "destroy" figure.
+describe('AP preview regression', () => {
+  it('computeShot AT solution separates penetration from conditional destruction', () => {
+    const sim = new Sim(new GameMap(40, 20), 1);
+    sim.addVehicle('red', 'panzer4', 10.5, 10.5, 0);
+    // panzerfaust (pen 150) well behind the tank: rear arc, in range (35 m), clear LOS
+    const atSquad = sim.addSquad('blue', 'AT', [{ name: 'AT', weapon: 'panzerfaust', x: 4.5, y: 10.5 }]);
+    const shot = computeShot(sim, atSquad.id, -1, { kind: 'vehicle', v: sim.vehicles[0] });
+    expect(shot?.ok).toBe(true);
+    const line = shot!.lines[1];
+    expect(line).toContain('penetrate');
+    expect(line).toContain('destroy');
+    expect(line).toContain('if hit');
+    expect(line.indexOf('destroy')).toBeGreaterThan(line.indexOf('penetrate'));
+  });
+
+  it('apShotPreview exposes destroyChance = penChance * 0.45', () => {
+    const sim = new Sim(new GameMap(40, 20), 1);
+    const panzer = sim.addVehicle('red', 'panzer4', 10.5, 10.5, 0);
+    const p = sim.apShotPreview(3.5, 10.5, 150, 0.5, 120, panzer, false); // rear: certain pen vs 25 mm
+    expect(p.arc).toBe('rear');
+    expect(p.penChance).toBe(1);
+    expect(p.destroyChance).toBeCloseTo(p.penChance * 0.45, 10);
+    expect(p.destroyChance).toBeCloseTo(0.45, 10);
+  });
+});

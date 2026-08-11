@@ -95,6 +95,8 @@ const GRENADE_FUSE_TICKS = 30; // ~1 s
 const GRENADE_COOLDOWN_TICKS = 60;
 const GRENADE_BLAST = { suppRadius: 6, fragRadius: 3, frags: 2, dmg: [20, 55] as [number, number], breach: 2 };
 const GRENADE_SCATTER = 2; // m max
+const ENTRY_LOOKAHEAD = 4; // path waypoints: imminent opening, not any later opening
+const AP_DESTROY_CHANCE = 0.45; // conditional on a penetrating hit
 
 // Destructible terrain (docs/plans/2026-07-27-destructible-terrain-design.md
 // §1.2-§1.3). Breach energy falls off linearly from the burst point over the
@@ -263,6 +265,7 @@ export interface Soldier {
   wallTarget: EdgeRef | null; // player-assigned wall to open with an AT weapon (D5), null = none
   grenadesLeft: number; // 2 for grenadiers, 0 for everyone else
   grenadeCooldownUntil: number; // tick when next grenade throw is allowed
+  entryHoldUntil: number; // waits outside an opening until his own grenade bursts (#217)
   captured: boolean; // alive, out of the fight, untargetable (surrendered at melee contact)
 }
 
@@ -401,6 +404,7 @@ export interface ApShotPreview {
   arc: 'front' | 'side' | 'rear';
   armor: number;
   penChance: number;
+  destroyChance: number; // immediate vehicle destruction, conditional on a hit
 }
 
 interface Barrage {
@@ -911,6 +915,7 @@ export class Sim {
       wallTarget: null,
       grenadesLeft: m.grenades ?? 0,
       grenadeCooldownUntil: 0,
+      entryHoldUntil: 0,
       captured: false,
     };
     s.morale = 0.7 + s.courage * 0.3;
@@ -2712,7 +2717,7 @@ export class Sim {
       const c = this.soldiers[cid];
       if (c.alive && this.rng.next() < 0.45) this.wound(c, this.rng.range(30, 80));
     }
-    if (this.rng.next() < 0.45) this.destroyVehicle(target);
+    if (this.rng.next() < AP_DESTROY_CHANCE) this.destroyVehicle(target);
   }
 
   private destroyVehicle(v: Vehicle): void {
@@ -2784,7 +2789,7 @@ export class Sim {
     const arc = armorFacing(target, fx, fy);
     const armor = VEHICLES[target.kind].armor[arc];
     const penChance = Math.min(1, Math.max(0, (1.25 - armor / pen) / 0.5));
-    return { dist: d, acc, arc, armor, penChance };
+    return { dist: d, acc, arc, armor, penChance, destroyChance: penChance * AP_DESTROY_CHANCE };
   }
 
   // Shared small-arms resolution used by soldiers and vehicle MGs.
@@ -2960,6 +2965,7 @@ export class Sim {
       (this.tick + s.id) % ASSAULT_REPATH_TICKS === 0
     ) {
       this.assaultRepath(s, order);
+      this.maybeGrenadeEntry(s);
       this.maybeThrowGrenade(s);
     }
 
@@ -2985,8 +2991,8 @@ export class Sim {
       this.crawlToCover(s);
     }
 
-    // movement (pinned men hug the ground)
-    if (s.path && s.mental !== 'pinned') this.advance(s, this.moveSpeed(s));
+    // pinned men stay down; a grenadier waits outside the opening for his fuse
+    if (s.path && s.mental !== 'pinned' && (this.tick >= s.entryHoldUntil || s.mental === 'broken')) this.advance(s, this.moveSpeed(s));
 
     // Sim.orderMount: walking to board, or arrived and boarding within 2m.
     // Re-paths if he arrives short (a formation spot, a vehicle that moved)
@@ -3971,6 +3977,64 @@ export class Sim {
     this.pendingGrenades.push({ x: best.x + Math.cos(angle) * dist, y: best.y + Math.sin(angle) * dist, fuse: GRENADE_FUSE_TICKS, l: best.level });
   }
 
+  // Before crossing a door or stair into a room with a currently spotted enemy,
+  // throw through the opening and wait outside until the fuse expires.
+  private maybeGrenadeEntry(s: Soldier): void {
+    if (s.grenadesLeft <= 0 || this.tick < s.grenadeCooldownUntil || !s.path) return;
+    let ax = Math.floor(s.x);
+    let ay = Math.floor(s.y);
+    let al = s.level;
+    const end = Math.min(s.path.length, s.pathI + ENTRY_LOOKAHEAD);
+    for (let i = s.pathI; i < end; i++) {
+      const wp = s.path[i];
+      const bx = Math.floor(wp.x);
+      const by = Math.floor(wp.y);
+      const bl = wp.l ?? 0;
+      let opening = bl !== al && this.map.isStair(ax, ay);
+      if (!opening && bl === al) {
+        const edge = this.map.edgeAddr(ax, ay, bx, by);
+        opening = !!edge && (edge.horiz ? this.map.hEdge(edge.x, edge.y) : this.map.vEdge(edge.x, edge.y)) === EDGE.DOOR;
+      }
+      if (opening) {
+        const buildingId = this.map.buildingIdAt(bx, by);
+        if (buildingId >= 0) this.grenadeEntryThrow(s, buildingId, bl);
+        return;
+      }
+      ax = bx;
+      ay = by;
+      al = bl;
+    }
+  }
+
+  private grenadeEntryThrow(s: Soldier, buildingId: number, level: number): void {
+    let target: Soldier | null = null;
+    let targetDistance = Infinity;
+    for (const e of this.soldiers) {
+      if (!e.alive || e.downed || e.captured || e.side === s.side || e.inVehicle >= 0 || e.level !== level) continue;
+      if (!this.spotted[s.side].has(e.id) || this.map.buildingIdAt(Math.floor(e.x), Math.floor(e.y)) !== buildingId) continue;
+      const distance = Math.hypot(e.x - s.x, e.y - s.y);
+      if (distance > GRENADE_RANGE || distance >= targetDistance) continue;
+      target = e;
+      targetDistance = distance;
+    }
+    if (!target || targetDistance <= GRENADE_BLAST.fragRadius) return;
+    for (const friendly of this.soldiers) {
+      if (!friendly.alive || friendly.id === s.id || friendly.side !== s.side || friendly.inVehicle >= 0 || friendly.level !== level) continue;
+      if (Math.hypot(friendly.x - target.x, friendly.y - target.y) <= GRENADE_BLAST.fragRadius) return;
+    }
+    s.grenadesLeft--;
+    s.grenadeCooldownUntil = this.tick + GRENADE_COOLDOWN_TICKS;
+    s.entryHoldUntil = this.tick + GRENADE_FUSE_TICKS;
+    const angle = this.rng.next() * Math.PI * 2;
+    const distance = this.rng.next() * GRENADE_SCATTER;
+    this.pendingGrenades.push({
+      x: target.x + Math.cos(angle) * distance,
+      y: target.y + Math.sin(angle) * distance,
+      fuse: GRENADE_FUSE_TICKS,
+      l: level,
+    });
+  }
+
   // Can a man physically get at (bx, by) from (ax, ay) at melee distance?
   // Greedy tile walk over canStep — doors pass, walls and windows don't.
   // At MELEE_ENGAGE range the chain is <= 2 steps; deterministic, no RNG.
@@ -4297,6 +4361,7 @@ export class Sim {
         Math.round(s.meleePhase * 1e6),
         s.grenadesLeft,
         s.grenadeCooldownUntil,
+        s.entryHoldUntil,
         s.captured,
         Math.round((s.crewSkill.mg ?? 0) * 1e6),
         Math.round((s.crewSkill.mortar ?? 0) * 1e6),

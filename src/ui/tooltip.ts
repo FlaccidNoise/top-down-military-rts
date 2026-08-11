@@ -152,7 +152,7 @@ function apSolution(sim: Sim, fx: number, fy: number, pen: number, accuracy: num
     ok: true,
     acc: p.acc,
     title: `${title} · ${p.arc} arc`,
-    lines: [`${Math.round(p.dist)} m · hit ${pct(p.acc)}${moving ? ' (moving)' : ''}`, `pen ${pen} vs ${p.armor} mm — kill ${pct(p.penChance)}`],
+    lines: [`${Math.round(p.dist)} m · hit ${pct(p.acc)}${moving ? ' (moving)' : ''}`, `pen ${pen} vs ${p.armor} mm — penetrate ${pct(p.penChance)} · destroy ${pct(p.destroyChance)} if hit`],
   };
 }
 
