@@ -8,7 +8,7 @@ Three tiers, measured 2026-07-31:
 |---|---|---|
 | `npx vitest run tests/<file>.test.ts` | 1–5s | Iterating on one feature |
 | `npx vitest related src/<path>.ts` | seconds | After editing one source file |
-| `npm run test:quick` | ~23s | Pre-commit sanity (85 files, 1059 tests) |
+| `npm run test:quick` | ~27s | Pre-commit sanity (87 files, 1071 tests) |
 | `npm test` | ~2 min | Full suite — ONLY on owner request or before merge/deploy |
 
 NEVER run `npm test` during dev iteration. Use `test:quick` or single-file runs.
@@ -29,4 +29,4 @@ mapgen territory or the owner asks for full.
 - `src/` — game code (sim, mapgen, strategic, ui)
 - `tests/` — vitest suite, one file per concern
 - `scripts/` — browser gates (playwright/CDP) and probes; `scripts/tutorial.mjs` is the strategic/UX gate
-- `docs/` — plans, specs, decisions (INDEX.md is the running log)
+- `docs/` — plans, specs, and decision records (`docs/decisions/INDEX.md` indexes the decisions)

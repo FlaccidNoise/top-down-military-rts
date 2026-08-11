@@ -25,7 +25,7 @@ services, no config file.
 | `npm run dev` | — | Dev server with hot reload |
 | `npm run build` | — | Production build to `dist/` |
 | `npm run check` | — | Typecheck (`tsc --noEmit`) |
-| `npm run test:quick` | ~23s | 1059 tests across 85 files — the pre-commit gate |
+| `npm run test:quick` | ~27s | 1071 tests across 87 files — the pre-commit gate |
 | `npm test` | ~2 min | Full suite |
 
 For a single file while iterating: `npx vitest run tests/<file>.test.ts`.
