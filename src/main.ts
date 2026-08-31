@@ -1887,6 +1887,7 @@ function frame(now: number): void {
     // fog of war: enemy unit events only ping where a friendly can see
     const unitEvents = sim.takeUnitEvents().filter((e) => e.side === 'blue' || sim.fowDisabled || sim.sideSeesPoint('blue', e.x, e.y));
     pings.add(unitEvents, sim.tick);
+    renderer.addUnitEvents(unitEvents, fxNow);
     audio.addUnitEvents(unitEvents);
 
     const pick = mouse.onCanvas && !targetMode ? pickAt(sim, cam, mouse.x, mouse.y, view.w, view.h) : null;

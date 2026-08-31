@@ -341,6 +341,40 @@ export function stageMorale(page, { x, y }) {
   );
 }
 
+// Transition-FX gate: the three one-shot morale effects (the sim's pinned /
+// rallied / ambush UnitEvents) laid out kind per row, AGE per column, so a
+// whole lifetime is in one still.
+//
+// Ages, not wall-clock, for the reason stageSmoke uses them — the renderer
+// keys every transient off (now - at), so injecting at `T - age` and drawing
+// at `T` freezes any point of the curve. It drives renderer.draw itself with
+// that chosen clock instead of waiting for a frame: the page's own fxNow is
+// frozen wherever the pause left it, which would pin every effect at age 0.
+// Returns a data URL — the caller writes the file.
+export function stageMoraleFx(page, { x, y, ages = [40, 150, 300] }) {
+  return page.evaluate(
+    ({ x, y, ages }) => {
+      const g = window.__game;
+      const canvas = document.querySelector('canvas');
+      const ctx = canvas.getContext('2d');
+      const T = 100000; // any clock past the longest lifetime
+      const kinds = ['pinned', 'rallied', 'ambush'];
+      ages.forEach((age, c) => {
+        g.renderer.addUnitEvents(
+          kinds.map((kind, r) => ({ kind, x: x + (c - (ages.length - 1) / 2) * 6, y: y + 5 + r * 6, side: 'blue', name: kind })),
+          T - age
+        );
+      });
+      g.cam.x = x;
+      g.cam.y = y + 11;
+      g.cam.scale = 30;
+      g.renderer.draw(ctx, g.cam, [], T);
+      return canvas.toDataURL('image/png');
+    },
+    { x, y, ages }
+  );
+}
+
 // Smoke art gate (V12): one row of shell-smoke puffs at ages spanning the
 // plume curve, plus one burning-wreck column. The renderer draws sim.smoke
 // straight off `p.h`/`p.r`/`smokeAxisAt`, so the AGE is the whole variable —

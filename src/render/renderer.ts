@@ -1,6 +1,6 @@
 import type { Emplacement } from '../sim/emplacement';
 import { smokeAxisAt } from '../sim/wind';
-import { MELEE_STRIKE_RANGE, stanceOf, type BreachEvent, type MeleeEvent, type ShotEvent, type Side, type Sim, type Soldier, type Vehicle } from '../sim/sim';
+import { MELEE_STRIKE_RANGE, stanceOf, type BreachEvent, type MeleeEvent, type ShotEvent, type Side, type Sim, type Soldier, type UnitEvent, type Vehicle } from '../sim/sim';
 import type { Camera } from './camera';
 import { DecalLayer } from './decals';
 import { bandFor, CRAWL_FRAMES, DUDE_SCALE, getShadowSprite, getSprite, glintSprite, headOffset, kitVariant, SPRITE_MIN_SCALE, SPRITE_SPAN, tier, WALK_FRAMES, weaponClass, type Pose } from './dudes';
@@ -11,7 +11,7 @@ import { MarkLayer } from './marks';
 import { craterSpots } from './props';
 import { RoofLayer } from './roofs';
 import { TerrainLayer } from './terrain';
-import { view } from './view';
+import { MOBILE, view } from './view';
 import { getVehicleShadow, getVehicleSprite, occBucket, trackGauge, turretBlob, turretCenter, vehicleBandFor, VEHICLE_SPAN } from './vehicles';
 
 interface Tracer extends ShotEvent {
@@ -107,6 +107,23 @@ interface BreachFx {
   k: number; // hash key — stable, so the same breach throws the same stone every frame
 }
 const BREACH_MS = 1300;
+
+// One-shot punctuation for the sim's morale crossings (sim.ts UnitEvent).
+// Nothing here is a particle system: three blits off the baked fx atlas, aged
+// on the same fxNow clock as every other transient, so they freeze under pause.
+interface MoraleFx {
+  kind: 'pinned' | 'rallied' | 'ambush';
+  x: number;
+  y: number;
+  at: number;
+  k: number; // stable hash key — the same puff scatters the same way every frame
+}
+const MORALE_MS: Record<MoraleFx['kind'], number> = { pinned: 380, rallied: 520, ambush: 320 };
+// Hard concurrent cap, the MAX_VOICES pattern (audio.ts): one barrage pins a
+// platoon in a single tick and every man would want his own puff. Overflow is
+// dropped silently — eight men going down already reads as "the line broke",
+// and the alternative is a frame that spends its whole budget on dust.
+const MAX_MORALE_FX = MOBILE ? 6 : 10;
 
 // A thing on fire. One record serves both causes: a building stoked by booms
 // that landed inside it (key = buildingId), and a vehicle the sim says is
@@ -232,6 +249,8 @@ export class Renderer {
   private fxClock = 0; // set once per draw(): the pinnable cosmetic clock overlay pulses read
   private booms: Boom[] = [];
   private breaches: BreachFx[] = [];
+  private moraleFx: MoraleFx[] = [];
+  private moraleSeq = 0;
   private decals: DecalLayer;
   private marks = new MarkLayer();
   private barrageMarks: { x: number; y: number; tick: number }[] = [];
@@ -326,6 +345,18 @@ export class Renderer {
   // player cannot see still changed the map, and a chunk that is never marked
   // stale is never rebaked, so the wall would come back the moment the fog
   // lifted. Only the PARTICLES are transient.
+  // Morale crossings, already fog-filtered by the caller exactly as the event
+  // pings are — a German breaking behind the hedge throws no dust the player
+  // has no business seeing. Every other kind (kia, downed, ping, ...) is the
+  // ping feed's and the audio layer's business, not the renderer's.
+  addUnitEvents(list: UnitEvent[], now: number): void {
+    for (const e of list) {
+      if (e.kind !== 'pinned' && e.kind !== 'rallied' && e.kind !== 'ambush') continue;
+      if (this.moraleFx.length >= MAX_MORALE_FX) return; // at the cap: drop, silently
+      this.moraleFx.push({ kind: e.kind, x: e.x, y: e.y, at: now, k: this.moraleSeq++ });
+    }
+  }
+
   addBreaches(list: BreachEvent[], now: number): void {
     if (list.length === 0) return;
     for (const b of list) {
@@ -1563,6 +1594,11 @@ export class Renderer {
 
     this.breaches = this.breaches.filter((b) => now - b.at < BREACH_MS);
     for (const b of this.breaches) this.drawBreach(ctx, cam, b, now, cw, ch, tier);
+
+    this.moraleFx = this.moraleFx.filter((m) => now - m.at < MORALE_MS[m.kind]);
+    // Below tier 1 a man is a dot and a 1 m puff is two pixels of mud: prune
+    // (so nothing piles up while zoomed out) but draw nothing.
+    if (tier >= 1) for (const m of this.moraleFx) this.drawMoraleFx(ctx, cam, m, now, cw, ch);
     // The additive halves (drawShotHot/drawBoomHot) moved to drawHot(), which
     // runs after the ambient grade — the filters above are what keep the
     // arrays it iterates current.
@@ -1654,6 +1690,33 @@ export class Renderer {
       ctx.beginPath();
       ctx.arc(g.x1, g.y1, (0.4 + kt * 2.2) * cam.scale, 0, Math.PI * 2);
       ctx.stroke();
+    }
+  }
+
+  // The three morale crossings, one blit vocabulary each. All source-over: a
+  // man losing his nerve is not an additive event.
+  private drawMoraleFx(ctx: CanvasRenderingContext2D, cam: Camera, m: MoraleFx, now: number, cw: number, ch: number): void {
+    const [x, y] = cam.worldToScreen(m.x, m.y, cw, ch);
+    if (!this.onScreen(x, y, cw, ch, 3 * cam.scale)) return;
+    const t = (now - m.at) / MORALE_MS[m.kind];
+    const S = cam.scale;
+    if (m.kind === 'pinned') {
+      // Dust kicked sideways as he goes flat. Squashed on y and never lifted:
+      // this is a man hitting the dirt, not a shell landing.
+      for (let i = 0; i < 3; i++) {
+        const a = hash(m.k, i, 91) * Math.PI * 2;
+        const d = (0.15 + t * 0.55) * S;
+        blit(ctx, 'dustTan', x + Math.cos(a) * d, y + Math.sin(a) * d * 0.6, Math.max(1, S * (0.3 + t * 0.35)), (1 - t) * 0.6);
+      }
+    } else if (m.kind === 'rallied') {
+      // Back on his feet. Deliberately the other end of the palette from the
+      // kill ring's pale tan, half its alpha and twice its life — the read is
+      // "settled", and nothing calm should be brighter than a confirmed kill.
+      blit(ctx, 'ringDark', x, y, (0.35 + t * 1.15) * S, (1 - t) * 0.38);
+    } else {
+      // The volley's own flashes land this same tick and they are the show.
+      // This is the full stop after them.
+      blit(ctx, 'ringTan', x, y, (0.5 + t * 1.9) * S, (1 - t) * 0.42);
     }
   }
 

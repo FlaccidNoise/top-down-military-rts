@@ -16,7 +16,7 @@
 //   node scripts/shot.mjs --list                             # presets + effects
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { arg, launch, gotoStaged, deriveTargets, deriveBuilding, wallStage, place, burst, stageEmplacements, stageMorale, stageSmoke, stageVehicles, hourMin, fmtHour, HOUR_PRESETS, stagedHour } from './lib/stage.mjs';
+import { arg, launch, gotoStaged, deriveTargets, deriveBuilding, wallStage, place, burst, stageEmplacements, stageMorale, stageMoraleFx, stageSmoke, stageVehicles, hourMin, fmtHour, HOUR_PRESETS, stagedHour } from './lib/stage.mjs';
 
 const has = (name) => process.argv.includes(`--${name}`);
 const PORT = Number(arg('port', '5198'));
@@ -158,8 +158,17 @@ if (has('map')) {
   ({ x, y, scale } = await stageEmplacements(page, targets.units));
 } else if (arg('preset', 'units') === 'morale') {
   // The psych ladder, staged. Shoot it twice with --flicker 1 to watch the
-  // pinned ring breathe; the default pin holds it on one frame.
+  // pinned ring breathe; the default pin holds it on one frame. --fx swaps the
+  // ladder for the three one-shot transition effects at a spread of ages.
   ({ x, y, scale } = await stageMorale(page, targets.units));
+  if (has('fx')) {
+    await place(page, x, y, scale);
+    const url = await stageMoraleFx(page, { x, y });
+    writeFileSync(OUT, Buffer.from(url.split(',')[1], 'base64'));
+    console.log(`${OUT}  (morale transition FX: pinned/rallied/ambush x ages 40/150/300 ms, ${at})`);
+    await browser.close();
+    process.exit(0);
+  }
 } else {
   const t = targets[arg('preset', 'units')];
   if (!t) throw new Error(`unknown preset "${arg('preset')}" — one of: ${PRESETS.join(', ')}`);
