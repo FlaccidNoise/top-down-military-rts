@@ -4,7 +4,7 @@ import { ECLASS, EDGE, GameMap, edgeClass, los } from '../src/sim/map';
 import { astar } from '../src/sim/path';
 import { generateMap } from '../src/sim/mapgen';
 import { makeScenario } from '../src/sim/scenario';
-import { DT, Sim, sightBetween, smokePuff } from '../src/sim/sim';
+import { DT, Sim, sightBetween, smokePuff, type UnitEvent } from '../src/sim/sim';
 import { CANON_CLOCK_MIN } from '../src/sim/solar';
 
 describe('line of sight', () => {
@@ -429,6 +429,121 @@ describe('simulation', () => {
       expect(Number.isFinite(s.suppression)).toBe(true);
       expect(Number.isFinite(s.morale)).toBe(true);
     }
+  });
+});
+
+describe('morale drama events', () => {
+  // One man, no enemies, no rounds: the psych ladder is the only thing moving,
+  // so forcing morale/suppression each tick drives an exact state trajectory.
+  const loner = () => {
+    const sim = new Sim(new GameMap(20, 20), 3);
+    sim.addSquad('blue', 'a', [{ name: 'A', weapon: 'garand', x: 10.5, y: 10.5 }]);
+    const s = sim.soldiers[0];
+    s.magLeft = 0;
+    s.ammo = {};
+    return { sim, s };
+  };
+
+  const run = (sim: Sim, ticks: number, hold: () => void) => {
+    const kinds: string[] = [];
+    for (let i = 0; i < ticks; i++) {
+      hold();
+      sim.step();
+      kinds.push(...sim.takeUnitEvents().map((e) => e.kind));
+    }
+    return kinds;
+  };
+
+  it('steady → pinned fires once, and not again while the pin holds', () => {
+    const { sim, s } = loner();
+    const kinds = run(sim, 40, () => {
+      s.suppression = 1;
+      s.morale = 0.8;
+    });
+    expect(s.mental).toBe('pinned');
+    expect(kinds.filter((k) => k === 'pinned')).toHaveLength(1);
+  });
+
+  it('pinned → steady fires one rallied', () => {
+    const { sim, s } = loner();
+    run(sim, 20, () => {
+      s.suppression = 1;
+      s.morale = 0.8;
+    });
+    expect(s.mental).toBe('pinned');
+    const kinds = run(sim, 40, () => {
+      s.suppression = 0;
+      s.morale = 1;
+    });
+    expect(s.mental).toBe('steady');
+    expect(kinds.filter((k) => k === 'rallied')).toHaveLength(1);
+    expect(kinds).not.toContain('pinned');
+  });
+
+  it('broken → pinned is a recovery, not a pin', () => {
+    const { sim, s } = loner();
+    run(sim, 20, () => {
+      s.morale = 0;
+      s.suppression = 1;
+    });
+    expect(s.mental).toBe('broken');
+    const kinds = run(sim, 40, () => {
+      s.morale = 0.4;
+      s.suppression = 1;
+    });
+    expect(s.mental).toBe('pinned');
+    expect(kinds).not.toContain('pinned');
+  });
+
+  it('a springing ambush emits one event, at the team, named for it', () => {
+    const sim = new Sim(new GameMap(100, 20), 11);
+    sim.addSquad('blue', 'obs', [{ name: 'A', weapon: 'garand', x: 5.5, y: 10.5 }]);
+    const red = sim.addSquad('red', 'amb', [{ name: 'R', weapon: 'kar98k', x: 80.5, y: 10.5, xp: 30 }]);
+    for (const s of sim.soldiers) {
+      s.magLeft = 0;
+      s.ammo = {};
+    }
+    const r = sim.soldiers[red.soldierIds[0]];
+    r.morale = 1;
+    sim.orderTeam(r.teamId, { kind: 'ambush', x: 80.5, y: 10.5 });
+    const events: UnitEvent[] = [];
+    for (let i = 0; i < 30; i++) sim.step(); // 75m out: nothing to spring on
+    expect(sim.teams[r.teamId].orderState.order?.kind).toBe('ambush');
+    expect(sim.takeUnitEvents().filter((e) => e.kind === 'ambush')).toHaveLength(0);
+    sim.soldiers[0].x = 50.5; // walks to 30m — inside the 40m rifleman threshold
+    for (let i = 0; i < 60; i++) {
+      sim.step();
+      events.push(...sim.takeUnitEvents());
+    }
+    expect(sim.teams[r.teamId].orderState.order?.kind).toBe('defend');
+    const sprung = events.filter((e) => e.kind === 'ambush');
+    expect(sprung).toHaveLength(1); // the order flips to defend, so the site is reached once
+    expect(sprung[0].side).toBe('red');
+    expect(sprung[0].name).toBe(sim.teams[r.teamId].name);
+    expect(sprung[0].x).toBeCloseTo(80.5, 0);
+  });
+
+  // Liveness: the forced trajectories above prove the mechanism, not that
+  // anything ever crosses the threshold under natural fire. Two squads at 30 m
+  // with live ammo and no orders — nothing staged but the placement.
+  it('a natural firefight pins someone', () => {
+    const sim = new Sim(new GameMap(60, 20), 7);
+    sim.addSquad('blue', 'A', [
+      { name: 'A1', weapon: 'garand', x: 10.5, y: 9.5 },
+      { name: 'A2', weapon: 'garand', x: 10.5, y: 10.5 },
+      { name: 'A3', weapon: 'bar', x: 10.5, y: 11.5 },
+    ]);
+    sim.addSquad('red', 'B', [
+      { name: 'B1', weapon: 'kar98k', x: 40.5, y: 9.5 },
+      { name: 'B2', weapon: 'kar98k', x: 40.5, y: 10.5 },
+      { name: 'B3', weapon: 'mg42', x: 40.5, y: 11.5 },
+    ]);
+    const kinds: string[] = [];
+    for (let i = 0; i < 900; i++) {
+      sim.step();
+      kinds.push(...sim.takeUnitEvents().map((e) => e.kind));
+    }
+    expect(kinds).toContain('pinned');
   });
 });
 

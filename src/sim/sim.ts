@@ -371,7 +371,7 @@ export interface ShotEvent {
 // UI never has to diff sim state (a DOWN followed by KIA in one frame batch
 // would otherwise drop the DOWN).
 export interface UnitEvent {
-  kind: 'downed' | 'kia' | 'broken' | 'surrendered' | 'vehicle-destroyed' | 'ping';
+  kind: 'downed' | 'kia' | 'broken' | 'surrendered' | 'vehicle-destroyed' | 'ping' | 'pinned' | 'rallied' | 'ambush';
   x: number;
   y: number;
   side: Side;
@@ -1988,6 +1988,19 @@ export class Sim {
     if (triggered) {
       order.kind = 'defend';
       team.ambushBonusTick = this.tick;
+      // Fires once: the order is 'defend' from here, so this site is never
+      // reached again for it. Anchor on the first live member, else the first
+      // listed man — position only, no state read that could vary.
+      let anchor: Soldier | undefined;
+      for (const sid of team.soldierIds) {
+        const m = this.soldiers[sid];
+        if (this.eligible(m)) {
+          anchor = m;
+          break;
+        }
+      }
+      anchor ??= this.soldiers[team.soldierIds[0]];
+      if (anchor) this.pendingUnitEvents.push({ kind: 'ambush', x: anchor.x, y: anchor.y, side, name: team.name });
     }
   }
 
@@ -2893,6 +2906,14 @@ export class Sim {
       : s.suppression > pinThreshold || (s.suppression > 0.5 && s.morale < 0.5) ? 'pinned'
       : s.suppression > 0.35 || s.morale < 0.55 ? 'shaken'
       : 'steady';
+    // Morale drama, one event per crossing. Deterioration into pinned only —
+    // a broken man recovering to pinned is good news, not a pin. Rallying
+    // counts from pinned/broken; shaken→steady is too frequent to be drama.
+    if (s.mental === 'pinned' && (wasMental === 'steady' || wasMental === 'shaken')) {
+      this.pendingUnitEvents.push({ kind: 'pinned', x: s.x, y: s.y, side: s.side, name: s.name });
+    } else if (s.mental === 'steady' && (wasMental === 'pinned' || wasMental === 'broken')) {
+      this.pendingUnitEvents.push({ kind: 'rallied', x: s.x, y: s.y, side: s.side, name: s.name });
+    }
     if (s.mental === 'broken' && wasMental !== 'broken') {
       this.pendingUnitEvents.push({ kind: 'broken', x: s.x, y: s.y, side: s.side, name: s.name });
       // Overwhelmed at contact: ≥2 enemies within MELEE_ENGAGE → capture
