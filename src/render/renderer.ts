@@ -149,6 +149,7 @@ interface Bird {
 }
 
 const BIRD_MS = 1900;
+const PULSE_W = (2 * Math.PI) / 1200; // rad per ms — the pinned ring breathes once every 1.2 s
 const BIRD_CAP = 24;
 const BIRD_SPEED = 11; // m/s
 
@@ -228,6 +229,7 @@ export class Renderer {
   private vrs = new Map<number, VState>();
   private deadVehicles = new Set<number>(); // scorch stamped once, on first dead frame
   private lastNow = 0;
+  private fxClock = 0; // set once per draw(): the pinnable cosmetic clock overlay pulses read
   private booms: Boom[] = [];
   private breaches: BreachFx[] = [];
   private decals: DecalLayer;
@@ -465,6 +467,11 @@ export class Renderer {
     const realNow = performance.now();
     const dt = Math.min(0.1, (realNow - this.lastNow) / 1000);
     this.lastNow = realNow;
+    // The cosmetic clock every overlay pulse reads: fxNow, so it stops with the
+    // sim, and pinned to 0 by ?flicker=0 exactly like the hearth glow below —
+    // an animated tell on an unpinnable clock is what made art crops
+    // unsettleable in the first place (#134, the class #278 tracks).
+    this.fxClock = this.flickerOn ? now : 0;
     ctx.fillStyle = '#161510'; // darker desaturated earth tone off-map, replacing the flat void
     ctx.fillRect(0, 0, cw, ch); // backdrop stays unshaken so shake never opens a gap at the map edge
     ctx.imageSmoothingEnabled = true;
@@ -1396,11 +1403,52 @@ export class Renderer {
       ctx.arc(x, y, cam.scale * 0.6 + 2, 0, Math.PI * 2);
       ctx.stroke();
     } else if (!s.downed && s.suppression > 0.35) {
-      ctx.strokeStyle = `rgba(255, 180, 40, ${Math.min(0.9, s.suppression)})`;
-      ctx.lineWidth = 1.5;
+      // A pinned man's ring breathes; a merely suppressed one holds steady, so
+      // the pin reads at a glance without a second ring. Phase is a hash of the
+      // id — a whole squad pulsing in lockstep reads as a UI fault, not as men
+      // under fire — and PULSE_HZ is slow enough to be a breath, not a strobe.
+      // tier 0 (band < 12) keeps the flat ring: at that zoom the whole man is
+      // four pixels and a 1 px radius wobble is noise.
+      const pinned = s.mental === 'pinned' && tier(band) >= 1;
+      const pulse = pinned ? 0.5 + 0.5 * Math.sin(this.fxClock * PULSE_W + hash(s.id, 0, 23) * Math.PI * 2) : 0;
+      ctx.strokeStyle = `rgba(255, 180, 40, ${Math.min(0.9, s.suppression) * (pinned ? 0.55 + 0.45 * pulse : 1)})`;
+      ctx.lineWidth = pinned ? 1.5 + pulse * 0.9 : 1.5;
       ctx.beginPath();
-      ctx.arc(x, y, cam.scale * 0.55 + 1.5, 0, Math.PI * 2);
+      ctx.arc(x, y, cam.scale * 0.55 + 1.5 + pulse * cam.scale * 0.07, 0, Math.PI * 2);
       ctx.stroke();
+    }
+
+    // Rout tell: morale snapped. A flat plan-view chip with a double chevron
+    // pointing away from the sprite — the same UI-glyph register as the floor
+    // badge below, in the brick red the event feed already uses for bad news.
+    // Strict plan view: nothing here is an elevation of anything. It rides
+    // 0.8 m up — clear of the body and the suppression ring, and well under
+    // the floor badge's 1.8 m, so a broken man upstairs shows both without
+    // either mark moving.
+    if (!s.downed && !s.captured && s.mental === 'broken' && tier(band) >= 1) {
+      const g = Math.max(8, Math.round(cam.scale * 0.34));
+      const gy = y - cam.scale * 0.8;
+      ctx.fillStyle = 'rgba(18,22,15,0.9)';
+      ctx.beginPath();
+      ctx.arc(x, gy, g * 0.62, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(74,82,64,0.9)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      ctx.strokeStyle = '#d05c50';
+      ctx.lineWidth = Math.max(1.2, cam.scale * 0.045);
+      ctx.lineJoin = 'round';
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(x - g * 0.3, gy + g * 0.02);
+      ctx.lineTo(x, gy - g * 0.28);
+      ctx.lineTo(x + g * 0.3, gy + g * 0.02);
+      ctx.moveTo(x - g * 0.3, gy + g * 0.3);
+      ctx.lineTo(x, gy);
+      ctx.lineTo(x + g * 0.3, gy + g * 0.3);
+      ctx.stroke();
+      ctx.lineCap = 'butt';
+      ctx.lineJoin = 'miter';
     }
 
     // Floor badge: dark chip with the floor number above the sprite, only for

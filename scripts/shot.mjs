@@ -16,7 +16,7 @@
 //   node scripts/shot.mjs --list                             # presets + effects
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { arg, launch, gotoStaged, deriveTargets, deriveBuilding, wallStage, place, burst, stageEmplacements, stageSmoke, stageVehicles, hourMin, fmtHour, HOUR_PRESETS, stagedHour } from './lib/stage.mjs';
+import { arg, launch, gotoStaged, deriveTargets, deriveBuilding, wallStage, place, burst, stageEmplacements, stageMorale, stageSmoke, stageVehicles, hourMin, fmtHour, HOUR_PRESETS, stagedHour } from './lib/stage.mjs';
 
 const has = (name) => process.argv.includes(`--${name}`);
 const PORT = Number(arg('port', '5198'));
@@ -28,10 +28,14 @@ const FORCE = arg('force', null); // bridge|river|... to force the defended cell
 // scene stages at the canonical hour, which is what the art gate shoots — so a
 // shot taken without --hour is directly comparable to a sweep baseline.
 const HOUR = hourMin(arg('hour', null));
+// Cosmetic clocks (hearth glow, the pinned-morale ring pulse) are pinned by
+// default so a shot is comparable to a sweep baseline. --flicker 1 unpins them,
+// which is how you prove an animated tell actually animates: shoot twice.
+const FLICKER = Number(arg('flicker', '0'));
 const OUT = arg('out', '.screenshots/shot.png');
 const MAP_W = 320;
 const MAP_H = 240;
-const PRESETS = ['village', 'woods', 'hamlet', 'farm', 'bocage', 'units', 'enemy', 'soldiers48', 'vehicles', 'guns', 'farlod', 'bridge'];
+const PRESETS = ['village', 'woods', 'hamlet', 'farm', 'bocage', 'units', 'enemy', 'soldiers48', 'vehicles', 'guns', 'morale', 'farlod', 'bridge'];
 // `anchor: 'wall'|'building'` stages against the masonry nearest the village
 // instead of the blue squad; `hold` swaps the burst for a plain screenshot
 // after N ms, which is how a sim-tick-lived effect (a building fire) is shot.
@@ -62,7 +66,7 @@ if (has('list')) {
 }
 
 const { browser, page } = await launch();
-const kind = await gotoStaged(page, { port: PORT, seed: SEED, camp: CAMP, fow: FOW, forceKind: FORCE, hour: HOUR });
+const kind = await gotoStaged(page, { port: PORT, seed: SEED, camp: CAMP, fow: FOW, flicker: FLICKER, forceKind: FORCE, hour: HOUR });
 const staged = await stagedHour(page);
 const at = `${fmtHour(staged.clockMin)}${staged.clockMin === staged.canon ? ' canonical' : ''}`;
 
@@ -152,6 +156,10 @@ if (has('map')) {
   ({ x, y, scale } = await stageVehicles(page, targets.units));
 } else if (arg('preset', 'units') === 'guns') {
   ({ x, y, scale } = await stageEmplacements(page, targets.units));
+} else if (arg('preset', 'units') === 'morale') {
+  // The psych ladder, staged. Shoot it twice with --flicker 1 to watch the
+  // pinned ring breathe; the default pin holds it on one frame.
+  ({ x, y, scale } = await stageMorale(page, targets.units));
 } else {
   const t = targets[arg('preset', 'units')];
   if (!t) throw new Error(`unknown preset "${arg('preset')}" — one of: ${PRESETS.join(', ')}`);

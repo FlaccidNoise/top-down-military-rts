@@ -295,6 +295,52 @@ export function stageVehicles(page, { x, y }) {
   );
 }
 
+// Morale-tell gate: the whole psych ladder in one row — steady, shaken, two
+// pinned men and two broken ones — so the suppression ring, the pinned pulse
+// and the rout chevron are all in frame together and against each other.
+//
+// The renderer reads `s.mental` continuously, so forcing the field IS the
+// staging; nothing steps and the crop holds. suppression/morale are set to
+// values the sim's own ladder agrees with, so the row survives even if
+// something does step. Mutates the sim (positions included), so it is opt-in
+// and must be staged LAST, like vehicles and guns.
+//
+// Under the default ?flicker=0 the pulse clock is pinned and this settles like
+// any other crop. With flicker=1 it deliberately never settles — that is the
+// point of the pin, not a bug (#134).
+export function stageMorale(page, { x, y }) {
+  return page.evaluate(
+    ({ x, y }) => {
+      const sim = window.__game.sim;
+      const cx = Math.max(16, Math.min(sim.map.w - 16, x));
+      const cy = Math.max(12, Math.min(sim.map.h - 12, y));
+      const row = [
+        ['steady', 0, 0.9],
+        ['shaken', 0.45, 0.7],
+        ['pinned', 0.8, 0.7],
+        ['pinned', 1, 0.7],
+        ['broken', 0.9, 0.1],
+        ['broken', 0.3, 0.1],
+      ];
+      const men = sim.soldiers.filter((s) => s.alive && !s.downed && !s.captured && s.inVehicle < 0).sort((a, b) => a.id - b.id).slice(0, row.length);
+      if (men.length < row.length) throw new Error(`stageMorale needs ${row.length} live soldiers, found ${men.length} — pick a different seed`);
+      men.forEach((s, i) => {
+        const [mental, supp, morale] = row[i];
+        s.x = cx + (i - (row.length - 1) / 2) * 3.2;
+        s.y = cy;
+        s.level = 0;
+        s.path = null;
+        s.targetId = -1;
+        s.mental = mental;
+        s.suppression = supp;
+        s.morale = morale;
+      });
+      return { x: cx, y: cy, scale: 34 };
+    },
+    { x, y }
+  );
+}
+
 // Smoke art gate (V12): one row of shell-smoke puffs at ages spanning the
 // plume curve, plus one burning-wreck column. The renderer draws sim.smoke
 // straight off `p.h`/`p.r`/`smokeAxisAt`, so the AGE is the whole variable —
