@@ -698,9 +698,11 @@ function chip(ctx: CanvasRenderingContext2D, x: number, y: number, text: string,
 
 interface Ping {
   side: Side;
-  label: string;
+  name: string; // clipped first when the row is tight — see draw()
+  status: string;
   color: string;
   tick: number;
+  drama: boolean; // morale/order news — yields its slot to a casualty when the feed is full
 }
 
 interface WorldKia {
@@ -710,8 +712,34 @@ interface WorldKia {
   tick: number;
 }
 
+// What the ticker needs off one team to speak about it, built in the drain
+// block (main.ts) because that is where `sim` lives. Flat numbers on purpose:
+// the aggregation below is then a pure function of them and can be tested
+// without standing up a Sim.
+//
+// `seen` carries the same fog test the event filter upstream applies, so a
+// German team going to ground behind the hedgerow says nothing. `balked` is
+// read straight off Team.orderState.phase — the orders.ts contract says the UI
+// never re-derives comply/cautious/balk, and this does not.
+export interface TeamPulse {
+  id: number;
+  side: Side;
+  name: string;
+  live: number;
+  pinned: number;
+  balked: boolean;
+  seen: boolean;
+}
+
 const PING_TICKS = 8 * 30;
 const MAX_VISIBLE = 5;
+// 30 s at DT=1/30. A team sitting on the majority line crosses it every few
+// seconds; without this the feed would be nothing else.
+const PIN_COOLDOWN = 30 * 30;
+const C_BAD = '#d05c50'; // blue's bad news
+const C_WARN = '#e08a3c'; // blue, not yet a casualty — downed, balked, our ambush
+const C_ENEMY = '#ffca6a'; // anything happening to the Germans
+const C_STEADY = '#9fb87a'; // the one line that is neither loss nor alarm
 const MAX_KIAS = 12;
 const KIA_CELL = 8; // world meters — casualties inside a cell share one stack
 const KIA_LINE_H = 11;
@@ -725,30 +753,95 @@ const ROW_GAP = 3;
 export class EventPings {
   private pings: Ping[] = [];
   private kias: WorldKia[] = [];
+  private pin = new Map<number, { majority: boolean; last: number }>();
+  private balk = new Map<number, boolean>();
 
-  add(events: UnitEvent[], tick: number): void {
+  add(events: UnitEvent[], tick: number, teams: TeamPulse[] = []): void {
     for (const e of events) {
       if (e.kind === 'vehicle-destroyed') {
-        this.push(e.side, `${e.name} — DESTROYED`, e.side === 'blue' ? '#d05c50' : '#ffca6a', tick);
-      } else if (e.side === 'blue') {
-        const label = e.kind === 'kia' ? 'KIA' : e.kind === 'downed' ? 'DOWN' : e.kind === 'broken' ? 'BROKE' : null;
-        if (label) this.push(e.side, `${e.name} — ${label}`, e.kind === 'downed' ? '#e08a3c' : '#d05c50', tick);
+        // sim.ts destroyVehicle sets `burning` unconditionally and is the only
+        // emitter of this event, so every one of them really is a brew-up.
+        this.push(e.side, e.name, 'BREWED UP', e.side === 'blue' ? C_BAD : C_ENEMY, tick);
+      } else if (e.kind === 'ambush') {
+        this.push(e.side, e.name, 'AMBUSH SPRUNG!', e.side === 'blue' ? C_WARN : C_ENEMY, tick, true);
+      } else if (e.kind === 'broken' || e.kind === 'surrendered') {
+        // Both sides. Watching the garrison come apart IS the payoff of the
+        // morale model, and the fog filter upstream (main.ts) means a German
+        // event only reaches here when a friendly can actually see it.
+        this.push(e.side, e.name, e.kind === 'broken' ? 'BROKE' : 'SURRENDERS', e.side === 'blue' ? C_BAD : C_ENEMY, tick, true);
+      } else if (e.side === 'blue' && (e.kind === 'kia' || e.kind === 'downed')) {
+        // Blue only, deliberately: an exact German body count is intel, and
+        // handing it over is a decision nobody has made.
+        this.push(e.side, e.name, e.kind === 'kia' ? 'KIA' : 'DOWN', e.kind === 'downed' ? C_WARN : C_BAD, tick);
         if (e.kind === 'kia') {
           this.kias.push({ x: e.x, y: e.y, label: e.name, tick });
           if (this.kias.length > MAX_KIAS) this.kias.shift();
         }
       }
+      // 'pinned' and 'rallied' are deliberately NOT consumed here. One barrage
+      // pins a platoon in a tick and five slots cannot hold that, so the ticker
+      // speaks in team aggregates (below); the per-man crossings drive the
+      // world FX and the audio layer instead.
     }
+    for (const t of teams) this.teamLine(t, tick);
+  }
+
+  // Both aggregate lines are edges on ONE flag — a team is either majority-
+  // pinned or it is not — rather than a reference count over the per-man
+  // events. Reading live state is simply less to get wrong than balancing a
+  // stream, and it self-heals if an event is ever dropped.
+  private teamLine(t: TeamPulse, tick: number): void {
+    if (t.live === 0) {
+      this.pin.delete(t.id);
+      this.balk.delete(t.id);
+      return;
+    }
+    const majority = t.pinned * 2 > t.live;
+    const st = this.pin.get(t.id) ?? { majority: false, last: -PIN_COOLDOWN };
+    if (majority !== st.majority) {
+      st.majority = majority; // the flag tracks truth even when nobody says it
+      // Only the ANNOUNCEMENT is gated — by the cooldown, so a team hovering on
+      // the line cannot chatter, and by fog, so a team that pinned unseen does
+      // not come back into view carrying a stale flag and a false rally.
+      if (t.seen && tick - st.last >= PIN_COOLDOWN) {
+        st.last = tick;
+        const c = majority ? (t.side === 'blue' ? C_BAD : C_ENEMY) : C_STEADY;
+        this.push(t.side, t.name, majority ? 'PINNED DOWN' : 'RALLIED', c, tick, true);
+      }
+    }
+    this.pin.set(t.id, st);
+
+    const was = this.balk.get(t.id) ?? false;
+    // Blue only: a German team refusing an order is AI state the player has no
+    // window onto, and inventing one would be a cheat.
+    if (t.side === 'blue' && t.balked && !was) this.push(t.side, t.name, "WON'T ADVANCE", C_WARN, tick, true);
+    this.balk.set(t.id, t.balked);
+  }
+
+  // The feed as the player is being told it, oldest first.
+  labels(): string[] {
+    return this.pings.map((p) => `${p.name} — ${p.status}`);
   }
 
   reset(): void {
     this.pings = [];
     this.kias = [];
+    this.pin.clear();
+    this.balk.clear();
   }
 
-  private push(side: Side, label: string, color: string, tick: number): void {
-    this.pings.push({ side, label, color, tick });
-    if (this.pings.length > MAX_VISIBLE) this.pings.shift(); // never more stored than are ever drawn
+  // `drama` is morale and order news. It is worth a slot, but never worth the
+  // slot a casualty or a burning tank is sitting in: with the store full, the
+  // oldest drama line gives way, and if there is no drama line to give way the
+  // incoming drama is the one that loses.
+  private push(side: Side, name: string, status: string, color: string, tick: number, drama = false): void {
+    if (this.pings.length >= MAX_VISIBLE) {
+      const i = this.pings.findIndex((p) => p.drama);
+      if (i >= 0) this.pings.splice(i, 1);
+      else if (drama) return;
+      else this.pings.shift();
+    }
+    this.pings.push({ side, name, status, color, tick, drama });
   }
 
   draw(ctx: CanvasRenderingContext2D, sim: Sim, cam: Camera, cw: number, ch: number): void {
@@ -771,7 +864,12 @@ export class EventPings {
       ctx.fillStyle = TEAM[p.side]; // side-colored left border
       ctx.fillRect(x, y, 3, ROW_H);
       ctx.fillStyle = p.color;
-      ctx.fillText(clipToWidth(ctx, p.label, rw - 16), x + 10, y + ROW_H / 2 + 1);
+      // The STATUS is the news and always survives; the name is context and is
+      // what gives way. A 190 px row holds ~26 monospace characters and team
+      // names run to "Panzerschreck Team", so clipping the whole label tail-
+      // first turned "— PINNED DOWN" into "— PINNED D…" and said nothing.
+      const tail = ` — ${p.status}`;
+      ctx.fillText(`${clipToWidth(ctx, p.name, rw - 16 - ctx.measureText(tail).width)}${tail}`, x + 10, y + ROW_H / 2 + 1);
       y += ROW_H + ROW_GAP;
     }
     ctx.globalAlpha = 1;

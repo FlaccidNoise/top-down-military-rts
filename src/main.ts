@@ -19,7 +19,7 @@ import { saveGame } from './strategic/save';
 import { makeDefaultSector } from './strategic/sector';
 import { emplacementOf, Hud, infantrySquads, type HudState } from './ui/hud';
 import { StratHud } from './ui/strat-hud';
-import { drawOverlays, EventPings } from './ui/overlays';
+import { drawOverlays, EventPings, type TeamPulse } from './ui/overlays';
 import { computeShot, pickAt, Tooltip } from './ui/tooltip';
 import { HealthPanel } from './ui/health-panel';
 import { actionForEvent, loadKeymap, type Keymap } from './ui/keymap';
@@ -1697,6 +1697,33 @@ window.addEventListener('keydown', (e) => {
 // Floor-focus filter (Height E2): All → Ground → Floor 2 → … → All. The
 // rebindable floorFocus action drives it on desktop and the touch bar's ⬒ chip
 // on a phone — one function, so the two surfaces cannot drift.
+// One row per team for the ticker's aggregate lines. Built here rather than in
+// the UI because this is where `sim` lives, and `seen` reuses the same fog test
+// the unit-event filter applies — the ticker must not become a way to watch
+// unseen Germans break.
+function teamPulses(s: Sim): TeamPulse[] {
+  const out: TeamPulse[] = [];
+  for (const t of s.teams) {
+    if (t.soldierIds.length === 0) continue;
+    let live = 0;
+    let pinned = 0;
+    let cx = 0;
+    let cy = 0;
+    for (const id of t.soldierIds) {
+      const m = s.soldiers[id];
+      if (!m.alive || m.downed || m.captured) continue;
+      live++;
+      cx += m.x;
+      cy += m.y;
+      if (m.mental === 'pinned') pinned++;
+    }
+    const side = s.soldiers[t.soldierIds[0]].side;
+    const seen = side === 'blue' || live === 0 || s.fowDisabled || s.sideSeesPoint('blue', cx / live, cy / live);
+    out.push({ id: t.id, side, name: t.name, live, pinned, balked: t.orderState.phase === 'balked', seen });
+  }
+  return out;
+}
+
 function cycleFloorFocus(): void {
   const maxStories = sim.map.maxStories;
   if (maxStories <= 0) return;
@@ -1713,6 +1740,13 @@ function cycleFloorFocus(): void {
   },
   get renderer() {
     return renderer;
+  },
+  // The battle ticker. Exposed for the same reason `renderer` is: what the
+  // player was just told is otherwise unreadable from outside the frame loop,
+  // and a feed that fires once every thirty seconds cannot be caught by
+  // screenshotting and hoping.
+  get pings() {
+    return pings;
   },
   commanders,
   cam,
@@ -1886,7 +1920,7 @@ function frame(now: number): void {
     audio.addBreaches(breaches, cam, cw, chh);
     // fog of war: enemy unit events only ping where a friendly can see
     const unitEvents = sim.takeUnitEvents().filter((e) => e.side === 'blue' || sim.fowDisabled || sim.sideSeesPoint('blue', e.x, e.y));
-    pings.add(unitEvents, sim.tick);
+    pings.add(unitEvents, sim.tick, teamPulses(sim));
     renderer.addUnitEvents(unitEvents, fxNow);
     audio.addUnitEvents(unitEvents);
 
