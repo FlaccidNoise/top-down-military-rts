@@ -736,6 +736,9 @@ const MAX_VISIBLE = 5;
 // 30 s at DT=1/30. A team sitting on the majority line crosses it every few
 // seconds; without this the feed would be nothing else.
 const PIN_COOLDOWN = 30 * 30;
+// 1 s at DT=1/30. A barrage that pins a platoon also kills men, and without a
+// dwell the PINNED DOWN line the player just got is gone the next frame.
+const DRAMA_DWELL = 30;
 const C_BAD = '#d05c50'; // blue's bad news
 const C_WARN = '#e08a3c'; // blue, not yet a casualty — downed, balked, our ambush
 const C_ENEMY = '#ffca6a'; // anything happening to the Germans
@@ -753,7 +756,7 @@ const ROW_GAP = 3;
 export class EventPings {
   private pings: Ping[] = [];
   private kias: WorldKia[] = [];
-  private pin = new Map<number, { majority: boolean; last: number }>();
+  private pin = new Map<number, { majority: boolean; lastPin: number; lastRally: number }>();
   private balk = new Map<number, boolean>();
 
   add(events: UnitEvent[], tick: number, teams: TeamPulse[] = []): void {
@@ -797,14 +800,21 @@ export class EventPings {
       return;
     }
     const majority = t.pinned * 2 > t.live;
-    const st = this.pin.get(t.id) ?? { majority: false, last: -PIN_COOLDOWN };
+    const st = this.pin.get(t.id) ?? { majority: false, lastPin: -PIN_COOLDOWN, lastRally: -PIN_COOLDOWN };
     if (majority !== st.majority) {
       st.majority = majority; // the flag tracks truth even when nobody says it
       // Only the ANNOUNCEMENT is gated — by the cooldown, so a team hovering on
       // the line cannot chatter, and by fog, so a team that pinned unseen does
       // not come back into view carrying a stale flag and a false rally.
-      if (t.seen && tick - st.last >= PIN_COOLDOWN) {
-        st.last = tick;
+      //
+      // One window per DIRECTION: a rally is the answer to the pin the player
+      // was just given, and a shared window swallowed it. Two windows still
+      // cannot chatter — spending both costs a crossing each way, so a team
+      // sitting on the line gets at most one PINNED DOWN and one RALLIED per
+      // cooldown, not a stream.
+      if (t.seen && tick - (majority ? st.lastPin : st.lastRally) >= PIN_COOLDOWN) {
+        if (majority) st.lastPin = tick;
+        else st.lastRally = tick;
         const c = majority ? (t.side === 'blue' ? C_BAD : C_ENEMY) : C_STEADY;
         this.push(t.side, t.name, majority ? 'PINNED DOWN' : 'RALLIED', c, tick, true);
       }
@@ -833,10 +843,13 @@ export class EventPings {
   // `drama` is morale and order news. It is worth a slot, but never worth the
   // slot a casualty or a burning tank is sitting in: with the store full, the
   // oldest drama line gives way, and if there is no drama line to give way the
-  // incoming drama is the one that loses.
+  // incoming drama is the one that loses. The exception is a drama line still
+  // inside its dwell — a PINNED DOWN evicted by the casualties of the very
+  // barrage that caused it was never read. Then the oldest line goes instead,
+  // casualty or not.
   private push(side: Side, name: string, status: string, color: string, tick: number, drama = false): void {
     if (this.pings.length >= MAX_VISIBLE) {
-      const i = this.pings.findIndex((p) => p.drama);
+      const i = this.pings.findIndex((p) => p.drama && tick - p.tick >= DRAMA_DWELL);
       if (i >= 0) this.pings.splice(i, 1);
       else if (drama) return;
       else this.pings.shift();

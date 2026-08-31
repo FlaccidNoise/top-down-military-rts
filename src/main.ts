@@ -1707,18 +1707,21 @@ function teamPulses(s: Sim): TeamPulse[] {
     if (t.soldierIds.length === 0) continue;
     let live = 0;
     let pinned = 0;
-    let cx = 0;
-    let cy = 0;
+    // Seen if ANY man of the team is seen — the same predicate the sprite gate
+    // uses, so the ticker never names a team the player has no man drawn for.
+    // A centroid + sideSeesPoint would both leak a concealed team (sightBetween
+    // skips the concealment rule sightToSoldier enforces) and put the test on a
+    // point no man is standing on when the team is split or behind a wall.
+    let seen = s.fowDisabled;
     for (const id of t.soldierIds) {
       const m = s.soldiers[id];
       if (!m.alive || m.downed || m.captured) continue;
       live++;
-      cx += m.x;
-      cy += m.y;
       if (m.mental === 'pinned') pinned++;
+      if (!seen && s.soldierVisibleTo('blue', m)) seen = true;
     }
     const side = s.soldiers[t.soldierIds[0]].side;
-    const seen = side === 'blue' || live === 0 || s.fowDisabled || s.sideSeesPoint('blue', cx / live, cy / live);
+    if (side === 'blue' || live === 0) seen = true;
     out.push({ id: t.id, side, name: t.name, live, pinned, balked: t.orderState.phase === 'balked', seen });
   }
   return out;
@@ -1918,8 +1921,13 @@ function frame(now: number): void {
     audio.addMelee(melee, cam, cw, chh);
     audio.addBooms(booms, cam, cw, chh);
     audio.addBreaches(breaches, cam, cw, chh);
-    // fog of war: enemy unit events only ping where a friendly can see
-    const unitEvents = sim.takeUnitEvents().filter((e) => e.side === 'blue' || sim.fowDisabled || sim.sideSeesPoint('blue', e.x, e.y));
+    // fog of war: enemy unit events only ping where a friendly can see. An
+    // event that happened to a man is filtered by the man — a point test would
+    // announce a concealed German the renderer refuses to draw. The two kinds
+    // that anchor to no single soldier fall back to the point.
+    const unitEvents = sim
+      .takeUnitEvents()
+      .filter((e) => (e.id !== undefined ? sim.soldierVisibleTo('blue', sim.soldiers[e.id]) : e.side === 'blue' || sim.fowDisabled || sim.sideSeesPoint('blue', e.x, e.y)));
     pings.add(unitEvents, sim.tick, teamPulses(sim));
     renderer.addUnitEvents(unitEvents, fxNow);
     audio.addUnitEvents(unitEvents);

@@ -54,16 +54,28 @@ describe('EventPings — team pinned-majority aggregate', () => {
   it('a team hovering on the line does not chatter', () => {
     const p = new EventPings();
     p.add([], 0, [pulse({ pinned: 4 })]);
-    for (let t = 1; t < PIN_COOLDOWN; t += 30) p.add([], t, [pulse({ pinned: t % 60 === 0 ? 4 : 1 })]);
-    expect(p.labels()).toEqual(['Able 1 — PINNED DOWN']);
+    for (let t = 1; t < PIN_COOLDOWN; t += 30) p.add([], t, [pulse({ pinned: t % 60 === 1 ? 4 : 1 })]);
+    // Fifteen crossings each way inside one cooldown buy one line each way.
+    expect(p.labels()).toEqual(['Able 1 — PINNED DOWN', 'Able 1 — RALLIED']);
+  });
+
+  it('the windows are per direction: a rally answers its own pin', () => {
+    const p = new EventPings();
+    p.add([], 0, [pulse({ pinned: 4 })]);
+    p.add([], 60, [pulse({ pinned: 1 })]); // 2 s later — the answer to the line just read
+    expect(p.labels()).toEqual(['Able 1 — PINNED DOWN', 'Able 1 — RALLIED']);
   });
 
   it('the cooldown gates the announcement, not the flag: a team that recovered unannounced can pin again', () => {
     const p = new EventPings();
     p.add([], 0, [pulse({ pinned: 4 })]); // PINNED DOWN
-    p.add([], 60, [pulse({ pinned: 1 })]); // rallied inside the cooldown — silent
-    p.add([], PIN_COOLDOWN, [pulse({ pinned: 4 })]); // ...so this is a real new crossing
-    expect(p.labels()).toEqual(['Able 1 — PINNED DOWN', 'Able 1 — PINNED DOWN']);
+    p.add([], 60, [pulse({ pinned: 1 })]); // RALLIED
+    p.add([], 120, [pulse({ pinned: 4 })]); // pinning again this soon is chatter — silent
+    p.add([], PIN_COOLDOWN, [pulse({ pinned: 1 })]); // and so is rallying again — silent
+    expect(p.labels()).toEqual(['Able 1 — PINNED DOWN', 'Able 1 — RALLIED']);
+    // Both flags tracked the silent crossings, so this one is a real new pin.
+    p.add([], PIN_COOLDOWN + 60, [pulse({ pinned: 4 })]);
+    expect(p.labels()).toEqual(['Able 1 — PINNED DOWN', 'Able 1 — RALLIED', 'Able 1 — PINNED DOWN']);
   });
 
   it('an unseen German team updates its flag but says nothing', () => {
@@ -126,6 +138,16 @@ describe('EventPings — feed pressure', () => {
     expect(p.labels()).toHaveLength(5);
     p.add([ev('kia', 'blue', 'D')], 1);
     expect(p.labels()).toEqual(['Zug 2 — AMBUSH SPRUNG!', 'A — KIA', 'B — KIA', 'C — KIA', 'D — KIA']);
+  });
+
+  it('a fresh drama line outlives the casualties of the barrage that caused it', () => {
+    const p = new EventPings();
+    for (const n of ['A', 'B', 'C', 'D'] as const) p.add([ev('kia', 'blue', n)], 0);
+    p.add([], 0, [pulse({ pinned: 4 })]); // PINNED DOWN, feed now full
+    p.add([ev('kia', 'blue', 'E')], 1); // one tick on: the oldest KIA gives way, not the pin
+    expect(p.labels()).toEqual(['B — KIA', 'C — KIA', 'D — KIA', 'Able 1 — PINNED DOWN', 'E — KIA']);
+    p.add([ev('kia', 'blue', 'F')], 31); // dwell spent: drama goes back to being the cheap slot
+    expect(p.labels()).toEqual(['B — KIA', 'C — KIA', 'D — KIA', 'E — KIA', 'F — KIA']);
   });
 
   it('reset clears the aggregate state as well as the feed', () => {

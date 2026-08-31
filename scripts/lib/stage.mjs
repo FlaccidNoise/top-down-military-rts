@@ -351,6 +351,9 @@ export function stageMorale(page, { x, y }) {
 // that chosen clock instead of waiting for a frame: the page's own fxNow is
 // frozen wherever the pause left it, which would pin every effect at age 0.
 // Returns a data URL — the caller writes the file.
+// Desktop only: three ages × three kinds is 9 live effects, and MAX_MORALE_FX
+// is 10 there but 6 under MOBILE — staged on a phone the last column silently
+// never lands.
 export function stageMoraleFx(page, { x, y, ages = [40, 150, 300] }) {
   return page.evaluate(
     ({ x, y, ages }) => {

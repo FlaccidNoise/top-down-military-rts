@@ -376,6 +376,11 @@ export interface UnitEvent {
   y: number;
   side: Side;
   name: string;
+  // The man it happened to, where there is one. Output only — the UI fog
+  // filter needs soldierVisibleTo, and a point test would leak a concealed
+  // man that sightToSoldier's concealment rule hides. Absent on the two
+  // kinds that anchor to no single soldier: vehicle-destroyed and ambush.
+  id?: number;
 }
 
 // One melee swing landing (or whiffing) at the victim — drives the
@@ -2871,7 +2876,7 @@ export class Sim {
     s.downed = cons < 0.3 || s.pain >= 0.8 || capacities(s.body).moving < 0.15;
     if (s.downed) {
       if (!wasDowned) {
-        this.pendingUnitEvents.push({ kind: 'downed', x: s.x, y: s.y, side: s.side, name: s.name });
+        this.pendingUnitEvents.push({ kind: 'downed', x: s.x, y: s.y, side: s.side, name: s.name, id: s.id });
         this.dropKit(s);
         s.path = null;
         s.targetId = -1;
@@ -2910,12 +2915,12 @@ export class Sim {
     // a broken man recovering to pinned is good news, not a pin. Rallying
     // counts from pinned/broken; shaken→steady is too frequent to be drama.
     if (s.mental === 'pinned' && (wasMental === 'steady' || wasMental === 'shaken')) {
-      this.pendingUnitEvents.push({ kind: 'pinned', x: s.x, y: s.y, side: s.side, name: s.name });
+      this.pendingUnitEvents.push({ kind: 'pinned', x: s.x, y: s.y, side: s.side, name: s.name, id: s.id });
     } else if (s.mental === 'steady' && (wasMental === 'pinned' || wasMental === 'broken')) {
-      this.pendingUnitEvents.push({ kind: 'rallied', x: s.x, y: s.y, side: s.side, name: s.name });
+      this.pendingUnitEvents.push({ kind: 'rallied', x: s.x, y: s.y, side: s.side, name: s.name, id: s.id });
     }
     if (s.mental === 'broken' && wasMental !== 'broken') {
-      this.pendingUnitEvents.push({ kind: 'broken', x: s.x, y: s.y, side: s.side, name: s.name });
+      this.pendingUnitEvents.push({ kind: 'broken', x: s.x, y: s.y, side: s.side, name: s.name, id: s.id });
       // Overwhelmed at contact: ≥2 enemies within MELEE_ENGAGE → capture
       // instead of flee. Count BEFORE flee clears state (a broken man clears
       // his own meleeId first — key everything off counts around the victim).
@@ -3084,7 +3089,7 @@ export class Sim {
         s.reloading = w.ammo.reload * this.assistFactor(s);
         if (s.reloading <= 0) s.magLeft = w.ammo.perUnit; // zero-duration reload (panzerfaust) completes at once
         // Garand en-bloc ping: audible tell that the rifle just went dry.
-        if (type === 'clip_3006') this.pendingUnitEvents.push({ kind: 'ping', x: s.x, y: s.y, side: s.side, name: s.name });
+        if (type === 'clip_3006') this.pendingUnitEvents.push({ kind: 'ping', x: s.x, y: s.y, side: s.side, name: s.name, id: s.id });
       } else if (w.oneShot && s.secondary) {
         s.weapon = s.secondary;
         s.secondary = undefined;
@@ -4142,7 +4147,7 @@ export class Sim {
     this.spotted[captor.side].set(victim.id, { x: victim.x, y: victim.y });
     this.contacts[victim.side].delete(`s${captor.id}`);
     this.contacts[captor.side].delete(`s${victim.id}`);
-    this.pendingUnitEvents.push({ kind: 'surrendered', x: victim.x, y: victim.y, side: victim.side, name: victim.name });
+    this.pendingUnitEvents.push({ kind: 'surrendered', x: victim.x, y: victim.y, side: victim.side, name: victim.name, id: victim.id });
   }
 
   private enterMelee(m: Soldier, oppId: number): void {
@@ -4278,7 +4283,7 @@ export class Sim {
 
   private kill(t: Soldier): void {
     if (t.inVehicle < 0) {
-      this.pendingUnitEvents.push({ kind: 'kia', x: t.x, y: t.y, side: t.side, name: t.name });
+      this.pendingUnitEvents.push({ kind: 'kia', x: t.x, y: t.y, side: t.side, name: t.name, id: t.id });
       this.dropKit(t);
     }
     t.alive = false;

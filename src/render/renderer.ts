@@ -1426,22 +1426,23 @@ export class Renderer {
       ctx.lineTo(x, y + c);
       ctx.stroke();
     }
-    // one-ring rule (S7): selection wins over suppression, never both
+    // one-ring rule (S7): selection wins over suppression, never both — so
+    // whichever ring a man gets is the one that carries the pin. A pinned man's
+    // ring breathes; a merely suppressed one holds steady, so the pin reads at
+    // a glance without a second ring. Phase is a hash of the id — a whole squad
+    // pulsing in lockstep reads as a UI fault, not as men under fire — and
+    // PULSE_W is slow enough to be a breath, not a strobe. tier 0 (band < 12)
+    // keeps the flat ring: at that zoom the whole man is four pixels and a 1 px
+    // radius wobble is noise.
+    const pinned = !s.downed && s.mental === 'pinned' && tier(band) >= 1;
+    const pulse = pinned ? 0.5 + 0.5 * Math.sin(this.fxClock * PULSE_W + hash(s.id, 0, 23) * Math.PI * 2) : 0;
     if (selectedSquads.includes(s.squadId)) {
-      ctx.strokeStyle = '#ffe9a0';
-      ctx.lineWidth = 1.5;
+      ctx.strokeStyle = `rgba(255, 233, 160, ${pinned ? 0.55 + 0.45 * pulse : 1})`;
+      ctx.lineWidth = pinned ? 1.5 + pulse * 0.9 : 1.5;
       ctx.beginPath();
-      ctx.arc(x, y, cam.scale * 0.6 + 2, 0, Math.PI * 2);
+      ctx.arc(x, y, cam.scale * 0.6 + 2 + pulse * cam.scale * 0.07, 0, Math.PI * 2);
       ctx.stroke();
     } else if (!s.downed && s.suppression > 0.35) {
-      // A pinned man's ring breathes; a merely suppressed one holds steady, so
-      // the pin reads at a glance without a second ring. Phase is a hash of the
-      // id — a whole squad pulsing in lockstep reads as a UI fault, not as men
-      // under fire — and PULSE_HZ is slow enough to be a breath, not a strobe.
-      // tier 0 (band < 12) keeps the flat ring: at that zoom the whole man is
-      // four pixels and a 1 px radius wobble is noise.
-      const pinned = s.mental === 'pinned' && tier(band) >= 1;
-      const pulse = pinned ? 0.5 + 0.5 * Math.sin(this.fxClock * PULSE_W + hash(s.id, 0, 23) * Math.PI * 2) : 0;
       ctx.strokeStyle = `rgba(255, 180, 40, ${Math.min(0.9, s.suppression) * (pinned ? 0.55 + 0.45 * pulse : 1)})`;
       ctx.lineWidth = pinned ? 1.5 + pulse * 0.9 : 1.5;
       ctx.beginPath();
