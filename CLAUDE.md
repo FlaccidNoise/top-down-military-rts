@@ -1,6 +1,8 @@
 # top-down-military-rts
 
-Agent guidance: `AGENTS.md`. Milestone state: `HANDOFF.md`, `HANDOFF-M5.md`.
+@AGENTS.md
+
+Milestone state: `HANDOFF.md`, `HANDOFF-M5.md`.
 
 ## Bug tracking (jtbug)
 
