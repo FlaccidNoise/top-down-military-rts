@@ -1,4 +1,7 @@
+// @ts-expect-error no @types/node in this project; node:fs still resolves fine at runtime under vitest
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
+import { SMOKE_THROW_M } from '../src/sim/sim';
 import { BALK_HINT, balkHint, canArm, ORDER_AFFORDANCE } from '../src/ui/order-data';
 import type { OrderKind } from '../src/sim/orders';
 
@@ -15,6 +18,24 @@ describe('ORDER_AFFORDANCE', () => {
       expect(a.complianceNote.length).toBeGreaterThan(0);
     }
     expect(Object.keys(ORDER_AFFORDANCE)).toHaveLength(8);
+  });
+
+  it('says it in plain words: no jargon, and no number typed by hand', () => {
+    const src = readFileSync(new URL('../src/ui/order-data.ts', import.meta.url), 'utf8') as string;
+    const table = src.slice(src.indexOf('export const ORDER_AFFORDANCE'), src.indexOf('};', src.indexOf('export const ORDER_AFFORDANCE')));
+    // Outside ${...} and the hotkey column, the table carries no digit.
+    expect(table.replace(/\$\{[^}]*\}/g, '').replace(/hotkey: '⇧\d'/g, '')).not.toMatch(/\d/);
+    for (const a of Object.values(ORDER_AFFORDANCE)) {
+      expect(`${a.when} ${a.complianceNote}`, a.name).not.toMatch(/balk|complian|suppress/i);
+      expect(`${a.when} ${a.complianceNote}`.split(/\s+/).length, a.name).toBeLessThanOrEqual(14);
+    }
+  });
+
+  it('claims "never refused" only for the orders the sim never refuses', () => {
+    // orders.ts movesTeam: fire and smoke move nobody. A smoke throw can still be out of reach, and says so.
+    expect(ORDER_AFFORDANCE.fire.complianceNote).toBe('Never refused');
+    expect(ORDER_AFFORDANCE.smoke.complianceNote).toContain(`${SMOKE_THROW_M} m`);
+    for (const k of ['move', 'fast', 'sneak', 'assault'] as const) expect(ORDER_AFFORDANCE[k].complianceNote, k).toMatch(/^Refused/);
   });
 });
 

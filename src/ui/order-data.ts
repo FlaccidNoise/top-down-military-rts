@@ -1,4 +1,5 @@
 import type { OrderKind } from '../sim/orders';
+import { SMOKE_THROW_M } from '../sim/sim';
 
 export interface OrderAffordance {
   name: string;
@@ -7,15 +8,22 @@ export interface OrderAffordance {
   complianceNote: string;
 }
 
+// Plain words, no numbers: what the order is (`when`) and when men will not
+// carry it out (`complianceNote`). The sim's own rule is orders.ts: fire and
+// smoke move nobody and are never refused, an order where the team already
+// stands is never refused, and anything that crosses open ground under fire
+// can be. A charge is refused first.
+const REFUSED_IN_THE_OPEN = 'Refused under fire in the open';
+
 export const ORDER_AFFORDANCE: Record<OrderKind, OrderAffordance> = {
-  move:    { name: 'Move',    when: 'Standard advance; covers ~2 m/s',              hotkey: '⇧1', complianceNote: 'Balks under fire across open ground' },
-  fast:    { name: 'Fast',    when: 'Sprint across danger zone; tires men quickly', hotkey: '⇧2', complianceNote: 'Balks under fire across open ground' },
-  sneak:   { name: 'Sneak',   when: 'Slow crawl; harder to spot while moving',      hotkey: '⇧3', complianceNote: 'Balks under fire across open ground' },
-  fire:    { name: 'Fire',    when: 'Direct suppressive fire at a point',           hotkey: '⇧4', complianceNote: 'Immediate compliance' },
-  smoke:   { name: 'Smoke',   when: 'Pop smoke grenades for visual cover; 2 uses',  hotkey: '⇧5', complianceNote: 'Immediate compliance' },
-  defend:  { name: 'Defend',  when: 'Hold a line with a firing arc',                hotkey: '⇧6', complianceNote: 'Immediate compliance' },
-  ambush:  { name: 'Ambush',  when: 'Hidden wait; free opening volley on contact',  hotkey: '⇧7', complianceNote: 'Immediate compliance' },
-  assault: { name: 'Assault', when: 'Charge a suppressed position; pairs with smoke', hotkey: '⇧8', complianceNote: '×1.3 danger — balks on open ground' },
+  move:    { name: 'Move',    when: 'The standard advance',                       hotkey: '⇧1', complianceNote: REFUSED_IN_THE_OPEN },
+  fast:    { name: 'Fast',    when: 'A sprint that tires the men',                hotkey: '⇧2', complianceNote: REFUSED_IN_THE_OPEN },
+  sneak:   { name: 'Sneak',   when: 'A slow crawl that is hard to spot',          hotkey: '⇧3', complianceNote: REFUSED_IN_THE_OPEN },
+  fire:    { name: 'Fire',    when: 'Shoot at a point to keep heads down',        hotkey: '⇧4', complianceNote: 'Never refused' },
+  smoke:   { name: 'Smoke',   when: 'Throw smoke to block a sightline',           hotkey: '⇧5', complianceNote: `Thrown from within ${SMOKE_THROW_M} m` },
+  defend:  { name: 'Defend',  when: 'Hold a line and watch an arc',               hotkey: '⇧6', complianceNote: 'Never refused where they stand' },
+  ambush:  { name: 'Ambush',  when: 'Hide and wait for a free first volley',      hotkey: '⇧7', complianceNote: 'Never refused where they stand' },
+  assault: { name: 'Assault', when: 'Charge a position that has stopped shooting', hotkey: '⇧8', complianceNote: 'Refused while the enemy can shoot back' },
 };
 
 // What the roster tells a player whose team refused an order. Every line names
