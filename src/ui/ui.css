@@ -1652,15 +1652,31 @@ html.mobile #theater-hud .th-ev[data-ev] { padding: 6px 0; }
     width: auto;
     margin: 0 4px;
   }
-  /* The strip in one line and a row of chips: the objectives scroll sideways. */
-  #theater-hud .th-strip { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 4px 8px; padding: 6px 8px; }
-  #theater-hud .th-next { grid-area: 1 / 1 / 2 / 3; margin: 0; }
+  /* The strip in two rows. Row one: what next, and the replacements clock.
+     Row two: the objectives as chips that scroll sideways, fading out at the
+     right edge so a chip that does not fit reads as "more this way", and the
+     Key button. Every chip here is an objective, so the star is dropped. */
+  #theater-hud .th-strip { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 4px 8px; padding: 6px 8px; }
+  #theater-hud .th-next { grid-area: 1 / 1; margin: 0; }
   #theater-hud .th-foot { display: contents; }
-  #theater-hud .th-keybtn { grid-area: 2 / 2; align-self: stretch; }
-  #theater-hud .th-objs { grid-area: 2 / 1; flex-direction: row; gap: 6px; overflow-x: auto; }
+  #theater-hud .th-reinf { grid-area: 1 / 2; white-space: nowrap; }
+  /* The chips take the whole second row but for the Key button's own width:
+     the grid's second column is as wide as the replacements clock above it,
+     and a Key button stretched to that would crowd out a chip. */
+  #theater-hud .th-objs {
+    grid-area: 2 / 1 / 3 / 3;
+    margin-right: 52px;
+    flex-direction: row;
+    gap: 6px;
+    overflow-x: auto;
+    padding-right: 28px;
+    -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 32px), transparent);
+    mask-image: linear-gradient(to right, #000 calc(100% - 32px), transparent);
+  }
   #theater-hud .th-objrow { flex: none; width: auto; min-height: 44px; border-color: var(--border-soft); }
-  #theater-hud .th-reinf { grid-area: 3 / 1 / 4 / 3; }
-  #theater-hud .th-key { grid-area: 4 / 1 / 5 / 3; max-height: 38vh; overflow-y: auto; margin-top: 2px; }
+  #theater-hud .th-objstar { display: none; }
+  #theater-hud .th-keybtn { grid-area: 2 / 2; justify-self: end; align-self: stretch; width: 46px; padding: 0; }
+  #theater-hud .th-key { grid-area: 3 / 1 / 4 / 3; max-height: 38vh; overflow-y: auto; margin-top: 2px; }
   #theater-hud .th-mov { display: inline; margin-left: 8px; }
   /* Card and log at the foot, whichever of them is there. */
   #theater-hud .th-force { margin-top: auto; }

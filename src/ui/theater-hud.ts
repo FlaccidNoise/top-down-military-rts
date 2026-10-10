@@ -9,7 +9,7 @@ import { COUNTER_H, COUNTER_W, drawCounter, type PlacedCounter } from '../render
 import { fmtEta } from '../render/theater-view';
 import { MOBILE } from '../render/view';
 
-import { minutesToReinforcementV2, REINFORCE_CYCLE_DAYS, REINFORCE_PER_COMPANY } from '../strategic/front';
+import { minutesToReinforcement, REINFORCE_CYCLE_DAYS, REINFORCE_PER_COMPANY } from '../strategic/front';
 import type { WarGoals } from '../strategic/goals';
 import { pathDestination, type Force, type ForceRole, type FrontV2, type TheaterEvent } from '../strategic/theater/force';
 import { forceEtaMinutes } from '../strategic/theater/step';
@@ -155,9 +155,10 @@ export class TheaterHud {
     this.log = q('.th-log');
     this.contact = q('.th-contact');
     this.drawKey();
-    // Open on a desktop, where the side column has the room. Closed on a
-    // phone, where it would cover the map it explains.
-    this.setKey(!MOBILE);
+    // Closed until asked for, on every screen: twenty rows of legend down the
+    // side are a wall of text on first sight. The prompt and the objectives
+    // are what a new player needs first.
+    this.setKey(false);
     document.body.appendChild(this.root);
     this.root.addEventListener('click', (e) => {
       const hit = (sel: string): HTMLElement | null => (e.target as HTMLElement).closest<HTMLElement>(sel);
@@ -268,7 +269,7 @@ export class TheaterHud {
       // the press that lands on it.
       this.objSig = ids;
       this.objs.innerHTML = objectives
-        .map((n) => `<button class="th-objrow" data-obj="${n}"><span class="th-objname">★ ${front.theater.nodes[n].name}</span><span class="th-objwho"></span></button>`)
+        .map((n) => `<button class="th-objrow" data-obj="${n}"><span class="th-objname"><span class="th-objstar">★ </span>${front.theater.nodes[n].name}</span><span class="th-objwho"></span></button>`)
         .join('');
       this.objRows = Array.from(this.objs.querySelectorAll<HTMLElement>('.th-objrow')).map((row, i) => ({ nodeId: objectives[i], row, who: row.querySelector<HTMLElement>('.th-objwho')! }));
     }
@@ -281,7 +282,7 @@ export class TheaterHud {
           ? `HELD${g.own.length ? ` ${g.own.join('')}` : ''}`
           : g.foe.length > 0 ? `${reconOn ? '~' : ''}${foe}` : reconOn ? '?' : 'open';
     });
-    const mins = minutesToReinforcementV2(front);
+    const mins = minutesToReinforcement(front);
     const h = Math.ceil(mins / 60);
     this.reinf.textContent = `Replacements in ${h >= 48 ? `${Math.floor(h / 24)}d ${h % 24}h` : `${h}h`}`;
     this.reinf.title = `Up to ${REINFORCE_PER_COMPANY} men per company every ${REINFORCE_CYCLE_DAYS} days.`;

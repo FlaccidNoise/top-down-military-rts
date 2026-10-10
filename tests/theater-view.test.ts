@@ -3,7 +3,7 @@
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_PRESET } from '../src/campaign/presets';
 import { makeHeadlessWorld, runHeadlessWar, stepWorldMinute } from '../src/strategic/headless';
-import { minutesToReinforcementV2 } from '../src/strategic/front';
+import { minutesToReinforcement } from '../src/strategic/front';
 import { otherEnd, pushEvent, route, type Force, type FrontV2 } from '../src/strategic/theater/force';
 import { supplyCuts } from '../src/render/theater-supply';
 import { fmtEta, THEATER_ZOOM_MAX, TheaterView } from '../src/render/theater-view';
@@ -209,7 +209,7 @@ describe('the replacements clock', () => {
     for (const cs of Object.values(w.campaign.soldiers).slice(0, 6)) cs.status = 'kia';
     let saidBefore = -1;
     for (let i = 0; i < 1440 * 3 && saidBefore < 0; i++) {
-      const eta = minutesToReinforcementV2(w.front);
+      const eta = minutesToReinforcement(w.front);
       const roll = Object.keys(w.campaign.soldiers).length;
       stepWorldMinute(w);
       if (Object.keys(w.campaign.soldiers).length > roll) saidBefore = eta;

@@ -379,7 +379,11 @@ export interface StepResult {
 // §3.3 composition, one strategic minute.
 export function stepWar(front: FrontV2, campaign: Campaign, opts: StepOptions = {}): StepResult {
   front.clockMin++;
-  if (front.clockMin >= (front.day + 1) * 1440) front.day++;
+  // Day d runs from midnight to midnight: [(d - 1) x 1440, d x 1440). Day 1
+  // starts at 06:00 and is the short one. The roll used to sit a day late
+  // ((day + 1) x 1440), so "Day 1" lasted 42 hours and a war of D days ran
+  // D + 1 of them.
+  if (front.clockMin >= front.day * 1440) front.day++;
   // 0) Hourly supply trace (S50) — before battles resolve, so a fight ending
   // on the hour reads the tier of the hour it ends in.
   if (opts.supply) updateSupplyMinute(front);
