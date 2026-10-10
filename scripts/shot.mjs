@@ -49,14 +49,14 @@ const EFFECTS = {
   miss: { trigger: { type: 'shot', hit: false, kill: false }, dur: 120, buckets: 3 },
   wall: { anchor: 'wall', trigger: { type: 'shot', hit: false, kill: false }, dur: 400, buckets: 4, roiFrac: 0.3 },
   // `boom` is the blast with no kind and no radius; the rest name a recipe
-  // (src/render/fx.ts BLAST) at its reference radius.
+  // (src/render/fx.ts BLAST) at the radius sim.ts sends for it.
   boom: { trigger: { type: 'boom' }, dur: 2000, buckets: 8 },
   grenade: { trigger: { type: 'boom', r: 3, kind: 'grenade' }, dur: 2000, buckets: 8 },
-  mortar: { trigger: { type: 'boom', r: 9, kind: 'mortar' }, dur: 2600, buckets: 8 },
-  barrage: { trigger: { type: 'boom', r: 12, kind: 'shell' }, dur: 2600, buckets: 8 },
-  at: { trigger: { type: 'boom', r: 4, kind: 'at' }, dur: 1200, buckets: 8 },
-  bomb: { trigger: { type: 'boom', r: 14, kind: 'bomb' }, dur: 3000, buckets: 8 },
-  brewup: { trigger: { type: 'boom', r: 6, kind: 'brewup' }, dur: 3000, buckets: 8 },
+  mortar: { trigger: { type: 'boom', r: 5, kind: 'mortar' }, dur: 2600, buckets: 8 },
+  barrage: { trigger: { type: 'boom', r: 9, kind: 'shell' }, dur: 2600, buckets: 8 },
+  at: { trigger: { type: 'boom', r: 3, kind: 'at' }, dur: 1200, buckets: 8 },
+  bomb: { trigger: { type: 'boom', r: 5, kind: 'bomb' }, dur: 3000, buckets: 8 },
+  brewup: { trigger: { type: 'boom', kind: 'brewup' }, dur: 3000, buckets: 8 },
   fire: { anchor: 'building', trigger: { type: 'boom', r: 6 }, hold: FX_FLUSH_MS, scale: 30 },
   // Sim-owned smoke, not a boom's column: staged at five ages so the plume
   // curve (V11) and the lean the renderer reads off it (V12) are both in one

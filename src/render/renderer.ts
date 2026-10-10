@@ -9,16 +9,21 @@ import { emplacementBandFor, emplacementFootprintRadius, emplacementSpan, getEmp
 import { ballistic, blastOf, blastScale, blit, FLASH, flashClass, fxDetail, fxScale, hazeBand, hotPass, SPIKE_SIDES, traceOvershoot, WIND, type BlastSpec, type BoomEvent, type FlashSpec, type FxKind, type Overshoot } from './fx';
 import { SUN, shadowSoftAlpha, sun } from './light';
 import { MarkLayer } from './marks';
+import { PallLayer } from './pall';
 import { craterSpots } from './props';
 import { RoofLayer } from './roofs';
 import { TerrainLayer } from './terrain';
 import { MOBILE, view } from './view';
 import { getVehicleShadow, getVehicleSprite, occBucket, trackGauge, turretBlob, turretCenter, vehicleBandFor, VEHICLE_SPAN } from './vehicles';
 
+// A ShotEvent with the output-only ids the sim may attach: who fired and whom
+// at. Every reader treats them as absent-by-default.
+export type ShotFx = ShotEvent & { shooterId?: number; targetId?: number };
+
 // One ShotEvent is one abstracted attack. An automatic weapon's attack is a
 // burst, drawn as `taps` rounds `gap` ms apart — the same two numbers the
 // audio layer voices it with (audio.ts gunOf/tapsOf).
-interface Tracer extends ShotEvent {
+interface Tracer extends ShotFx {
   at: number; // ms timestamp
   over?: Overshoot; // misses only: where the round actually came down
   taps: number;
@@ -91,6 +96,31 @@ interface Boom {
 // A barrage is a dozen rounds and each now hangs for five to nine seconds. The
 // oldest are thin smoke by the time the cap is reached, so they go first.
 const MAX_BOOMS = MOBILE ? 14 : 36;
+
+// Pall density one round adds at the muzzle (pall.ts). Thirty-odd rifle shots
+// from one spot, or seven MG42 bursts, fill a puff.
+const PALL_PER_ROUND = 0.03;
+
+// A weapon that has been firing. A live firefight has only a handful of rounds
+// in the air in any one frame, so between them the field went quiet; this is
+// what stays at the source. `heat` rises with every round and cools over a
+// second or two, and while it is up the muzzle trails a wisp of gun smoke — an
+// MG that has been working for ten seconds is visibly a firing position even
+// between bursts. Keyed by the shooter when the sim names him, by where the
+// muzzle was otherwise (an emplaced gun, a hull).
+interface Firing {
+  x: number; // muzzle, world
+  y: number;
+  ux: number; // bearing of the last shot
+  uy: number;
+  heat: number; // 0..1 at `at`
+  at: number; // ms of the last shot, fx clock
+  seen: boolean; // fog answer, re-tested on the fires' throttle
+  seenTick: number;
+}
+const HEAT_PER_ROUND = 0.2;
+const GUN_COOL_MS = 2200; // heat's time constant
+const MAX_FIRING = MOBILE ? 16 : 40;
 
 interface Plane {
   x0: number;
@@ -260,6 +290,8 @@ export class Renderer {
   private moraleSeq = 0;
   private decals: DecalLayer;
   private marks = new MarkLayer();
+  private pall = new PallLayer();
+  private firing = new Map<number, Firing>();
   private barrageMarks: { x: number; y: number; tick: number }[] = [];
   private strafeMarks: { x: number; y: number; tick: number }[] = [];
   private planes: Plane[] = [];
@@ -299,12 +331,21 @@ export class Renderer {
     for (const [x, y, seed] of craterSpots(sim.map, this.terrain.index)) this.decals.oldCrater(x, y, seed);
   }
 
-  addEvents(events: ShotEvent[], now: number): void {
+  addEvents(events: ShotFx[], now: number): void {
     for (const e of events) {
       const gun = gunOf(e.weapon);
       const taps = tapsOf(gun);
       const gap = (gun.spacing ?? 0) * 1000;
       const t: Tracer = { ...e, at: now, taps, gap, life: (taps - 1) * gap + SHOT_MS };
+      // Powder smoke where it was fired from, dust where it landed. A tracer
+      // is drawn ungated, but it is gone in a tenth of a second; haze over a
+      // firing position stays for twenty, so it is fog-tested. The shooter is
+      // the exact test when the sim names him, the point otherwise.
+      const shooter = e.shooterId !== undefined ? this.sim.soldiers[e.shooterId] : undefined;
+      const muzzleSeen = (): boolean => (shooter ? this.sim.soldierVisibleTo(PLAYER_SIDE, shooter) : this.pointSeen(e.fx, e.fy));
+      this.pall.feed(e.fx, e.fy, PALL_PER_ROUND * taps, now, this.sim.tick, muzzleSeen);
+      this.pall.feed(e.tx, e.ty, PALL_PER_ROUND * 0.6 * taps, now, this.sim.tick, () => this.pointSeen(e.tx, e.ty));
+      this.noteFiring(e, taps, now, muzzleSeen);
       // A miss has to land somewhere past the target — resolve it once, here,
       // rather than 48 edge tests per frame for the shot's whole life.
       if (!e.hit) {
@@ -336,6 +377,9 @@ export class Renderer {
       const { spec, k } = blastOf(b);
       this.booms.push({ x: b.x, y: b.y, at: now, spec, k, landed: 0 });
       if (this.booms.length > MAX_BOOMS) this.booms.shift();
+      // What the blast leaves in the air once its own smoke has gone. Ungated,
+      // like the blast itself.
+      this.pall.feed(b.x, b.y, Math.min(1, ((0.25 + 0.5 * spec.dust + 0.3 * spec.smoke) * spec.fire * k) / 2.2), now, this.sim.tick);
       this.decals.scorch(b.x, b.y, spec.crater * k);
       this.roofs.noteImpact(b.x, b.y); // roof damage is render-derived from the same detonation, never from sim HP
       // Ignition is render-derived: a blast inside a building footprint is the
@@ -390,6 +434,75 @@ export class Renderer {
     // Once for the batch, not once per edge: it re-derives the whole
     // free-standing index, and a barrage delivers four breaches at a time.
     this.terrain.breachEnclosures();
+  }
+
+  // Heat the weapon this shot came from (see Firing).
+  private noteFiring(e: ShotFx, taps: number, now: number, seen: () => boolean): void {
+    const d = Math.hypot(e.tx - e.fx, e.ty - e.fy);
+    if (!(d > 0)) return; // also drops a NaN bearing
+    const ux = (e.tx - e.fx) / d;
+    const uy = (e.ty - e.fy) / d;
+    // Soldier ids are >= 0, so a position key goes below zero.
+    const key = e.shooterId ?? -1 - (Math.round(e.fx * 2) * 4099 + Math.round(e.fy * 2));
+    let f = this.firing.get(key);
+    if (!f) {
+      if (this.firing.size >= MAX_FIRING) {
+        let cold = key;
+        let least = Infinity;
+        for (const [k, o] of this.firing) {
+          const h = o.heat * Math.exp(-(now - o.at) / GUN_COOL_MS);
+          if (h < least) {
+            least = h;
+            cold = k;
+          }
+        }
+        this.firing.delete(cold);
+      }
+      f = { x: 0, y: 0, ux, uy, heat: 0, at: now, seen: false, seenTick: -1e9 };
+      this.firing.set(key, f);
+    }
+    if (this.sim.tick - f.seenTick >= FIRE_SEEN_TICKS) {
+      f.seen = seen();
+      f.seenTick = this.sim.tick;
+    }
+    f.heat = Math.min(1, f.heat * Math.exp(-(now - f.at) / GUN_COOL_MS) + HEAT_PER_ROUND * taps);
+    f.at = now;
+    f.x = e.fx + ux * 0.9; // the same barrel length shotGeom puts the flash at
+    f.y = e.fy + uy * 0.9;
+    f.ux = ux;
+    f.uy = uy;
+  }
+
+  // The wisp a working weapon trails. Three puffs on staggered two-second
+  // lives, pushed off the muzzle and carried on the wind, so a hot gun smokes
+  // steadily where a single shot only puffs.
+  private drawGunSmoke(ctx: CanvasRenderingContext2D, cam: Camera, now: number, cw: number, ch: number): void {
+    if (this.firing.size === 0) return;
+    const F = fxScale(cam.scale);
+    for (const [key, f] of this.firing) {
+      const heat = f.heat * Math.exp(-(now - f.at) / GUN_COOL_MS);
+      if (!(heat >= 0.03)) {
+        this.firing.delete(key);
+        continue;
+      }
+      if (!f.seen) continue;
+      const [mx, my] = cam.worldToScreen(f.x, f.y, cw, ch);
+      if (!this.onScreen(mx, my, cw, ch, 4 * F)) continue;
+      const a = 0.45 * Math.min(1, heat * 1.6);
+      // Three even on a phone: two puffs this size are two discs, three overlap
+      // into a streak.
+      for (let j = 0; j < 3; j++) {
+        const ph = mod(now / 1800 + j / 3 + hash(key, 0, 620), 1);
+        const out = 0.4 + ph * 0.5;
+        const drift = ph * 1.6;
+        blit(ctx, 'smoke', mx + (f.ux * out + WIND.dx * drift) * F, my + (f.uy * out + WIND.dy * drift) * F, (0.3 + ph * 0.6) * F, a * Math.sin(ph * Math.PI));
+      }
+    }
+  }
+
+  // Fog test for an effect anchored to a point rather than to a man.
+  private pointSeen(x: number, y: number): boolean {
+    return this.sim.fowDisabled || this.sim.sideSeesPoint(PLAYER_SIDE, x, y);
   }
 
   // Put birds up if this blast landed in or beside woods. The 1-in-2 gate is
@@ -599,6 +712,9 @@ export class Renderer {
     for (const v of this.sim.vehicles) if (v.alive && visV(v)) this.drawVehicle(ctx, cam, v, cw, ch);
     for (const e of this.sim.emplacements) if (this.sim.emplacementVisibleTo(PLAYER_SIDE, e)) this.drawEmplacement(ctx, cam, e, selectedSquads, cw, ch);
 
+    // Hanging dust and powder smoke: over the men standing in it, under the
+    // roofs, and well under the sim's smoke screens further down.
+    this.pall.draw(ctx, cam, now, cw, ch);
     this.drawFire(ctx, cam, now, cw, ch);
     this.roofs.drawTops(ctx, cam, cw, ch);
     this.roofs.drawChimneySmoke(ctx, cam, cw, ch);
@@ -1603,6 +1719,7 @@ export class Renderer {
     // entries must survive past FADE_MS so the dust (which starts at TRAVEL_MS) can finish
     this.tracers = this.tracers.filter((t) => now - t.at < t.life);
     for (const t of this.tracers) this.drawShotCool(ctx, cam, t, now, cw, ch);
+    this.drawGunSmoke(ctx, cam, now, cw, ch);
 
     this.booms = this.booms.filter((b) => now - b.at < b.spec.hang);
     for (const b of this.booms) this.drawBoom(ctx, cam, b, now, cw, ch, tier);
@@ -2068,51 +2185,54 @@ export class Renderer {
       }
     }
 
-    // Thrown earth. First the burst itself, dark lobes punched out of the
-    // ground; then the streaks that leave it and fly, each with a clod at its
-    // tip. This is the fountain, seen from above. The streaks are two batched
-    // strokes (thick root, thin tip), not one path per spoke.
+    // Thrown earth, seen from above: a ragged dark mass punched out of the
+    // ground. Lobes of every size, and the distance squared so most of them
+    // stay close and only a few go wide — an even ring of equal lobes is a
+    // flower, not a fountain.
     const throwMs = 420 + sp.throw * k * 30;
-    if (sp.spokes > 0 && age < throwMs * 1.5) {
-      const t = age / (throwMs * 1.5);
+    if (sp.spokes > 0 && age < throwMs * 1.4) {
+      const t = age / (throwMs * 1.4);
       const e = 1 - (1 - t) ** 3;
-      const reach = (0.4 + e * 0.75) * sp.throw * k * 0.3 * S;
-      for (let i = 0; i < 4; i++) {
-        const ang = hash(sx, sy, 350 + i) * Math.PI * 2;
-        blit(ctx, 'dirt', x + Math.cos(ang) * reach * 0.8, y + Math.sin(ang) * reach * 0.8, reach * (0.9 + hash(sx, sy, 355 + i) * 0.5) + S * 0.3, 0.8 * (1 - t) ** 1.2);
+      const reach = sp.throw * k * S;
+      const n = Math.max(5, Math.round(sp.spokes * (tier === 0 ? 0.5 : 1) * lite));
+      const a = 0.85 * (1 - t) ** 1.3;
+      for (let i = 0; i < n; i++) {
+        const ang = hash(sx, sy, 10 + i) * Math.PI * 2;
+        const d = (0.08 + 0.62 * hash(sx, sy, 40 + i) ** 2) * reach * e;
+        const r = (0.06 + 0.17 * hash(sx, sy, 70 + i) ** 1.5) * reach * (0.6 + 0.4 * e) + S * 0.15;
+        blit(ctx, 'dirt', x + Math.cos(ang) * d, y + Math.sin(ang) * d, r, a);
       }
     }
-    if (sp.spokes > 0 && age < throwMs) {
+    // ...and the few fast outliers that leave it. Each is a small clod with a
+    // trail behind it that thins to a point and is gone well before the clod
+    // lands. One to four of them, never a spoke per lobe: a dozen straight
+    // lines of one length ending in a knob read as an insect.
+    if (sp.spokes > 0 && tier >= 1 && age < throwMs) {
       const t = age / throwMs;
-      const e = 1 - (1 - t) ** 2.2;
-      const n = Math.max(4, Math.round(sp.spokes * (tier === 0 ? 0.5 : 1) * lite));
-      const root = 0.15 + 0.55 * t; // the streak lets go of the ground as it flies
-      const w = (0.26 + 0.08 * k) * S * (1 - 0.5 * t);
-      ctx.lineCap = 'round';
-      ctx.strokeStyle = `rgba(58,45,30,${0.9 * (1 - t) ** 0.7})`;
-      for (const [from, to, width] of [
-        [root, 0.62, w],
-        [0.62, 1, w * 0.55],
-      ]) {
-        if (from >= to) continue;
-        ctx.lineWidth = Math.max(0.8, width);
+      const e = 1 - (1 - t) ** 2;
+      const F = fxScale(cam.scale);
+      const n = Math.max(1, Math.round((1 + hash(sx, sy, 5) * 0.2 * sp.spokes) * lite));
+      const trail = Math.max(0, 1 - t / 0.55);
+      if (trail > 0) {
+        ctx.fillStyle = `rgba(58,45,30,${0.75 * trail})`;
         ctx.beginPath();
-        for (let i = 0; i < n; i++) {
-          const ang = hash(sx, sy, 10 + i) * Math.PI * 2;
-          const len = sp.throw * k * (0.45 + hash(sx, sy, 40 + i) * 0.65) * e * S;
-          ctx.moveTo(x + Math.cos(ang) * len * from, y + Math.sin(ang) * len * from);
-          ctx.lineTo(x + Math.cos(ang) * len * to, y + Math.sin(ang) * len * to);
-        }
-        ctx.stroke();
       }
-      ctx.lineCap = 'butt';
-      if (tier >= 1) {
-        for (let i = 0; i < n; i++) {
-          const ang = hash(sx, sy, 10 + i) * Math.PI * 2;
-          const len = sp.throw * k * (0.45 + hash(sx, sy, 40 + i) * 0.65) * e * S;
-          blit(ctx, 'dirt', x + Math.cos(ang) * len, y + Math.sin(ang) * len, w * (1.2 + hash(sx, sy, 70 + i) * 1.2), 0.9 * (1 - t) ** 0.7);
+      for (let i = 0; i < n; i++) {
+        const ang = hash(sx, sy, 360 + i) * Math.PI * 2;
+        const cs = Math.cos(ang);
+        const sn = Math.sin(ang);
+        const len = (0.55 + 0.6 * hash(sx, sy, 370 + i)) * sp.throw * k * S * e;
+        const w = (0.09 + 0.08 * hash(sx, sy, 380 + i)) * F;
+        if (trail > 0) {
+          const tail = len * (0.4 + 0.45 * t);
+          ctx.moveTo(x + cs * tail, y + sn * tail);
+          ctx.lineTo(x + cs * len - sn * w, y + sn * len + cs * w);
+          ctx.lineTo(x + cs * len + sn * w, y + sn * len - cs * w);
+          ctx.closePath();
         }
+        blit(ctx, CHUNKS[i & 3], x + cs * len, y + sn * len, w * 1.5, 1 - t ** 3, hash(sx, sy, 390 + i) * 6.28 + t * 5);
       }
+      if (trail > 0) ctx.fill();
     }
 
     // Smoke. It starts as the fire's own soot and stays when the fire is out:

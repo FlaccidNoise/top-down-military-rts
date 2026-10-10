@@ -44,14 +44,15 @@ const DYN = [
   { name: 'wall strike', anchor: 'wall', trigger: { type: 'shot', hit: false, kill: false }, dur: 400, buckets: 4, roiFrac: 0.3, minPeak: 15 },
   // One row per blast recipe (src/render/fx.ts BLAST), plus the boom with no
   // kind and no radius, which is what a sim that sends neither still gets.
+  // Radii are the ones sim.ts sends: barrage shell 9, a brew-up none.
   // Each runs for its own hang time, so the last bucket is the smoke it leaves.
   { name: 'boom unnamed', trigger: { type: 'boom' }, dur: 5500, buckets: 8 },
   { name: 'boom grenade', trigger: { type: 'boom', r: 3, kind: 'grenade' }, dur: 2600, buckets: 8 },
-  { name: 'boom mortar', trigger: { type: 'boom', r: 9, kind: 'mortar' }, dur: 5500, buckets: 8 },
-  { name: 'boom shell', trigger: { type: 'boom', r: 12, kind: 'shell' }, dur: 6000, buckets: 8 },
-  { name: 'boom at', trigger: { type: 'boom', r: 4, kind: 'at' }, dur: 3000, buckets: 8 },
-  { name: 'boom bomb', trigger: { type: 'boom', r: 14, kind: 'bomb' }, dur: 8000, buckets: 8 },
-  { name: 'boom brewup', trigger: { type: 'boom', r: 6, kind: 'brewup' }, dur: 9000, buckets: 8 },
+  { name: 'boom mortar', trigger: { type: 'boom', r: 5, kind: 'mortar' }, dur: 5500, buckets: 8 },
+  { name: 'boom shell', trigger: { type: 'boom', r: 9, kind: 'shell' }, dur: 6000, buckets: 8 },
+  { name: 'boom at', trigger: { type: 'boom', r: 3, kind: 'at' }, dur: 3000, buckets: 8 },
+  { name: 'boom bomb', trigger: { type: 'boom', r: 5, kind: 'bomb' }, dur: 7000, buckets: 8 },
+  { name: 'boom brewup', trigger: { type: 'boom', kind: 'brewup' }, dur: 9000, buckets: 8 },
 ];
 
 const { browser, page } = await launch();

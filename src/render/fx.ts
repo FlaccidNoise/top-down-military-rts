@@ -25,6 +25,7 @@ export type FxKind =
   | 'ringDark'
   | 'shock'
   | 'dirt'
+  | 'pall'
   | 'spark'
   | 'leaf'
   | 'chunk0'
@@ -91,11 +92,17 @@ export interface BoomEvent {
 // reference radius; blastOf() scales them from there.
 //
 //   grenade  a sharp crack and a dirt puff. Almost no fire, gone in two seconds.
-//   mortar   the fountain: long spokes of thrown earth and dust that hangs.
+//   mortar   the fountain: a ragged mass of thrown earth and dust that hangs.
 //   shell    more fire, a darker edge, more smoke than dust.
 //   at       a white-hot point and a shower of sparks. No earth: it hit steel.
-//   bomb     the largest of everything.
+//   bomb     an air attack's strike. They land ten in a row four metres apart,
+//            so each is a heavy shell's worth and the run is the event.
 //   brewup   fuel and ammunition: a long rolling fireball that goes black.
+//
+// `ref` is the frag radius the sim sends for that kind today (sim.ts explode
+// callers), so the common case draws at exactly the tuned size: grenade 3,
+// 81 mm mortar 5, tank HE 5 and barrage 9 around a shell ref of 7, AT 3,
+// strafe 5. A brew-up carries no radius at all.
 export interface BlastSpec {
   ref: number; // frag radius the row is tuned at, m
   flash: number; // white flash, peak radius
@@ -103,8 +110,8 @@ export interface BlastSpec {
   burn: number; // ms the fireball lasts
   rim: number; // 0..1, how dark the roiling soot edge is
   ring: number; // shockwave reach
-  spokes: number; // streaks of thrown earth
-  throw: number; // how far they go
+  spokes: number; // lobes of thrown earth in the burst
+  throw: number; // how far the furthest of it goes
   debris: number; // ballistic chunks
   sparks: number; // hot ballistic sparks
   dust: number; // 0..1, tan dust left hanging
@@ -116,10 +123,10 @@ export interface BlastSpec {
 
 export const BLAST: Record<BlastKind, BlastSpec> = {
   grenade: { ref: 3, flash: 1.6, fire: 0.85, burn: 110, rim: 0.35, ring: 3.4, spokes: 8, throw: 2.4, debris: 4, sparks: 0, dust: 0.8, smoke: 0.3, hang: 2600, shake: 0.3, crater: 0.45 },
-  mortar: { ref: 9, flash: 3, fire: 1.7, burn: 200, rim: 0.55, ring: 8, spokes: 16, throw: 5, debris: 10, sparks: 0, dust: 0.8, smoke: 0.35, hang: 5500, shake: 0.62, crater: 1 },
-  shell: { ref: 12, flash: 3.8, fire: 2.4, burn: 280, rim: 0.75, ring: 10, spokes: 12, throw: 4.5, debris: 14, sparks: 5, dust: 0.55, smoke: 0.8, hang: 6000, shake: 0.78, crater: 1.25 },
-  at: { ref: 4, flash: 3.2, fire: 1.3, burn: 150, rim: 0.45, ring: 4, spokes: 0, throw: 0, debris: 4, sparks: 22, dust: 0.15, smoke: 0.6, hang: 3000, shake: 0.45, crater: 0.5 },
-  bomb: { ref: 14, flash: 5.5, fire: 3.4, burn: 360, rim: 0.8, ring: 14, spokes: 20, throw: 7.5, debris: 20, sparks: 8, dust: 0.75, smoke: 0.7, hang: 8000, shake: 1, crater: 1.9 },
+  mortar: { ref: 5, flash: 3, fire: 1.7, burn: 200, rim: 0.55, ring: 8, spokes: 16, throw: 5, debris: 10, sparks: 0, dust: 0.8, smoke: 0.35, hang: 5500, shake: 0.62, crater: 1 },
+  shell: { ref: 7, flash: 3.8, fire: 2.4, burn: 280, rim: 0.75, ring: 10, spokes: 12, throw: 4.5, debris: 14, sparks: 5, dust: 0.55, smoke: 0.8, hang: 6000, shake: 0.78, crater: 1.25 },
+  at: { ref: 3, flash: 3.2, fire: 1.3, burn: 150, rim: 0.45, ring: 4, spokes: 0, throw: 0, debris: 4, sparks: 22, dust: 0.15, smoke: 0.6, hang: 3000, shake: 0.45, crater: 0.5 },
+  bomb: { ref: 5, flash: 4.2, fire: 2.6, burn: 320, rim: 0.8, ring: 10, spokes: 16, throw: 6, debris: 12, sparks: 6, dust: 0.75, smoke: 0.7, hang: 7000, shake: 0.85, crater: 1.3 },
   brewup: { ref: 6, flash: 6, fire: 4.2, burn: 650, rim: 0.95, ring: 9, spokes: 0, throw: 0, debris: 12, sparks: 26, dust: 0.1, smoke: 1, hang: 9000, shake: 0.95, crater: 1.3 },
 };
 
@@ -520,6 +527,11 @@ function bake(kind: FxKind, px: number): HTMLCanvasElement {
       break;
     case 'dirt':
       puff(g, px, '70,55,38', 5);
+      break;
+    case 'pall':
+      // Paler and warmer than 'smoke' on purpose: sim smoke blocks sight and
+      // battle pall does not, and the two must never be one colour (pall.ts).
+      puff(g, px, '214,206,188', 6);
       break;
     case 'spark':
       radial(g, h, h, h, [

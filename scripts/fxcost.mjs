@@ -122,7 +122,9 @@ for (const [k, ages] of Object.entries(r.legibility))
 // The renderer's transient stores. The idle arm empties them for one draw and
 // puts them back, so both arms draw the same terrain, men and decals. A store
 // this build does not have is skipped. Add a new one here when you add it to
-// the renderer, or its cost lands in BOTH arms and the delta hides it.
+// the renderer, or its cost lands in BOTH arms and the delta hides it. The
+// fires, the firing positions and the pall are not plain arrays and are
+// stashed by hand in the loop below.
 const STORES = ['booms', 'tracers', 'moraleFx', 'breaches', 'meleeFx', 'birds'];
 
 async function wholeFrame(view, scale) {
@@ -149,17 +151,18 @@ async function wholeFrame(view, scale) {
       // Terrain chunks bake on a per-frame budget: draw until the view is warm.
       for (let i = 0; i < 80; i++) draw(T);
 
+      // kind and frag radius as sim.ts sends them; a brew-up has no radius
       const KINDS = [
         ['grenade', 3],
-        ['mortar', 9],
-        ['shell', 12],
-        ['at', 4],
-        ['bomb', 14],
-        ['brewup', 6],
+        ['mortar', 5],
+        ['shell', 9],
+        ['at', 3],
+        ['bomb', 5],
+        ['brewup', undefined],
       ];
       for (let i = 0; i < 12; i++) {
         const [kind, r] = KINDS[i % KINDS.length];
-        R.addBooms([{ x: x + ((i % 4) - 1.5) * 5, y: y + (((i / 4) | 0) - 1) * 5, r, kind }], T - i * 180);
+        R.addBooms([{ x: x + ((i % 4) - 1.5) * 5, y: y + (((i / 4) | 0) - 1) * 5, kind, ...(r === undefined ? {} : { r }) }], T - i * 180);
       }
       for (let i = 0; i < 60; i++) {
         const a = i * 0.7;
@@ -179,6 +182,8 @@ async function wholeFrame(view, scale) {
       let max = 0;
       const live = Object.fromEntries(stores.filter((k) => R[k]).map((k) => [k, R[k].length]));
       live.fires = R.fires.size;
+      live.pall = R.pall.puffs.length;
+      live.firing = R.firing.size;
       for (let i = 0; i < n; i++) {
         const h = draw(T);
         heavy += h;
@@ -187,10 +192,15 @@ async function wholeFrame(view, scale) {
         for (const [k] of held) R[k] = [];
         const fires = R.fires;
         R.fires = new Map();
+        const firing = R.firing;
+        R.firing = new Map();
+        const pall = R.pall.puffs.splice(0);
         wreck.burning = false;
         idle += draw(T);
         for (const [k, v] of held) R[k] = v;
         R.fires = fires;
+        R.firing = firing;
+        R.pall.puffs.push(...pall);
         wreck.burning = true;
       }
       return { idle: idle / n, heavy: heavy / n, max, live, mpx: (canvas.width * canvas.height) / 1e6 };
