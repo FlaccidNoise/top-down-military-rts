@@ -175,6 +175,7 @@ export class RedCommander {
   private asked = new Map<number, OrderKind>(); // teamId -> the kind last sent it, which a cautious team may be executing as a plain 'move'
   private flankLeg = new Map<number, { post: { x: number; y: number }; x: number; y: number }>(); // maneuver teamId -> the flank bound it is on
   private hullSent = new Map<number, { x: number; y: number }>(); // vehicleId -> the hold point it was last sent to
+  private charged = new Map<number, { x: number; y: number }>(); // maneuver teamId -> the objective its charge has already run its course on
 
   constructor(private cfg: CommanderConfig) {}
 
@@ -464,6 +465,20 @@ export class RedCommander {
       const cleared = seen && this.threatConfNear(post.x, post.y, POST_CLEAR_RADIUS) < CLEAR_CONF;
       const c = this.centroid(sim, team.soldierIds);
       const dist = Math.hypot(c.x - post.x, c.y - post.y);
+      // A charge that has run its course is not ordered again onto the ground
+      // it took (#787). The sim ends an assault when no man of the team sees a
+      // defender he can reach; the objective "reads live" off the whole side's
+      // intel, last-known ghosts and other teams' sightings included. Where
+      // the two disagree — a contact behind a wall, a ghost 31 s old — the
+      // team was charged at the spot it stood on every eval (322 assault
+      // orders in two probed battles), each one a fresh compliance roll. It
+      // holds what it took instead, until the objective reads clear or it is
+      // pushed off it.
+      if (this.asked.get(teamId) === 'assault' && team.orderState.order === null) this.charged.set(teamId, post);
+      if (this.charged.get(teamId) === post && !cleared && dist <= POST_HELD_RADIUS) {
+        this.consolidate(sim, team);
+        continue;
+      }
       // Same gate at two distance bands: press the objective when suppression's
       // up and the post still reads live.
       const pressing = suppressed && !cleared;

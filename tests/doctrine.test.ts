@@ -456,6 +456,47 @@ describe('AI commander doctrine', () => {
     }
   });
 
+  it('a team that has charged an objective holds it; it is not charged again at the ground it stands on (#787)', () => {
+    // The objective reads live off side intel: here a last-known contact 6 m
+    // from the post that no man of the team will ever see. The sim ends the
+    // charge once the team is on the post with nobody in sight to close with,
+    // and the commander used to order it again every eval.
+    const sim = new Sim(new GameMap(140, 60), 111);
+    const post = { x: 110, y: 30 };
+    const mg = sim.addSquad('red', 'MG', [
+      { name: 'G', weapon: 'mg42', x: 50.5, y: 30.5 },
+      { name: 'A1', weapon: 'kar98k', x: 51.5, y: 29.5 },
+    ]);
+    const rifle = sim.addSquad(
+      'red',
+      'Rifle',
+      Array.from({ length: 5 }, (_, i) => ({ name: `R${i}`, weapon: 'kar98k' as const, x: 86.5, y: 28.5 + i, xp: 20 })),
+    );
+    rifle.soldierIds.forEach((id) => (sim.soldiers[id].morale = 1));
+    sim.soldiers[rifle.soldierIds[0]].role = 'leader';
+    sim.addSquad('blue', 'Elsewhere', [{ name: 'B', weapon: 'garand', x: 5.5, y: 5.5, ammo: {} }]); // a second side, out of the way
+    sim.soldiers[sim.soldiers.length - 1].magLeft = 0;
+    const commander = new RedCommander({ side: 'red', stance: 'attack', posts: { [mg.id]: post, [rifle.id]: post } });
+    const team = sim.teams[rifle.teamIds[0]];
+    let assaults = 0;
+    const orderTeam = sim.orderTeam.bind(sim);
+    sim.orderTeam = (teamId, order, used, routine) => {
+      if (teamId === team.id && order.kind === 'assault') assaults++;
+      orderTeam(teamId, order, used, routine);
+    };
+    let charging = 0;
+    for (let i = 0; i < 3600; i++) {
+      // staged intel: the ghost is kept fresh so the post reads live throughout
+      sim.contacts.red.set('ghost', { kind: 'infantry', x: post.x + 6, y: post.y, tick: sim.tick });
+      commander.update(sim);
+      sim.step();
+      if (team.orderState.order?.kind === 'assault') charging++;
+    }
+    expect(charging).toBeGreaterThan(0); // the charge was made
+    expect(assaults).toBe(1); // once: it was 1 per 5 s eval for as long as the post read live
+    expect(team.orderState.order?.kind).toBe('defend'); // and the team holds the ground it took
+  });
+
   it('reserve still commits when a maneuver team bleeds out mid-assault (the executing-assault guard must not skip the loss check)', () => {
     // Regression: the "an executing charge owns its team" continue-guard sits
     // above the reserve-commit check. If it short-circuits the loss check too,
