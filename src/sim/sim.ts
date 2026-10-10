@@ -280,6 +280,7 @@ export interface Soldier {
   entryHoldUntil: number; // waits outside an opening until his own grenade bursts (#217)
   captured: boolean; // alive, out of the fight, untargetable (surrendered at melee contact)
   fledGun: boolean; // broke and ran while crewing a deployed gun, and has not yet gone back to it
+  meleeResume: { x: number; y: number; l: number } | null; // where he was walking to when a melee took his path, null = nowhere
   lastCowedTick: number; // tick he was last pinned or broken. Output only: it times the 'rallied' event and nothing in the sim reads it, so it is not in snapshot()
   // The last wound that came from somewhere: unit vector away from its source,
   // and the tick. Output only (the kia/downed events' dx, dy), not in snapshot().
@@ -997,6 +998,7 @@ export class Sim {
       entryHoldUntil: 0,
       captured: false,
       fledGun: false,
+      meleeResume: null,
       lastCowedTick: -Infinity,
       hitDx: 0,
       hitDy: 0,
@@ -1843,6 +1845,7 @@ export class Sim {
       s.path = path.slice(1).map((p) => ({ x: p.x + 0.5, y: p.y + 0.5, l: p.l }));
       s.pathI = 0;
       s.fleeing = false;
+      s.meleeResume = null; // a path given since the lock is the one he walks
     }
   }
 
@@ -1877,6 +1880,13 @@ export class Sim {
   // team in a tick was declared complete on the next (#763).
   private marching(id: number): boolean {
     return this.soldiers[id].path !== null || this.pendingPaths.has(id);
+  }
+
+  // Not yet where his order sent him: on the way, or held up in a melee. A
+  // lock takes a man's path (enterMelee), and reading him as arrived ended
+  // the order of any team whose last walking man it took (#787).
+  private enRoute(id: number): boolean {
+    return this.marching(id) || this.soldiers[id].meleeId >= 0;
   }
 
   // Men who stop where they are — the half that holds while the other rushes,
@@ -2056,7 +2066,7 @@ export class Sim {
     const [a, b] = this.teamHalves(team);
     const activeIds = st.phase === 'bounding_a' ? a : b;
     const otherIds = st.phase === 'bounding_a' ? b : a;
-    if (activeIds.some((id) => this.eligible(this.soldiers[id]) && this.marching(id))) return; // mid-leg
+    if (activeIds.some((id) => this.eligible(this.soldiers[id]) && this.enRoute(id))) return; // mid-leg
     const centroid = this.centroidOf(team.soldierIds);
     const done = (): void => {
       st.order = null;
@@ -2444,7 +2454,7 @@ export class Sim {
         this.continueBounding(team, order, st);
       } else if ((order.kind === 'move' || order.kind === 'fast' || order.kind === 'sneak') && st.phase === 'executing') {
         const eligibleIds = team.soldierIds.filter((id) => this.eligible(this.soldiers[id]));
-        if (eligibleIds.length > 0 && eligibleIds.every((id) => !this.marching(id))) {
+        if (eligibleIds.length > 0 && eligibleIds.every((id) => !this.enRoute(id))) {
           st.order = null;
           st.phase = 'idle';
           st.reason = '';
@@ -3056,6 +3066,7 @@ export class Sim {
         s.path = null;
         s.targetId = -1;
         s.meleeId = -1;
+        s.meleeResume = null;
         if (s.task) this.dropTask(s);
         this.triggerSuccession(s);
       }
@@ -3139,6 +3150,13 @@ export class Sim {
     // tasks, orders, and ranged fire until it resolves (kill, down, or rout)
     if (s.meleeId < 0 && s.mental !== 'pinned' && s.mental !== 'broken' && (this.tick + s.id) % 10 === 0) this.considerMelee(s);
     if (s.meleeId >= 0 && this.updateMelee(s)) return;
+    // The fight is over and he came through it: back onto the walk it
+    // interrupted, if his team is still on that order. Queued, like a breach
+    // repath — he re-solves the journey he was on, he is not re-ordered.
+    if (s.meleeResume) {
+      if (this.eligible(s) && this.legInProgress(this.teams[s.teamId].orderState)) this.pendingPaths.set(s.id, { spot: s.meleeResume, task: null });
+      s.meleeResume = null;
+    }
 
     // rescue / ammo run / weapon succession: a bonded squadmate may pull a
     // casualty out of the fight, ferry belts to a dry gunner, or take over a
@@ -4390,6 +4408,10 @@ export class Sim {
     m.meleeId = oppId;
     m.meleePhase = 0.4; // start at guard; first strike after the windup below
     m.meleeTempo = 1 / this.rng.range(0.9, 1.5);
+    if (m.path) {
+      const dest = m.path[m.path.length - 1];
+      m.meleeResume = { x: Math.floor(dest.x), y: Math.floor(dest.y), l: dest.l ?? 0 };
+    }
     m.path = null;
     m.targetId = -1;
     m.mountTarget = -1;
@@ -4651,6 +4673,7 @@ export class Sim {
         s.entryHoldUntil,
         s.captured,
         s.fledGun,
+        s.meleeResume ? `${s.meleeResume.x},${s.meleeResume.y},${s.meleeResume.l}` : '',
         Math.round((s.crewSkill.mg ?? 0) * 1e6),
         Math.round((s.crewSkill.mortar ?? 0) * 1e6),
         Math.round((s.crewSkill.gun ?? 0) * 1e6),
