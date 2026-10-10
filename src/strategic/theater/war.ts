@@ -415,6 +415,16 @@ function screenFallsBack(front: FrontV2, c: Contact): boolean {
   return false;
 }
 
+// The free forces inside contact range of a fight's site, other than the two
+// that are fighting it: the ones the join step folds into a coarse battle and
+// the ones whose fire supports a fought one. ONE list for the contact card
+// and for staging, so the card's line is true.
+export function supportersOf(front: FrontV2, site: NetPos, principals: readonly number[]): Force[] {
+  return front.forces
+    .filter((f) => !principals.includes(f.id) && f.strength > 0 && f.engagedIn === null && graphGap(front.theater, f.pos, site) <= CONTACT_M)
+    .sort((a, b) => a.id - b.id);
+}
+
 export interface StepOptions {
   nightMult?: number;
   // Return true to open a timed coarse battle for this contact; false to

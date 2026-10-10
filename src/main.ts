@@ -875,7 +875,7 @@ function showContactModalV2(c: Contact): void {
   const v2 = S().v2!;
   const atk = v2.front.forces.find((f) => f.id === c.attackerId)!;
   const def = v2.front.forces.find((f) => f.id === c.defenderId)!;
-  const b = contactBrief(v2.front, c, { supply: v2.campaignCfg.supply, fog: v2.campaignCfg.recon === 'contacts' });
+  const b = contactBrief(v2.front, c, { supply: v2.campaignCfg.supply, fog: v2.campaignCfg.recon === 'contacts', nightTempo: v2.campaignCfg.nightTempo });
   const { playerAttacks, trivial } = b;
   const col = (s: (typeof b.sides)[number]): string =>
     `<div class="fc-col ${s.side === 'blue' ? 'us' : 'ge'}"><h4>${s.name}</h4><p class="fc-str">${s.men}</p><p class="fc-state">${s.state}</p></div>`;

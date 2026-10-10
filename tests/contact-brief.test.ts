@@ -11,7 +11,9 @@ import type { Contact } from '../src/strategic/theater/contact';
 import { SUPPLY_OUT_MIN } from '../src/strategic/theater/supply';
 import { DIG_IN_MIN } from '../src/strategic/theater/step';
 import { battleDuration, openBattle, RETREAT_SETBACK_M } from '../src/strategic/theater/war';
-import { briefWords, contactBrief } from '../src/ui/contact-brief';
+import { newCampaign } from '../src/campaign/campaign';
+import { makeTheaterBattle, SUPPORT_BARRAGES } from '../src/strategic/bridge2';
+import { briefWords, contactBrief, SUPPORT_WAIT_MIN } from '../src/ui/contact-brief';
 
 const OPTS = { supply: true, fog: false };
 
@@ -74,7 +76,11 @@ describe('contact brief', () => {
     expect(b.facts[0]).toBe('None in range to join.');
     const other = front.forces.filter((f) => f.side === 'blue')[1];
     other.pos = { ...def.pos };
-    expect(contactBrief(front, c, OPTS).facts[0]).toBe(`In range: ${other.name}. They join only an auto-resolved fight.`);
+    expect(contactBrief(front, c, OPTS).facts[0]).toBe(`${other.name} in range: +${SUPPORT_BARRAGES} barrage.`);
+    // The line is true: the battle staged from this contact holds that barrage.
+    const alone = makeTheaterBattle(newCampaign(1, 3), { ...front, forces: front.forces.filter((f) => f !== other) }, openBattle(front, c)).sim.barragesLeft.blue;
+    const battle = front.battles[front.battles.length - 1];
+    expect(makeTheaterBattle(newCampaign(1, 3), front, battle).sim.barragesLeft.blue).toBe(alone + SUPPORT_BARRAGES);
   });
 
   // Isolation as a weapon (jtbug #786): the same garrison, the same company.
@@ -105,6 +111,18 @@ describe('contact brief', () => {
     const dug = contactBrief(front, c, OPTS);
     expect(dug.trivial).toBe(false);
     expect(dug.odds).toContain('No walkover: they are dug in.');
+  });
+
+  it('with nobody in range it names the nearest company and its march time', () => {
+    const { front, c } = atContact();
+    const b = contactBrief(front, c, OPTS);
+    const m = /^(\w+) is (\S+) away\.$/.exec(b.facts[0]);
+    if (m) {
+      expect(front.forces.some((f) => f.side === 'blue' && f.name === m[1])).toBe(true);
+    } else {
+      expect(b.facts[0]).toBe('None in range to join.');
+    }
+    expect(SUPPORT_WAIT_MIN).toBeGreaterThan(0);
   });
 
   it('types no tracked number into its copy', () => {
