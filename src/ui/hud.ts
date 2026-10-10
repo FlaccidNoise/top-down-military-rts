@@ -305,7 +305,7 @@ export class Hud {
     });
   }
 
-  /** Bottom-sheet roster: the ☰ chip is the only way in or out on a phone. */
+  /** The phone roster, a sheet in portrait and a column in landscape: the ☰ chip is the only way in or out. */
   toggleRoster(): void {
     this.q('#squads').classList.toggle('open');
     this.sig = ''; // chip active-state is part of the touchbar render
@@ -573,7 +573,8 @@ export class Hud {
       panel.querySelector('.card.sel')?.scrollIntoView({ block: 'nearest' });
       // A phone sheet that stays open after a selection buries the ground the
       // next order has to be given on. Selecting is the end of the roster's job.
-      if (this.tb) panel.classList.remove('open');
+      // In landscape the roster is a column beside the map and stays.
+      if (this.tb && !window.matchMedia('(orientation: landscape)').matches) panel.classList.remove('open');
     }
   }
 }

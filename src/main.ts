@@ -399,11 +399,19 @@ const hud = new Hud({
 // one height, and the bar's own height changes when the order-chip row comes
 // and goes. Publish the measured value rather than hard-coding it twice.
 const touchbarEl = document.getElementById('touchbar');
-if (touchbarEl && typeof ResizeObserver === 'function') {
-  const publishBarHeight = (): void =>
-    document.documentElement.style.setProperty('--touchbar-h', `${Math.round(touchbarEl.getBoundingClientRect().height)}px`);
-  new ResizeObserver(publishBarHeight).observe(touchbarEl);
-  publishBarHeight();
+const topbarEl = document.getElementById('topbar');
+if (touchbarEl && topbarEl && typeof ResizeObserver === 'function') {
+  // The landscape roster column hangs between the two bars, so it needs the
+  // top bar's bottom edge as well.
+  const publishBars = (): void => {
+    const css = document.documentElement.style;
+    css.setProperty('--touchbar-h', `${Math.round(touchbarEl.getBoundingClientRect().height)}px`);
+    css.setProperty('--topbar-b', `${Math.round(topbarEl.getBoundingClientRect().bottom)}px`);
+  };
+  const watch = new ResizeObserver(publishBars);
+  watch.observe(touchbarEl);
+  watch.observe(topbarEl);
+  publishBars();
 }
 const stratHud = new StratHud({
   togglePause: () => { stratPaused = !stratPaused; },
@@ -658,13 +666,16 @@ function viewportInset(): { left: number; top: number; bottom: number } {
     const r = document.getElementById(id)?.getBoundingClientRect();
     return r && r.width > 0 && r.height > 0 ? r : null;
   };
-  const squads = box('squads');
+  // The roster is a column on a desktop and on a phone in landscape, and a
+  // sheet across the bottom on a phone in portrait.
+  const roster = box('squads');
+  const squads = roster && roster.width < view.w * 0.6 ? roster : null;
   const strip = box('obj-strip');
   // Both bottom-edge layers, whichever exists: the order bar on desktop (only
   // with a squad selected), #touchbar on a phone, which holds its own order
   // rows. Taking the max means the map the player is told about never runs
   // under whichever one is actually on screen.
-  const bottoms = ['orderbar', 'touchbar'].map((id) => box(id)).filter((r) => r !== null);
+  const bottoms = [box('orderbar'), box('touchbar'), squads ? null : roster].filter((r) => r !== null);
   return {
     left: squads ? squads.right : 0,
     top: strip ? strip.bottom : 0,

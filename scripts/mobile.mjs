@@ -262,10 +262,21 @@ async function phoneRun(device) {
     const e = document.getElementById('squads');
     const r = e.getBoundingClientRect();
     const bar = document.getElementById('touchbar').getBoundingClientRect();
-    return { open: e.classList.contains('open'), top: Math.round(r.top), bottom: Math.round(r.bottom), barTop: Math.round(bar.top), cards: e.querySelectorAll('.card').length };
+    const top = document.getElementById('topbar').getBoundingClientRect();
+    return {
+      open: e.classList.contains('open'), top: Math.round(r.top), bottom: Math.round(r.bottom), right: Math.round(r.right), barTop: Math.round(bar.top), topBottom: Math.round(top.bottom),
+      cards: e.querySelectorAll('.card').length, landscape: matchMedia('(orientation: landscape)').matches, stage: window.__game.stage(), w: innerWidth, h: innerHeight,
+    };
   });
   check(sheet.open && sheet.cards > 0, `${device} roster sheet opens with ${sheet.cards} cards`);
   check(sheet.bottom <= sheet.barTop + 1, `${device} roster sheet sits above the touch bar (${sheet.bottom} <= ${sheet.barTop})`);
+  // In landscape the roster is a column: it leaves both bars whole and most of the map.
+  if (sheet.landscape) {
+    check(sheet.top >= sheet.topBottom, `${device} the roster column starts under the top bar (${sheet.top} >= ${sheet.topBottom})`);
+    check(sheet.right <= sheet.w * 0.4, `${device} the roster column takes no more than 40% of the width (${sheet.right} of ${sheet.w})`);
+    const mapW = sheet.stage.right - sheet.stage.left, mapH = sheet.stage.bottom - sheet.stage.top;
+    check(sheet.stage.left >= sheet.right - 1 && mapW >= sheet.w * 0.55 && mapH >= sheet.h * 0.5, `${device} with the roster open the map keeps ${Math.round(mapW)}x${Math.round(mapH)} of ${sheet.w}x${sheet.h}`);
+  }
   await shot('roster-open');
   await noOverflow('roster open');
 
@@ -282,7 +293,13 @@ async function phoneRun(device) {
     rosterOpen: document.getElementById('squads').classList.contains('open'),
   }));
   check(afterSelect.sel.length === 1, `${device} tapping a card selects one squad`);
-  check(!afterSelect.rosterOpen, `${device} the sheet auto-collapses on selection`);
+  if (sheet.landscape) {
+    check(afterSelect.rosterOpen, `${device} the roster column stays open on selection`);
+    await shot('roster-column-selected');
+    await page.touchscreen.tap(chip('roster').x, chip('roster').y);
+    await page.waitForTimeout(200);
+    check(!(await page.evaluate(() => document.getElementById('squads').classList.contains('open'))), `${device} the Roster chip closes the column`);
+  } else check(!afterSelect.rosterOpen, `${device} the sheet auto-collapses on selection`);
   // One order bar: four primary orders and More, all on screen, no scrolling.
   const primary = await readChips('#orderbar .ob-main [data-order], #orderbar [data-ob="more"]');
   check(primary.map((c) => c.tb).join(',') === 'move,fire,smoke,assault,more', `${device} the order bar shows Move, Fire, Smoke, Assault and More (${primary.map((c) => c.tb).join(',')})`);
