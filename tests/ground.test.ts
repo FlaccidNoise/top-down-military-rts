@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { cornerCuts, cutOnH, cutOnV, HARD, RELIEF_MAX, reliefShade, smoothElev, type ReliefLight } from '../src/render/ground';
+import { cornerCuts, cutOnH, cutOnV, HARD, RELIEF_MAX, reliefShade, smoothElev, TUFT_PATCH, tuftCount, type ReliefLight } from '../src/render/ground';
 
 // The ground's two anti-lattice passes (src/render/ground.ts). The tile grid
 // showed through in two ways: a hillshade taken off whole-metre terraces, and
@@ -124,5 +124,50 @@ describe('cornerCuts', () => {
       expect(v - i).toBeGreaterThanOrEqual(0.32);
       expect(v - i).toBeLessThanOrEqual(0.68);
     }
+  });
+});
+
+describe('tuftCount', () => {
+  const N = 220;
+  const at = (x: number, y: number): number => tuftCount(x, y);
+
+  it('throws 0 to 4 tufts a tile, every count in use, about two on average', () => {
+    const seen = [0, 0, 0, 0, 0];
+    let sum = 0;
+    for (let y = 0; y < N; y++)
+      for (let x = 0; x < N; x++) {
+        const n = at(x, y);
+        expect(Number.isInteger(n) && n >= 0 && n <= 4).toBe(true);
+        seen[n]++;
+        sum += n;
+      }
+    for (const c of seen) expect(c / (N * N)).toBeGreaterThan(0.04);
+    expect(sum / (N * N)).toBeGreaterThan(1.5);
+    expect(sum / (N * N)).toBeLessThan(2.8);
+  });
+
+  it('is patchy: a patch-sized block of ground is thick or thin as a whole', () => {
+    // the mean count of each TUFT_PATCH block: if every tile rolled alone
+    // these would all sit at the map mean, give or take 0.15
+    const means: number[] = [];
+    for (let by = 0; by + TUFT_PATCH <= N; by += TUFT_PATCH)
+      for (let bx = 0; bx + TUFT_PATCH <= N; bx += TUFT_PATCH) {
+        let s = 0;
+        for (let y = 0; y < TUFT_PATCH; y++) for (let x = 0; x < TUFT_PATCH; x++) s += at(bx + x, by + y);
+        means.push(s / (TUFT_PATCH * TUFT_PATCH));
+      }
+    means.sort((a, b) => a - b);
+    expect(means[Math.floor(means.length * 0.1)]).toBeLessThan(1.3);
+    expect(means[Math.floor(means.length * 0.9)]).toBeGreaterThan(2.7);
+  });
+
+  it('is not a contour map: neighbours inside a patch still differ', () => {
+    let differ = 0;
+    for (let y = 0; y < N; y++) for (let x = 0; x < N - 1; x++) if (at(x, y) !== at(x + 1, y)) differ++;
+    expect(differ / (N * (N - 1))).toBeGreaterThan(0.3);
+  });
+
+  it('is the same every time', () => {
+    expect(at(37, 91)).toBe(at(37, 91));
   });
 });
