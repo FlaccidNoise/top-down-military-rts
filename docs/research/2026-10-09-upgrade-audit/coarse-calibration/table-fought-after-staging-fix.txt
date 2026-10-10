@@ -1,0 +1,38 @@
+
+blue attacking: fought (AI both sides, through makeTheaterBattle) against coarse (the constants in src now)
+class            ratio   n  fought win  coarse win   fought: winner lost, loser lost   coarse: winner, loser   best-fit mult for the odds formula in src (mult in src)
+settlement          1   6    0% (0/6)    12%          35%   76%                       4%   65%        1.30 (7.00)
+settlement        1.5   6   33% (2/6)    17%          47%   76%                       4%   65%        
+settlement          2   6  100% (6/6)    22%          41%   76%                       3%   65%        
+settlement          3   6  100% (6/6)    30%          42%   77%                       3%   64%        
+hamlet              1   6   50% (3/6)    25%          67%   76%                       4%   65%        0.30 (3.00)
+hamlet            1.5   6  100% (6/6)    33%          58%   76%                       4%   65%        
+hamlet              2   6  100% (6/6)    40%          23%   76%                       3%   64%        
+hamlet              3   6  100% (6/6)    51%          22%   77%                       3%   64%        
+forest              1   6   17% (1/6)    40%          44%   75%                       4%   65%        1.50 (1.50)
+forest            1.5   6   33% (2/6)    51%          47%   76%                       4%   65%        
+forest              2   6   83% (5/6)    58%          51%   75%                       3%   64%        
+forest              3   6   83% (5/6)    67%          40%   70%                       3%   64%        
+farmland            1   6    0% (0/6)    51%          48%   76%                       4%   65%        1.10 (1.00)
+farmland          1.5   6   50% (3/6)    61%          53%   76%                       4%   65%        
+farmland            2   6  100% (6/6)    67%          38%   76%                       4%   64%        
+farmland            3   6  100% (6/6)    76%          21%   77%                       3%   64%        
+marsh               1   6   67% (4/6)    51%          56%   76%                       4%   65%        0.40 (1.00)
+marsh             1.5   6   67% (4/6)    61%          48%   76%                       4%   65%        
+marsh               2   6  100% (6/6)    67%          34%   76%                       4%   64%        
+marsh               3   6  100% (6/6)    76%          20%   77%                       3%   64%        
+roadside            1   6   50% (3/6)    51%          48%   76%                       4%   65%        0.30 (1.00)
+roadside          1.5   6  100% (6/6)    61%          41%   76%                       4%   65%        
+roadside            2   6  100% (6/6)    67%          22%   77%                       4%   64%        
+roadside            3   6  100% (6/6)    76%          15%   77%                       3%   64%        
+bridge-assault      1   6    0% (0/6)    33%          36%   76%                       4%   65%        0.70 (2.00)
+bridge-assault    1.5   6  100% (6/6)    43%          54%   76%                       4%   65%        
+bridge-assault      2   6  100% (6/6)    51%          34%   76%                       3%   64%        
+bridge-assault      3   6  100% (6/6)    61%          21%   77%                       3%   64%        
+ford-assault        1   6   17% (1/6)    33%          41%   75%                       4%   65%        2.05 (2.00)
+ford-assault      1.5   6   17% (1/6)    43%          36%   75%                       4%   65%        
+ford-assault        2   6   67% (4/6)    51%          55%   73%                       3%   64%        
+ford-assault        3   6   83% (5/6)    61%          27%   76%                       3%   64%        
+losses over all 192 battles: winner p10/median/p90  21%/ 38%/ 65% · loser  75%/ 76%/ 77%
+
+[exited with code 0]

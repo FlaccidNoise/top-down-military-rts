@@ -44,4 +44,21 @@ A fought battle caps the attacker at about 130 men whatever its theater strength
 - `calibration.patch` — the unapplied change.
 - `table-before-calibration.txt`, `table-after-calibration.txt` — coarse against fought, per class and ratio.
 
-The fought numbers were taken before any theater-staging fix from #796 item 1. Re-run `scripts/coarsefit.mjs` before applying.
+- `table-fought-after-staging-fix.txt` — the fought table re-run on `beabd6a`, after the #796 staging fix.
+
+## After the staging fix (2026-10-10, `beabd6a`)
+
+The German company table was fielded from its front, so any defender under 99 men had no mortar and fired no HE. It is now drawn platoon by platoon with its weapons. Fought wins of 6 at 1:1, 1.5:1, 2:1, 3:1, was → now:
+
+| Class | Was | Now |
+|---|---|---|
+| settlement | 0 3 6 6 | 0 2 6 6 |
+| hamlet | 3 6 6 6 | 3 6 6 6 |
+| forest | 0 3 3 5 | 1 2 5 5 |
+| farmland | 0 4 5 6 | 0 3 6 6 |
+| marsh | 3 6 6 6 | 4 4 6 6 |
+| roadside | 3 6 6 6 | 3 6 6 6 |
+| bridge | 0 2 6 6 | 0 6 6 6 |
+| ford | 1 2 2 5 | 1 1 4 5 |
+
+The threshold near 1.5:1 stays. The winner's cost moved: settlement at 3:1 went from 29% to 42% lost. The calibration patch was fitted to the "was" column: refit before applying.
