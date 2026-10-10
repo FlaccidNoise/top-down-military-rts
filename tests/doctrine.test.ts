@@ -548,6 +548,8 @@ describe('AI commander doctrine', () => {
     sim.tick = SPOT_INTERVAL + 150;
     commander.update(sim);
     expect(reserveTeam.orderState.order).not.toBeNull(); // reserve committed
+    // #787: and the commander says so, once, on its own side's channel
+    expect(sim.takeUnitEvents().filter((e) => e.kind === 'reserve-committed').map((e) => [e.side, e.name])).toEqual([['red', 'HQ']]);
     expect(manTeam.orderState.order?.kind).toBe('assault'); // and the charge was NOT re-rolled
 
     // #763: committed means commanded. The reserve used to get this one order
@@ -607,6 +609,7 @@ describe('AI commander doctrine', () => {
     sim.tick = SPOT_INTERVAL + 10800 + 150;
     commander.update(sim);
     expect(commander['culminated']).toBe(true);
+    expect(sim.takeUnitEvents().filter((e) => e.kind === 'culminated').map((e) => e.side)).toEqual(['red']); // #787: reported once
     expect(manTeam.orderState.order?.kind).toBe('defend'); // consolidating on the ground it holds
 
     // every man back on his feet: the attack stays broken off
@@ -706,15 +709,19 @@ describe('AI commander doctrine', () => {
     const commander = new RedCommander({ side: 'red', stance: 'attack', posts: { [mg.id]: post, [rifle.id]: post } });
 
     let smokeOnPostTick = -1; // first tick a smoke puff sits on the objective
+    let smokeSaidTick = -1; // tick the commander reported the mission (#787)
     let chargeStepsOffTick = -1; // first tick the assault is actually executing (a real charge, not a balk)
     for (let i = 0; i < 12000 && chargeStepsOffTick < 0; i++) {
       commander.update(sim);
       sim.step();
       if (smokeOnPostTick < 0 && sim.smoke.some((p) => Math.hypot(p.x - post.x, p.y - post.y) <= 10)) smokeOnPostTick = sim.tick;
+      if (smokeSaidTick < 0 && sim.takeUnitEvents().some((e) => e.kind === 'smoke-objective' && e.side === 'red')) smokeSaidTick = sim.tick;
       const os = sim.teams[rifle.teamIds[0]].orderState;
       if (chargeStepsOffTick < 0 && os.order?.kind === 'assault' && os.phase === 'executing') chargeStepsOffTick = sim.tick;
     }
     expect(smokeOnPostTick).toBeGreaterThan(0); // the commander employed mortar smoke on the objective
+    expect(smokeSaidTick).toBeGreaterThan(0); // and said so when it called the mission, before the rounds landed
+    expect(smokeSaidTick).toBeLessThanOrEqual(smokeOnPostTick);
     expect(chargeStepsOffTick).toBeGreaterThan(0); // and the maneuver team's charge actually stepped off
     // the doctrine loop, in order: a charge onto this covered post balks until
     // the screen blinds it, so the committed charge can only follow the smoke

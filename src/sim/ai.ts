@@ -318,7 +318,18 @@ export class RedCommander {
   private updateCulmination(sim: Sim): void {
     if (this.culminated || this.forceStart <= 0) return;
     if (sim.tick - this.lastProgressTick < CULMINATION_STALL_TICKS) return; // an attack taking ground is not culminating, whatever it costs
-    if (this.effectives(sim, this.committedTeamIds()) / this.forceStart <= 1 - CULMINATION_LOSS) this.culminated = true;
+    if (this.effectives(sim, this.committedTeamIds()) / this.forceStart <= 1 - CULMINATION_LOSS) {
+      this.culminated = true;
+      this.say(sim, 'culminated');
+    }
+  }
+
+  // The commander's voice (#787): what it has just decided, for its OWN
+  // side's ticker. Output only. It says nothing about the enemy — what a side
+  // may know of its enemy comes from the sim's sightings, not from here.
+  private say(sim: Sim, kind: 'reserve-committed' | 'culminated' | 'smoke-objective', at?: { x: number; y: number }): void {
+    const p = at ?? this.centroid(sim, this.committedTeamIds().flatMap((id) => sim.teams[id].soldierIds));
+    sim.report({ kind, x: p.x, y: p.y, side: this.cfg.side, name: 'HQ' });
   }
 
   // Consolidate: hold the ground the team is standing on — for a team that
@@ -709,6 +720,7 @@ export class RedCommander {
   // objective, flank and suppression reading everyone else is working from.
   private commitReserve(sim: Sim): void {
     this.reserveCommitted = true;
+    this.say(sim, 'reserve-committed');
     for (const teamId of this.reserveTeamIds) {
       this.maneuverTeamIds.push(teamId);
       this.startStrength.set(teamId, sim.teams[teamId].soldierIds.filter((sid) => sim.soldiers[sid].alive).length);
@@ -948,7 +960,9 @@ export class RedCommander {
   // finish (readyMortar skips smokeRoundsLeft > 0) rather than re-tasked.
   private maybeSmokeObjective(sim: Sim, post: { x: number; y: number }): void {
     const mortar = this.readyMortar(sim, post);
-    if (mortar) sim.orderSmoke(mortar.id, post.x, post.y);
+    if (!mortar) return;
+    sim.orderSmoke(mortar.id, post.x, post.y);
+    this.say(sim, 'smoke-objective', post);
   }
 
   // A deployed mortar of its side not mid-smoke-mission, with shells its crew can

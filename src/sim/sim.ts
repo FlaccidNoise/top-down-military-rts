@@ -77,6 +77,9 @@ const REAUDIT_TICKS = 60;
 // A crewman who ran from his gun goes back to it once he has steadied, unless
 // an enemy stands this close to it (#787).
 const GUN_HELD_RADIUS = 10;
+// A movement order ending this close to a standing enemy is headed for ground
+// that enemy holds (noteClosing). The commander's own "held" radius.
+const CLOSING_RADIUS = 20;
 // A man who steadies within this long of being pinned or broken has rallied
 // (#766). The crossing never happens in one tick: suppression decays at most
 // 0.0023 a tick and morale climbs 0.00013, so he always passes through
@@ -432,7 +435,18 @@ export interface UnitEvent {
     | 'promoted' // a teammate became leader after the leader fell
     | 'stabilized' // a casualty's bleeding was stopped by a squadmate
     | 'recovered' // a downed man is back on his feet
-    | 'resupplied'; // a runner handed ammunition to a dry gunner
+    | 'resupplied' // a runner handed ammunition to a dry gunner
+    // A commander's own reports (#787), written through Sim.report. They are
+    // for that commander's side and nobody else: an enemy commander's reserve
+    // or culmination is not something a man across the field can see, so a
+    // consumer shows them for its own side only.
+    | 'reserve-committed'
+    | 'culminated'
+    | 'smoke-objective'
+    // A team seen moving onto ground the other side holds. Raised by the sim
+    // off what that other side can see, never by a commander: `id` is a man
+    // of the team its enemy has in sight.
+    | 'closing';
   x: number;
   y: number;
   side: Side;
@@ -886,6 +900,7 @@ export class Sim {
   breachLog: BreachEvent[] = [];
   private pendingPlanes: { x0: number; y: number; x1: number }[] = [];
   private pendingUnitEvents: UnitEvent[] = [];
+  private closingSaid = new WeakSet<TeamOrder>(); // orders already announced by noteClosing. Output only
   private pendingMeleeEvents: MeleeEvent[] = [];
   // Per-squad move state, indexed by squad id. Read-only for the UI (route preview).
   squadDest: ({ x: number; y: number } | null)[] = [];
@@ -2290,6 +2305,45 @@ export class Sim {
     return p;
   }
 
+  // A commander's report for its own side's ticker. Output only: it joins the
+  // drain queue and nothing in the sim reads it back.
+  report(e: UnitEvent): void {
+    this.pendingUnitEvents.push(e);
+  }
+
+  // "They are coming for the ground we hold" (#787), said once per order and
+  // only off what the side holding the ground can see: a team on a movement
+  // order, a man of it in that side's sight (soldierVisibleTo), and a
+  // destination within CLOSING_RADIUS of one of that side's standing men.
+  // Run on the spotting cadence, straight after the sweep it reads. Draws no
+  // rng and writes nothing the sim reads.
+  private noteClosing(): void {
+    for (const team of this.teams) {
+      const st = team.orderState;
+      const order = st.order;
+      if (!order || st.phase === 'balked' || this.closingSaid.has(order)) continue;
+      if (order.kind !== 'move' && order.kind !== 'fast' && order.kind !== 'assault') continue;
+      const side = this.squads[team.squadId].side;
+      const other: Side = side === 'blue' ? 'red' : 'blue';
+      let seen: Soldier | null = null;
+      for (const id of team.soldierIds) {
+        const m = this.soldiers[id];
+        if (this.eligible(m) && this.soldierVisibleTo(other, m)) {
+          seen = m;
+          break;
+        }
+      }
+      if (!seen) continue;
+      for (const o of this.soldiers) {
+        if (o.side !== other || !o.alive || o.downed || o.captured || o.inVehicle >= 0) continue;
+        if (Math.hypot(o.x - order.x, o.y - order.y) > CLOSING_RADIUS) continue;
+        this.closingSaid.add(order);
+        this.pendingUnitEvents.push({ kind: 'closing', x: seen.x, y: seen.y, side, name: seen.name, id: seen.id, team: team.name });
+        break;
+      }
+    }
+  }
+
   takeUnitEvents(): UnitEvent[] {
     const e = this.pendingUnitEvents;
     this.pendingUnitEvents = [];
@@ -2323,6 +2377,7 @@ export class Sim {
     if (this.tick % SPOT_INTERVAL === 0) {
       this.updateSpotting('blue');
       this.updateSpotting('red');
+      this.noteClosing();
     }
     let blue = 0;
     let red = 0;
