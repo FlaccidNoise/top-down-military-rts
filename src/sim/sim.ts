@@ -117,6 +117,8 @@ const GRENADE_RANGE = 12; // m
 const GRENADE_FUSE_TICKS = 30; // ~1 s
 const GRENADE_COOLDOWN_TICKS = 60;
 const GRENADE_BLAST: Blast = { suppRadius: 6, fragRadius: 3, frags: 2, dmg: [20, 55], breach: 2, kind: 'grenade' };
+// A mortar HE round, either calibre: opens a head-high enclosure wall, never masonry.
+export const MORTAR_BLAST: Blast = { suppRadius: 10, fragRadius: 5, frags: 2, dmg: [25, 75], breach: 5, kind: 'mortar' };
 const GRENADE_SCATTER = 2; // m max
 const ENTRY_LOOKAHEAD = 4; // path waypoints: imminent opening, not any later opening
 const AP_DESTROY_CHANCE = 0.45; // conditional on a penetrating hit
@@ -1640,7 +1642,7 @@ export class Sim {
       if (this.tick < sh.tick) return true;
           // Mortar/barrage smoke lands at ground level 0, wherever it falls.
       if (sh.smoke) this.smoke.push(smokePuff(sh.x, sh.y, this.map.elevAt(Math.floor(sh.x), Math.floor(sh.y)), 60));
-      else this.explode(sh.x, sh.y, { suppRadius: 10, fragRadius: 5, frags: 2, dmg: [25, 75], breach: 5, kind: 'mortar' }); // 81 mm: opens a head-high enclosure wall, never masonry
+      else this.explode(sh.x, sh.y, MORTAR_BLAST);
       return false;
     });
   }

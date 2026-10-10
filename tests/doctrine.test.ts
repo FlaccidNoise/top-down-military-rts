@@ -1010,6 +1010,85 @@ describe('attacker fire support (#790)', () => {
   });
 });
 
+// #790. A defensive fire mission had no end: the tubes shelled the last aim
+// point until they were dry, whoever stood there. The tube in these cases is
+// held on a long cooldown, so nobody is hit and the men stay where the test
+// puts them: what is read is where the commander has it aimed.
+describe('a fire mission follows its men and ends (#790)', () => {
+  const stage = () => {
+    const sim = new Sim(new GameMap(240, 80), 4);
+    const spotter = sim.addSquad('red', 'Spotter', [{ name: 'S', weapon: 'kar98k', x: 20.5, y: 40.5 }]);
+    const mass = sim.addSquad('blue', 'Mass', Array.from({ length: 8 }, (_, i) => ({ name: `M${i}`, weapon: 'garand' as const, x: 120.5 + (i % 4) * 2, y: 39.5 + Math.floor(i / 4) * 2 })));
+    const tube = sim.addEmplacement('red', 'mortar81', 30, 40, 0, 'deployed');
+    for (const m of sim.soldiers) {
+      m.ammo = m.ammo.shell_81 ? { shell_81: m.ammo.shell_81 } : {};
+      m.magLeft = 0;
+      m.morale = 1;
+    }
+    const commander = new RedCommander({ side: 'red', stance: 'defend', posts: { [spotter.id]: { x: 20, y: 40 } } });
+    const men = mass.soldierIds.map((id) => sim.soldiers[id]);
+    // One spotting sweep, then one commander eval, with the tube held silent.
+    const look = (ticks = SPOT_INTERVAL): void => {
+      for (let i = 0; i < ticks; i++) {
+        tube.cooldown = 1e6;
+        sim.step();
+      }
+      commander['lastEval'] = -Infinity;
+      commander.update(sim);
+    };
+    const aim = (): { x: number; y: number } | null => (tube.hasTarget ? { x: tube.targetX, y: tube.targetY } : null);
+    const mid = (ms: { x: number; y: number }[]): { x: number; y: number } => ({ x: mean(ms.map((m) => m.x)), y: mean(ms.map((m) => m.y)) });
+    return { sim, men, tube, look, aim, mid, spotter: sim.soldiers[spotter.soldierIds[0]] };
+  };
+
+  it('with the mass broken up it stays on the men still inside a burst of the aim point, then shells the empty point 20 s and ends', () => {
+    const { sim, men, look, aim, mid } = stage();
+    look();
+    expect(aim()).toEqual(mid(men)); // eight together: the mission
+    for (const m of men.slice(3)) m.x += 60; // five walk off; three stay
+    look();
+    expect(aim()).toEqual(mid(men.slice(0, 3))); // not a mass any more, and still the target
+    for (const m of men.slice(0, 3)) m.y += 4;
+    look();
+    expect(aim()).toEqual(mid(men.slice(0, 3))); // it goes with them
+    const last = aim()!;
+    const left = sim.tick;
+    for (const m of men.slice(0, 3)) m.y -= 30; // and now they are gone too, not to the five
+    look();
+    expect(aim()).toEqual(last); // the point is shelled a while longer
+    look(20 * 30 - (sim.tick - left) - 1);
+    expect(aim()).toEqual(last);
+    look(1 + SPOT_INTERVAL);
+    expect(aim()).toBeNull(); // 20 s with nobody on it: the mission is over
+  });
+
+  it('a mission that ended is on the next mass in the eval that sees it', () => {
+    const { men, look, aim, mid } = stage();
+    look();
+    men.forEach((m, i) => {
+      m.x = 60.5 + i * 15; // strung out 30 m off: nobody on the point, no mass anywhere
+      m.y = 10.5;
+    });
+    look(21 * 30);
+    expect(aim()).toBeNull();
+    men.forEach((m, i) => {
+      m.x = 170.5 + (i % 4) * 2;
+      m.y = 20.5 + Math.floor(i / 4) * 2;
+    });
+    look();
+    expect(aim()).toEqual(mid(men)); // the same eight, together again 50 m on
+  });
+
+  it('danger close ends it: a tube does not go on shelling a point its own men have reached', () => {
+    const { men, look, aim, mid, spotter } = stage();
+    look();
+    expect(aim()).toEqual(mid(men));
+    spotter.x = mid(men).x - 24; // inside DEFEND_HE_SAFETY (25 m)
+    look();
+    expect(aim()).toBeNull();
+  });
+});
+
 // Night A/B (day/night design §7.4): same seed, same AI-driven strategic
 // battle, startMin 14:00 vs 02:00. Direction-only assertions, and the
 // direction asserted is the one the mechanics actually own: night caps the
