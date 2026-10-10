@@ -523,10 +523,22 @@ function drawApron(g: Ctx, map: GameMap, patches: PatchIndex, y: Yard, d: Detail
   const cy = py(b, side, door, 0.85);
   if (!paintable(map, patches, cx, cy)) return;
   const along = side === 0 || side === 1;
-  g.fillStyle = 'rgba(150,140,120,0.35)';
-  g.beginPath();
-  g.ellipse(cx, cy, along ? 1 : 0.8, along ? 0.8 : 1, 0, 0, Math.PI * 2);
-  g.fill();
+  // Worn ground, so it has no edge: three soft lobes that fade to nothing. As
+  // one flat ellipse at this value it was a pale disc parked beside every door
+  // in the village, and from 24 px/m in that is what it read as.
+  for (let i = 0; i < 3; i++) {
+    const ox = cx + (hash(b.id, i, 306) - 0.5) * (along ? 1.1 : 0.5);
+    const oy = cy + (hash(b.id, i, 307) - 0.5) * (along ? 0.5 : 1.1);
+    const r = 0.75 + hash(b.id, i, 308) * 0.35;
+    const gr = g.createRadialGradient(ox, oy, 0, ox, oy, r);
+    gr.addColorStop(0, 'rgba(150,140,120,0.24)');
+    gr.addColorStop(0.55, 'rgba(150,140,120,0.14)');
+    gr.addColorStop(1, 'rgba(150,140,120,0)');
+    g.fillStyle = gr;
+    g.beginPath();
+    g.arc(ox, oy, r, 0, Math.PI * 2);
+    g.fill();
+  }
   if (d < 1) return;
   const n = 14 + ((hash(b.id, 0, 304) * 7) | 0);
   for (let i = 0; i < n; i++) {

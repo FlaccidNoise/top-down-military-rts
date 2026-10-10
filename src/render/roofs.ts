@@ -3,6 +3,7 @@ import { EDGE } from '../sim/map';
 import type { GameMap } from '../sim/map';
 import type { Sim, Soldier } from '../sim/sim';
 import type { Camera } from './camera';
+import { blit, type FxKind } from './fx';
 import { AO_ALPHA, SHADOW_LEN_LEGIBLE, SUN, WIND, shadowAlpha, shadowOffset, shadowOffsetLegible, shadowSoft, shadowSoftAlpha, sun, sweptRectPath } from './light';
 
 // Gable roofs drawn over building footprints (sim.buildings, from the map
@@ -162,6 +163,8 @@ const CAST_CORE = 0.71; // core
 
 // Keyed on (building index, salt) — same arithmetic as the old local copy.
 import { hash } from './noise';
+
+const WISP_FULL_SCALE = 16; // px/m — a chimney wisp is at full strength up to here and thins above it
 
 function hexToRgb(hex: string): [number, number, number] {
   const n = parseInt(hex.slice(1), 16);
@@ -2394,56 +2397,54 @@ export class RoofLayer {
   // Hearth wisps on the shared wind. Phase comes off the sim tick, never
   // wall-clock, so they freeze under pause exactly like sim smoke does; alpha
   // rides the roof's own so a revealed interior gets no smoke floating over it.
+  //
+  // Each wisp is one blit of a baked puff from the fx atlas. It used to build
+  // a radial gradient per wisp per frame, which no browser caches and which is
+  // the cost fx.ts exists to remove; and a plain radial is a disc, which at
+  // close zoom is what these read as: pale discs parked on the roofs.
   drawChimneySmoke(ctx: CanvasRenderingContext2D, cam: Camera, cw: number, ch: number): void {
     if (cam.scale < 6) return;
     const t = this.tick / 30;
+    const S = cam.scale;
+    // Thinner the closer the camera: a wisp that is right at 14 px/m is a
+    // 40 px white blob at 40.
+    const near = Math.min(1, WISP_FULL_SCALE / S);
     // one wisp writer for both sources: a hearth plume and a shell-hole plume
     // differ only in origin, tone and how far they get before they thin out
-    const wisp = (cx: number, cy: number, life: number, k: number, reach: number, rad0: number, grow: number, rgb: string, peak: number): void => {
+    const wisp = (kind: FxKind, cx: number, cy: number, life: number, k: number, reach: number, rad0: number, grow: number, peak: number): void => {
       const wob = Math.sin(life * 6 + k) * 0.25 * life;
-      const px = cx + WIND.dx * life * reach - WIND.dy * wob;
-      const py = cy + WIND.dy * life * reach + WIND.dx * wob;
-      const rad = rad0 + life * grow;
-      // a soft core, not a disc — this has to read as haze over a roof,
-      // never as a sprite that got its ordering wrong
-      const gr = ctx.createRadialGradient(px, py, 0, px, py, rad);
-      gr.addColorStop(0, `rgba(${rgb},${(peak * (1 - life)).toFixed(3)})`);
-      gr.addColorStop(1, `rgba(${rgb},0)`);
-      ctx.fillStyle = gr;
-      ctx.beginPath();
-      ctx.arc(px, py, rad, 0, TAU);
-      ctx.fill();
+      const [px, py] = cam.worldToScreen(cx + WIND.dx * life * reach - WIND.dy * wob, cy + WIND.dy * life * reach + WIND.dx * wob, cw, ch);
+      // in fast, out slow: it leaves the pot as a thread and is gone as haze
+      blit(ctx, kind, px, py, (rad0 + life * grow) * S, peak * near * Math.min(1, life * 8) * (1 - life), k * 2.4);
     };
-    this.withWorldTransform(ctx, cam, cw, ch, () => {
-      for (let i = 0; i < this.buildings.length; i++) {
-        const art = this.art[i];
-        const dmg = this.damage[i];
-        if (!art.smoke && !dmg.length) continue;
-        if (!this.onScreen(cam, i, cw, ch, 4)) continue;
-        const a = this.alphas[i];
-        if (a < 0.05) continue;
-        if (art.smoke) {
-          const n = 3 + ((hash(art.key, 274) * 2) | 0);
-          for (const st of art.chimneys) {
-            const cx = st.x + st.w / 2;
-            const cy = st.y + st.h / 2;
-            for (let k = 0; k < n; k++) {
-              const life = (t * 0.45 + k / n + hash(art.key, 273 + k)) % 1;
-              wisp(cx, cy, life, k, 3.2, 0.18, 0.7, '196,190,178', 0.26 * a);
-            }
-          }
-        }
-        // A holed roof smoulders. Greyer, fatter and slower than a hearth, so a
-        // shelled village reads as damaged from across the field.
-        for (let j = 0; j < dmg.length; j++) {
-          const d = dmg[j];
-          if (!d.direct) continue;
-          for (let k = 0; k < 3; k++) {
-            const life = (t * 0.3 + k / 3 + hash(art.key, j, 292 + k)) % 1;
-            wisp(d.x, d.y, life, k + j * 3, 4.2, 0.4, 1.4, '140,132,120', 0.22 * a);
+    for (let i = 0; i < this.buildings.length; i++) {
+      const art = this.art[i];
+      const dmg = this.damage[i];
+      if (!art.smoke && !dmg.length) continue;
+      if (!this.onScreen(cam, i, cw, ch, 4)) continue;
+      const a = this.alphas[i];
+      if (a < 0.05) continue;
+      if (art.smoke) {
+        const n = 3 + ((hash(art.key, 274) * 2) | 0);
+        for (const st of art.chimneys) {
+          const cx = st.x + st.w / 2;
+          const cy = st.y + st.h / 2;
+          for (let k = 0; k < n; k++) {
+            const life = (t * 0.45 + k / n + hash(art.key, 273 + k)) % 1;
+            wisp('masonry', cx, cy, life, k, 3.2, 0.16, 0.6, 0.38 * a);
           }
         }
       }
-    });
+      // A holed roof smoulders. Greyer, fatter and slower than a hearth, so a
+      // shelled village reads as damaged from across the field.
+      for (let j = 0; j < dmg.length; j++) {
+        const d = dmg[j];
+        if (!d.direct) continue;
+        for (let k = 0; k < 3; k++) {
+          const life = (t * 0.3 + k / 3 + hash(art.key, j, 292 + k)) % 1;
+          wisp('smoke', d.x, d.y, life, k + j * 3, 4.2, 0.4, 1.4, 0.3 * a);
+        }
+      }
+    }
   }
 }
