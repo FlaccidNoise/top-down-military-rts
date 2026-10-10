@@ -79,6 +79,48 @@ describe('emplaced MG belts (#765)', () => {
   });
 });
 
+// #787. Nothing used to bring a routed crew back: the defending commander
+// re-posts a squad only when an enemy stands on its post.
+describe('a routed crew goes back to its gun (#787)', () => {
+  it('the gunner who ran returns once he is steady, but not while an enemy holds the gun', () => {
+    const sim = new Sim(new GameMap(140, 40), 6);
+    const e = sim.addEmplacement('blue', 'mg42_lafette', 70.5, 20.5, 0, 'deployed');
+    const crew = sim.teams[e.crewTeamId].soldierIds.map((id) => sim.soldiers[id]);
+    const gunner = crew.find((m) => m.role === 'gunner')!;
+    // A quiet gun and a quiet enemy: this is about one man's legs, and a
+    // firefight round the pit would decide it for him.
+    for (const m of crew) {
+      m.ammo = {};
+      if (m !== gunner) m.magLeft = 0;
+    }
+    e.magLeft = 0;
+    const holder = sim.soldiers[sim.addSquad('red', 'holder', [{ name: 'H', weapon: 'kar98k', x: 62.5, y: 20.5, ammo: {} }]).soldierIds[0]];
+    holder.magLeft = 0;
+    const off = () => Math.hypot(gunner.x - e.x, gunner.y - e.y);
+
+    // The rout is staged. Nothing after it is.
+    for (let i = 0; i < 20; i++) {
+      gunner.morale = 0;
+      gunner.suppression = 1;
+      sim.step();
+    }
+    expect(gunner.mental).toBe('broken');
+    expect(gunner.fledGun).toBe(true);
+    for (let i = 0; i < 30 * 240 && gunner.mental !== 'steady'; i++) sim.step();
+    expect(gunner.mental).toBe('steady');
+    expect(off()).toBeGreaterThan(15); // he ran
+
+    for (let i = 0; i < 30 * 30; i++) sim.step();
+    expect(off()).toBeGreaterThan(15); // steady, and staying away: the enemy is 8 m from the gun
+    expect(gunner.fledGun).toBe(true);
+
+    holder.x = 5.5; // the enemy goes
+    for (let i = 0; i < 30 * 60 && gunner.fledGun; i++) sim.step();
+    expect(off()).toBeLessThanOrEqual(4); // CREW_RADIUS: on the gun again
+    expect(gunner.fledGun).toBe(false);
+  });
+});
+
 describe('emplacement lifecycle', () => {
   it('packed -> deploying -> deployed -> fires on a visible enemy', () => {
     const sim = new Sim(new GameMap(160, 20), 1);

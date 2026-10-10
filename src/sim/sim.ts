@@ -21,7 +21,7 @@ import {
   type WeaponDef,
   type WeaponKey,
 } from './data';
-import { crewDegrade, crewHasLos, crewNear, friendlyHasLos, loadsReady, pickFirer, type Emplacement } from './emplacement';
+import { CREW_RADIUS, crewDegrade, crewHasLos, crewNear, friendlyHasLos, loadsReady, pickFirer, type Emplacement } from './emplacement';
 import {
   BREACH_LIP,
   BREACH_THRESH,
@@ -74,6 +74,9 @@ const BOUND_LEG = 15; // meters per bounding rush (spec's "15m legs")
 // ~0.4 vs a ~0.85 threshold) — then owned the team to the far map edge. Under
 // fire, the same ladder re-runs every 2s, staggered by team id.
 const REAUDIT_TICKS = 60;
+// A crewman who ran from his gun goes back to it once he has steadied, unless
+// an enemy stands this close to it (#787).
+const GUN_HELD_RADIUS = 10;
 // A man who steadies within this long of being pinned or broken has rallied
 // (#766). The crossing never happens in one tick: suppression decays at most
 // 0.0023 a tick and morale climbs 0.00013, so he always passes through
@@ -276,6 +279,7 @@ export interface Soldier {
   grenadeCooldownUntil: number; // tick when next grenade throw is allowed
   entryHoldUntil: number; // waits outside an opening until his own grenade bursts (#217)
   captured: boolean; // alive, out of the fight, untargetable (surrendered at melee contact)
+  fledGun: boolean; // broke and ran while crewing a deployed gun, and has not yet gone back to it
   lastCowedTick: number; // tick he was last pinned or broken. Output only: it times the 'rallied' event and nothing in the sim reads it, so it is not in snapshot()
   // The last wound that came from somewhere: unit vector away from its source,
   // and the tick. Output only (the kia/downed events' dx, dy), not in snapshot().
@@ -992,6 +996,7 @@ export class Sim {
       grenadeCooldownUntil: 0,
       entryHoldUntil: 0,
       captured: false,
+      fledGun: false,
       lastCowedTick: -Infinity,
       hitDx: 0,
       hitDy: 0,
@@ -3090,6 +3095,7 @@ export class Sim {
       this.pendingUnitEvents.push({ kind: 'rallied', x: s.x, y: s.y, side: s.side, name: s.name, id: s.id });
     }
     if (s.mental === 'broken' && wasMental !== 'broken') {
+      if (s.inEmplacement >= 0 && this.emplacements[s.inEmplacement].state === 'deployed') s.fledGun = true;
       this.pendingUnitEvents.push({ kind: 'broken', x: s.x, y: s.y, side: s.side, name: s.name, id: s.id });
       // Overwhelmed at contact: ≥2 enemies within MELEE_ENGAGE → capture
       // instead of flee. Count BEFORE flee clears state (a broken man clears
@@ -3143,6 +3149,7 @@ export class Sim {
       this.considerAmmoRunner(s);
       this.considerPickup(s);
       this.considerLoadPickup(s);
+      this.considerRemanGun(s);
     }
 
     // stamina: recovers when settled and not under heavy fire (drain lives in advance())
@@ -3693,6 +3700,27 @@ export class Sim {
       return;
     }
     s.task = null;
+  }
+
+  // A crewman who broke and ran from a deployed gun walks back to it once he
+  // is steady again (#787). Nothing else brought him back: the defending
+  // commander re-posts a squad only when an enemy stands on its post, so a
+  // crew that routed 30 m and recovered sat out the battle beside a gun that
+  // was still in working order (probed: one MG42 crew alive and off its gun
+  // for a whole 30-minute battle, the gun silent). He waits while an enemy
+  // holds the gun, and gives up the errand if the gun is no longer set up.
+  private considerRemanGun(s: Soldier): void {
+    if (!s.fledGun || s.task || s.path || s.mental !== 'steady' || s.meleeId >= 0) return;
+    const e = s.inEmplacement >= 0 ? this.emplacements[s.inEmplacement] : null;
+    if (!e || e.state !== 'deployed' || Math.hypot(s.x - e.x, s.y - e.y) <= CREW_RADIUS) {
+      s.fledGun = false;
+      return;
+    }
+    for (const o of this.soldiers) {
+      if (o.side !== s.side && o.alive && !o.downed && !o.captured && Math.hypot(o.x - e.x, o.y - e.y) <= GUN_HELD_RADIUS) return;
+    }
+    const spot = this.findSpot(Math.floor(e.x), Math.floor(e.y), new Set());
+    if (spot) this.pathTo(s, { x: spot.x, y: spot.y, l: 0 });
   }
 
   // Idle soldier within 2m of a same-side dropped kit that outranks his
@@ -4617,6 +4645,7 @@ export class Sim {
         s.grenadeCooldownUntil,
         s.entryHoldUntil,
         s.captured,
+        s.fledGun,
         Math.round((s.crewSkill.mg ?? 0) * 1e6),
         Math.round((s.crewSkill.mortar ?? 0) * 1e6),
         Math.round((s.crewSkill.gun ?? 0) * 1e6),
