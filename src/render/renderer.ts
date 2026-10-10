@@ -12,7 +12,7 @@ import { BrassLayer, MarkLayer } from './marks';
 import { PallLayer } from './pall';
 import { craterSpots } from './props';
 import { RoofLayer } from './roofs';
-import { TerrainLayer } from './terrain';
+import { SURROUND_FAR, TerrainLayer } from './terrain';
 import { MOBILE, view } from './view';
 import { getVehicleShadow, getVehicleSprite, occBucket, trackGauge, turretBlob, turretCenter, vehicleBandFor, VEHICLE_SPAN } from './vehicles';
 
@@ -847,8 +847,11 @@ export class Renderer {
     this.fxClock = this.flickerOn ? now : 0;
     this.fxDt = Math.min(0.1, Math.max(0, (now - this.frameNow) / 1000));
     this.frameNow = now;
-    ctx.fillStyle = '#161510'; // darker desaturated earth tone off-map, replacing the flat void
-    ctx.fillRect(0, 0, cw, ch); // backdrop stays unshaken so shake never opens a gap at the map edge
+    // The far dark the country round the map fades into (terrain.ts
+    // drawSurround), filled first and unshaken, so neither the end of that
+    // country nor a shake at the map edge ever opens a gap.
+    ctx.fillStyle = `rgb(${SURROUND_FAR[0]},${SURROUND_FAR[1]},${SURROUND_FAR[2]})`;
+    ctx.fillRect(0, 0, cw, ch);
     ctx.imageSmoothingEnabled = true;
 
     // Camera shake: world layers only (HUD/picking stay steady — worldToScreen
@@ -860,11 +863,15 @@ export class Renderer {
     ctx.translate(shx, shy);
 
     this.prewarm(cam.scale);
+    this.terrain.drawSurround(ctx, cam, cw, ch);
     this.terrain.draw(ctx, cam, cw, ch);
+    // The limit of the battle, still drawn: the ground past it is scenery,
+    // and the player has to be able to see where orders stop. Thinner than it
+    // was, now that it is a line on a landscape and not the rim of a hole.
     const [mx0, my0] = cam.worldToScreen(0, 0, cw, ch);
     const [mx1, my1] = cam.worldToScreen(this.sim.map.w, this.sim.map.h, cw, ch);
-    ctx.strokeStyle = 'rgba(18,16,12,0.7)';
-    ctx.lineWidth = 2;
+    ctx.strokeStyle = 'rgba(18,16,12,0.55)';
+    ctx.lineWidth = 1.5;
     ctx.strokeRect(mx0, my0, mx1 - mx0, my1 - my0);
     this.spreadPools(now);
     this.decals.draw(ctx, cam, cw, ch);

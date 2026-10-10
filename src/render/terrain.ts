@@ -1787,6 +1787,68 @@ function softenGround(g: Ctx, map: GameMap, patches: PatchIndex, tx0: number, ty
   }
 }
 
+// The country past the edge of the map. The battle map is a window on a
+// landscape, and its edge used to be a hole: a flat near-black plate. This is
+// what is out there instead — the same fields and pasture in the same
+// palette, out of focus and falling away into the dark. Baked once per map at
+// one pixel per SURROUND_Q metres and stretched up with smoothing on, which is
+// the out-of-focus: there is deliberately nothing in it sharp enough to be
+// mistaken for ground a unit could stand on.
+export const SURROUND_M = 160; // metres of it on every side
+const SURROUND_Q = 4; // metres per baked pixel
+export const SURROUND_FAR: [number, number, number] = [22, 21, 16]; // what it fades to, and what the renderer fills the rest of the view with
+// Value noise with smoothstep weights. `macro` is bilinear, which is right
+// for a tone drift across textured ground; stretched bare over a hundred
+// metres of out-of-focus country its lattice shows as creases.
+function soft(x: number, y: number, cell: number, salt: number): number {
+  const gx = x / cell;
+  const gy = y / cell;
+  const ix = Math.floor(gx);
+  const iy = Math.floor(gy);
+  const fx = gx - ix;
+  const fy = gy - iy;
+  const ux = fx * fx * (3 - 2 * fx);
+  const uy = fy * fy * (3 - 2 * fy);
+  const a = hash(ix, iy, salt) * (1 - ux) + hash(ix + 1, iy, salt) * ux;
+  const b = hash(ix, iy + 1, salt) * (1 - ux) + hash(ix + 1, iy + 1, salt) * ux;
+  return a * (1 - uy) + b * uy;
+}
+
+function bakeSurround(w: number, h: number): HTMLCanvasElement {
+  const cw = Math.ceil((w + SURROUND_M * 2) / SURROUND_Q);
+  const chh = Math.ceil((h + SURROUND_M * 2) / SURROUND_Q);
+  const c = document.createElement('canvas');
+  c.width = cw;
+  c.height = chh;
+  const sg = c.getContext('2d')!;
+  const img = sg.createImageData(cw, chh);
+  const px = img.data;
+  for (let j = 0; j < chh; j++) {
+    for (let i = 0; i < cw; i++) {
+      const wx = (i + 0.5) * SURROUND_Q - SURROUND_M;
+      const wy = (j + 0.5) * SURROUND_Q - SURROUND_M;
+      // how far outside the map this pixel is, in metres
+      const out = Math.hypot(Math.max(0, -wx, wx - w), Math.max(0, -wy, wy - h));
+      // pasture, drifting toward plough on one lattice and toward woods on
+      // another, with a slower swell of value under both
+      const t = blendPalette([blendPalette([GRASS, FIELD_VARIANTS[0]], soft(wx, wy, 46, 401)), WOODS_GROUND], soft(wx, wy, 70, 402) * 0.6);
+      // (one level of noise per pixel: eight bits across a ramp this long band without it)
+      const v = 0.84 + 0.14 * soft(wx, wy, 90, 403) + (hash(i, j, 404) - 0.5) * 0.02;
+      // Falling away: a step down at the edge itself, so the limit of the map
+      // still reads as one, then a long tail to the dark.
+      const far = 1 - Math.exp(-out / 60);
+      const f = Math.min(1, 0.22 + 0.78 * far);
+      const o = (j * cw + i) * 4;
+      px[o] = t[0] * v + (SURROUND_FAR[0] - t[0] * v) * f;
+      px[o + 1] = t[1] * v + (SURROUND_FAR[1] - t[1] * v) * f;
+      px[o + 2] = t[2] * v + (SURROUND_FAR[2] - t[2] * v) * f;
+      px[o + 3] = 255;
+    }
+  }
+  sg.putImageData(img, 0, 0);
+  return c;
+}
+
 function drawTree(g: Ctx, map: GameMap, x: number, y: number, band: number, d: Detail): void {
   const wooded = (tx: number, ty: number) => map.inBounds(tx, ty) && map.terrainKeyAt(tx, ty) === 'woods';
   // Canopy-gap culling is only safe deep inside a stand, where the bare (darker)
@@ -1987,6 +2049,7 @@ export class TerrainLayer {
   private relief: Float32Array | null;
   private reliefImg: HTMLCanvasElement | null = null; // its shade at one pixel per tile, under `reliefFor`
   private reliefFor: ReliefLight | null = null; // hillLightNow() hands out a new object per sun step
+  private surround: HTMLCanvasElement | null = null; // the country past the map edge (bakeSurround), built on first draw
   private hasStairs: boolean;
   private bakeBudget = 0;
   private patches: PatchIndex;
@@ -2345,6 +2408,18 @@ export class TerrainLayer {
     const c = TERRAIN[best].color;
     this.flat.set(key, c);
     return c;
+  }
+
+  // The out-of-focus country round the map, under the terrain. One blit, and
+  // none at all while the view is wholly inside the map.
+  drawSurround(ctx: Ctx, cam: Camera, cw: number, ch: number): void {
+    const [x0, y0] = cam.worldToScreen(0, 0, cw, ch);
+    const [x1, y1] = cam.worldToScreen(this.map.w, this.map.h, cw, ch);
+    if (x0 <= 0 && y0 <= 0 && x1 >= cw && y1 >= ch) return;
+    this.surround ??= bakeSurround(this.map.w, this.map.h);
+    const [sx, sy] = cam.worldToScreen(-SURROUND_M, -SURROUND_M, cw, ch);
+    ctx.imageSmoothingEnabled = true;
+    ctx.drawImage(this.surround, sx, sy, (this.map.w + SURROUND_M * 2) * cam.scale, (this.map.h + SURROUND_M * 2) * cam.scale);
   }
 
   draw(ctx: Ctx, cam: Camera, cw: number, ch: number): void {
