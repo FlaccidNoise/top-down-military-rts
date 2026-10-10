@@ -6,6 +6,7 @@ import { canBreachByHand, type Sim, type Soldier, type Squad, type Vehicle } fro
 import { objectiveStripText, type ObjectiveData } from './objective-strip';
 import { formatBinding, loadKeymap, type Keymap } from './keymap';
 import { MOBILE } from '../render/view';
+import { patchChildren } from './patch';
 
 export const STATE_COLOR = { steady: '#7fbf6a', shaken: '#e0c060', pinned: '#e08a3c', broken: '#d05c50' } as const;
 
@@ -403,7 +404,7 @@ export class Hud {
     const hasSquad = primary >= 0 && st.selectedVehicle < 0;
     const orders = bar.querySelector<HTMLElement>('.tb-orders')!;
     orders.style.display = hasSquad ? '' : 'none';
-    orders.innerHTML = hasSquad ? orderChips(st, this.km, emplacementOf(sim, primary) ? 'crew' : 'squad') : '';
+    patchChildren(orders, hasSquad ? orderChips(st, this.km, emplacementOf(sim, primary) ? 'crew' : 'squad') : '');
 
     const tb = (name: string) => bar.querySelector<HTMLButtonElement>(`[data-tb="${name}"]`)!;
     const barrage = tb('barrage');
@@ -518,24 +519,13 @@ export class Hud {
     for (const q of weaponSquads) cards.push(squadCard(sim, q, st, this.km));
 
     const panel = this.q('#squads');
-    // innerHTML rebuild destroys keyboard focus (sig rebuilds run every 5 ticks
-    // while unpaused) — re-focus the same entity's element afterwards.
-    const focused =
-      document.activeElement instanceof HTMLElement && panel.contains(document.activeElement)
-        ? document.activeElement.closest<HTMLElement>('[data-squad],[data-vehicle],[data-soldier]')
-        : null;
-    const focusSel = focused
-      ? ['data-squad', 'data-vehicle', 'data-soldier']
-          .filter((a) => focused.hasAttribute(a))
-          .map((a) => `[${a}="${focused.getAttribute(a)}"]`)
-          .join('')
-      : '';
-    panel.innerHTML = cards.join('');
-    if (focusSel) panel.querySelector<HTMLElement>(focusSel)?.focus();
+    // In place, never innerHTML: this runs every 5 ticks while the battle
+    // does, and a card replaced under a pressed mouse button eats the click.
+    patchChildren(panel, cards.join(''));
 
-    // Auto-scroll only on an actual selection change, not on every sig
-    // rebuild (which also fires every 5 ticks while unpaused) — otherwise
-    // this would fight a player manually scrolling the roster.
+    // Auto-scroll only on an actual selection change, not on every refresh
+    // (every 5 ticks while unpaused) — otherwise this would fight a player
+    // manually scrolling the roster.
     const selKey = `${primarySquad(st)}|${st.selectedVehicle}`;
     if (selKey !== this.lastSel) {
       this.lastSel = selKey;
