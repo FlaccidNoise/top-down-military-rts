@@ -11,8 +11,8 @@ import { EYE_CROUCH, EYE_PRONE, EYE_STAND, eyeOf, stanceOf, type Sim, type Soldi
 // depends on the team's ORDER, which is why stanceOf takes the sim.
 
 // A one-team sim stub: stanceOf reads nothing else off it.
-function ctx(order?: OrderKind): Sim {
-  return { teams: [{ orderState: { order: order ? { kind: order, x: 0, y: 0 } : null } }] } as unknown as Sim;
+function ctx(order?: OrderKind, team: { contactNear?: boolean; phase?: string } = {}): Sim {
+  return { teams: [{ orderState: { order: order ? { kind: order, x: 0, y: 0 } : null, phase: team.phase ?? 'idle' }, contactNear: team.contactNear ?? false }] } as unknown as Sim;
 }
 
 function man(over: Partial<Soldier> = {}): Soldier {
@@ -52,10 +52,27 @@ describe('stanceOf', () => {
     expect(stanceOf(ctx(), man({ path: [{ x: 1, y: 1 }], suppression: 0.5 }))).toBe('stand'); // strict >
   });
 
-  it('crouches only when halted, engaged and suppressed past the kneel threshold', () => {
+  it('out of contact, crouches only when halted, engaged and suppressed past the kneel threshold', () => {
     expect(stanceOf(ctx(), man({ targetId: 3, suppression: 0.16 }))).toBe('crouch');
     expect(stanceOf(ctx(), man({ targetId: 3, suppression: 0.15 }))).toBe('stand'); // strict >
-    expect(stanceOf(ctx(), man({ targetId: -1, suppression: 0.9 }))).toBe('stand'); // no target: standing watch
+    expect(stanceOf(ctx(), man({ targetId: -1, suppression: 0.3 }))).toBe('stand'); // no target: standing watch
+  });
+
+  // #790. Attackers stood upright in 97% of stance samples, most of them
+  // halted in the open in front of a garrison.
+  it('going to ground: a halted man kneels when the enemy is near, and lies down when balked or under fire', () => {
+    const near = { contactNear: true };
+    expect(stanceOf(ctx(undefined, near), man())).toBe('crouch');
+    expect(stanceOf(ctx('fire', near), man())).toBe('crouch');
+    expect(stanceOf(ctx('move', near), man())).toBe('crouch'); // halted on a move order: a bounding team's waiting half
+    expect(stanceOf(ctx('move', { phase: 'balked' }), man())).toBe('prone'); // will not go on: gets down
+    expect(stanceOf(ctx(), man({ suppression: 0.36 }))).toBe('prone'); // the fire has reached him
+    expect(stanceOf(ctx(), man({ suppression: 0.35 }))).toBe('stand'); // strict >
+    // none of it touches a man on the move, or the two doctrine stances
+    expect(stanceOf(ctx('move', near), man({ path: [{ x: 1, y: 1 }] }))).toBe('stand');
+    expect(stanceOf(ctx('move', { phase: 'balked' }), man({ path: [{ x: 1, y: 1 }] }))).toBe('stand');
+    expect(stanceOf(ctx('defend', near), man({ suppression: 0.5 }))).toBe('crouch');
+    expect(stanceOf(ctx('ambush', near), man())).toBe('prone');
   });
 
   it('doctrine: ambush lies prone, defend digs in crouched, other orders do not', () => {
@@ -110,11 +127,17 @@ describe('stance liveness under natural dynamics', () => {
     // measured 2026-07-26 on this scenario: 0.8% crouch, 5.3% prone. (V6, before
     // the crawl rule, ran 1.4% / 2.8%: men advancing under >0.5 suppression
     // moved from `stand` to `prone`, which is what the renderer always drew.)
+    // Measured 2026-10-10 with going to ground (#790): 25.8% stand, 53.9%
+    // crouch, 20.3% prone. Two halted companies in contact are down, which is
+    // the change. The old ceiling here ((crouch + prone) < 50%) encoded men
+    // standing in a firefight and is replaced by its mirror: somebody must
+    // still be on his feet, or the rule has swallowed the men out of contact.
     const t = tallyOver(makeScenario(7), 4500);
     expect(t.stand).toBeGreaterThan(0);
     expect(t.crouch, 'crouch never fired — the engaged/suppressed branch is dead').toBeGreaterThan(0);
     expect(t.prone, 'prone never fired — the pinned/broken/crawl branch is dead').toBeGreaterThan(0);
-    expect((t.crouch + t.prone) / t.total).toBeLessThan(0.5);
+    expect(t.stand / t.total, 'nobody stands: going to ground has swallowed the men out of contact').toBeGreaterThan(0.1);
+    expect((t.crouch + t.prone) / t.total, 'halted men in contact are not going to ground').toBeGreaterThan(0.5);
   }, 60000);
 
   it('a commanded defence lies down: the doctrine prone branch fires under a real AI', () => {
@@ -153,7 +176,7 @@ describe('stance liveness under natural dynamics', () => {
 describe('eyeOf', () => {
   it('maps the three stances onto the three eye heights', () => {
     expect(eyeOf(ctx(), man({ mental: 'pinned' }))).toBe(EYE_PRONE);
-    expect(eyeOf(ctx(), man({ targetId: 3, suppression: 0.5 }))).toBe(EYE_CROUCH);
+    expect(eyeOf(ctx(), man({ targetId: 3, suppression: 0.3 }))).toBe(EYE_CROUCH);
     expect(eyeOf(ctx(), man())).toBe(EYE_STAND);
     expect(eyeOf(ctx('ambush'), man())).toBe(EYE_PRONE);
     expect(eyeOf(ctx('defend'), man())).toBe(EYE_CROUCH);
