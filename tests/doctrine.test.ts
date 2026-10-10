@@ -1089,6 +1089,56 @@ describe('a fire mission follows its men and ends (#790)', () => {
   });
 });
 
+// #790. The commander fired one barrage a battle whatever its side held: the
+// attacker's second sat unused in every probed battle.
+describe('the commander spends the barrages it holds (#790)', () => {
+  it.each(['attack', 'defend'] as const)('%s: every one it has, 90 s apart; an attacker calls none onto ground its own men are closing on', (stance) => {
+    const sim = new Sim(new GameMap(240, 60), 2);
+    const red = sim.addSquad('red', 'R', [{ name: 'R1', weapon: 'kar98k', x: 10.5, y: 30.5 }]);
+    const cluster = sim.addSquad('blue', 'Cluster', Array.from({ length: 5 }, (_, i) => ({ name: `C${i}`, weapon: 'garand' as const, x: 185.5, y: 28.5 + i })));
+    for (const m of sim.soldiers) {
+      m.ammo = {};
+      m.magLeft = 0;
+    }
+    sim.barragesLeft.red = 3;
+    const calls: number[] = [];
+    // Counted and not fired: the five have to be there for the next one.
+    sim.callBarrage = (side) => {
+      sim.barragesLeft[side]--;
+      calls.push(sim.tick);
+      return true;
+    };
+    const commander = new RedCommander({ side: 'red', stance, posts: { [red.id]: stance === 'attack' ? { x: 185, y: 30 } : { x: 10, y: 30 } } });
+    const spotter = sim.soldiers[red.soldierIds[0]];
+    const hold = { x: spotter.x, y: spotter.y };
+    for (let i = 0; i < 200 * 30; i++) {
+      commander.update(sim);
+      sim.step();
+      // he stays where he is, whatever the attack stance tells him
+      spotter.x = hold.x;
+      spotter.y = hold.y;
+      spotter.path = null;
+    }
+    expect(calls).toHaveLength(3);
+    expect(sim.barragesLeft.red).toBe(0);
+    expect(calls[1] - calls[0]).toBeGreaterThanOrEqual(90 * 30);
+    expect(calls[2] - calls[1]).toBeGreaterThanOrEqual(90 * 30);
+    expect(calls[2] - calls[0]).toBeLessThan(200 * 30); // and no slower than the gap and one eval
+
+    // His own man 39 m from the five, inside PREP_HE_LIFT. A defender calls it all the same.
+    sim.barragesLeft.red = 1;
+    hold.x = sim.soldiers[cluster.soldierIds[0]].x - 39;
+    for (let i = 0; i < 120 * 30; i++) {
+      commander.update(sim);
+      sim.step();
+      spotter.x = hold.x;
+      spotter.y = hold.y;
+      spotter.path = null;
+    }
+    expect(calls).toHaveLength(stance === 'attack' ? 3 : 4);
+  });
+});
+
 // Night A/B (day/night design §7.4): same seed, same AI-driven strategic
 // battle, startMin 14:00 vs 02:00. Direction-only assertions, and the
 // direction asserted is the one the mechanics actually own: night caps the

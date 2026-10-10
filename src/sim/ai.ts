@@ -167,6 +167,18 @@ const PREP_SMOKE_RESERVE = 8;
 // arrives 25 s after the call, which is a long way for a rifle team.
 const AIR_MIN = 4;
 const AIR_SAFETY = 70;
+// The commander spends every barrage its side holds (#790; it used to fire
+// one and sit on the rest), one at a time: the next is not called until the
+// last has landed and what it left can be seen. An ATTACKER does not call
+// one with its own men inside PREP_HE_LIFT of the point: the rounds fall from
+// 20 s to a minute after the call, onto ground its riflemen are walking to
+// (probed: 1.9 of its own men hit a battle, and that with one barrage). A
+// DEFENDER keeps the rule it had, which has no such limit. Its first sight
+// of a company in close country is at arm's length, and the barrage it calls
+// onto its own wire then is the one that counts: with a danger-close limit
+// it never fired in the doctrine suite's campaign battle, and a fight the
+// garrison won in 8,200 ticks became one it lost.
+const BARRAGE_GAP_TICKS = 90 * 30;
 // Fire discipline releases against a massed attack (balance 2026-07): ambush
 // is sited for infiltrators and patrols; once the commander's own intel shows
 // this many enemies AT ONCE, the garrison is looking at a company in the open
@@ -177,7 +189,7 @@ const MASS_RELEASE = 20;
 
 export class RedCommander {
   private lastEval = -EVAL_TICKS;
-  private barrageUsed = false;
+  private lastBarrageTick = -BARRAGE_GAP_TICKS;
   private heAim: { x: number; y: number } | null = null; // the HE mission's aim point, while one runs
   private heSeenTick = 0; // last eval a spotted enemy stood inside one burst of it
   private threat: ThreatContact[] = [];
@@ -1017,21 +1029,22 @@ export class RedCommander {
     return best?.p;
   }
 
-  // One barrage on the densest cluster among its side's spotted contacts, once
-  // five or more sit together — intel-range knowledge, not weapon range: the
+  // A barrage on a cluster among its side's spotted contacts, once five or
+  // more sit together — intel-range knowledge, not weapon range: the
   // commander can shell an observed concentration its rifles can't yet reach.
+  // See BARRAGE_GAP_TICKS.
   private maybeBarrage(sim: Sim): void {
-    if (this.barrageUsed || sim.barragesLeft[this.cfg.side] <= 0) return;
+    if (sim.barragesLeft[this.cfg.side] <= 0 || sim.tick - this.lastBarrageTick < BARRAGE_GAP_TICKS) return;
+    const safety = this.cfg.stance === 'attack' ? PREP_HE_LIFT : 0;
     const seen = this.spottedPositions(sim);
     for (const b of seen) {
       const cluster = seen.filter((o) => Math.hypot(o.x - b.x, o.y - b.y) < 8);
-      if (cluster.length >= 5) {
-        const cx = cluster.reduce((a, s) => a + s.x, 0) / cluster.length;
-        const cy = cluster.reduce((a, s) => a + s.y, 0) / cluster.length;
-        sim.callBarrage(this.cfg.side, cx, cy);
-        this.barrageUsed = true;
-        break;
-      }
+      if (cluster.length < 5) continue;
+      const c = this.mid(cluster);
+      if (this.ownWithin(sim, c.x, c.y, safety)) continue;
+      sim.callBarrage(this.cfg.side, c.x, c.y);
+      this.lastBarrageTick = sim.tick;
+      break;
     }
   }
 
