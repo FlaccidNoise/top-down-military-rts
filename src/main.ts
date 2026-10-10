@@ -31,6 +31,7 @@ import { ManualScreen } from './ui/manual';
 import { Tutorial } from './ui/tutorial';
 import { TheaterView } from './render/theater-view';
 import { TheaterHud } from './ui/theater-hud';
+import type { ViewInset } from './render/theater-view';
 import { CustomizeScreen } from './ui/customize';
 import { DEFAULT_PRESET, presetSpec } from './campaign/presets';
 import { SPEC_TAG, specStream, type CampaignConfig, type TheaterConfig } from './campaign/spec';
@@ -136,6 +137,9 @@ interface SessionV2 {
   battle: { b: CoarseBattle; tb: TheaterBattle } | null;
   pending: Contact | null;
   selectedForce: number;
+  // Frame the player's sector once the theater HUD is laid out: the boot
+  // camera measures the panels, and they do not exist until the first frame.
+  needsFrame: boolean;
 }
 interface Session {
   campaign: Campaign;
@@ -405,6 +409,7 @@ const theaterHud = new TheaterHud({
   togglePause: () => { stratPaused = !stratPaused; tutorial?.notify('speed-changed'); },
   setSpeed: (i) => { speedIdx = i; tutorial?.notify('speed-changed'); },
   openMenu: () => { openPauseMenu(); },
+  fitAll: () => { S().v2?.view.fitAll(view.w, view.h); },
   halt: () => {
     const v2 = S().v2;
     if (!v2) return;
@@ -598,6 +603,24 @@ function viewportInset(): { left: number; top: number; bottom: number } {
     top: strip ? strip.bottom : 0,
     bottom: bottoms.length ? Math.max(...bottoms.map((r) => view.h - r.top)) : 0,
   };
+}
+
+// The theater's counterpart: which borders of the canvas the theater HUD
+// covers. Classified by shape and place, not by name, so a new panel insets
+// the camera without an edit here: a wide panel in the top or bottom quarter
+// is a top or bottom border, a tall one in a side quarter is a side border.
+function theaterInset(): ViewInset {
+  const out: ViewInset = { left: 0, top: 0, right: 0, bottom: 0 };
+  for (const el of Array.from(theaterHud.root.querySelectorAll('.panel'))) {
+    const r = el.getBoundingClientRect();
+    if (r.width <= 0 || r.height <= 0) continue;
+    if (r.width >= r.height) {
+      if (r.bottom < view.h * 0.45) out.top = Math.max(out.top, r.bottom);
+      else if (r.top > view.h * 0.55) out.bottom = Math.max(out.bottom, view.h - r.top);
+    } else if (r.right < view.w * 0.45) out.left = Math.max(out.left, r.right);
+    else if (r.left > view.w * 0.55) out.right = Math.max(out.right, view.w - r.left);
+  }
+  return out;
 }
 
 // bootCameraFor scales off the clear region's WIDTH, which is the right axis
@@ -1072,6 +1095,7 @@ function startCampaignV2(
         battle: null,
         pending: null,
         selectedForce: -1,
+        needsFrame: true,
       },
     };
     // §4.8: a reloaded red keeps its axes — restore the persisted plan.
@@ -1457,8 +1481,13 @@ function escapeLadder(): boolean {
   return false;
 }
 
+// Theater drag-pan: a left press that travels past the slop is a pan, and its
+// release does not select.
+const STRAT_DRAG_SLOP = 4;
+let stratDrag: { x: number; y: number; panning: boolean } | null = null;
 canvas.addEventListener('mousedown', (e) => {
   if (mode === 'menu') return;
+  if (e.button === 0 && mode === 'strategic' && S().v2) stratDrag = { x: e.clientX, y: e.clientY, panning: false };
   if (e.button === 0) beginBox(e.clientX, e.clientY);
   if (e.button === 2) beginOrderAnchor(e.clientX, e.clientY);
 });
@@ -1466,6 +1495,17 @@ window.addEventListener('mousemove', (e) => {
   mouse.x = e.clientX;
   mouse.y = e.clientY;
   mouse.onCanvas = e.target === canvas;
+  if (stratDrag && e.buttons & 1 && mode === 'strategic') {
+    const v2 = S().v2;
+    if (!stratDrag.panning && Math.hypot(e.clientX - stratDrag.x, e.clientY - stratDrag.y) > STRAT_DRAG_SLOP) stratDrag.panning = true;
+    if (v2 && stratDrag.panning) {
+      v2.view.panX += e.clientX - stratDrag.x;
+      v2.view.panY += e.clientY - stratDrag.y;
+      v2.view.clampPan(view.w, view.h);
+      stratDrag.x = e.clientX;
+      stratDrag.y = e.clientY;
+    }
+  }
   if (mode !== 'battle') return;
   if (dragStart && e.buttons & 1) updateBox(e.clientX, e.clientY);
 });
@@ -1479,7 +1519,7 @@ canvas.addEventListener('mouseup', (e) => {
   if (e.button !== 0 || mode === 'menu') return;
 
   if (mode === 'strategic') {
-    stratTapSelect(e.clientX, e.clientY);
+    if (!stratDrag?.panning) stratTapSelect(e.clientX, e.clientY);
     dragStart = null;
     boxRect = null;
     return;
@@ -1505,6 +1545,7 @@ canvas.addEventListener('contextmenu', (e) => {
   // separate listener below.
 });
 window.addEventListener('mouseup', (e) => {
+  if (e.button === 0) stratDrag = null; // after the canvas handler has read it
   if (e.button !== 2) return;
   if (!rmbDown || !rmbAnchor) { rmbDown = false; rmbAnchor = null; return; }
   rmbDown = false;
@@ -1610,9 +1651,16 @@ const stratTouch: TouchHandlers = {
   holdEnd: (x, y) => stratOrderMove(x, y),
   holdCancel: () => {},
   pinch: (factor, mx, my, dmx, dmy) => {
+    const v2 = S().v2;
+    if (v2) {
+      v2.view.panX += dmx;
+      v2.view.panY += dmy;
+      v2.view.zoomAt(factor, mx, my, view.w, view.h);
+      return;
+    }
     const cam2 = stratCam();
     const before = cam2.zoomMul;
-    cam2.zoomMul = Math.max(STRAT_ZOOM[0], Math.min(STRAT_ZOOM[1] * (S().v2 ? 2 : 1), before * factor));
+    cam2.zoomMul = Math.max(STRAT_ZOOM[0], Math.min(STRAT_ZOOM[1], before * factor));
     // keep the map point under the pinch midpoint fixed
     const k = cam2.zoomMul / before;
     cam2.panX = mx - k * (mx - cam2.panX) + dmx;
@@ -1629,11 +1677,13 @@ const stratTouch: TouchHandlers = {
 bindTouch(canvas, () => (mode === 'battle' ? battleTouch : stratTouch));
 canvas.addEventListener('wheel', (e) => {
   e.preventDefault();
-  if (mode !== 'battle') return;
   // scroll = zoom (trackpad two-finger scroll, pinch, and mouse wheel alike);
   // ~1.003^px: a trackpad flick ramps fast, a mouse notch (dy≈100) ≈1.35×
   const dy = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;
-  cam.zoom(Math.pow(1.003, -dy), e.clientX, e.clientY, view.w, view.h);
+  const factor = Math.pow(1.003, -dy);
+  if (mode === 'strategic') S().v2?.view.zoomAt(factor, e.clientX, e.clientY, view.w, view.h);
+  if (mode !== 'battle') return;
+  cam.zoom(factor, e.clientX, e.clientY, view.w, view.h);
 });
 
 // WASD camera pan: held-key set keyed by event.code so a keyup always clears
@@ -1776,6 +1826,19 @@ function cycleFloorFocus(): void {
   selectVehicle: (i: number) => selectVehicle(i),
   getCampaign: () => S().campaign,
   getV2: () => S().v2,
+  // Advance the theater by exact minutes through the SAME tick the frame loop
+  // runs (red planner, war step, day roll). scripts/stratsweep.mjs stages its
+  // states with this: a wall-clock run at 60x never stops on the same minute
+  // twice. Returns the minutes stepped; stops at a contact.
+  stepTheater: (minutes: number): number => {
+    const v2 = S().v2;
+    let n = 0;
+    while (v2 && n < minutes && !v2.pending) {
+      stepTheaterMinuteV2(v2);
+      n++;
+    }
+    return n;
+  },
   startEngagementBattle,
   showDebrief,
   setFow: (on: boolean) => {
@@ -1831,9 +1894,14 @@ function frame(now: number): void {
       const st = warStatus(v2.front, v2.goals);
       if (st.state === 'decided') showOperationEnd(st.winner === 'blue' ? 'won' : 'lost');
     }
+    theaterHud.update(v2.front, v2.goals, v2.selectedForce, stratPaused, speedIdx, v2.campaignCfg.supply, v2.campaignCfg.recon === 'contacts', v2.campaignCfg.nightTempo);
+    v2.view.inset = theaterInset();
+    if (v2.needsFrame) {
+      v2.needsFrame = false;
+      v2.view.frameStart(v2.front, view.w, view.h);
+    }
     v2.view.clampPan(view.w, view.h);
     v2.view.draw(ctx, v2.front, v2.selectedForce, stratPaused, SPEEDS[speedIdx], view.w, view.h);
-    theaterHud.update(v2.front, v2.goals, v2.selectedForce, stratPaused, speedIdx, v2.campaignCfg.supply, v2.campaignCfg.recon === 'contacts', v2.campaignCfg.nightTempo);
     if (touchHold) drawHoldRing(ctx, touchHold, now);
   } else if (mode === 'strategic') {
     hud.updateIdle('strategic', selectedChit >= 0 || stratPaused);

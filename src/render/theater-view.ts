@@ -58,10 +58,28 @@ const SUPPLY_TAG: Record<SupplyTier, { text: string; color: string } | null> = {
   out: { text: 'OUT', color: '#b5533c' },
 };
 
+// The HUD is opaque DOM over the canvas, so the canvas is not what the player
+// can see. main.ts measures the panels and hands the borders in; every
+// framing operation works against the clear rectangle they leave.
+export interface ViewInset {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+}
+// zoomMul is relative to the whole theater fitted to the raw canvas. The
+// floor is whatever fits the theater into the CLEAR rectangle (at most 1).
+export const THEATER_ZOOM_MAX = 8;
+// Boot framing stops here: three companies in one town must not open the war
+// on a close-up of a road junction.
+const FRAME_ZOOM_MAX = 3;
+const PAN_SLACK_PX = 80;
+
 export class TheaterView {
   zoomMul = 1;
   panX = 0;
   panY = 0;
+  inset: ViewInset = { left: 0, top: 0, right: 0, bottom: 0 };
   supplyOn = false; // S50: gates cut hatching + tier tags (set from CampaignConfig)
   recon: ReconMode = 'omniscient'; // S53: 'contacts' fogs every enemy-derived mark
   private flashText = '';
@@ -79,21 +97,102 @@ export class TheaterView {
 
   // Base fit: the whole theater inside the viewport with a margin.
   layout(w: number, h: number): { scale: number; ox: number; oy: number } {
-    const m = MOBILE ? 8 : 40;
+    const m = this.margin();
     const scale = (Math.min((w - m * 2) / this.theater.boundsM.w, (h - m * 2) / this.theater.boundsM.h)) * this.zoomMul;
     const ox = (w - this.theater.boundsM.w * scale) / 2 + this.panX;
     const oy = (h - this.theater.boundsM.h * scale) / 2 + this.panY;
     return { scale, ox, oy };
   }
 
+  private clear(w: number, h: number): { x: number; y: number; w: number; h: number } {
+    const i = this.inset;
+    return { x: i.left, y: i.top, w: Math.max(1, w - i.left - i.right), h: Math.max(1, h - i.top - i.bottom) };
+  }
+
+  private margin(): number {
+    return MOBILE ? 8 : 40;
+  }
+
+  // The zoom at which the whole theater sits inside the clear rectangle.
+  minZoom(w: number, h: number): number {
+    const m = this.margin();
+    const c = this.clear(w, h);
+    const { w: tw, h: th } = this.theater.boundsM;
+    const fit = Math.min((c.w - m * 2) / tw, (c.h - m * 2) / th);
+    const base = Math.min((w - m * 2) / tw, (h - m * 2) / th);
+    return Math.max(0.2, Math.min(1, fit / base));
+  }
+
+  // The map may leave the clear rectangle by a thumb's width and no more: a
+  // map smaller than the clear rectangle stays inside it, a larger one never
+  // shows more than the slack of empty ground. A panel that appears later
+  // (the company card) moves the map only if it would cover it.
   clampPan(w: number, h: number): void {
+    this.zoomMul = Math.max(this.minZoom(w, h), Math.min(THEATER_ZOOM_MAX, this.zoomMul));
     const { scale } = this.layout(w, h);
-    const mw = this.theater.boundsM.w * scale;
-    const mh = this.theater.boundsM.h * scale;
-    const slackX = Math.max(0, (mw - w) / 2 + 80);
-    const slackY = Math.max(0, (mh - h) / 2 + 80);
-    this.panX = Math.max(-slackX, Math.min(slackX, this.panX));
-    this.panY = Math.max(-slackY, Math.min(slackY, this.panY));
+    const c = this.clear(w, h);
+    const axis = (pan: number, full: number, c0: number, cLen: number, mapLen: number): number => {
+      const neutral = (full - mapLen) / 2; // the offset at pan 0
+      const lo = Math.min(c0, c0 + cLen - mapLen) - PAN_SLACK_PX;
+      const hi = Math.max(c0, c0 + cLen - mapLen) + PAN_SLACK_PX;
+      return Math.max(lo, Math.min(hi, neutral + pan)) - neutral;
+    };
+    this.panX = axis(this.panX, w, c.x, c.w, this.theater.boundsM.w * scale);
+    this.panY = axis(this.panY, h, c.y, c.h, this.theater.boundsM.h * scale);
+  }
+
+  // Put the bounding box of `pts` (theater metres) in the middle of the clear
+  // rectangle, as large as it goes with `padPx` of room for counters and names.
+  frame(pts: readonly Vec[], w: number, h: number, maxZoom = FRAME_ZOOM_MAX, padPx = MOBILE ? 48 : 72): void {
+    if (pts.length === 0) return;
+    const xs = pts.map((p) => p.x);
+    const ys = pts.map((p) => p.y);
+    const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
+    const c = this.clear(w, h);
+    const base = this.layout(w, h).scale / this.zoomMul;
+    const want = Math.min(Math.max(1, c.w - padPx * 2) / Math.max(1, x1 - x0), Math.max(1, c.h - padPx * 2) / Math.max(1, y1 - y0));
+    this.zoomMul = Math.max(this.minZoom(w, h), Math.min(maxZoom, want / base));
+    const scale = base * this.zoomMul;
+    const { w: tw, h: th } = this.theater.boundsM;
+    this.panX = c.x + c.w / 2 - ((x0 + x1) / 2) * scale - (w - tw * scale) / 2;
+    this.panY = c.y + c.h / 2 - ((y0 + y1) / 2) * scale - (h - th * scale) / 2;
+    this.clampPan(w, h);
+  }
+
+  // The whole theater, inside the clear rectangle.
+  fitAll(w: number, h: number): void {
+    const { w: tw, h: th } = this.theater.boundsM;
+    this.frame([{ x: 0, y: 0 }, { x: tw, y: th }], w, h, 1, this.margin());
+  }
+
+  // How a war opens: the player's companies and the nearest objective they do
+  // not hold, as large as they go. A phone fitted to the whole theater shows
+  // a map a third of the screen tall with the player's sector an inch across.
+  frameStart(front: FrontV2, w: number, h: number): void {
+    const own = front.forces.filter((f) => f.side === 'blue' && f.strength > 0).map((f) => this.forceXY(f));
+    if (own.length === 0) return this.fitAll(w, h);
+    const cx = own.reduce((a, p) => a + p.x, 0) / own.length;
+    const cy = own.reduce((a, p) => a + p.y, 0) / own.length;
+    const goal = this.theater.objectiveNodes
+      .filter((n) => front.controlByNode[n] !== 'blue')
+      .map((n) => this.theater.nodes[n].pos)
+      .sort((a, b) => Math.hypot(a.x - cx, a.y - cy) - Math.hypot(b.x - cx, b.y - cy))[0];
+    this.frame(goal ? [...own, goal] : own, w, h);
+  }
+
+  // Centre a theater point in the clear rectangle without changing the zoom.
+  centerOn(p: Vec, w: number, h: number): void {
+    this.frame([p], w, h, this.zoomMul, 0);
+  }
+
+  // Zoom by `factor`, keeping the map point under (sx, sy) where it is.
+  zoomAt(factor: number, sx: number, sy: number, w: number, h: number): void {
+    const [wx, wy] = this.toWorld(sx, sy, w, h);
+    this.zoomMul = Math.max(this.minZoom(w, h), Math.min(THEATER_ZOOM_MAX, this.zoomMul * factor));
+    const [nx, ny] = this.toScreen(wx, wy, w, h);
+    this.panX += sx - nx;
+    this.panY += sy - ny;
+    this.clampPan(w, h);
   }
 
   toScreen(x: number, y: number, w: number, h: number): [number, number] {

@@ -22,6 +22,8 @@ export interface TheaterHudCallbacks {
   setSpeed(idx: number): void;
   /** Save, keybinds and the Field Manual, from the strategic phase. */
   openMenu(): void;
+  /** Show the whole theater. */
+  fitAll(): void;
   /** Halt the selected company where it stands. */
   halt(): void;
 }
@@ -57,6 +59,7 @@ export class TheaterHud {
           <span class="th-controls">
             <button class="hbtn st-pause" data-clock="pause"></button>
             ${SPEED_LABELS.map((label, i) => `<button class="hbtn st-speed" data-clock="${i}">${label}</button>`).join('')}
+            <button class="hbtn th-fit" data-th="fit" title="Show the whole theater">Fit</button>
             <button class="hbtn th-menu" data-th="menu" title="Menu, keybinds and the Field Manual">⚙</button>
           </span>
         </div>
@@ -88,6 +91,7 @@ export class TheaterHud {
     this.root.addEventListener('click', (e) => {
       if ((e.target as HTMLElement).closest('[data-th="menu"]')) { this.cb.openMenu(); return; }
       if ((e.target as HTMLElement).closest('[data-th="halt"]')) { this.cb.halt(); return; }
+      if ((e.target as HTMLElement).closest('[data-th="fit"]')) { this.cb.fitAll(); return; }
       const btn = (e.target as HTMLElement).closest('[data-clock]');
       if (!btn) return;
       const v = btn.getAttribute('data-clock')!;
