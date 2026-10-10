@@ -1,5 +1,6 @@
 import { advanceDays, fillReplacements, newCampaign, squadMembers, type BattleRecord, type Campaign } from './campaign/campaign';
 import { AudioEngine } from './render/audio';
+import { backdropMode, MenuBackdrop } from './render/backdrop';
 import { Barks, barksOn, setBarksOn } from './render/barks';
 import { Camera } from './render/camera';
 import type { GrenadeThrow } from './render/fx';
@@ -1038,6 +1039,12 @@ function showDrillEnd(): void {
     startDrill(campSeed());
   };
 }
+
+// ?backdrop=0 turns the menu's battle off; ?flicker=0 or a reduced-motion
+// preference holds it on one frame.
+const backdrop = new MenuBackdrop(
+  backdropMode(new URLSearchParams(location.search).get('backdrop'), flickerOff, window.matchMedia('(prefers-reduced-motion: reduce)').matches),
+);
 
 function openMainMenu(): void {
   mode = 'menu';
@@ -2255,6 +2262,7 @@ function cycleFloorFocus(): void {
   get barks() {
     return barks;
   },
+  backdrop,
   commanders,
   cam,
   audio,
@@ -2355,7 +2363,13 @@ function frame(now: number): void {
   theaterHud.root.style.display = mode === 'strategic' && S().v2 ? '' : 'none';
   // Off the battle map there are no engines and no guns to rumble: wind only.
   if (mode !== 'battle') audio.ambience(hullsHeard, cam, view.w, view.h, true);
+  // The battle behind the main menu (render/backdrop.ts): wanted only while
+  // the menu itself is the thing on screen. Play, a sub-screen or any other
+  // mode stops it and frees its sim. The class drops the menu's own black.
+  backdrop.want(mode === 'menu' && mainMenu.isOpen && !customize.isOpen && !manual.isOpen);
+  document.documentElement.classList.toggle('menu-backdrop', backdrop.shown);
   if (mode === 'menu') {
+    backdrop.frame(ctx, dtReal);
     requestAnimationFrame(frame);
     return;
   }

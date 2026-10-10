@@ -904,6 +904,11 @@ export class Renderer {
     for (const p of planes) this.planes.push({ ...p, at: now });
   }
 
+  /** Bake up to `max` of the terrain chunks this camera needs; returns how many are left (terrain.ts warm). */
+  warm(cam: Camera, cw: number, ch: number, max: number): number {
+    return this.terrain.warm(cam, cw, ch, max);
+  }
+
   draw(ctx: CanvasRenderingContext2D, cam: Camera, selectedSquads: number[], now: number, floorFocus = -1): void {
     const cw = view.w;
     const ch = view.h;

@@ -477,6 +477,8 @@ button.hbtn.active { background: var(--chip-active-bg); border-color: var(--ambe
   font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
   color: var(--paper);
 }
+/* A battle is on the canvas behind the menu (render/backdrop.ts), already dimmed there. */
+.menu-backdrop #mainmenu { background: none; }
 #mainmenu .db-scroll { overflow-y: auto; min-height: 0; touch-action: pan-y; }
 #mainmenu .db { max-width: 640px; margin: 48px auto 0; padding: 0 var(--sp-5); }
 #mainmenu h1 { letter-spacing: 6px; font-size: 26px; margin: 0 0 var(--sp-1); }
