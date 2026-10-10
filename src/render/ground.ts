@@ -1,6 +1,6 @@
-import { hash } from './noise';
+import { hash, soft } from './noise';
 
-// The two places the 1 m tile grid used to show through the ground, and the
+// The three places the 1 m tile grid used to show through the ground, and the
 // pure arithmetic that takes it out again. No canvas in here: terrain.ts does
 // the drawing, this decides what to draw, so it can be pinned by a test.
 //
@@ -17,6 +17,10 @@ import { hash } from './noise';
 //    the staircase was approximating: at every tile corner where one tile
 //    stands alone against the two beside it, that tile's corner is cut off and
 //    given to its neighbours.
+//
+// 3. GRASS. One tuft stamp to the tile, every tile as full as the next, is a
+//    1 m lattice of clumps however the clumps are drawn. The tiles now only
+//    say how many tufts they throw, and that number follows a slow field.
 
 // Half-width of the box the elevation is blurred with, twice over. Two passes
 // of a box are a triangle roughly 4R wide: 24 tiles, which spans the terraces
@@ -105,4 +109,14 @@ export function cutOnH(x: number, y: number): number {
 }
 export function cutOnV(x: number, y: number): number {
   return y + 0.32 + hash(x, y, 812) * 0.36;
+}
+
+// How many tufts a grass tile throws, 0 to 4. The square of a slow field
+// TUFT_PATCH metres across, so thin ground is properly thin and a meadow has
+// thick and bare patches, dithered per tile so a contour of the field is not
+// a contour of the count.
+export const TUFT_PATCH = 11;
+export function tuftCount(x: number, y: number): number {
+  const f = soft(x, y, TUFT_PATCH, 620);
+  return Math.min(4, Math.floor(0.4 + f * f * 6 + hash(x, y, 621)));
 }

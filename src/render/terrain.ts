@@ -67,8 +67,9 @@ export function chunkSpan(t0: number, t1: number, n: number): [number, number] {
   ];
 }
 
-import { cornerCuts, cutOnH, cutOnV, HARD, reliefShade, smoothElev, type ReliefLight } from './ground';
+import { cornerCuts, cutOnH, cutOnV, HARD, reliefShade, smoothElev, tuftCount, type ReliefLight } from './ground';
 import { buildHedgerows, hedgeLobes, type Hedgerows } from './hedgerow';
+import { buildShore, SHORE_TETHER, shorePieces, type Shore } from './shore';
 import { hash, soft, vec } from './noise';
 import { stamp, stampRect } from './stamps';
 import { SPRITE as CANOPY_SPRITE, canopySprite, drawLog } from './canopy';
@@ -141,70 +142,118 @@ const FIELD_VARIANTS: [number, number, number][] = [
 
 type Ctx = CanvasRenderingContext2D;
 
-// Grass is the largest surface in the frame, so its cost per tile has to be
-// one blit. A tuft stamp carries everything the old 5-rect speckle loop could
-// not afford: soft mottle bands running along the local mowing direction,
-// 3-4 clumps of tapered blades leaning the same way, and a dark contact tick
-// under each clump so tufts sit ON the ground instead of floating. All
-// geometry stays inside 0.05..0.95 m — a blade crossing the stamp edge would
-// make the 1 m lattice visible as a grid, which rule 3 forbids.
-const GRASS_VARIANTS = 12;
+// Grass is the largest surface in the frame, so its detail has to be blits.
+// It used to be ONE stamp to the tile, square on the tile, every tile as full
+// as the next and every blade held 5 cm inside its own edge "so the lattice
+// would not show": which is the lattice. Rows and columns of clumps at a 1 m
+// pitch, with a gutter down every seam.
+//
+// A tuft is now its own small stamp, and the tiles only say how many: each
+// grass tile throws 0 to 4 of them anywhere on itself, at their own size,
+// free to lie across a seam onto the next tile of grass. How many follows a
+// slow field (ground.ts tuftCount), so a meadow has thick ground and thin
+// ground. The lean is baked into the stamp, a sixth of a half-turn apart, and
+// picked off the same combing field as before, so nothing rotates at bake.
+const TUFT_VARIANTS = 8;
+const TUFT_LEANS = 6; // over a half turn: grass has a direction, not a heading
+const TUFT_REACH = 0.42; // how far from its centre a size-1 tuft paints, metres
 
-function grassStamp(v: number, axis: number, bloom: boolean, band: number): HTMLCanvasElement {
-  return stamp(`grass:${bloom ? 'bloom' : 'tuft'}:${v}:${axis}`, band, 1, (g) => {
-    const ax = axis === 0 ? 1 : 0;
-    const ay = axis === 0 ? 0 : 1;
-    // Bands sit anywhere across the stamp, not on a fixed pitch: three evenly
-    // spaced bands per tile line up tile-to-tile into a visible 0.3 m stripe
-    // rhythm across a whole field, which is the grid rule 3 forbids.
-    const bands = 2 + ((hash(v, 1, 207) * 2) | 0);
-    for (let i = 0; i < bands; i++) {
-      const len = 0.5 + hash(v * 5 + i, 1, 206) * 0.4;
-      const wid = 0.1 + hash(v * 5 + i, 2, 206) * 0.08;
-      const off = 0.05 + hash(v * 5 + i, 3, 206) * (0.9 - len);
-      const t = 0.1 + hash(v * 5 + i, 0, 206) * 0.8;
-      const a = 0.05 + hash(v * 5 + i, 4, 206) * 0.04;
-      g.fillStyle = i % 2 ? `rgba(206,216,164,${a.toFixed(3)})` : `rgba(26,34,18,${a.toFixed(3)})`;
-      g.fillRect(ax * off + ay * (t - wid / 2), ay * off + ax * (t - wid / 2), ax * len + ay * wid, ay * len + ax * wid);
-    }
-    const clumps = 3 + ((hash(v, 0, 207) * 2) | 0);
+function tuftStamp(v: number, lean: number, band: number): HTMLCanvasElement {
+  return stamp(`grass:tuft:${v}:${lean}`, band, 1, (g) => {
+    const ang = (lean / TUFT_LEANS) * Math.PI;
+    const k0 = v * 31 + lean;
+    // a soft patch of lighter or darker sward, laid along the lean
+    const a = 0.05 + hash(k0, 4, 206) * 0.04;
+    g.fillStyle = hash(k0, 5, 206) > 0.5 ? `rgba(206,216,164,${a.toFixed(3)})` : `rgba(26,34,18,${a.toFixed(3)})`;
+    g.beginPath();
+    g.ellipse(0.5, 0.5, 0.22 + hash(k0, 1, 206) * 0.18, 0.06 + hash(k0, 2, 206) * 0.06, ang, 0, Math.PI * 2);
+    g.fill();
+    const clumps = 1 + ((hash(k0, 0, 207) * 2) | 0);
     for (let c = 0; c < clumps; c++) {
-      const cx = 0.16 + hash(v * 7 + c, 0, 208) * 0.68;
-      const cy = 0.16 + hash(v * 7 + c, 1, 208) * 0.68;
-      g.fillStyle = 'rgba(18,22,14,0.25)';
-      g.fillRect(cx - 0.05, cy - 0.014, 0.1, 0.028);
-      const n = 4 + ((hash(v * 7 + c, 2, 208) * 3) | 0);
+      const cx = 0.5 + (hash(k0 * 7 + c, 0, 208) - 0.5) * 0.4;
+      const cy = 0.5 + (hash(k0 * 7 + c, 1, 208) - 0.5) * 0.4;
+      // the dark tick a clump stands on, so it sits ON the ground
+      g.strokeStyle = 'rgba(18,22,14,0.25)';
+      g.lineWidth = 0.028;
+      g.beginPath();
+      g.moveTo(cx - Math.cos(ang) * 0.05, cy - Math.sin(ang) * 0.05);
+      g.lineTo(cx + Math.cos(ang) * 0.05, cy + Math.sin(ang) * 0.05);
+      g.stroke();
+      const n = 4 + ((hash(k0 * 7 + c, 2, 208) * 3) | 0);
       for (let i = 0; i < n; i++) {
-        const k = v * 97 + c * 11 + i;
-        const ang = (axis === 0 ? 0 : Math.PI / 2) + (hash(k, 0, 209) - 0.5) * 0.7;
+        const k = k0 * 97 + c * 11 + i;
+        const ba = ang + (hash(k, 0, 209) - 0.5) * 0.7;
         const len = 0.1 + hash(k, 1, 209) * 0.12;
-        const sx = Math.min(0.9, Math.max(0.08, cx + (hash(k, 2, 209) - 0.5) * 0.18));
-        const sy = Math.min(0.9, Math.max(0.08, cy + (hash(k, 3, 209) - 0.5) * 0.18));
+        const sx = cx + (hash(k, 2, 209) - 0.5) * 0.18;
+        const sy = cy + (hash(k, 3, 209) - 0.5) * 0.18;
         const tone = hash(k, 4, 209);
         g.strokeStyle = tone > 0.66 ? shade(GRASS, 1.22) : tone > 0.33 ? shade(GRASS_DRY, 1.1) : shade(GRASS, 0.72);
         g.lineWidth = 0.03 + hash(k, 5, 209) * 0.025;
         g.beginPath();
         g.moveTo(sx, sy);
-        g.lineTo(Math.min(0.95, Math.max(0.05, sx + Math.cos(ang) * len)), Math.min(0.95, Math.max(0.05, sy + Math.sin(ang) * len)));
+        g.lineTo(sx + Math.cos(ba) * len, sy + Math.sin(ba) * len);
         g.stroke();
       }
     }
-    if (!bloom) return;
-    // Meadow bloom: cream / pale ochre / dusty mauve, all under the muted
-    // ceiling. Deliberately tiny and never at d<2 — a red dot at mid zoom
-    // reads as a unit marker.
+  });
+}
+
+// Meadow bloom: cream / pale ochre / dusty mauve, all under the muted
+// ceiling. Deliberately tiny and never at d<2 — a red dot at mid zoom reads
+// as a unit marker.
+function bloomStamp(v: number, band: number): HTMLCanvasElement {
+  return stamp(`grass:bloom:${v}`, band, 1, (g) => {
     const petals = 5 + ((hash(v, 0, 215) * 5) | 0);
     for (let i = 0; i < petals; i++) {
       const k = v * 13 + i;
-      const px = 0.1 + hash(k, 0, 215) * 0.8;
-      const py = 0.1 + hash(k, 1, 215) * 0.8;
       const t = hash(k, 2, 215);
       g.fillStyle = t > 0.6 ? 'rgba(228,224,198,0.60)' : t > 0.3 ? 'rgba(208,188,122,0.50)' : 'rgba(162,142,158,0.45)';
       g.beginPath();
-      g.arc(px, py, 0.015 + hash(k, 3, 215) * 0.01, 0, Math.PI * 2);
+      g.arc(0.14 + hash(k, 0, 215) * 0.72, 0.14 + hash(k, 1, 215) * 0.72, 0.015 + hash(k, 3, 215) * 0.01, 0, Math.PI * 2);
       g.fill();
     }
   });
+}
+
+// The grass, over the finished tile bases (a tuft that lies across a seam
+// would be painted out by the next tile's base if it went down with its own).
+// It lies across a seam only onto more grass, or the grass a hedge stands on:
+// along anything else — a floor, a lane, a field, water — it is held inside
+// its own tile, because a blade drawn 30 cm into a kitchen is a bug.
+function drawGrassTufts(g: Ctx, map: GameMap, tx0: number, ty0: number, tx1: number, ty1: number, band: number, d: Detail): void {
+  if (d === 0) return;
+  const sward = (x: number, y: number): boolean => {
+    if (!map.inBounds(x, y)) return false;
+    const k = map.terrainKeyAt(x, y);
+    return k === 'grass' || (k === 'hedge' && !hedgeHost(map, x, y));
+  };
+  for (let y = ty0; y < ty1; y++) {
+    for (let x = tx0; x < tx1; x++) {
+      if (map.terrainKeyAt(x, y) !== 'grass') continue;
+      const n = tuftCount(x, y);
+      const bloom = d >= 2 && macro(x + 411, y + 87) > 0.63; // offset lattice so flower patches are uncorrelated with the hue drift
+      if (n === 0 && !bloom) continue;
+      const [fdx, fdy] = vec(x + 0.5, y + 0.5, 205, 34);
+      const lean0 = Math.round((Math.atan2(fdy, fdx) / Math.PI + 1) * TUFT_LEANS);
+      const w = sward(x - 1, y);
+      const e = sward(x + 1, y);
+      const no = sward(x, y - 1);
+      const so = sward(x, y + 1);
+      const put = (c: HTMLCanvasElement, k: number, s: number): void => {
+        const r = Math.min(0.5, TUFT_REACH * s);
+        const px = Math.min(e ? 1 : 1 - r, Math.max(w ? 0 : r, hash(k, 0, 622)));
+        const py = Math.min(so ? 1 : 1 - r, Math.max(no ? 0 : r, hash(k, 1, 622)));
+        g.drawImage(c, x + px - s / 2, y + py - s / 2, s, s);
+      };
+      for (let i = 0; i < n; i++) {
+        const k = (x * 73 + y * 151) * 4 + i;
+        // one in four leans a notch off its neighbours, so the combing is a tendency
+        const lean = (lean0 + (hash(k, 2, 622) < 0.25 ? 1 : 0)) % TUFT_LEANS;
+        put(tuftStamp((hash(k, 3, 622) * TUFT_VARIANTS) | 0, lean, band), k, 0.7 + hash(k, 4, 622) * 0.7);
+      }
+      if (bloom) put(bloomStamp((hash(x, y, 201) * 6) | 0, band), (x * 73 + y * 151) * 4 + 3, 1);
+    }
+  }
 }
 
 // Verge strip for the grass side of a road edge: tufts leaning out over the
@@ -927,7 +976,7 @@ function drawPaving(g: Ctx, map: GameMap, patches: PatchIndex, tx0: number, ty0:
 // is measured from the parcel centroid, so a row is one continuous line from
 // one end of the field to the other, across every tile and chunk boundary.
 type Crop = 0 | 1 | 2; // plowed / cereal / roots
-const cropOf = (seed: number): Crop => {
+export const cropOf = (seed: number): Crop => {
   const t = hash(seed, 0, 244);
   return t < 0.4 ? 0 : t < 0.75 ? 1 : 2;
 };
@@ -1123,65 +1172,102 @@ function drawBridgeDeck(g: Ctx, x: number, y: number, ew: boolean, waterAt: (tx:
   if (waterAt(x - 1, y)) g.fillRect(x, y, 0.04, 1);
 }
 
-// Water banks in a post-pass over finished tile bases: a mud fringe painted
-// onto the LAND side of each bank edge (raster order would overpaint an E/S
-// fringe drawn from the water tile), depth jittered per half-tile so the
-// tile-quantized bank edge stops reading as a hard staircase; then the dark
-// waterline and a few ripple dashes inside the water.
-function drawWaterBanks(g: Ctx, map: GameMap, tx0: number, ty0: number, tx1: number, ty1: number): void {
-  const waterAt = (tx: number, ty: number) => map.inBounds(tx, ty) && map.terrainKeyAt(tx, ty) === 'water';
-  const mudAt = (tx: number, ty: number) => {
-    if (!map.inBounds(tx, ty)) return false;
-    const k = map.terrainKeyAt(tx, ty);
-    return k === 'grass' || k === 'field' || k === 'woods' || k === 'hedge'; // roads keep a clean edge (bridge rails own it)
-  };
+// The water's outline (shore.ts) as two canvas paths in world metres, built
+// once a map: `water` is every loop closed, for filling and clipping; `banks`
+// is only the stretches with open ground beside them, for the strokes a bank
+// is drawn with. A deck end, a quay wall and the map edge get no bank.
+interface ShorePaths {
+  water: Path2D;
+  banks: Path2D;
+}
+
+function shorePaths(shore: Shore): ShorePaths {
+  const water = new Path2D();
+  const banks = new Path2D();
+  for (const loop of shore.loops) {
+    const n = loop.soft.length;
+    let started = false;
+    let run = false; // the bank path is mid-stretch, at this piece's start point
+    shorePieces(loop, (i, x0, y0, vx, vy, x1, y1, curved) => {
+      if (!started) water.moveTo(x0, y0);
+      started = true;
+      if (curved) water.quadraticCurveTo(vx, vy, x1, y1);
+      else {
+        water.lineTo(vx, vy);
+        water.lineTo(x1, y1);
+      }
+      const before = loop.soft[(i + n - 1) % n] === 1;
+      const after = loop.soft[i] === 1;
+      if (before) {
+        if (!run) banks.moveTo(x0, y0);
+        if (curved && after) banks.quadraticCurveTo(vx, vy, x1, y1);
+        else banks.lineTo(vx, vy);
+      }
+      if (after && !(curved && before)) {
+        if (!before) banks.moveTo(vx, vy);
+        banks.lineTo(x1, y1);
+      }
+      run = after;
+    });
+    water.closePath();
+  }
+  return { water, banks };
+}
+
+const waterTone = (x: number, y: number): string => shade(WATER, 0.925 + coarse(x, y) * 0.12);
+
+// Open ground a bank can be drawn on. Anything made keeps a ruled edge.
+const bankable = (k: TerrainKey): boolean => k === 'grass' || k === 'field' || k === 'woods' || k === 'hedge' || k === 'bank';
+
+// Water banks, in a post-pass over the finished tile bases. The tiles gave a
+// staircase with a jittered mud fringe down it; the bank is now the smoothed
+// outline, and it is drawn as what a bank is: a wet margin of dark earth, the
+// water up to the line, a darker waterline just inside it and a thin pale edge
+// where it meets the ground.
+//
+// The margin has a second job. Where the outline pulls back INSIDE a water
+// tile, that tile's corner has to become land again, and the margin is what
+// is painted there: it is opaque for half its width either side of the line,
+// and that half is wider than the outline may move (SHORE_TETHER).
+function drawWaterBanks(g: Ctx, map: GameMap, shore: ShorePaths | null, tx0: number, ty0: number, tx1: number, ty1: number): void {
+  if (!shore) return;
+  const wet = (x: number, y: number): boolean => map.inBounds(x, y) && (map.terrainKeyAt(x, y) === 'water' || map.isBridge(x, y));
+  // tiles the bank passes through or beside: water with land next to it, and
+  // open ground with water next to it (corners count)
+  const edge: [number, number][] = [];
   for (let y = ty0; y < ty1; y++) {
     for (let x = tx0; x < tx1; x++) {
-      if (!waterAt(x, y)) continue;
-      for (let h = 0; h < 2; h++) {
-        if (mudAt(x, y - 1)) {
-          const d = 0.1 + hash(x * 2 + h, y, 120) * 0.22;
-          g.fillStyle = 'rgba(88,76,52,0.5)';
-          g.fillRect(x + h * 0.5, y - d, 0.5, d);
-          g.fillStyle = 'rgba(50,48,38,0.45)';
-          g.fillRect(x + h * 0.5, y - d * 0.45, 0.5, d * 0.45);
-        }
-        if (mudAt(x, y + 1)) {
-          const d2 = 0.1 + hash(x * 2 + h, y, 121) * 0.22;
-          g.fillStyle = 'rgba(88,76,52,0.5)';
-          g.fillRect(x + h * 0.5, y + 1, 0.5, d2);
-          g.fillStyle = 'rgba(50,48,38,0.45)';
-          g.fillRect(x + h * 0.5, y + 1, 0.5, d2 * 0.45);
-        }
-        if (mudAt(x - 1, y)) {
-          const d3 = 0.1 + hash(x, y * 2 + h, 122) * 0.22;
-          g.fillStyle = 'rgba(88,76,52,0.5)';
-          g.fillRect(x - d3, y + h * 0.5, d3, 0.5);
-          g.fillStyle = 'rgba(50,48,38,0.45)';
-          g.fillRect(x - d3 * 0.45, y + h * 0.5, d3 * 0.45, 0.5);
-        }
-        if (mudAt(x + 1, y)) {
-          const d4 = 0.1 + hash(x, y * 2 + h, 123) * 0.22;
-          g.fillStyle = 'rgba(88,76,52,0.5)';
-          g.fillRect(x + 1, y + h * 0.5, d4, 0.5);
-          g.fillStyle = 'rgba(50,48,38,0.45)';
-          g.fillRect(x + 1, y + h * 0.5, d4 * 0.45, 0.5);
-        }
-      }
-      // dark waterline inside the water tile on every land edge
-      g.fillStyle = 'rgba(30,38,32,0.35)';
-      if (!waterAt(x, y - 1)) g.fillRect(x, y, 1, 0.12);
-      if (!waterAt(x, y + 1)) g.fillRect(x, y + 0.88, 1, 0.12);
-      if (!waterAt(x - 1, y)) g.fillRect(x, y, 0.12, 1);
-      if (!waterAt(x + 1, y)) g.fillRect(x + 0.88, y, 0.12, 1);
-      // ripple dashes just inside the banks
-      g.fillStyle = 'rgba(200,220,225,0.1)';
-      if (!waterAt(x, y - 1) && hash(x, y, 124) < 0.6) g.fillRect(x + hash(x, y, 125) * 0.5, y + 0.2 + hash(x, y, 126) * 0.15, 0.4, 0.05);
-      if (!waterAt(x, y + 1) && hash(x, y, 127) < 0.6) g.fillRect(x + hash(x, y, 128) * 0.5, y + 0.65 + hash(x, y, 129) * 0.15, 0.4, 0.05);
-      if (!waterAt(x - 1, y) && hash(x, y, 130) < 0.6) g.fillRect(x + 0.2 + hash(x, y, 131) * 0.15, y + hash(x, y, 132) * 0.5, 0.05, 0.4);
-      if (!waterAt(x + 1, y) && hash(x, y, 133) < 0.6) g.fillRect(x + 0.65 + hash(x, y, 134) * 0.15, y + hash(x, y, 135) * 0.5, 0.05, 0.4);
+      const k = map.terrainKeyAt(x, y);
+      const w = k === 'water';
+      if (!w && (!bankable(k) || map.isBridge(x, y))) continue;
+      let mixed = false;
+      for (let dy = -1; dy <= 1 && !mixed; dy++) for (let dx = -1; dx <= 1 && !mixed; dx++) mixed = wet(x + dx, y + dy) !== w;
+      if (mixed) edge.push([x, y]);
     }
   }
+  if (edge.length === 0) return;
+  g.lineCap = 'butt'; // a bank that ends at a deck or a wall ends ON it, not half a metre past
+  g.lineJoin = 'round';
+  g.strokeStyle = 'rgba(58,54,38,0.28)';
+  g.lineWidth = 2 * SHORE_TETHER + 0.9;
+  g.stroke(shore.banks);
+  g.strokeStyle = 'rgb(82,74,54)';
+  g.lineWidth = 2 * SHORE_TETHER + 0.2;
+  g.stroke(shore.banks);
+  g.save();
+  g.clip(shore.water, 'evenodd');
+  for (const [x, y] of edge) {
+    g.fillStyle = waterTone(x, y);
+    g.fillRect(x, y, 1, 1);
+  }
+  g.strokeStyle = 'rgba(22,32,30,0.4)';
+  g.lineWidth = 0.4;
+  g.stroke(shore.banks);
+  g.restore();
+  g.strokeStyle = 'rgba(214,220,204,0.5)';
+  g.lineWidth = 0.08;
+  g.stroke(shore.banks);
+  g.lineCap = 'round';
 }
 
 // Worn dirt trail out from each exterior building door — overlapping ellipses
@@ -1218,30 +1304,20 @@ function drawDoorTrails(g: Ctx, map: GameMap, tx0: number, ty0: number, tx1: num
   }
 }
 
-// 2x2 sub-tile sampling of the woods-ground tone (same fix grass got — a
-// single flat per-tile value reads as a 1m checkerboard through canopy gaps
-// at high zoom). `darken` dims it under hedges.
-function drawSubTileGround(g: Ctx, x: number, y: number, darken = 1): void {
-  for (let sub = 0; sub < 4; sub++) {
-    const sx = x + (sub & 1) * 0.5;
-    const sy = y + (sub >> 1) * 0.5;
-    const sv = (0.9 + coarse(sx + 0.25, sy + 0.25) * 0.12 + hash(x, y, sub) * 0.04) * darken;
-    g.fillStyle = shade(WOODS_GROUND, sv);
-    g.fillRect(sx, sy, 0.5, 0.5);
-  }
+// The woods floor's tone: drift only, for the reason drawGrassBase gives. Its
+// four random quadrants were a 0.5 m checkerboard through every canopy gap.
+function drawWoodsBase(g: Ctx, x: number, y: number): void {
+  g.fillStyle = shade(WOODS_GROUND, 0.92 + coarse(x, y) * 0.12);
+  g.fillRect(x, y, 1, 1);
 }
 
-// 2x2 sub-tile sampling — each quadrant gets its own coarse() read instead of
-// one flat value per tile, which is what made the grass read as a visible 1m
-// checkerboard at high zoom.
+// Tone drift only, off the two smooth fields. This drew four quadrants a
+// tile, each with a 5% random step, to break up a 1 m checkerboard: `coarse`
+// reads whole metres, so the quadrants differed by the random step alone and
+// the result was a 0.5 m checkerboard. The tufts are the texture.
 function drawGrassBase(g: Ctx, x: number, y: number): void {
-  const base = blendPalette([GRASS, GRASS_DRY], macro(x, y));
-  for (let sub = 0; sub < 4; sub++) {
-    const sx = x + (sub & 1) * 0.5;
-    const sy = y + (sub >> 1) * 0.5;
-    g.fillStyle = shade(base, 0.88 + coarse(sx + 0.25, sy + 0.25) * 0.16 + hash(x, y, sub) * 0.05);
-    g.fillRect(sx, sy, 0.5, 0.5);
-  }
+  g.fillStyle = shade(blendPalette([GRASS, GRASS_DRY], macro(x, y)), 0.905 + coarse(x, y) * 0.16);
+  g.fillRect(x, y, 1, 1);
 }
 
 // ── Railway: ballast, sleepers, rails, embankment batter (V4) ──────────────
@@ -1641,14 +1717,7 @@ function drawTileBase(
   const v = 0.95 + coarse(x, y) * 0.1;
   const host = t === 'hedge' ? hedgeHost(map, x, y) : null;
   if (t === 'grass') {
-    drawGrassBase(g, x, y);
-    if (d >= 1) {
-      const [fdx, fdy] = vec(x + 0.5, y + 0.5, 205, 34);
-      const axis = Math.abs(fdx) > Math.abs(fdy) ? 0 : 1;
-      // offset lattice so flower patches are uncorrelated with the hue drift
-      const bloom = d >= 2 && macro(x + 411, y + 87) > 0.63;
-      g.drawImage(grassStamp((hash(x, y, 201) * GRASS_VARIANTS) | 0, axis, bloom, band), x, y, 1, 1);
-    }
+    drawGrassBase(g, x, y); // the tufts are a post-pass: drawGrassTufts
     // dusty verge where grass meets road: half-tile strips of jittered depth,
     // so traffic wear bleeds past the road's own shoulder without a hard line
     const roadAt = (tx: number, ty: number) => map.inBounds(tx, ty) && map.terrainKeyAt(tx, ty) === 'road';
@@ -1722,7 +1791,7 @@ function drawTileBase(
       }
     }
   } else if (t === 'woods') {
-    drawSubTileGround(g, x, y);
+    drawWoodsBase(g, x, y);
     if (d >= 1) g.drawImage(litterStamp((hash(x, y, 265) * 8) | 0, d, band), x, y, 1, 1);
   } else if (t === 'hedge' && !host) {
     // Ground under the hedge only: the hedgerow itself is drawn by
@@ -1751,7 +1820,7 @@ function drawTileBase(
     if (!fieldAt(x - 1, y)) g.fillRect(x, y, 0.08, 1);
     if (!fieldAt(x + 1, y)) g.fillRect(x + 0.92, y, 0.08, 1);
   } else if (t === 'water') {
-    g.fillStyle = shade(WATER, 0.9 + coarse(x, y) * 0.12 + hash(x, y, 91) * 0.05);
+    g.fillStyle = waterTone(x, y); // drift only: a random step a tile is a checkerboard, on water more than anywhere
     g.fillRect(x, y, 1, 1);
     // faint N→S drift streaks with the current
     g.fillStyle = 'rgba(255,255,255,0.05)';
@@ -1974,17 +2043,26 @@ function bakeSurround(w: number, h: number): HTMLCanvasElement {
   return c;
 }
 
-function drawTree(g: Ctx, map: GameMap, x: number, y: number, band: number, d: Detail): void {
+// The tree on a woods tile: where its crown is centred and its radius, or null
+// where the stand has a gap. One rule for the bake and for anything laid over
+// the baked crown afterwards (ambient.ts).
+export function treeAt(map: GameMap, x: number, y: number): [number, number, number] | null {
   const wooded = (tx: number, ty: number) => map.inBounds(tx, ty) && map.terrainKeyAt(tx, ty) === 'woods';
   // Canopy-gap culling is only safe deep inside a stand, where the bare (darker)
   // woods floor sits under surrounding canopy. On an edge tile — any non-woods
   // orthogonal neighbor — a culled tree exposes the dark floor square against
   // the lighter grass, which reads as a hard dark rectangle. Keep edge trees.
   const interior = wooded(x - 1, y) && wooded(x + 1, y) && wooded(x, y - 1) && wooded(x, y + 1);
-  if (interior && hash(x, y, 40) >= 0.55) return;
-  const cx = x + 0.3 + hash(x, y, 41) * 0.4;
-  const cy = y + 0.3 + hash(x, y, 42) * 0.4;
-  const r = 0.55 + hash(x, y, 43) * 0.4; // may overhang up to ~1 tile — chunks overscan by `pad`, so this is safe
+  if (interior && hash(x, y, 40) >= 0.55) return null;
+  // the crown may overhang up to ~1 tile — chunks overscan by `pad`, so this is safe
+  return [x + 0.3 + hash(x, y, 41) * 0.4, y + 0.3 + hash(x, y, 42) * 0.4, 0.55 + hash(x, y, 43) * 0.4];
+}
+
+function drawTree(g: Ctx, map: GameMap, x: number, y: number, band: number, d: Detail): void {
+  const tree = treeAt(map, x, y);
+  if (!tree) return;
+  const [cx, cy, r] = tree;
+  const wooded = (tx: number, ty: number) => map.inBounds(tx, ty) && map.terrainKeyAt(tx, ty) === 'woods';
   // mapgen plants orchards on a staggered 2-tile spacing, so a woods tile with
   // no orthogonal woods neighbour but woods two tiles out is a fruit tree, not
   // a forest tree
@@ -2178,7 +2256,9 @@ export class TerrainLayer {
   private hasStairs: boolean;
   private bakeBudget = 0;
   private patches: PatchIndex;
-  private hedges: Hedgerows;
+  readonly hedges: Hedgerows;
+  readonly shore: Shore;
+  private shorePath: ShorePaths | null = null; // built on the first chunk of a map that has water
   private paveMask: HTMLCanvasElement | null = null; // bakePaveMask, built on the first chunk of a map that has a square
   private yards: Yard[];
   // props bucketed by chunk key on their DRAWN extent (a telegraph wire spans
@@ -2222,6 +2302,13 @@ export class TerrainLayer {
     this.chunksW = Math.ceil(map.w / CHUNK);
     this.patches = new PatchIndex(map);
     this.hedges = buildHedgerows((x, y) => map.terrainKeyAt(x, y) === 'hedge', map.w, map.h);
+    // a bridge deck counts as water: the river runs on beneath it, and the deck is drawn over
+    this.shore = buildShore(
+      (x, y) => map.terrainKeyAt(x, y) === 'water' || map.isBridge(x, y),
+      (x, y) => bankable(map.terrainKeyAt(x, y)) && !map.isBridge(x, y),
+      map.w,
+      map.h,
+    );
     this.rail = railIndex(map);
     const churchTiles = new Uint8Array(map.w * map.h);
     for (const b of buildings) {
@@ -2343,6 +2430,7 @@ export class TerrainLayer {
     for (let y = ty0; y < ty1; y++) {
       for (let x = tx0; x < tx1; x++) drawTileBase(g, this.map, this.patches, x, y, band, d, this.roleAt, this.apron, this.rail);
     }
+    drawGrassTufts(g, this.map, tx0, ty0, tx1, ty1, band, d);
     drawCropRows(g, this.map, this.patches, tx0, ty0, tx1, ty1, d);
     // after the rows, so a cut corner is not ruled with its old parcel's
     // furrows; before the paving and the wear, which lie on top of the ground
@@ -2355,7 +2443,8 @@ export class TerrainLayer {
       drawCrossings(g, this.map, tx0, ty0, tx1, ty1, d, this.rail);
       drawTrackRun(g, this.map, tx0, ty0, tx1, ty1, d, this.rail);
     }
-    drawWaterBanks(g, this.map, tx0, ty0, tx1, ty1);
+    if (this.shore.loops.length > 0) this.shorePath ??= shorePaths(this.shore);
+    drawWaterBanks(g, this.map, this.shorePath, tx0, ty0, tx1, ty1);
     drawYardGround(g, this.map, this.patches, this.yards, tx0, ty0, tx1, ty1, d);
     drawEnclosureGround(g, this.map, this.enclos, tx0, ty0, tx1, ty1, d);
     drawDoorTrails(g, this.map, tx0, ty0, tx1, ty1);
@@ -2386,7 +2475,7 @@ export class TerrainLayer {
     }
     for (const p of this.props.get(`${cx},${cy}`) ?? []) drawProp(g, p, band, d);
     drawEnclosurePlanting(g, this.map, this.enclos, tx0, ty0, tx1, ty1, band, d);
-    if(false)    drawShopfronts(g, this.shops, tx0, ty0, tx1, ty1, d);
+    drawShopfronts(g, this.shops, tx0, ty0, tx1, ty1, d);
     // Free-standing masonry owns its own edges — drawEdge's generic hairline
     // would sit under the rubble as a dark seam and, on a gate, draw a second
     // door leaf across the plank one.

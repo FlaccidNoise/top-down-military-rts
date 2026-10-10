@@ -99,6 +99,21 @@ const CLOSING_RADIUS = 20;
 export const RALLY_WINDOW_TICKS = 120 * 30;
 // Melee (decision log 2026-07-23): proximity-triggered close combat.
 const MELEE_ENGAGE = 2.0; // m — an enemy this close (and reachable on foot) locks both into melee
+// The rout (#790). A broken man runs for his own rear (away from
+// sim.threatAxis), to the nearest leader of his side who is still in hand
+// and not forward of him, and stops inside GATHER of that leader. With no
+// such leader he runs RUN metres rearward and looks again. He used to run
+// 30 m straight away from the nearest enemy soldier on the map, seen or not,
+// leg after leg.
+const ROUT_RUN = 30;
+const ROUT_GATHER = 6;
+const ROUT_STANDOFF = 3; // tiles short of that leader his run ends
+const ROUT_REPATH_TICKS = 90;
+// A broken man on his own gives up: out of ammunition for his weapon, or
+// with no leader left standing in his team, and ENEMIES or more of them
+// inside RADIUS with eyes on him. No bayonet has to reach him first.
+const SURRENDER_RADIUS = 15;
+const SURRENDER_ENEMIES = 3;
 const MELEE_CONTACT = 0.9; // m — combatants close to here, then hold
 export const MELEE_STRIKE_RANGE = 1.3; // m — strikes only land inside this (renderer keys the pose off it)
 const MELEE_BREAK = 2.5; // m — an opponent past this has gotten away
@@ -117,6 +132,8 @@ const GRENADE_RANGE = 12; // m
 const GRENADE_FUSE_TICKS = 30; // ~1 s
 const GRENADE_COOLDOWN_TICKS = 60;
 const GRENADE_BLAST: Blast = { suppRadius: 6, fragRadius: 3, frags: 2, dmg: [20, 55], breach: 2, kind: 'grenade' };
+// A mortar HE round, either calibre: opens a head-high enclosure wall, never masonry.
+export const MORTAR_BLAST: Blast = { suppRadius: 10, fragRadius: 5, frags: 2, dmg: [25, 75], breach: 5, kind: 'mortar' };
 const GRENADE_SCATTER = 2; // m max
 const ENTRY_LOOKAHEAD = 4; // path waypoints: imminent opening, not any later opening
 const AP_DESTROY_CHANCE = 0.45; // conditional on a penetrating hit
@@ -287,7 +304,7 @@ export interface Soldier {
   climbLeft: number; // ticks remaining of a stair climb; >0 = on stairs transitioning
   scrambleLeft: number; // ticks remaining of a rubble-lip crossing; >0 = clambering through a breach
   wallTarget: EdgeRef | null; // player-assigned wall to open with an AT weapon (D5), null = none
-  grenadesLeft: number; // 2 for grenadiers, 0 for everyone else
+  grenadesLeft: number; // what he has left of his slot's `grenades`
   grenadeCooldownUntil: number; // tick when next grenade throw is allowed
   entryHoldUntil: number; // waits outside an opening until his own grenade bursts (#217)
   captured: boolean; // alive, out of the fight, untargetable (surrendered at melee contact)
@@ -412,6 +429,18 @@ export interface ShotEvent {
 // What went off, so the renderer can tell a grenade from a shell. `r` is the
 // fragment radius in metres, the same number the blast wounded with; a brew-up
 // has none. Render-only, like every drain queue here.
+// A grenade leaving the hand: where from, where it will land, and how long it
+// is in the air. Render-only, drained by takeGrenades(). The renderer's own
+// GrenadeThrow (render/fx.ts) is this shape, field for field.
+export interface GrenadeThrow {
+  fromX: number;
+  fromY: number;
+  toX: number;
+  toY: number;
+  flightTicks: number;
+  side: Side;
+}
+
 export type BoomKind = 'grenade' | 'shell' | 'mortar' | 'at' | 'brewup' | 'bomb';
 export interface BoomEvent {
   x: number;
@@ -456,6 +485,7 @@ export interface UnitEvent {
     | 'reserve-committed'
     | 'culminated'
     | 'smoke-objective'
+    | 'grenade' // a man threw one: `id` is the thrower
     // A team seen moving onto ground the other side holds. Raised by the sim
     // off what that other side can see, never by a commander: `id` is a man
     // of the team its enemy has in sight.
@@ -947,6 +977,7 @@ export class Sim {
   // Mortar rounds in flight: 3s from trigger to impact (spec: indirect fire).
   private mortarShells: { tick: number; x: number; y: number; smoke: boolean }[] = [];
   private pendingGrenades: { x: number; y: number; fuse: number; l: number }[] = [];
+  private pendingThrows: GrenadeThrow[] = [];
   // Staggered dismount: one passenger every 0.5s (spec: "1 per 0.5s").
   private dismountQueue: { vehicleId: number; soldierId: number; tick: number }[] = [];
   private pathBudget = PATH_BUDGET_PER_TICK;
@@ -1508,6 +1539,14 @@ export class Sim {
     e.hasTarget = true;
   }
 
+  // Ends an HE mission: orderFire has no end of its own, the tube shells the
+  // point until it is told otherwise or runs dry. A smoke mission is left to
+  // run its rounds out.
+  ceaseFire(empId: number): void {
+    const e = this.emplacements[empId];
+    if (e && e.smokeRoundsLeft <= 0) e.hasTarget = false;
+  }
+
   // Mortar-only: a 4-round smoke screen at the point, consuming shells —
   // sustained coverage the rifle-squad smoke grenades can't match.
   orderSmoke(empId: number, x: number, y: number): void {
@@ -1618,7 +1657,7 @@ export class Sim {
       if (this.tick < sh.tick) return true;
           // Mortar/barrage smoke lands at ground level 0, wherever it falls.
       if (sh.smoke) this.smoke.push(smokePuff(sh.x, sh.y, this.map.elevAt(Math.floor(sh.x), Math.floor(sh.y)), 60));
-      else this.explode(sh.x, sh.y, { suppRadius: 10, fragRadius: 5, frags: 2, dmg: [25, 75], breach: 5, kind: 'mortar' }); // 81 mm: opens a head-high enclosure wall, never masonry
+      else this.explode(sh.x, sh.y, MORTAR_BLAST);
       return false;
     });
   }
@@ -2369,6 +2408,12 @@ export class Sim {
         break;
       }
     }
+  }
+
+  takeGrenades(): GrenadeThrow[] {
+    const g = this.pendingThrows;
+    this.pendingThrows = [];
+    return g;
   }
 
   takeUnitEvents(): UnitEvent[] {
@@ -3216,13 +3261,16 @@ export class Sim {
       }
     }
 
-    // broken men flee away from the nearest enemy — breaking is the one way
-    // out of a melee lock: he drops his guard and runs (and can be run down)
+    // broken men rout — breaking is the one way out of a melee lock: he
+    // drops his guard and runs (and can be run down). The run is solved the
+    // tick he breaks and on his own stagger after that. It used to be solved
+    // again every tick he stood without a path, which was every tick for a
+    // man with nowhere to go.
     if (s.mental === 'broken' && !s.captured) {
       s.targetId = -1;
       s.meleeId = -1;
       if (s.task) this.dropTask(s);
-      if (!s.fleeing || (this.tick + s.id) % 90 === 0) this.flee(s);
+      if (wasMental !== 'broken' || (this.tick + s.id) % ROUT_REPATH_TICKS === 0) this.flee(s);
     } else if (s.fleeing) {
       s.fleeing = false;
       s.path = null;
@@ -3274,6 +3322,19 @@ export class Sim {
     ) {
       this.assaultRepath(s, order);
       this.maybeGrenadeEntry(s);
+      this.maybeThrowGrenade(s);
+    } else if (
+      // Outside a charge too (#790): a man holding, advancing or left to his
+      // own devices throws at what is in reach. Not under the orders that
+      // hold fire (sneak, ambush), sprint (fast) or aim him elsewhere (fire).
+      // Same stagger as the charge, and the pocket check first: most men
+      // have none.
+      s.grenadesLeft > 0 &&
+      (order === null || order.kind === 'defend' || order.kind === 'move') &&
+      s.mental !== 'broken' &&
+      s.mental !== 'pinned' &&
+      (this.tick + s.id) % ASSAULT_REPATH_TICKS === 0
+    ) {
       this.maybeThrowGrenade(s);
     }
 
@@ -3857,14 +3918,16 @@ export class Sim {
   }
 
   // A crewman who broke and ran from a deployed gun walks back to it once he
-  // is steady again (#787). Nothing else brought him back: the defending
+  // is no longer broken (#787; it waited for 'steady' until #790, and a man
+  // who stays shaken for the rest of a fight never went). Nothing else
+  // brought him back: the defending
   // commander re-posts a squad only when an enemy stands on its post, so a
   // crew that routed 30 m and recovered sat out the battle beside a gun that
   // was still in working order (probed: one MG42 crew alive and off its gun
   // for a whole 30-minute battle, the gun silent). He waits while an enemy
   // holds the gun, and gives up the errand if the gun is no longer set up.
   private considerRemanGun(s: Soldier): void {
-    if (!s.fledGun || s.task || s.path || s.mental !== 'steady' || s.meleeId >= 0) return;
+    if (!s.fledGun || s.task || s.path || s.mental === 'broken' || s.meleeId >= 0) return;
     const e = s.inEmplacement >= 0 ? this.emplacements[s.inEmplacement] : null;
     if (!e || e.state !== 'deployed' || Math.hypot(s.x - e.x, s.y - e.y) <= CREW_RADIUS) {
       s.fledGun = false;
@@ -4257,23 +4320,42 @@ export class Sim {
     s.pathI = 0;
   }
 
+  // See ROUT_RUN. Draws no rng.
   private flee(s: Soldier): void {
-    let nearest: Soldier | null = null;
+    if (this.givesUp(s)) return;
+    const axis = this.threatAxis[s.side];
+    let rx = -Math.cos(axis);
+    let ry = -Math.sin(axis);
+    // The rear is where the enemy is not. With the nearest enemy his side
+    // knows of standing on that side of him, he runs from that man instead.
+    let near: { x: number; y: number } | null = null;
     let nd = Infinity;
-    for (const e of this.soldiers) {
-      if (!e.alive || e.side === s.side) continue;
-      const d = Math.hypot(e.x - s.x, e.y - s.y);
+    for (const p of this.spotted[s.side].values()) {
+      const d = Math.hypot(p.x - s.x, p.y - s.y);
       if (d < nd) {
         nd = d;
-        nearest = e;
+        near = p;
       }
     }
-    if (!nearest) return;
-    const dx = s.x - nearest.x;
-    const dy = s.y - nearest.y;
-    const len = Math.hypot(dx, dy) || 1;
-    const gx = Math.floor(s.x + (dx / len) * 30);
-    const gy = Math.floor(s.y + (dy / len) * 30);
+    if (near && nd > 0 && (near.x - s.x) * rx + (near.y - s.y) * ry > 0) {
+      rx = (s.x - near.x) / nd;
+      ry = (s.y - near.y) / nd;
+    }
+    let leader: Soldier | null = null;
+    let ld = Infinity;
+    for (const m of this.soldiers) {
+      if (m.side !== s.side || m.role !== 'leader' || m.id === s.id) continue;
+      if (!m.alive || m.downed || m.captured || m.mental === 'broken' || m.inVehicle >= 0) continue;
+      if ((m.x - s.x) * rx + (m.y - s.y) * ry < 0) continue; // forward of him: he does not run at the enemy
+      const d = Math.hypot(m.x - s.x, m.y - s.y);
+      if (d < ld) {
+        ld = d;
+        leader = m;
+      }
+    }
+    if (leader && ld <= ROUT_GATHER) return; // he is where he was running to
+    const gx = Math.floor(leader ? leader.x : s.x + rx * ROUT_RUN);
+    const gy = Math.floor(leader ? leader.y : s.y + ry * ROUT_RUN);
     const spot = this.findSpot(
       Math.max(1, Math.min(this.map.w - 2, gx)),
       Math.max(1, Math.min(this.map.h - 2, gy)),
@@ -4281,11 +4363,42 @@ export class Sim {
     );
     if (!spot) return;
     const path = astar(this.map, Math.floor(s.x), Math.floor(s.y), spot.x, spot.y);
-    if (path && path.length > 1) {
-      s.path = path.slice(1).map((p) => ({ x: p.x + 0.5, y: p.y + 0.5, l: p.l }));
-      s.pathI = 0;
-      s.fleeing = true;
+    if (!path) return;
+    // He pulls up a few paces short of the leader, not on top of him.
+    const legs = path.slice(1, leader ? -ROUT_STANDOFF : undefined);
+    if (legs.length === 0) return;
+    s.path = legs.map((p) => ({ x: p.x + 0.5, y: p.y + 0.5, l: p.l }));
+    s.pathI = 0;
+    s.fleeing = true;
+  }
+
+  // See SURRENDER_RADIUS. Run on the rout's stagger, never per tick.
+  private givesUp(s: Soldier): boolean {
+    const armed = s.magLeft > 0 || (s.ammo[WEAPONS[s.weapon].ammo.type] ?? 0) > 0;
+    const led = this.teams[s.teamId].soldierIds.some((id) => {
+      const m = this.soldiers[id];
+      return m.role === 'leader' && m.alive && !m.downed && !m.captured;
+    });
+    if (armed && led) return false;
+    let captor: Soldier | null = null;
+    let cd = Infinity;
+    let n = 0;
+    for (const e of this.soldiers) {
+      if (!e.alive || e.downed || e.captured || e.side === s.side || e.inVehicle >= 0 || e.mental === 'broken') continue;
+      const d = Math.hypot(e.x - s.x, e.y - s.y);
+      // Standing eye to standing eye: a man gives up on his feet with his
+      // hands up. Read at his own stance he vanished behind 30 cm of relief
+      // the tick he broke and dropped, and gave up to nobody.
+      if (d > SURRENDER_RADIUS || !sightBetween(this, e.x, e.y, s.x, s.y, e.level, s.level, EYE_STAND, EYE_STAND).visible) continue;
+      n++;
+      if (d < cd) {
+        cd = d;
+        captor = e;
+      }
     }
+    if (!captor || n < SURRENDER_ENEMIES) return false;
+    this.capture(s, captor);
+    return true;
   }
 
   // The objective's defenders as this soldier sees them: alive, on foot,
@@ -4357,15 +4470,22 @@ export class Sim {
     return false;
   }
 
-  // Grenade throw: fires alongside the assault repath on the same cadence.
-  // Only throws at a clustered target point or into a building — a lone man
-  // in the open is a fire problem, not a grenade problem.
+  // Grenade throw, on the assault repath cadence. The target is the nearest
+  // enemy his SIDE has spotted (the search runs over that list and never over
+  // every soldier: with a grenade in every rifleman's pocket the old all-
+  // soldiers scan would be the quadratic #444 warns about), inside
+  // GRENADE_RANGE and in his own sight. It has to be worth a grenade: two or
+  // more together, in a room, or behind cover. A lone man in the open is a
+  // fire problem. He does not throw at his own feet, nor onto a friend.
   private maybeThrowGrenade(s: Soldier): void {
     if (s.grenadesLeft <= 0 || this.tick < s.grenadeCooldownUntil) return;
+    const spotted = this.spotted[s.side];
+    const live = (e: Soldier): boolean => e.alive && !e.downed && !e.captured && e.inVehicle < 0;
     let best: Soldier | null = null;
     let bestD = Infinity;
-    for (const e of this.soldiers) {
-      if (!e.alive || e.downed || e.captured || e.side === s.side || e.inVehicle >= 0) continue;
+    for (const id of spotted.keys()) {
+      const e = this.soldiers[id];
+      if (!live(e)) continue;
       const d = Math.hypot(e.x - s.x, e.y - s.y);
       if (d > GRENADE_RANGE || d >= bestD) continue;
       if (!sightToSoldier(this, s.x, s.y, e, s.level, eyeOf(this, s)).visible) continue;
@@ -4373,20 +4493,42 @@ export class Sim {
       best = e;
     }
     if (!best) return;
+    // One in the air on that spot is enough: a whole team does not empty its
+    // pockets at the same man in the same half second.
+    for (const g of this.pendingGrenades) {
+      if (Math.hypot(g.x - best.x, g.y - best.y) <= GRENADE_BLAST.fragRadius + GRENADE_SCATTER) return;
+    }
     // Clustered: ≥2 enemies within frag radius of the target point
     let clustered = 0;
-    for (const e of this.soldiers) {
-      if (!e.alive || e.downed || e.captured || e.side === s.side || e.inVehicle >= 0) continue;
-      if (Math.hypot(e.x - best.x, e.y - best.y) <= GRENADE_BLAST.fragRadius) clustered++;
+    for (const id of spotted.keys()) {
+      const e = this.soldiers[id];
+      if (live(e) && Math.hypot(e.x - best.x, e.y - best.y) <= GRENADE_BLAST.fragRadius) clustered++;
     }
-    const enclosed = this.isInside(best.x, best.y);
-    if (clustered < 2 && !enclosed) return;
-    // Throw: scatter exactly like the mortar (angle then dist, one draw each)
+    if (clustered < 2 && !this.isInside(best.x, best.y) && !this.inCover(best.x, best.y)) return;
+    // Nobody of his own inside the burst, himself included. Reached only by
+    // a man with a target worth the grenade, so this scan is rare.
+    for (const f of this.soldiers) {
+      if (f.side !== s.side || !f.alive || f.inVehicle >= 0 || f.level !== best.level) continue;
+      if (Math.hypot(f.x - best.x, f.y - best.y) <= GRENADE_BLAST.fragRadius + GRENADE_SCATTER) return;
+    }
+    this.throwGrenade(s, best.x, best.y, best.level);
+  }
+
+  // The throw itself, for both callers: one grenade spent, the mortar's
+  // scatter (angle then distance, one draw each, as before), the fused
+  // grenade queued for stepGrenades — and the three output records of it:
+  // the arc for the renderer, and the event the ticker and the fog filter
+  // read. The cooldown is per thrower.
+  private throwGrenade(s: Soldier, x: number, y: number, level: number): void {
     s.grenadesLeft--;
     s.grenadeCooldownUntil = this.tick + GRENADE_COOLDOWN_TICKS;
     const angle = this.rng.next() * Math.PI * 2;
     const dist = this.rng.next() * GRENADE_SCATTER;
-    this.pendingGrenades.push({ x: best.x + Math.cos(angle) * dist, y: best.y + Math.sin(angle) * dist, fuse: GRENADE_FUSE_TICKS, l: best.level });
+    const toX = x + Math.cos(angle) * dist;
+    const toY = y + Math.sin(angle) * dist;
+    this.pendingGrenades.push({ x: toX, y: toY, fuse: GRENADE_FUSE_TICKS, l: level });
+    this.pendingThrows.push({ fromX: s.x, fromY: s.y, toX, toY, flightTicks: GRENADE_FUSE_TICKS, side: s.side });
+    this.note('grenade', s);
   }
 
   // Before crossing a door or stair into a room with a currently spotted enemy,
@@ -4434,17 +4576,8 @@ export class Sim {
       if (!friendly.alive || friendly.id === s.id || friendly.side !== s.side || friendly.inVehicle >= 0 || friendly.level !== level) continue;
       if (Math.hypot(friendly.x - target.x, friendly.y - target.y) <= GRENADE_BLAST.fragRadius) return;
     }
-    s.grenadesLeft--;
-    s.grenadeCooldownUntil = this.tick + GRENADE_COOLDOWN_TICKS;
     s.entryHoldUntil = this.tick + GRENADE_FUSE_TICKS;
-    const angle = this.rng.next() * Math.PI * 2;
-    const distance = this.rng.next() * GRENADE_SCATTER;
-    this.pendingGrenades.push({
-      x: target.x + Math.cos(angle) * distance,
-      y: target.y + Math.sin(angle) * distance,
-      fuse: GRENADE_FUSE_TICKS,
-      l: level,
-    });
+    this.throwGrenade(s, target.x, target.y, level);
   }
 
   // Can a man physically get at (bx, by) from (ax, ay) at melee distance?

@@ -58,11 +58,31 @@ const AWNING_H = 2.3;
 const SIGN_H = 2.5;
 const TRESTLE_H = 0.8;
 
-// Muted awning canvas — sun-bleached ticking, not a beach parasol. The pale
-// stripe is the one that sets the value, so it stays well under the roof
-// highlights or a row of shops becomes the brightest band in the frame.
-const AWNING_PALE = 'rgb(178,170,148)';
-const AWNING_TRIM = ['rgb(124,76,58)', 'rgb(86,96,78)', 'rgb(112,100,66)', 'rgb(76,84,96)'];
+// Sun-faded awning canvas, under the palette rule (docs/decisions, "Muted
+// Normandy"): an awning reads by its shape and the shade it throws, never by
+// its colour. Measured on a town street, the first cut's pale stripe was the
+// brightest pixel in the frame and its brick stripe sat above the tile roofs
+// in saturation: alternated 0.4 m apart, that is a candy stripe.
+// The pale stripe now sits under the roof highlights. The dyed stripe is a
+// dull brick, a faded blue-grey or an olive, none more saturated than the
+// tuile beside it, and every shop's canvas has faded by its own amount
+// (awningStripes), which takes the two stripes toward each other.
+type RGB = [number, number, number];
+const AWNING_PALE: RGB = [160, 154, 136];
+const AWNING_TRIM: RGB[] = [
+  [112, 80, 66],
+  [84, 92, 98],
+  [88, 94, 78],
+];
+const lerp = (a: RGB, b: RGB, k: number): string => `rgb(${a.map((v, i) => Math.round(v + (b[i] - v) * k)).join(',')})`;
+
+// The two stripes of one shop's awning, as CSS colours: [dyed, pale]. Pure,
+// keyed on the shop's seed alone.
+export function awningStripes(seed: number): [string, string] {
+  const trim = AWNING_TRIM[(hash(seed, 0, 341) * AWNING_TRIM.length) | 0];
+  const fade = 0.1 + hash(seed, 1, 341) * 0.35;
+  return [lerp(trim, AWNING_PALE, fade), lerp(AWNING_PALE, trim, fade * 0.3)];
+}
 const SIGN_BOARD = ['rgb(58,52,40)', 'rgb(48,58,52)', 'rgb(66,50,38)'];
 
 const normalOf = (f: Face): [number, number] => (f === 'n' ? [0, -1] : f === 's' ? [0, 1] : f === 'e' ? [1, 0] : [-1, 0]);
@@ -193,11 +213,11 @@ function awning(g: Ctx, s: Shopfront, ux: number, uy: number, u0: number, u1: nu
   }
   // Striped canvas: the stripes run OUT from the wall, which is what an awning
   // does and also what tells the eye which way the shop faces.
-  const trim = AWNING_TRIM[(hash(s.seed, 0, 341) * AWNING_TRIM.length) | 0];
+  const [trim, pale] = awningStripes(s.seed);
   const stripe = 0.4;
   const n = Math.max(2, Math.round(span / stripe));
   for (let i = 0; i < n; i++) {
-    g.fillStyle = i & 1 ? trim : AWNING_PALE;
+    g.fillStyle = i & 1 ? trim : pale;
     quad(u0 + (span * i) / n, u0 + (span * (i + 1)) / n, 0.04, AWNING);
   }
   // lit crown where the canvas leaves the wall, shade in the fall

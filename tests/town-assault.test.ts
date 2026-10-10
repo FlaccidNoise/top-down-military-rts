@@ -211,7 +211,10 @@ describe('floor-aware town assault (#130)', () => {
     let climbedAfterFuse = false;
     for (let i = 0; i < 500; i++) {
       sim.step();
-      if (throwTick < 0 && a.grenadesLeft < 2) throwTick = sim.tick;
+      if (throwTick < 0 && a.grenadesLeft < 2) {
+        throwTick = sim.tick;
+        expect(a.level).toBe(0); // thrown from the stair base
+      }
       if (a.level === 1) {
         if (throwTick < 0 || sim.tick < throwTick + FUSE) climbedBeforeFuse = true;
         else climbedAfterFuse = true;
@@ -219,7 +222,9 @@ describe('floor-aware town assault (#130)', () => {
     }
 
     expect(throwTick).toBeGreaterThanOrEqual(0); // stair pre-clear fired at the spotted upstairs defender
-    expect(a.grenadesLeft).toBe(1);
+    // His second goes at the top of the stair (#790): the first missed, and a
+    // man in a room is a grenade target outside the pre-clear too.
+    expect(a.grenadesLeft).toBe(0);
     expect(a.entryHoldUntil).toBe(throwTick + FUSE);
     expect(climbedBeforeFuse).toBe(false); // waited the fuse out at the stair base, level 0
     expect(climbedAfterFuse).toBe(true); // ...then climbed

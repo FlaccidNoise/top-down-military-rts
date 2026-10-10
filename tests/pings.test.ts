@@ -101,6 +101,13 @@ describe('EventPings — commander voice', () => {
     expect(p.labels()).toEqual(['3. Gruppe — CLOSING IN']);
   });
 
+  it('a grenade is called out for either side, once per team per cooldown', () => {
+    const p = new EventPings();
+    const g = (side: UnitEvent['side'], team: string): UnitEvent => ({ kind: 'grenade', side, name: 'Pvt. Kelly', team, x: 10, y: 10, id: 3 });
+    p.add([g('blue', 'Baker'), g('blue', 'Baker'), g('red', 'Schützen')], 0);
+    expect(p.labels()).toEqual(['Baker — GRENADE!', 'Schützen — GRENADE!']);
+  });
+
   it('repeated smoke missions are one line per cooldown', () => {
     const p = new EventPings();
     p.add([hq('smoke-objective', 'blue')], 0);
