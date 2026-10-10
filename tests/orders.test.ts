@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { EDGE, GameMap } from '../src/sim/map';
-import { dangerScore, visibleEnemies } from '../src/sim/orders';
+import { dangerScore, orderVerdict, visibleEnemies } from '../src/sim/orders';
 import { Sim, sightBetween, sightToSoldier, SMOKE_THROW_M } from '../src/sim/sim';
 
 describe('order vocabulary: move/fast/sneak executor', () => {
@@ -242,6 +242,72 @@ describe('orders in progress (#763)', () => {
     expect(interrupted).toBe(0); // each alternation used to re-path the rescuer and drop his task
     expect(sim.teams[0].orderState.phase).toBe('idle'); // the order ended
     expect(flips).toBeLessThan(12); // a handful of legs — not one flip a tick
+  });
+});
+
+// #764. The danger ladder is about crossing ground. It ran on every order
+// kind, so a team under observation refused to shoot, refused to hold where it
+// stood, and — refused on an ambush — held its fire until it died.
+describe('orders that move nobody (#764)', () => {
+  // Two riflemen in the open, 30 m from a five-man MG team that sees every
+  // metre between them: the fixture the balk test above refuses a move on.
+  const covered = () => {
+    const sim = new Sim(new GameMap(80, 20), 3);
+    sim.addSquad('blue', 'a', [
+      { name: 'A', weapon: 'thompson', x: 10.5, y: 10.5 },
+      { name: 'B', weapon: 'garand', x: 10.5, y: 11.5 },
+    ]);
+    for (const s of sim.soldiers) s.morale = 0.5;
+    sim.addSquad('red', 'mg', [
+      { name: 'M1', weapon: 'mg42', x: 40.5, y: 10.5 },
+      { name: 'M2', weapon: 'kar98k', x: 40.5, y: 11.5 },
+      { name: 'M3', weapon: 'kar98k', x: 40.5, y: 12.5 },
+      { name: 'M4', weapon: 'kar98k', x: 40.5, y: 9.5 },
+      { name: 'M5', weapon: 'kar98k', x: 40.5, y: 8.5 },
+    ]);
+    sim.squadLastCasualty[0] = sim.tick;
+    return sim;
+  };
+
+  it('fire, defend in place and ambush in place are carried out where a move is refused', () => {
+    const sim = covered();
+    sim.orderTeam(0, { kind: 'move', x: 50, y: 10 });
+    expect(sim.teams[0].orderState.phase).toBe('balked'); // the ladder still refuses the walk
+    for (const order of [
+      { kind: 'fire', x: 40.5, y: 10.5 },
+      { kind: 'defend', x: 10.5, y: 11 },
+      { kind: 'ambush', x: 10.5, y: 11 },
+      { kind: 'defend', x: 13, y: 12 }, // a few metres: shaking out, not crossing ground
+    ] as const) {
+      sim.orderTeam(0, order);
+      expect(sim.teams[0].orderState.phase, order.kind).toBe('executing');
+      expect(orderVerdict(sim, sim.teams[0], order).verdict, order.kind).toBe('comply'); // what the order preview shows
+    }
+    sim.orderTeam(0, { kind: 'defend', x: 30, y: 10 }); // 20 m toward the gun is a move again
+    expect(sim.teams[0].orderState.phase).toBe('balked');
+  });
+
+  it('a team that refused the walk to its ambush position still springs the ambush', () => {
+    const sim = new Sim(new GameMap(120, 20), 13);
+    sim.addSquad('blue', 'a', [
+      { name: 'A', weapon: 'garand', x: 10.5, y: 10.5 },
+      { name: 'B', weapon: 'garand', x: 10.5, y: 11.5 },
+    ]);
+    for (const s of sim.soldiers) s.morale = 0.5;
+    sim.addSquad('red', 'r', [{ name: 'R', weapon: 'kar98k', x: 80.5, y: 10.5, ammo: {} }]); // 70 m out, sees the whole approach, dry
+    const enemy = sim.soldiers[2];
+    enemy.magLeft = 0;
+    sim.squadLastCasualty[0] = sim.tick;
+    sim.orderTeam(0, { kind: 'ambush', x: 40, y: 10.5 });
+    expect(sim.teams[0].orderState.phase).toBe('balked');
+    expect(sim.teams[0].orderState.order?.kind).toBe('ambush');
+    for (let i = 0; i < 60; i++) sim.step();
+    expect(sim.takeEvents().length).toBe(0); // holding fire, as ordered
+
+    enemy.x = 45.5; // 35 m: inside the rifleman's trigger range
+    for (let i = 0; i < 90; i++) sim.step();
+    expect(sim.teams[0].orderState.order?.kind).toBe('defend'); // was 'ambush' for the rest of the battle
+    expect(sim.takeEvents().length).toBeGreaterThan(0);
   });
 });
 

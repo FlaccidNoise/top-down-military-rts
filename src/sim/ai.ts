@@ -1,6 +1,6 @@
 import { EMPLACEMENTS, WEAPONS, type WeaponDef } from './data';
 import { crewNear, friendlyHasLos, type Emplacement } from './emplacement';
-import { ASSAULT_DANGER_MULT, compliance, dangerScore, type OrderKind, type TeamOrder } from './orders';
+import { dangerScore, orderVerdict, type OrderKind, type TeamOrder } from './orders';
 import { CONTACT_TTL, EYE_CROUCH, EYE_STAND, SPOT_INTERVAL, sightBetween, type Side, type Sim, type Team } from './sim';
 
 // Red commander: issues squad orders through the same public order API the
@@ -317,9 +317,9 @@ export class RedCommander {
   // measured choice, not a shortcut: a withdrawal leg back to the assembly
   // area was probed (open seeds 3/4) and cost MORE than staying down — 71%
   // final KIA vs 51% on seed 4 — because the walk back re-crosses the same
-  // arcs that culminated the attack. Issued once; re-issuing every eval would
-  // re-roll compliance on a team that has already stopped, and a 'defend'
-  // that balked is a team staying exactly where consolidating wants it.
+  // arcs that culminated the attack. Issued once: the order stands until the
+  // commander has something else for the team. It cannot be refused — it
+  // moves nobody (orders.ts movesTeam).
   private consolidate(sim: Sim, team: Team): void {
     if (team.orderState.order?.kind === 'defend') return;
     const c = this.centroid(sim, team.soldierIds);
@@ -469,7 +469,7 @@ export class RedCommander {
         // Forecast the same ladder orderTeam will run. A balked charge used to
         // be re-issued every eval until transient danger decayed and fed the
         // team into an unchanged defended lane (#216).
-        if (compliance(sim, team, dangerScore(sim, team, post) * ASSAULT_DANGER_MULT) === 'balk') {
+        if (orderVerdict(sim, team, { kind: 'assault', x: post.x, y: post.y }).verdict === 'balk') {
           this.divertRefusedAssault(sim, team, post);
           continue;
         }
@@ -726,7 +726,7 @@ export class RedCommander {
   // smoke or new geometry changes the same danger reading. No hidden intel or RNG.
   private divertRefusedAssault(sim: Sim, team: Team, post: { x: number; y: number }): void {
     const flank = this.flankBound(sim, team, post);
-    if (compliance(sim, team, dangerScore(sim, team, flank)) !== 'balk') {
+    if (orderVerdict(sim, team, { kind: 'move', x: flank.x, y: flank.y }).verdict !== 'balk') {
       this.issue(sim, team, { kind: 'move', x: flank.x, y: flank.y });
     } else {
       this.consolidate(sim, team);

@@ -1,6 +1,6 @@
 import type { Camera } from '../render/camera';
 import { MOBILE, view } from '../render/view';
-import { ASSAULT_DANGER_MULT, compliance, dangerSamples, dangerScore, MOVE_FAMILY, type OrderKind } from '../sim/orders';
+import { dangerSamples, MOVE_FAMILY, orderVerdict, type OrderKind } from '../sim/orders';
 import { eligible, fanOffsets, formationSlots, squadClumpOffsets, TEAM_FAN, SQUAD_FAN, type Side, type Sim, type UnitEvent } from '../sim/sim';
 import { orderLevel, resolveDeployment, resolveMoveSpots, type ResolvedSpot } from '../sim/spots';
 import { emplacementOf, TEAM } from './hud';
@@ -225,10 +225,9 @@ function pushPreviewTeam(
   let danger: number | null = null;
   let verdict: ChipVerdict | null = null;
   if (st.armedOrder && focus) {
-    // orderTeam weights the charge up BEFORE the ladder runs; the old chip
-    // omitted the multiplier and under-reported assault refusal.
-    danger = dangerScore(sim, team, { x, y }) * (kind === 'assault' ? ASSAULT_DANGER_MULT : 1);
-    verdict = compliance(sim, team, danger);
+    // The executor's own verdict, charge multiplier and stay-in-place rule
+    // included: the old chip re-derived it and under-reported assault refusal.
+    ({ danger, verdict } = orderVerdict(sim, team, { kind, x, y }));
   }
   out.push({ teamId, x, y, level, spots: mine, refused, danger, verdict });
 }

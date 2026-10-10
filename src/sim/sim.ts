@@ -43,11 +43,11 @@ import {
 import type { Building } from './mapgen';
 import {
   ambushThreshold,
-  ASSAULT_DANGER_MULT,
   BALK_REASON,
   CHARGE_BALK_REASON,
   compliance,
   dangerScore,
+  orderVerdict,
   type OrderKind,
   type OrderState,
   type TeamOrder,
@@ -1814,11 +1814,12 @@ export class Sim {
     // Assault is the scariest ask: same danger evaluation, weighted up before
     // the ladder runs. Checked ONCE — a charge that steps off is committed
     // (no bounding, no per-leg re-check); pinned/broken men drop out via the
-    // psych model instead.
-    const danger = dangerScore(this, team, { x: order.x, y: order.y }) * (order.kind === 'assault' ? ASSAULT_DANGER_MULT : 1);
-    const verdict = compliance(this, team, danger);
+    // psych model instead. An order that moves nobody is never refused
+    // (orderVerdict).
+    const verdict = orderVerdict(this, team, order).verdict;
     if (verdict === 'balk') {
       team.orderState = { order, phase: 'balked', reason: order.kind === 'assault' ? CHARGE_BALK_REASON : BALK_REASON };
+      if (order.kind === 'sneak') this.sneakBaseline[team.id] = this.woundCount(team); // a refused sneak still holds fire until someone is hit
       return;
     }
     const cautious = verdict === 'cautious';
@@ -2320,7 +2321,14 @@ export class Sim {
       const order = team.orderState.order;
       if (!order) continue;
       const st = team.orderState;
-      if (st.phase === 'balked') continue;
+      if (st.phase === 'balked') {
+        // Refusing to walk somewhere does not suspend the fire discipline the
+        // order carries. A team that balked on the way to an ambush is lying
+        // up where it stopped, and skipping its trigger left it holding fire
+        // until it was dead (#764: one team mute for 53,985 of 54,000 ticks).
+        this.checkFireDiscipline(team, order);
+        continue;
+      }
       if (order.kind === 'move' && (st.phase === 'bounding_a' || st.phase === 'bounding_b')) {
         this.continueBounding(team, order, st);
       } else if ((order.kind === 'move' || order.kind === 'fast' || order.kind === 'sneak') && st.phase === 'executing') {
@@ -2378,9 +2386,14 @@ export class Sim {
           st.reason = '';
         }
       }
-      if (order.kind === 'sneak') this.checkSneakBreak(team);
-      else if (order.kind === 'ambush') this.checkAmbushTrigger(team, order);
+      this.checkFireDiscipline(team, order);
     }
+  }
+
+  // The two orders that hold fire, and what releases each.
+  private checkFireDiscipline(team: Team, order: TeamOrder): void {
+    if (order.kind === 'sneak') this.checkSneakBreak(team);
+    else if (order.kind === 'ambush') this.checkAmbushTrigger(team, order);
   }
 
   private explode(
