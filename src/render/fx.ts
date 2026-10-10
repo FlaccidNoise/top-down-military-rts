@@ -48,6 +48,28 @@ export function fxDetail(scale: number): 0 | 1 | 2 {
   return scale >= 24 ? 2 : scale >= 10 ? 1 : 0;
 }
 
+// The legibility floor. The men are drawn 1.35x life size (dudes.ts
+// DUDE_SCALE) so a squad still reads at the 14 px/m the game is played at; a
+// flash, a tracer or a bullet strike drawn at true metric size beside them is
+// a 4 px spark, and the loudest thing in a firefight was the suppression ring.
+// Below FX_FLOOR px/m an effect's own SIZE stops shrinking with the zoom. Its
+// ANCHOR never moves: a round still leaves the muzzle and lands where the sim
+// put it, only the flash and the dust around those two points are drawn as if
+// the camera were closer. Under 8 px/m the floor itself eases down, so the
+// whole-map view twinkles instead of wearing flashes the size of houses.
+export const FX_FLOOR = 20;
+export function fxScale(scale: number): number {
+  return Math.max(scale, Math.min(FX_FLOOR, 10 + scale * 1.25));
+}
+
+// The same idea for a blast, which is already metres across: it only needs
+// help when the whole map is on screen and a shell would otherwise be a 3 px
+// dot. Below this zoom a blast is drawn as if the camera stopped here.
+export const BLAST_FLOOR = 6;
+export function blastScale(scale: number): number {
+  return Math.max(scale, BLAST_FLOOR);
+}
+
 // Every additive draw batches into one call per frame, so the composite mode
 // flips twice rather than once per particle.
 export function hotPass(ctx: CanvasRenderingContext2D, f: () => void): void {
@@ -103,11 +125,11 @@ export interface FlashSpec {
 }
 
 export const FLASH: Record<FlashClass, FlashSpec> = {
-  rifle: { r: 0.3, spikes: 2, len: 1.35, spread: 0.42, life: 50, tracerW: 1, tracerCol: '255,240,210', tracerOdds: 0.2 },
-  smg: { r: 0.22, spikes: 3, len: 1, spread: 0.8, life: 38, tracerW: 1, tracerCol: '255,236,200', tracerOdds: 0.2 },
-  mg: { r: 0.42, spikes: 3, len: 1.8, spread: 0.3, life: 70, tracerW: 2, tracerCol: '255,214,140', extra: 'double', tracerOdds: 0.34 },
+  rifle: { r: 0.36, spikes: 2, len: 1.35, spread: 0.42, life: 60, tracerW: 1, tracerCol: '255,240,210', tracerOdds: 0.2 },
+  smg: { r: 0.28, spikes: 3, len: 1, spread: 0.8, life: 45, tracerW: 1, tracerCol: '255,236,200', tracerOdds: 0.2 },
+  mg: { r: 0.5, spikes: 3, len: 1.8, spread: 0.3, life: 75, tracerW: 2, tracerCol: '255,214,140', extra: 'double', tracerOdds: 0.34 },
   rocket: { r: 0.7, spikes: 0, len: 0, spread: 0, life: 90, tracerW: 2, tracerCol: '255,222,170', extra: 'backblast', tracerOdds: 1 },
-  cannon: { r: 0.85, spikes: 2, len: 1.5, spread: 0.5, life: 110, tracerW: 2, tracerCol: '255,226,180', extra: 'wash', tracerOdds: 1 },
+  cannon: { r: 1.2, spikes: 2, len: 1.5, spread: 0.5, life: 120, tracerW: 2, tracerCol: '255,226,180', extra: 'wash', tracerOdds: 1 },
 };
 
 // Undefined weapon is a vehicle cannon / AP round (sim.ts pairs those with a
