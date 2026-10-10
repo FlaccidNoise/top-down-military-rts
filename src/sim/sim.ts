@@ -107,6 +107,7 @@ const MELEE_ENGAGE = 2.0; // m — an enemy this close (and reachable on foot) l
 // leg after leg.
 const ROUT_RUN = 30;
 const ROUT_GATHER = 6;
+const ROUT_STANDOFF = 3; // tiles short of that leader his run ends
 const ROUT_REPATH_TICKS = 90;
 // A broken man on his own gives up: out of ammunition for his weapon, or
 // with no leader left standing in his team, and ENEMIES or more of them
@@ -4362,11 +4363,13 @@ export class Sim {
     );
     if (!spot) return;
     const path = astar(this.map, Math.floor(s.x), Math.floor(s.y), spot.x, spot.y);
-    if (path && path.length > 1) {
-      s.path = path.slice(1).map((p) => ({ x: p.x + 0.5, y: p.y + 0.5, l: p.l }));
-      s.pathI = 0;
-      s.fleeing = true;
-    }
+    if (!path) return;
+    // He pulls up a few paces short of the leader, not on top of him.
+    const legs = path.slice(1, leader ? -ROUT_STANDOFF : undefined);
+    if (legs.length === 0) return;
+    s.path = legs.map((p) => ({ x: p.x + 0.5, y: p.y + 0.5, l: p.l }));
+    s.pathI = 0;
+    s.fleeing = true;
   }
 
   // See SURRENDER_RADIUS. Run on the rout's stagger, never per tick.
@@ -4383,7 +4386,10 @@ export class Sim {
     for (const e of this.soldiers) {
       if (!e.alive || e.downed || e.captured || e.side === s.side || e.inVehicle >= 0 || e.mental === 'broken') continue;
       const d = Math.hypot(e.x - s.x, e.y - s.y);
-      if (d > SURRENDER_RADIUS || !sightToSoldier(this, e.x, e.y, s, e.level, eyeOf(this, e)).visible) continue;
+      // Standing eye to standing eye: a man gives up on his feet with his
+      // hands up. Read at his own stance he vanished behind 30 cm of relief
+      // the tick he broke and dropped, and gave up to nobody.
+      if (d > SURRENDER_RADIUS || !sightBetween(this, e.x, e.y, s.x, s.y, e.level, s.level, EYE_STAND, EYE_STAND).visible) continue;
       n++;
       if (d < cd) {
         cd = d;

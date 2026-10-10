@@ -154,7 +154,9 @@ describe('rout and isolated surrender (#790)', () => {
     const behind = stage([{ x: 30.5, y: 5.5 }], [{ x: 48.5, y: 20.5, leader: true }, { x: 20.5, y: 15.5, leader: true }]);
     behind.run(600);
     const [rear] = behind.mates;
-    expect(Math.hypot(behind.b.x - rear.x, behind.b.y - rear.y)).toBeLessThan(6 + 1.5); // ROUT_GATHER, and the free tile he was given
+    const gap = Math.hypot(behind.b.x - rear.x, behind.b.y - rear.y);
+    expect(gap).toBeLessThan(6); // ROUT_GATHER
+    expect(gap).toBeGreaterThan(1.5); // beside his leader, not on top of him
     expect(behind.b.mental).toBe('broken');
     expect(behind.b.fleeing).toBe(false); // gathered: he is not running any more
     const at = { x: behind.b.x, y: behind.b.y };
