@@ -65,6 +65,35 @@ describe('emplaced MG belts (#765)', () => {
     expect(fired).toBeGreaterThan(1); // and back in action after it
   });
 
+  it('firingAmmo reads the gun for the man serving it, and his own kit for everyone else (#787)', () => {
+    const { sim, e, belts, bursts, targets } = gun(7);
+    const crew = sim.teams[e.crewTeamId].soldierIds.map((id) => sim.soldiers[id]);
+    const gunner = crew.find((m) => m.role === 'gunner')!;
+    const bearer = crew.find((m) => m.role === 'bearer')!;
+    expect(sim.firingAmmo(gunner)).toEqual({ mag: WEAPONS.mg42.ammo.perUnit, reserve: belts() });
+    expect(sim.firingAmmo(bearer)).toEqual({ mag: bearer.magLeft, reserve: bearer.ammo.belt_792 }); // his rifle, his pouches
+    targets(12, 60.5);
+    let fired = 0;
+    for (let i = 0; i < 600 && fired < 5; i++) {
+      sim.step();
+      fired += bursts();
+    }
+    expect(sim.firingAmmo(gunner).mag).toBe(WEAPONS.mg42.ammo.perUnit - fired);
+    expect(gunner.magLeft).toBe(WEAPONS.mg42.ammo.perUnit); // what the roster used to show: untouched
+
+    const packed = new Sim(new GameMap(40, 20), 8);
+    const p = packed.addEmplacement('blue', 'mg42_lafette', 10.5, 10.5); // packed: nothing to serve
+    const carrier = packed.teams[p.crewTeamId].soldierIds.map((id) => packed.soldiers[id]).find((m) => m.role === 'gunner')!;
+    expect(packed.firingAmmo(carrier)).toEqual({ mag: carrier.magLeft, reserve: carrier.ammo.belt_792 });
+
+    const tube = new Sim(new GameMap(40, 20), 9);
+    const t = tube.addEmplacement('blue', 'mortar60', 10.5, 10.5, 0, 'deployed');
+    const tubeCrew = tube.teams[t.crewTeamId].soldierIds.map((id) => tube.soldiers[id]);
+    const shells = tubeCrew.reduce((a, m) => a + (m.ammo.shell_60 ?? 0), 0);
+    expect(shells).toBeGreaterThan(0);
+    expect(tube.firingAmmo(tubeCrew.find((m) => m.role === 'gunner')!)).toEqual({ mag: 0, reserve: shells });
+  });
+
   it('with no belt left to change to, the gun stops when the one on it runs out', () => {
     const { sim, e, bursts, targets } = gun(5);
     targets(16, 60.5);
@@ -76,6 +105,48 @@ describe('emplaced MG belts (#765)', () => {
       fired += bursts();
     }
     expect(fired).toBe(3);
+  });
+});
+
+// #787. Nothing used to bring a routed crew back: the defending commander
+// re-posts a squad only when an enemy stands on its post.
+describe('a routed crew goes back to its gun (#787)', () => {
+  it('the gunner who ran returns once he is steady, but not while an enemy holds the gun', () => {
+    const sim = new Sim(new GameMap(140, 40), 6);
+    const e = sim.addEmplacement('blue', 'mg42_lafette', 70.5, 20.5, 0, 'deployed');
+    const crew = sim.teams[e.crewTeamId].soldierIds.map((id) => sim.soldiers[id]);
+    const gunner = crew.find((m) => m.role === 'gunner')!;
+    // A quiet gun and a quiet enemy: this is about one man's legs, and a
+    // firefight round the pit would decide it for him.
+    for (const m of crew) {
+      m.ammo = {};
+      if (m !== gunner) m.magLeft = 0;
+    }
+    e.magLeft = 0;
+    const holder = sim.soldiers[sim.addSquad('red', 'holder', [{ name: 'H', weapon: 'kar98k', x: 62.5, y: 20.5, ammo: {} }]).soldierIds[0]];
+    holder.magLeft = 0;
+    const off = () => Math.hypot(gunner.x - e.x, gunner.y - e.y);
+
+    // The rout is staged. Nothing after it is.
+    for (let i = 0; i < 20; i++) {
+      gunner.morale = 0;
+      gunner.suppression = 1;
+      sim.step();
+    }
+    expect(gunner.mental).toBe('broken');
+    expect(gunner.fledGun).toBe(true);
+    for (let i = 0; i < 30 * 240 && gunner.mental !== 'steady'; i++) sim.step();
+    expect(gunner.mental).toBe('steady');
+    expect(off()).toBeGreaterThan(15); // he ran
+
+    for (let i = 0; i < 30 * 30; i++) sim.step();
+    expect(off()).toBeGreaterThan(15); // steady, and staying away: the enemy is 8 m from the gun
+    expect(gunner.fledGun).toBe(true);
+
+    holder.x = 5.5; // the enemy goes
+    for (let i = 0; i < 30 * 60 && gunner.fledGun; i++) sim.step();
+    expect(off()).toBeLessThanOrEqual(4); // CREW_RADIUS: on the gun again
+    expect(gunner.fledGun).toBe(false);
   });
 });
 

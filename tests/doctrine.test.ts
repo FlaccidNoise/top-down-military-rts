@@ -14,6 +14,14 @@ function mean(xs: number[]): number {
   return xs.reduce((a, b) => a + b, 0) / xs.length;
 }
 
+// One turn of the event loop. Every test in this file is synchronous, and
+// vitest awaits between tests on microtasks only, so the worker never reads
+// its message port for as long as the file runs. Its own heartbeat
+// (onTaskUpdate) times out at 60 s, the run reports "Errors 1 error" and exits
+// 1 with every test green. The two soak tests below are most of that time and
+// hand the loop back between battles. Nothing in a sim depends on it.
+const breathe = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
+
 // Honesty audit (spec: ai-commander.md "log every commander decision's
 // input set; assert no reads outside belief state + briefing"). Pragmatic,
 // code-review-level check: the commander is side-generalized (cfg.side),
@@ -328,11 +336,11 @@ describe('AI commander doctrine', () => {
     let sent = 0;
     let repeats = 0;
     const orderTeam = sim.orderTeam.bind(sim);
-    sim.orderTeam = (teamId, order, used) => {
+    sim.orderTeam = (teamId, order, used, routine) => {
       const st = sim.teams[teamId].orderState;
       sent++;
       if (st.order && st.phase !== 'balked' && st.order.kind === order.kind && Math.hypot(st.order.x - order.x, st.order.y - order.y) <= 5) repeats++;
-      orderTeam(teamId, order, used);
+      orderTeam(teamId, order, used, routine);
     };
     for (let i = 0; i < 3000; i++) {
       commander.update(sim);
@@ -371,7 +379,7 @@ describe('AI commander doctrine', () => {
     expect(sim.teams[rocket.teamIds[0]].orderState.order).toBeNull(); // the launcher was not sent to "suppress"
   });
 
-  it('armour follows the maneuver element onto its next objective instead of parking on the first (#763)', () => {
+  it('armour follows the maneuver element onto its next objective, and stays behind it (#763, #787)', () => {
     const sim = new Sim(new GameMap(220, 60), 107);
     const first = { x: 70, y: 30 };
     const second = { x: 170, y: 30 };
@@ -393,16 +401,108 @@ describe('AI commander doctrine', () => {
       posts: Object.fromEntries(rifles.map((q) => [q.id, first])),
       objectives: [first, second],
     });
-    let onFirst = false;
-    for (let i = 0; i < 6000 && !hulls.every((v) => v.x > first.x + 40); i++) {
+    // #787: and they follow BEHIND it. Sent straight to the objective, the
+    // hulls got there first and alone. While the objective the riflemen are
+    // working is untaken, a hull holds the standoff until the lead team is on
+    // it, and is never sent in ahead of that team.
+    let held = false;
+    let ranAhead = 0;
+    let onward = false;
+    const was = hulls.map(() => Infinity);
+    for (let i = 0; i < 6000 && !onward; i++) {
       commander.update(sim);
       sim.step();
-      if (hulls.every((v) => Math.hypot(v.x - first.x, v.y - first.y) <= 25)) onFirst = true;
+      const post = commander['maneuverPost'](sim);
+      const lead = post && commander['leadDistance'](sim, post);
+      if (!post || lead === undefined || commander['isTaken'](post)) continue;
+      hulls.forEach((v, h) => {
+        const d = Math.hypot(v.x - post.x, v.y - post.y);
+        if (lead > 35 && lead < 55 && d >= 50) held = true; // riflemen inside the standoff, hull still out at it
+        if (lead > 35 && d < 50 && d < was[h]) ranAhead++; // closing inside the standoff with nobody on the objective
+        was[h] = d;
+      });
+      onward = hulls.every((v) => v.x > first.x + 20);
     }
-    expect(onFirst).toBe(true); // they went to the first objective
-    expect(commander['takenPosts'].length).toBeGreaterThan(0); // which the riflemen then took
-    for (const v of hulls) expect(v.x).toBeGreaterThan(first.x + 40); // and they were sent on
+    expect(commander['takenPosts'].length).toBeGreaterThan(0); // the riflemen took the first objective
+    expect(onward).toBe(true); // and the hulls were sent on past it, toward the second
+    expect(held).toBe(true);
+    expect(ranAhead).toBe(0);
     expect(Math.hypot(hulls[0].x - hulls[1].x, hulls[0].y - hulls[1].y)).toBeGreaterThan(3); // not parked on one tile
+  });
+
+  it('every order a commander gives is a routine one, in attack and in defence (#787)', () => {
+    // A routine order leaves a man on a rescue, ammo run or weapon hand-over
+    // to finish it (tests/orders.test.ts proves that half). A commander tasks
+    // every team again each time a bound ends, and as direct orders those cut
+    // short 17.5 of the attacker's 29.9 rescues a battle.
+    for (const stance of ['attack', 'defend'] as const) {
+      const sim = new Sim(new GameMap(140, 60), 109);
+      const post = { x: stance === 'attack' ? 120 : 40, y: 30 };
+      const mg = sim.addSquad('red', 'MG', [
+        { name: 'G', weapon: 'mg42', x: 40.5, y: 30.5 },
+        { name: 'A1', weapon: 'kar98k', x: 41.5, y: 29.5 },
+      ]);
+      const rifle = sim.addSquad(
+        'red',
+        'Rifle',
+        Array.from({ length: 4 }, (_, i) => ({ name: `R${i}`, weapon: 'kar98k' as const, x: 40.5, y: 22.5 + i })),
+      );
+      sim.addSquad('blue', 'Garrison', [{ name: 'B1', weapon: 'kar98k', x: 122.5, y: 30.5 }]);
+      const commander = new RedCommander({ side: 'red', stance, posts: { [mg.id]: post, [rifle.id]: post } });
+      const seen: (boolean | undefined)[] = [];
+      const orderTeam = sim.orderTeam.bind(sim);
+      sim.orderTeam = (teamId, order, used, routine) => {
+        seen.push(routine);
+        orderTeam(teamId, order, used, routine);
+      };
+      for (let i = 0; i < 900; i++) {
+        commander.update(sim);
+        sim.step();
+      }
+      expect(seen.length, stance).toBeGreaterThan(0);
+      expect(seen.every((r) => r === true), stance).toBe(true);
+    }
+  });
+
+  it('a team that has charged an objective holds it; it is not charged again at the ground it stands on (#787)', () => {
+    // The objective reads live off side intel: here a last-known contact 6 m
+    // from the post that no man of the team will ever see. The sim ends the
+    // charge once the team is on the post with nobody in sight to close with,
+    // and the commander used to order it again every eval.
+    const sim = new Sim(new GameMap(140, 60), 111);
+    const post = { x: 110, y: 30 };
+    const mg = sim.addSquad('red', 'MG', [
+      { name: 'G', weapon: 'mg42', x: 50.5, y: 30.5 },
+      { name: 'A1', weapon: 'kar98k', x: 51.5, y: 29.5 },
+    ]);
+    const rifle = sim.addSquad(
+      'red',
+      'Rifle',
+      Array.from({ length: 5 }, (_, i) => ({ name: `R${i}`, weapon: 'kar98k' as const, x: 86.5, y: 28.5 + i, xp: 20 })),
+    );
+    rifle.soldierIds.forEach((id) => (sim.soldiers[id].morale = 1));
+    sim.soldiers[rifle.soldierIds[0]].role = 'leader';
+    sim.addSquad('blue', 'Elsewhere', [{ name: 'B', weapon: 'garand', x: 5.5, y: 5.5, ammo: {} }]); // a second side, out of the way
+    sim.soldiers[sim.soldiers.length - 1].magLeft = 0;
+    const commander = new RedCommander({ side: 'red', stance: 'attack', posts: { [mg.id]: post, [rifle.id]: post } });
+    const team = sim.teams[rifle.teamIds[0]];
+    let assaults = 0;
+    const orderTeam = sim.orderTeam.bind(sim);
+    sim.orderTeam = (teamId, order, used, routine) => {
+      if (teamId === team.id && order.kind === 'assault') assaults++;
+      orderTeam(teamId, order, used, routine);
+    };
+    let charging = 0;
+    for (let i = 0; i < 3600; i++) {
+      // staged intel: the ghost is kept fresh so the post reads live throughout
+      sim.contacts.red.set('ghost', { kind: 'infantry', x: post.x + 6, y: post.y, tick: sim.tick });
+      commander.update(sim);
+      sim.step();
+      if (team.orderState.order?.kind === 'assault') charging++;
+    }
+    expect(charging).toBeGreaterThan(0); // the charge was made
+    expect(assaults).toBe(1); // once: it was 1 per 5 s eval for as long as the post read live
+    expect(team.orderState.order?.kind).toBe('defend'); // and the team holds the ground it took
   });
 
   it('reserve still commits when a maneuver team bleeds out mid-assault (the executing-assault guard must not skip the loss check)', () => {
@@ -456,15 +556,17 @@ describe('AI commander doctrine', () => {
     sim.tick = SPOT_INTERVAL + 150;
     commander.update(sim);
     expect(reserveTeam.orderState.order).not.toBeNull(); // reserve committed
+    // #787: and the commander says so, once, on its own side's channel
+    expect(sim.takeUnitEvents().filter((e) => e.kind === 'reserve-committed').map((e) => [e.side, e.name])).toEqual([['red', 'HQ']]);
     expect(manTeam.orderState.order?.kind).toBe('assault'); // and the charge was NOT re-rolled
 
     // #763: committed means commanded. The reserve used to get this one order
     // and no other; it now maneuvers with the rest, bound after bound.
     let reserveOrders = 0;
     const orderTeam = sim.orderTeam.bind(sim);
-    sim.orderTeam = (teamId, order, used) => {
+    sim.orderTeam = (teamId, order, used, routine) => {
       if (teamId === reserveTeam.id) reserveOrders++;
-      orderTeam(teamId, order, used);
+      orderTeam(teamId, order, used, routine);
     };
     const resX = () => mean(reserve.soldierIds.map((id) => sim.soldiers[id].x));
     const x0 = resX();
@@ -515,6 +617,7 @@ describe('AI commander doctrine', () => {
     sim.tick = SPOT_INTERVAL + 10800 + 150;
     commander.update(sim);
     expect(commander['culminated']).toBe(true);
+    expect(sim.takeUnitEvents().filter((e) => e.kind === 'culminated').map((e) => e.side)).toEqual(['red']); // #787: reported once
     expect(manTeam.orderState.order?.kind).toBe('defend'); // consolidating on the ground it holds
 
     // every man back on his feet: the attack stays broken off
@@ -614,15 +717,19 @@ describe('AI commander doctrine', () => {
     const commander = new RedCommander({ side: 'red', stance: 'attack', posts: { [mg.id]: post, [rifle.id]: post } });
 
     let smokeOnPostTick = -1; // first tick a smoke puff sits on the objective
+    let smokeSaidTick = -1; // tick the commander reported the mission (#787)
     let chargeStepsOffTick = -1; // first tick the assault is actually executing (a real charge, not a balk)
     for (let i = 0; i < 12000 && chargeStepsOffTick < 0; i++) {
       commander.update(sim);
       sim.step();
       if (smokeOnPostTick < 0 && sim.smoke.some((p) => Math.hypot(p.x - post.x, p.y - post.y) <= 10)) smokeOnPostTick = sim.tick;
+      if (smokeSaidTick < 0 && sim.takeUnitEvents().some((e) => e.kind === 'smoke-objective' && e.side === 'red')) smokeSaidTick = sim.tick;
       const os = sim.teams[rifle.teamIds[0]].orderState;
       if (chargeStepsOffTick < 0 && os.order?.kind === 'assault' && os.phase === 'executing') chargeStepsOffTick = sim.tick;
     }
     expect(smokeOnPostTick).toBeGreaterThan(0); // the commander employed mortar smoke on the objective
+    expect(smokeSaidTick).toBeGreaterThan(0); // and said so when it called the mission, before the rounds landed
+    expect(smokeSaidTick).toBeLessThanOrEqual(smokeOnPostTick);
     expect(chargeStepsOffTick).toBeGreaterThan(0); // and the maneuver team's charge actually stepped off
     // the doctrine loop, in order: a charge onto this covered post balks until
     // the screen blinds it, so the committed charge can only follow the smoke
@@ -703,7 +810,7 @@ describe('AI commander doctrine', () => {
   // man in the open crawls into cover instead of being shot where he stands
   // (movement design §2.2). It is the tail that stretched, not the fight:
   // blue is at 129 of 138 by 5k either way.
-  it('existing campaign battles still produce a winner within 80k ticks', { timeout: 150_000 }, () => {
+  it('existing campaign battles still produce a winner within 80k ticks', { timeout: 150_000 }, async () => {
     const c = newCampaign(1);
     const front = newFront(c, makeDefaultSector());
     const able = front.chits.find((ch) => ch.side === 'blue')!;
@@ -737,6 +844,7 @@ describe('AI commander doctrine', () => {
     let steps = 0;
     while (sim.winner === null && steps < 80000) {
       if (steps % 1000 === 0) pressBlue(); // keep pushing toward red's current mass
+      if (steps % 10000 === 0) await breathe();
       commander.update(sim);
       sim.step();
       steps++;
@@ -857,10 +965,12 @@ describe('night intel A/B', () => {
     return { dists: spotDist, uniq: everSeen.size };
   };
 
-  it('at 02:00 the intel picture collapses to the cap; at 14:00 it does not (seeds 11, 42)', () => {
+  it('at 02:00 the intel picture collapses to the cap; at 14:00 it does not (seeds 11, 42)', async () => {
     for (const seed of [11, 42]) {
       const day = runBattle(seed, 14 * 60);
+      await breathe();
       const night = runBattle(seed, 2 * 60);
+      await breathe();
       // measured: seed 11 day 28 distinct / max 193.5 m, night 20 / 24.9 m;
       //           seed 42 day 24 distinct / max 126.9 m, night 17 / 24.6 m.
       expect(night.dists.length).toBeGreaterThan(0); // liveness: night spotting fires under natural dynamics

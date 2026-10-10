@@ -76,6 +76,41 @@ describe('EventPings — recoveries', () => {
   });
 });
 
+// #787: the commander's voice, and the one line about the enemy's movement.
+describe('EventPings — commander voice', () => {
+  const hq = (kind: UnitEvent['kind'], side: UnitEvent['side']): UnitEvent => ({ kind, side, name: 'HQ', x: 10, y: 10 });
+  const closing = (side: UnitEvent['side'], team: string): UnitEvent => ({ kind: 'closing', side, name: 'Gefr. Weber', team, x: 10, y: 10, id: 7 });
+
+  it("the player's own headquarters reports what it decided", () => {
+    const p = new EventPings();
+    p.add([hq('reserve-committed', 'blue'), hq('smoke-objective', 'blue'), hq('culminated', 'blue')], 0);
+    expect(p.labels()).toEqual(['HQ — RESERVE COMMITTED', 'HQ — SMOKE ON OBJECTIVE', 'HQ — ATTACK CALLED OFF']);
+  });
+
+  it("the enemy's headquarters is never heard", () => {
+    const p = new EventPings();
+    p.add([hq('reserve-committed', 'red'), hq('smoke-objective', 'red'), hq('culminated', 'red')], 0);
+    expect(p.labels()).toEqual([]);
+  });
+
+  it('a German team seen coming for blue ground is named; a blue advance is not news', () => {
+    const p = new EventPings();
+    p.add([closing('red', '3. Gruppe'), closing('blue', 'Able 1')], 0);
+    expect(p.labels()).toEqual(['3. Gruppe — CLOSING IN']);
+    p.add([closing('red', '3. Gruppe')], PIN_COOLDOWN - 1); // its next bound: same news
+    expect(p.labels()).toEqual(['3. Gruppe — CLOSING IN']);
+  });
+
+  it('repeated smoke missions are one line per cooldown', () => {
+    const p = new EventPings();
+    p.add([hq('smoke-objective', 'blue')], 0);
+    p.add([hq('smoke-objective', 'blue')], 300);
+    expect(p.labels()).toEqual(['HQ — SMOKE ON OBJECTIVE']);
+    p.add([hq('smoke-objective', 'blue')], PIN_COOLDOWN);
+    expect(p.labels()).toHaveLength(2);
+  });
+});
+
 describe('EventPings — team pinned-majority aggregate', () => {
   it('fires only past a majority, and only once per crossing', () => {
     const p = new EventPings();
