@@ -60,10 +60,23 @@ function enemyRead(sim: Sim): EnemyRead {
   return { exact: false, lit, of, word: ENEMY_READS[lit] };
 }
 
+/**
+ * The player is the defender. Staging gives the attacker the west edge and
+ * says so in sim.threatAxis: an attacker expects his enemy east, a defender
+ * west (bridge.ts). The drill and every battle the player starts read false.
+ */
+export const defending = (sim: Sim): boolean => Math.cos(sim.threatAxis.blue) < 0;
+
+// The rule is the same for both sides: the battle ends when one of them is
+// under its break line, and in no other way. So the defender's goal is the
+// attacker's, said from where he stands. "Hold" alone would be false: an
+// attack that stalls above its break line does not end the battle.
+export const GOAL_LABEL = { attack: 'Break them', defend: 'Break their attack' } as const;
+
 /** null before either side is fielded: the strip has nothing true to say. */
 export function battleGoal(sim: Sim): BattleGoal | null {
   if (sim.startStrength.blue <= 0 || sim.startStrength.red <= 0) return null;
-  return { label: 'Break them', own: strength(sim, 'blue'), enemy: enemyRead(sim) };
+  return { label: defending(sim) ? GOAL_LABEL.defend : GOAL_LABEL.attack, own: strength(sim, 'blue'), enemy: enemyRead(sim) };
 }
 
 /** The strip as plain text: what a screen reader hears, and what the tests read. */

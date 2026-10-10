@@ -216,6 +216,11 @@ export class TheaterView {
 
   constructor(private readonly theater: Theater) {}
 
+  /** A flash line is on the map now. The tutorial's goal line stands down for it: same place. */
+  get flashing(): boolean {
+    return this.flashText !== '' && performance.now() < this.flashUntil;
+  }
+
   flash(text: string): void {
     this.flashText = text;
     this.flashUntil = performance.now() + 6000;
@@ -819,12 +824,22 @@ export class TheaterView {
     void speed;
     if (this.flashText && performance.now() < this.flashUntil) {
       // Under the top bar is unreadable, and that bar wraps to two rows on a
-      // phone — so its height is measured, never assumed.
+      // phone — so its height is measured, never assumed. On a phone the strip
+      // stacks under the bar as well, and the inset is where the map starts.
+      // Turned on its side the bar is in the left column, beside the map and
+      // not over it: there it pushes nothing down.
       const bar = typeof document === 'undefined' ? null : document.querySelector('#theater-hud .th-top')?.getBoundingClientRect();
+      const over = bar && bar.height > 0 && bar.right > this.inset.left + 1;
+      const x = (this.inset.left + w - this.inset.right) / 2;
+      const y = Math.max(over ? bar.bottom : 4, this.inset.top) + 20;
       ctx.textAlign = 'center';
-      ctx.fillStyle = '#e8dcc4';
       ctx.font = '13px ui-monospace, monospace';
-      ctx.fillText(this.flashText, w / 2, bar && bar.height > 0 ? bar.bottom + 20 : 24);
+      // On a plate: the line lands on whatever town label is there.
+      const tw = ctx.measureText(this.flashText).width;
+      ctx.fillStyle = 'rgba(14, 17, 11, 0.88)';
+      ctx.fillRect(x - tw / 2 - 8, y - 14, tw + 16, 20);
+      ctx.fillStyle = '#e8dcc4';
+      ctx.fillText(this.flashText, x, y);
     }
   }
 

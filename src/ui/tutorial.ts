@@ -29,6 +29,8 @@ export type TutorialEvent =
   | 'deploy-commit'
   | 'debrief-open'
   | 'debrief-closed'
+  | 'objective-captured'
+  | 'posture-set'
   // any battle
   | 'squad-selected'
   | 'order-issued'
@@ -59,7 +61,8 @@ export type StepId =
   | 'deploy'
   | 'battle-select'
   | 'battle-order'
-  | 'debrief';
+  | 'debrief'
+  | 'dig-in';
 
 export type Scene = 'drill' | 'campaign';
 
@@ -73,10 +76,10 @@ export interface TutorialState {
 /**
  * A place in the game world a step can ring. The game resolves it per frame.
  * 'squad' is the selected squad, or one near the middle of the screen. The
- * rest of the battle marks are the drill's own ground and men. 'company' and
- * 'town' are on the theater map.
+ * rest of the battle marks are the drill's own ground and men. 'company',
+ * 'town' and 'holder' (the company on a town just taken) are on the theater map.
  */
-export type WorldMark = 'squad' | 'lead' | 'hedge' | 'enemy' | 'other' | 'house' | 'company' | 'town';
+export type WorldMark = 'squad' | 'lead' | 'hedge' | 'enemy' | 'other' | 'house' | 'company' | 'town' | 'holder';
 
 /** A world mark on screen: centre and ring radius, in CSS px. */
 export interface Circle {
@@ -94,7 +97,7 @@ export interface Step {
   doneOn: TutorialEvent;
   /** A step that must already be done before this one may show. */
   requires?: StepId;
-  /** CSS selector the bubble points at. Without one the bubble points at `mark`. */
+  /** CSS selector the bubble points at. With none laid out, or none given, the bubble points at `mark`. */
   anchor?: string;
   /** A world point drawn as a pulsing ring. */
   mark?: WorldMark;
@@ -261,7 +264,8 @@ export const STEPS: readonly Step[] = [
     showOn: ['squad-selected'],
     doneOn: 'order-issued',
     mark: 'squad',
-    text: { desktop: 'Right-click the ground to send them.', touch: 'Press and hold the ground to send them.' },
+    // "Move", not "send": the first battle may be one the player defends.
+    text: { desktop: 'Right-click the ground to move them.', touch: 'Press and hold the ground to move them.' },
   },
   {
     id: 'debrief',
@@ -270,6 +274,18 @@ export const STEPS: readonly Step[] = [
     doneOn: 'debrief-closed',
     anchor: '#next',
     text: both('Your men carry over. The dead do not.'),
+  },
+  {
+    // The one posture the first run teaches, and only once there is something
+    // to hold. The button is on the company's card, so until that company is
+    // selected the bubble points at the company.
+    id: 'dig-in',
+    scene: 'campaign',
+    showOn: ['objective-captured'],
+    doneOn: 'posture-set',
+    anchor: '#theater-hud [data-post="dig"]',
+    mark: 'holder',
+    text: both('Dig in to hold what you take.'),
   },
 ];
 
@@ -559,7 +575,6 @@ export class Tutorial {
             const avoid = hud ? Array.from(hud.querySelectorAll('.panel')).flatMap((e) => visibleRect(e) ?? []) : [];
             return { anchor, clear: (panel && visibleRect(panel)) ?? anchor, avoid };
           }
-          return null;
         }
         const c = step.mark ? this.host.world?.(step.mark) : null;
         if (!c) return null;

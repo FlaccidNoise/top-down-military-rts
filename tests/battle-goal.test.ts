@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { GameMap } from '../src/sim/map';
 import { Sim } from '../src/sim/sim';
-import { battleGoal, BREAK_FLOOR_MIN, BREAK_FRACTION, breakFloor, edgePointer, effective, ENEMY_READS, enemyPointer, goalText, quietPrompt, type SideStrength } from '../src/ui/battle-goal';
+import { battleGoal, BREAK_FLOOR_MIN, BREAK_FRACTION, breakFloor, defending, edgePointer, effective, ENEMY_READS, enemyPointer, GOAL_LABEL, goalText, quietPrompt, type SideStrength } from '../src/ui/battle-goal';
 
 // Two forces far apart on bare ground: nobody is in range, so the only thing
 // that changes a count is this test.
@@ -217,12 +217,42 @@ describe('the enemy pointer', () => {
   });
 });
 
+describe('the goal when the player defends', () => {
+  it('reads the defender off the side staging says the enemy comes from', () => {
+    const sim = standoff(1, 1);
+    expect(defending(sim)).toBe(false); // a bare Sim, and the drill: the player attacks
+    sim.threatAxis.blue = Math.PI; // bridge.ts, for the side that is attacked
+    expect(defending(sim)).toBe(true);
+  });
+
+  it('says the same rule from where the defender stands', () => {
+    const sim = standoff(1, 1);
+    expect(battleGoal(sim)!.label).toBe(GOAL_LABEL.attack);
+    sim.threatAxis.blue = Math.PI;
+    expect(battleGoal(sim)!.label).toBe(GOAL_LABEL.defend);
+    expect(goalText(battleGoal(sim)!)).toMatch(/^Break their attack · GE /);
+  });
+
+  it('is still true: a defender wins when the attacker goes under his break line, and only then', () => {
+    const sim = standoff(2, 2);
+    sim.threatAxis.blue = Math.PI;
+    sim.threatAxis.red = 0;
+    for (let i = 0; i < 200; i++) sim.step();
+    expect(sim.winner).toBeNull(); // holding the ground decides nothing by itself
+    const red = sim.soldiers.filter((s) => s.side === 'red');
+    const keep = Math.ceil(breakFloor(sim, 'red')) - 1;
+    red.slice(keep).forEach((s) => { s.alive = false; });
+    sim.step();
+    expect(sim.winner).toBe('blue');
+  });
+});
+
 describe('quietPrompt', () => {
   it('names the goal and the side the enemy is expected from before any contact', () => {
     const sim = standoff(1, 1);
     expect(quietPrompt(sim)).toBe('Break them · enemy to the east →');
     sim.threatAxis.blue = Math.PI;
-    expect(quietPrompt(sim)).toBe('Break them · enemy to the west ←');
+    expect(quietPrompt(sim)).toBe('Break their attack · enemy to the west ←');
   });
 
   it('points at the nearest enemy the player knows of once there is one', () => {

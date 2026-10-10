@@ -54,6 +54,7 @@ function run(state: TutorialState, events: TutorialEvent[], scene: Scene = 'camp
 const CAMPAIGN: TutorialEvent[] = [
   'campaign-start', 'force-selected', 'move-ordered', 'clock-advanced', 'contact-open', 'contact-closed',
   'deploy-start', 'deploy-commit', 'squad-selected', 'order-issued', 'debrief-open', 'debrief-closed',
+  'objective-captured', 'posture-set',
 ];
 const DRILL: TutorialEvent[] = [
   'drill-start', 'squad-selected', 'order-issued', 'enemy-seen', 'fire-armed', 'fire-ordered', 'house-quiet', 'squad-switched', 'assault-ordered', 'battle-won',
@@ -120,7 +121,7 @@ describe('saveState', () => {
 describe('advance, the campaign', () => {
   it('walks the whole chain in teaching order', () => {
     const { state, shown } = run(fresh(), CAMPAIGN);
-    expect(shown).toEqual(['select-force', 'march', 'play', 'contact', 'deploy', 'battle-select', 'battle-order', 'debrief']);
+    expect(shown).toEqual(['select-force', 'march', 'play', 'contact', 'deploy', 'battle-select', 'battle-order', 'debrief', 'dig-in']);
     expect(new Set(state.done)).toEqual(new Set(ofScene('campaign').map((s) => s.id)));
   });
 
@@ -176,6 +177,18 @@ describe('advance, the campaign', () => {
 
   it('a later squad pick does not bring the order step back once it is done', () => {
     expect(advance(withDone('battle-select', 'battle-order'), 'squad-selected').show).toBeNull();
+  });
+
+  it('teaches Dig in once, when there is an objective to hold, and not before', () => {
+    expect(advance(fresh(), 'posture-set').show).toBeNull();
+    const taken = advance(fresh(), 'objective-captured');
+    expect(taken.show).toBe('dig-in');
+    const dug = advance(taken.state, 'posture-set', 'campaign', 'dig-in');
+    expect(dug.hide).toBe(true);
+    expect(advance(dug.state, 'objective-captured').show).toBeNull();
+    const step = STEPS.find((s) => s.id === 'dig-in')!;
+    // The button is on a card that is not always up: the step can point at the company instead.
+    expect(step.anchor && step.mark).toBeTruthy();
   });
 
   it('re-arms the next un-done step on campaign start, across a reload', () => {

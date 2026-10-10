@@ -21,6 +21,8 @@ export interface DebriefSummary {
   kia: readonly string[];
   wounded: number;
   enemyLosses: number;
+  /** What a few of the player's men did, one line each (highlights.ts). May be empty. */
+  highlights: readonly string[];
 }
 
 export interface DebriefAction {
@@ -47,6 +49,7 @@ export function debriefHtml(d: DebriefSummary, actions: readonly DebriefAction[]
       ${stat(d.enemyLosses > 0 ? `~${d.enemyLosses}` : '0', 'enemy losses')}
     </div>
     <p class="fallen${d.kia.length === 0 ? ' none' : ''}">${esc(fallenLine(d.kia))}</p>
+    ${d.highlights.length ? `<ul class="db-high">${d.highlights.map((h) => `<li>${esc(h)}</li>`).join('')}</ul>` : ''}
     <div id="db-roster"></div>
     </div></div>
     ${actionRow(actions)}`;

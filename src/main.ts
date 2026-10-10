@@ -19,7 +19,7 @@ import { operationStatus, REINFORCE_CYCLE_DAYS, REINFORCE_PER_COMPANY, type Chit
 import { saveGame } from './strategic/save';
 import { makeDefaultSector } from './strategic/sector';
 import { emplacementOf, Hud, infantrySquads } from './ui/hud';
-import { drawEnemyPointer, enemyPointer, QUIET_PROMPT_S, quietPrompt } from './ui/battle-goal';
+import { drawEnemyPointer, enemyPointer, type Pointer, QUIET_PROMPT_S, quietPrompt } from './ui/battle-goal';
 import { debriefHtml, drillEndHtml } from './ui/debrief';
 import { frameSteps, nextSpeed, type BattleSpeed } from './ui/battle-speed';
 import { StratHud } from './ui/strat-hud';
@@ -41,6 +41,7 @@ import { fmtEta, type MarchPreview, type ViewInset } from './render/theater-view
 import { CustomizeScreen } from './ui/customize';
 import { DEFAULT_PRESET, FIRST_PRESET, presetSpec } from './campaign/presets';
 import { goalLine } from './ui/goal-line';
+import { Highlights } from './ui/highlights';
 import { SPEC_TAG, specStream, type CampaignConfig, type TheaterConfig } from './campaign/spec';
 import { makeTheater, TheaterGenError } from './strategic/theatergen';
 import { DispositionError, makeDisposition } from './strategic/theatergen/disposition';
@@ -272,6 +273,8 @@ const trackAlt = (e: KeyboardEvent | MouseEvent): void => { mouse.alt = e.altKey
 window.addEventListener('keydown', trackAlt);
 window.addEventListener('keyup', trackAlt);
 const pings = new EventPings();
+// What the player's men did in this battle, by name, for the debrief. One battle, never saved.
+const highlights = new Highlights();
 // Touch-only sticky modes. A phone has no shift key and no second mouse
 // button, so the two modifiers the desktop path reads off the keyboard become
 // latched chips in the touch bar. Both stay false on desktop, where the
@@ -465,6 +468,7 @@ const theaterHud = new TheaterHud({
     if (!v2) return;
     const r = setPosture(v2.front, v2.selectedForce, p);
     if (!r.ok) v2.view.flash(MOVE_REJECT_TEXT[r.reason]);
+    else tutorial?.notify('posture-set');
   },
 });
 const tooltip = new Tooltip(hud.root);
@@ -527,7 +531,8 @@ const tutorial = campPinned
       stage: stageRect,
       goal: () => {
         const v2 = mode === 'strategic' && !opEnded ? S().v2 : null;
-        const text = v2 && goalLine(v2.goals);
+        // The view's flash line is drawn where this line sits. A flash is news and lasts seconds.
+        const text = v2 && !v2.view.flashing && goalLine(v2.goals);
         return text ? { text, over: stageRect() } : null;
       },
       onStep: onTutorialStep,
@@ -565,6 +570,10 @@ function onTutorialStep(step: Step | null): void {
 }
 
 const MARK_MARGIN_PX = 24;
+// Half the width of the enemy pointer with its label: how near a step's bubble or ring it may come.
+const POINTER_REACH_PX = 56;
+// The ENEMY pointer as drawn on the last battle frame, for the gates. null = none drawn.
+let foeShown: Pointer | null = null;
 // A bubble that points at a chip in the order bar sits in this band above it.
 const CHIP_BUBBLE_BAND_PX = 84;
 
@@ -616,6 +625,7 @@ function tutorialMark(mark: WorldMark): Circle | null {
     }
     case 'company':
     case 'town':
+    case 'holder':
       return null; // theater marks: theaterMark
     // The squad the player has picked. Before any pick, the one nearest the
     // middle of the map on screen: the ring must be somewhere they can see.
@@ -667,6 +677,17 @@ function marchTargets(v2: SessionV2): number[] {
   return marchTargetsCached;
 }
 
+// The objective the player took last and still holds, from the war's own
+// event log. null = he has taken none yet.
+function capturedObjective(v2: SessionV2): number | null {
+  const objectives = v2.front.theater.objectiveNodes;
+  for (let i = v2.front.events.length - 1; i >= 0; i--) {
+    const e = v2.front.events[i];
+    if (e.kind === 'capture' && e.nodeId !== undefined && objectives.includes(e.nodeId) && v2.front.controlByNode[e.nodeId] === 'blue') return e.nodeId;
+  }
+  return null;
+}
+
 // The theater's two marks. 'company' is one of the player's counters as it is
 // drawn: the strongest that is whole on the map. 'town' is where the selected
 // company should march (marchTargets). Each prefers a place the player can
@@ -686,6 +707,17 @@ function theaterMark(mark: WorldMark): Circle | null {
           return r ? [{ x: (r.x0 + r.x1) / 2, y: (r.y0 + r.y1) / 2, r: Math.hypot(r.x1 - r.x0, r.y1 - r.y0) / 2 + 4 }] : [];
         }),
     );
+  }
+  if (mark === 'holder') {
+    // The company standing on the objective the player took last, as drawn.
+    const n = capturedObjective(v2);
+    if (n === null) return null;
+    const on = v2.front.forces.find((f) => f.side === 'blue' && f.strength > 0 && f.pos.kind === 'node' && f.pos.nodeId === n);
+    const r = on && v2.view.counterOf(on.id);
+    if (r) return { x: (r.x0 + r.x1) / 2, y: (r.y0 + r.y1) / 2, r: Math.hypot(r.x1 - r.x0, r.y1 - r.y0) / 2 + 4 };
+    const at = v2.front.theater.nodes[n].pos;
+    const [x, y] = v2.view.toScreen(at.x, at.y, view.w, view.h);
+    return { x, y, r: 22 };
   }
   if (mark === 'town') {
     if (v2.selectedForce < 0) return null;
@@ -821,7 +853,7 @@ function showContactModal(e: Engagement): void {
   // attack for free while the AI re-paths its whole approach. Defenders only
   // get Attack and (when it qualifies) Auto-resolve.
   const defending = aiSides.has(attacker.side);
-  debriefEl.innerHTML = `<div class="db-scroll"><div class="db">
+  showCard(`<div class="db-scroll"><div class="db">
     <h1>CONTACT</h1>
     <p class="sub">${attacker.name} has met ${defender.name}.</p>
     <div class="fc">${forceCol(attacker)}<div class="fc-vs">VS</div>${forceCol(defender)}</div>
@@ -832,8 +864,7 @@ function showContactModal(e: Engagement): void {
       <button id="fight" class="primary">Attack</button>
       ${forced ? '<button id="autoresolve">Auto-resolve</button>' : ''}
       ${defending ? '' : '<button id="standdown">Stand down</button>'}
-    </div>`;
-  debriefEl.style.display = 'flex';
+    </div>`, false);
   document.getElementById('fight')!.onclick = () => startEngagementBattle(e);
   if (forced) {
     document.getElementById('autoresolve')!.onclick = () => {
@@ -962,6 +993,7 @@ function bootBattle(staged: { sim: Sim; commander: BattleAi; blueCommander: Batt
   boxMode = false;
   addMode = false;
   pings.reset();
+  highlights.reset();
   tooltip.clear();
   lastOrderTick = 0;
   battleSpeed = 1;
@@ -1021,8 +1053,7 @@ function showDrillEnd(): void {
   debriefShown = true;
   const won = sim.winner === 'blue';
   const hasCampaign = probeSave().status === 'ok';
-  debriefEl.innerHTML = drillEndHtml(won, hasCampaign ? 'Back to the menu' : 'Start the campaign');
-  debriefEl.style.display = 'flex';
+  showResultCard(drillEndHtml(won, hasCampaign ? 'Back to the menu' : 'Start the campaign'));
   const leave = (): void => {
     debriefEl.style.display = 'none';
     drill = null;
@@ -1265,13 +1296,37 @@ function debriefRows(): string {
     .join('');
 }
 
+// Every card in #debrief comes through here. `overBattle`: a card over the
+// battlefield the player just fought on (ui.css, #debrief.over-battle), where
+// the others are a page of their own.
+function showCard(html: string, overBattle: boolean): void {
+  debriefEl.innerHTML = html;
+  debriefEl.classList.toggle('over-battle', overBattle);
+  debriefEl.style.display = 'flex';
+}
+
+// A battle's result, over the battle. The fight stops where it ended, so the
+// ground, the smoke and the bodies are still there behind the card, and the
+// HUD and the selection step aside (frame() hides the HUD while debriefShown).
+function showResultCard(html: string): void {
+  paused = true;
+  selectedSquads = [];
+  selectedTeam = -1;
+  selectedVehicle = -1;
+  renderer.selectedVehicle = -1;
+  armedOrder = null;
+  setTargetMode('');
+  inspectedSoldier = -1;
+  tooltip.clear();
+  showCard(html, true);
+}
+
 // The result first, the roster on request: a company's full table is 150 rows.
 function renderDebrief(record: BattleRecord, redLosses: number, groundLine: string, onNext: () => void): void {
-  debriefEl.innerHTML = debriefHtml(
-    { won: record.won, outcome: groundLine, kia: record.kia, wounded: record.wounded.length, enemyLosses: redLosses },
+  showResultCard(debriefHtml(
+    { won: record.won, outcome: groundLine, kia: record.kia, wounded: record.wounded.length, enemyLosses: redLosses, highlights: highlights.top() },
     [{ id: 'next', label: 'Return to the front', primary: true }, { id: 'db-show-roster', label: 'Show roster' }],
-  );
-  debriefEl.style.display = 'flex';
+  ));
   document.getElementById('next')!.onclick = onNext;
   const toggle = document.getElementById('db-show-roster')!;
   toggle.onclick = () => {
@@ -1487,12 +1542,11 @@ function showOperationEnd(status: 'won' | 'lost'): void {
   const sess = S();
   const day = sess.v2 ? sess.v2.front.day : sess.front.day;
   const kia = Object.values(S().campaign.soldiers).filter((s) => s.status === 'kia').length;
-  debriefEl.innerHTML = `<div class="db-scroll"><div class="db">
+  showCard(`<div class="db-scroll"><div class="db">
     <h1 class="${status === 'won' ? 'win' : 'loss'}">OPERATION ${status === 'won' ? 'ACCOMPLISHED' : 'FAILED'}</h1>
     <p class="sub">${S().campaign.log.length} battles fought over ${day} days · ${kia} men killed.</p>
     </div></div>
-    <div class="db-actions"><button id="next" class="primary">Main menu</button><button id="same">Same theater again</button></div>`;
-  debriefEl.style.display = 'flex';
+    <div class="db-actions"><button id="next" class="primary">Main menu</button><button id="same">Same theater again</button></div>`, false);
   document.getElementById('next')!.onclick = () => {
     debriefEl.style.display = 'none';
     openMainMenu();
@@ -2145,6 +2199,8 @@ window.addEventListener('keydown', (e) => {
     return;
   }
   if (mode === 'menu') return;
+  // A result card owns the screen: the battle behind it is over and stays stopped.
+  if (mode === 'battle' && debriefShown) return;
 
   const km = loadKeymap(localStorage);
   const action = actionForEvent(e, km);
@@ -2307,6 +2363,7 @@ function cycleFloorFocus(): void {
   stage: stageRect,
   // The tutorial as the player sees it, and the drill it is teaching: scripts/drill.mjs
   // finds its targets here, the way a player finds them from the ring.
+  enemyPointer: () => foeShown,
   tutorialView: () => (tutorial ? { step: tutorial.step?.id ?? null, ring: tutorial.ring(), occupied: tutorial.occupied() } : null),
   getDrill: () => (drill ? { lead: drill.lead, rifles: drill.rifles, shooter: drill.shooter, hedge: drill.hedge, house: drill.house } : null),
   setFow: (on: boolean) => {
@@ -2347,7 +2404,8 @@ function frame(now: number): void {
   const held = mode === 'battle' && now < holdUntil;
   if (!(mode === 'battle' ? paused : stratPaused) && !held) fxNow += dtReal;
   if (mode === 'battle') easeCamera(dtReal);
-  hud.root.style.display = mode === 'battle' ? '' : 'none';
+  // Under a result card the battle HUD is gone: what is left is the battlefield.
+  hud.root.style.display = mode === 'battle' && !debriefShown ? '' : 'none';
   // Gates the portrait guidance (ui.css). Not the drill: its map is a third as
   // wide as a campaign battle's and plays whole in portrait.
   document.documentElement.classList.toggle('in-battle', mode === 'battle' && drill === null);
@@ -2375,6 +2433,8 @@ function frame(now: number): void {
       if (st.state === 'decided') showOperationEnd(st.winner === 'blue' ? 'won' : 'lost');
     }
     theaterHud.update(v2.front, v2.goals, v2.selectedForce, stratPaused, speedIdx, v2.campaignCfg.supply, v2.campaignCfg.recon === 'contacts', v2.campaignCfg.nightTempo);
+    // The first objective taken, by a battle or by walking in: one step, once.
+    if (tutorial?.wants('objective-captured') && !v2.pending && capturedObjective(v2) !== null) tutorial.notify('objective-captured');
     // One thing talks at a time: while a tutorial step is on screen the
     // theater's own "what next" line is quiet (ui.css, .coached).
     theaterHud.root.classList.toggle('coached', tutorial?.isShowing ?? false);
@@ -2511,6 +2571,8 @@ function frame(now: number): void {
       .takeUnitEvents()
       .filter((e) => (e.id !== undefined ? sim.soldierVisibleTo('blue', sim.soldiers[e.id]) : e.side === 'blue' || sim.fowDisabled || sim.sideSeesPoint('blue', e.x, e.y)));
     pings.add(unitEvents, sim.tick, teamPulses(sim));
+    highlights.observe(sim);
+    highlights.add(unitEvents, sim);
     renderer.addUnitEvents(unitEvents, fxNow);
     barks.observe(sim, fxNow);
     barks.addUnitEvents(unitEvents, sim, fxNow);
@@ -2544,7 +2606,8 @@ function frame(now: number): void {
       noteSelection();
     }
     renderer.draw(ctx, cam, selectedSquads, fxNow, floorFocus);
-    barks.draw(ctx, cam, sim, fxNow, view.w, view.h);
+    // Under a result card only the battlefield is drawn: no words, chips or rings over it.
+    if (!debriefShown) barks.draw(ctx, cam, sim, fxNow, view.w, view.h);
     if (deployPhase) {
       const zone = deployZone();
       const [zx0, zy0] = cam.worldToScreen(zone.x0, 0, view.w, view.h);
@@ -2596,7 +2659,8 @@ function frame(now: number): void {
       }
     }
     const stage = stageRect();
-    drawOverlays(ctx, cam, sim, {
+    const taken = tutorial?.occupied() ?? [];
+    if (!debriefShown) drawOverlays(ctx, cam, sim, {
       shot,
       selectedSquad: primary,
       selectedTeam,
@@ -2611,12 +2675,15 @@ function frame(now: number): void {
       floorFocus,
       deploy: deployPhase ? { ...deployZone(), bearing: deployBearing() } : null,
       clear: stage,
-      avoid: tutorial?.occupied(),
+      avoid: taken,
     }, pings);
-    // The battle opens on the player's men: the pointer says which way the enemy is.
-    // Quiet while a tutorial step is on screen: its ring is the thing to look at.
-    const foe = sim.winner || tutorial?.isShowing ? null : enemyPointer(sim, stage, (x, y) => cam.worldToScreen(x, y, view.w, view.h));
-    if (foe) drawEnemyPointer(ctx, foe);
+    // The battle opens on the player's men: the pointer says which way the enemy
+    // is. A defender needs that from the first screen, deployment and its step
+    // included, so a tutorial step silences it only in the drill (every drill
+    // step rings the one thing to look at) or where it would sit on the step.
+    const foe = sim.winner || (drill && tutorial?.isShowing) ? null : enemyPointer(sim, stage, (x, y) => cam.worldToScreen(x, y, view.w, view.h));
+    foeShown = foe && !taken.some((r) => foe.x > r.left - POINTER_REACH_PX && foe.x < r.right + POINTER_REACH_PX && foe.y > r.top - 16 && foe.y < r.bottom + 16) ? foe : null;
+    if (foeShown) drawEnemyPointer(ctx, foeShown);
     if (drill) pollDrill(drill);
     const ring = tutorial?.ring();
     if (ring) drawMarkRing(ctx, ring, now);

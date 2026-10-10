@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { debriefHtml, drillEndHtml, FALLEN_SHOWN, fallenLine, type DebriefSummary } from '../src/ui/debrief';
 
 const names = (n: number): string[] => Array.from({ length: n }, (_, i) => `Man${i + 1}`);
-const summary = (o: Partial<DebriefSummary> = {}): DebriefSummary => ({ won: true, outcome: 'The ground is ours.', kia: [], wounded: 0, enemyLosses: 0, ...o });
+const summary = (o: Partial<DebriefSummary> = {}): DebriefSummary => ({ won: true, outcome: 'The ground is ours.', kia: [], wounded: 0, enemyLosses: 0, highlights: [], ...o });
 const ACTIONS = [{ id: 'next', label: 'Return to the front', primary: true }, { id: 'db-show-roster', label: 'Show roster' }];
 const words = (html: string): number => html.replace(/<[^>]*>/g, ' ').split(/\s+/).filter((w) => /[\p{L}\p{N}]/u.test(w)).length;
 
@@ -54,6 +54,19 @@ describe('debriefHtml', () => {
 
   it('escapes names from a save file', () => {
     expect(debriefHtml(summary({ kia: ['<img src=x>'] }), ACTIONS)).not.toContain('<img');
+    expect(debriefHtml(summary({ highlights: ['<img src=x> took over the gun.'] }), ACTIONS)).not.toContain('<img');
+  });
+
+  it('puts the highlights after the losses and ahead of the roster and its button', () => {
+    const html = debriefHtml(summary({ highlights: ['Reyes dragged Carter to cover.', 'Webb took over the gun.'] }), ACTIONS);
+    expect(html).toContain('<ul class="db-high"><li>Reyes dragged Carter to cover.</li><li>Webb took over the gun.</li></ul>');
+    expect(html.indexOf('class="fallen')).toBeLessThan(html.indexOf('db-high'));
+    expect(html.indexOf('db-high')).toBeLessThan(html.indexOf('id="db-roster"'));
+    expect(html.indexOf('db-high')).toBeLessThan(html.indexOf('id="db-show-roster"'));
+  });
+
+  it('has no highlights block when nothing was recorded', () => {
+    expect(debriefHtml(summary(), ACTIONS)).not.toContain('db-high');
   });
 });
 
