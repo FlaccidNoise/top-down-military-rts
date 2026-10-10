@@ -351,7 +351,7 @@ export class RedCommander {
       return;
     }
     this.asked.set(team.id, order.kind);
-    sim.orderTeam(team.id, order);
+    sim.orderTeam(team.id, order, undefined, true);
   }
 
   // Whether the team is still walking the bound that ends at `p`.
@@ -764,16 +764,16 @@ export class RedCommander {
       const confAtPost = this.threatConfNear(post.x, post.y, 12);
       const team = sim.teams[squad.teamIds[0]];
       if (confAtPost > 0 && distToPost > 8 && !moving) {
-        sim.orderSquad(squad.id, { kind: 'move', x: post.x, y: post.y }); // counterattack a lost post
+        sim.orderSquad(squad.id, { kind: 'move', x: post.x, y: post.y }, undefined, true); // counterattack a lost post
       } else if (distToPost <= 8 && !moving) {
         const order = team.orderState.order;
         const approach = this.cfg.approach;
         const arcDefend = (): void => {
           if (approach) {
             const center = Math.atan2(approach.y - post.y, approach.x - post.x);
-            sim.orderSquad(squad.id, { kind: 'defend', x: post.x, y: post.y, arc: [center - DEFEND_ARC_HALF, center + DEFEND_ARC_HALF] });
+            sim.orderSquad(squad.id, { kind: 'defend', x: post.x, y: post.y, arc: [center - DEFEND_ARC_HALF, center + DEFEND_ARC_HALF] }, undefined, true);
           } else {
-            sim.orderSquad(squad.id, { kind: 'defend', x: post.x, y: post.y });
+            sim.orderSquad(squad.id, { kind: 'defend', x: post.x, y: post.y }, undefined, true);
           }
         };
         if (order === null) {
@@ -784,7 +784,7 @@ export class RedCommander {
           if (approach && longRange) {
             arcDefend();
           } else {
-            sim.orderSquad(squad.id, { kind: 'ambush', x: post.x, y: post.y }); // settled in, holding fire
+            sim.orderSquad(squad.id, { kind: 'ambush', x: post.x, y: post.y }, undefined, true); // settled in, holding fire
           }
         } else if (order.kind === 'ambush' && this.spottedPositions(sim).length >= MASS_RELEASE) {
           arcDefend(); // see MASS_RELEASE: fire-at-will against a spotted mass

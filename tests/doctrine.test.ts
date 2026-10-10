@@ -328,11 +328,11 @@ describe('AI commander doctrine', () => {
     let sent = 0;
     let repeats = 0;
     const orderTeam = sim.orderTeam.bind(sim);
-    sim.orderTeam = (teamId, order, used) => {
+    sim.orderTeam = (teamId, order, used, routine) => {
       const st = sim.teams[teamId].orderState;
       sent++;
       if (st.order && st.phase !== 'balked' && st.order.kind === order.kind && Math.hypot(st.order.x - order.x, st.order.y - order.y) <= 5) repeats++;
-      orderTeam(teamId, order, used);
+      orderTeam(teamId, order, used, routine);
     };
     for (let i = 0; i < 3000; i++) {
       commander.update(sim);
@@ -422,6 +422,40 @@ describe('AI commander doctrine', () => {
     expect(Math.hypot(hulls[0].x - hulls[1].x, hulls[0].y - hulls[1].y)).toBeGreaterThan(3); // not parked on one tile
   });
 
+  it('every order a commander gives is a routine one, in attack and in defence (#787)', () => {
+    // A routine order leaves a man on a rescue, ammo run or weapon hand-over
+    // to finish it (tests/orders.test.ts proves that half). A commander tasks
+    // every team again each time a bound ends, and as direct orders those cut
+    // short 17.5 of the attacker's 29.9 rescues a battle.
+    for (const stance of ['attack', 'defend'] as const) {
+      const sim = new Sim(new GameMap(140, 60), 109);
+      const post = { x: stance === 'attack' ? 120 : 40, y: 30 };
+      const mg = sim.addSquad('red', 'MG', [
+        { name: 'G', weapon: 'mg42', x: 40.5, y: 30.5 },
+        { name: 'A1', weapon: 'kar98k', x: 41.5, y: 29.5 },
+      ]);
+      const rifle = sim.addSquad(
+        'red',
+        'Rifle',
+        Array.from({ length: 4 }, (_, i) => ({ name: `R${i}`, weapon: 'kar98k' as const, x: 40.5, y: 22.5 + i })),
+      );
+      sim.addSquad('blue', 'Garrison', [{ name: 'B1', weapon: 'kar98k', x: 122.5, y: 30.5 }]);
+      const commander = new RedCommander({ side: 'red', stance, posts: { [mg.id]: post, [rifle.id]: post } });
+      const seen: (boolean | undefined)[] = [];
+      const orderTeam = sim.orderTeam.bind(sim);
+      sim.orderTeam = (teamId, order, used, routine) => {
+        seen.push(routine);
+        orderTeam(teamId, order, used, routine);
+      };
+      for (let i = 0; i < 900; i++) {
+        commander.update(sim);
+        sim.step();
+      }
+      expect(seen.length, stance).toBeGreaterThan(0);
+      expect(seen.every((r) => r === true), stance).toBe(true);
+    }
+  });
+
   it('reserve still commits when a maneuver team bleeds out mid-assault (the executing-assault guard must not skip the loss check)', () => {
     // Regression: the "an executing charge owns its team" continue-guard sits
     // above the reserve-commit check. If it short-circuits the loss check too,
@@ -479,9 +513,9 @@ describe('AI commander doctrine', () => {
     // and no other; it now maneuvers with the rest, bound after bound.
     let reserveOrders = 0;
     const orderTeam = sim.orderTeam.bind(sim);
-    sim.orderTeam = (teamId, order, used) => {
+    sim.orderTeam = (teamId, order, used, routine) => {
       if (teamId === reserveTeam.id) reserveOrders++;
-      orderTeam(teamId, order, used);
+      orderTeam(teamId, order, used, routine);
     };
     const resX = () => mean(reserve.soldierIds.map((id) => sim.soldiers[id].x));
     const x0 = resX();

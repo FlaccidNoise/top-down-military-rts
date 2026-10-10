@@ -904,7 +904,7 @@ export class Sim {
   // Staggered dismount: one passenger every 0.5s (spec: "1 per 0.5s").
   private dismountQueue: { vehicleId: number; soldierId: number; tick: number }[] = [];
   private pathBudget = PATH_BUDGET_PER_TICK;
-  private pendingPaths = new Map<number, { spot: { x: number; y: number; l: number } }>();
+  private pendingPaths = new Map<number, { spot: { x: number; y: number; l: number }; task: Soldier['task'] }>(); // `task`: what he was on when the search was queued
 
   constructor(readonly map: GameMap, seed: number) {
     this.rng = mulberry32(seed);
@@ -1819,7 +1819,7 @@ export class Sim {
         this.pathBudget--;
         this.pathTo(s, spot);
       } else {
-        this.pendingPaths.set(sid, { spot });
+        this.pendingPaths.set(sid, { spot, task: s.task });
       }
     }
   }
@@ -1848,6 +1848,14 @@ export class Sim {
       this.pendingPaths.delete(sid);
       const s = this.soldiers[sid];
       if (!this.eligible(s)) continue; // died/broke while queued: drop it
+      // A man pathed at once can still leave the march for a casualty a
+      // moment later, and does. One whose search was queued must have the
+      // same choice (#787): if he has taken up a task SINCE the order, the
+      // queued search is the stale half, and running it dropped the rescue he
+      // had just started — 5.8 of the 7.6 rescues a battle that an order
+      // cancelled. A task he already had when the order came is what the
+      // order was meant to override, and still is.
+      if (s.task && s.task !== req.task) continue;
       this.pathBudget--;
       this.pathTo(s, req.spot);
     }
@@ -1878,8 +1886,8 @@ export class Sim {
 
   // A leg dispatched inside a running order is a continuation of it, not a
   // new order: a man who left the bound to reach a casualty, carry belts or
-  // take over a gun is not pulled off it by the next leg. pathTo's task drop
-  // is for real orders.
+  // take over a gun is not pulled off it by the next leg. Nor by a routine
+  // order (orderTeam). pathTo's task drop is for a direct one.
   private offTask(ids: number[]): number[] {
     return ids.filter((id) => !this.soldiers[id].task);
   }
@@ -1889,9 +1897,18 @@ export class Sim {
   // `used` is the ONE tile-reservation set of the whole player commit —
   // orderSquad shares it across its teams and a multi-squad click shares it
   // across squads, so clumped anchors cannot resolve two men onto one tile.
-  orderTeam(teamId: number, order: TeamOrder, used?: Set<number>): void {
+  //
+  // `routine` is how a commander orders (#787). A direct order overrides a
+  // rescue, an ammo run or a weapon hand-over: the player pointed, the man
+  // goes. A commander tasks every team again each time a bound ends, and on
+  // that footing no rescue outlived the next bound — 17.5 of 29.9 a battle
+  // were cut short, 10 of them with the rescuer already kneeling over the
+  // casualty. A routine order leaves a man on a task to finish it; he falls
+  // in on the team's next order.
+  orderTeam(teamId: number, order: TeamOrder, used?: Set<number>, routine = false): void {
     const team = this.teams[teamId];
     if (!team) return;
+    const men = (ids: number[]): number[] => (routine ? this.offTask(ids) : ids);
     const eligibleIds = team.soldierIds.filter((id) => this.eligible(this.soldiers[id]));
     if (eligibleIds.length === 0) return;
 
@@ -1914,13 +1931,13 @@ export class Sim {
     if (effective.kind === 'move' && (cautious || this.teamUnderFire(team))) {
       team.orderState = { order: effective, phase: 'bounding_a', reason };
       const [a, b] = this.teamHalves(team);
-      this.halt(b);
-      this.dispatchLeg(a, effective, used);
+      this.halt(men(b));
+      this.dispatchLeg(men(a), effective, used);
     } else if (effective.kind === 'move' || effective.kind === 'fast' || effective.kind === 'sneak' || effective.kind === 'assault') {
       team.orderState = { order: effective, phase: 'executing', reason };
       if (effective.kind === 'sneak') this.sneakBaseline[team.id] = this.woundCount(team);
       const gl = orderLevel(this, effective.kind, effective.x, effective.y, effective.l);
-      this.moveSoldiersTo(team.soldierIds, effective.x, effective.y, gl, effective.facing, effective.width, effective.kind, undefined, used);
+      this.moveSoldiersTo(men(team.soldierIds), effective.x, effective.y, gl, effective.facing, effective.width, effective.kind, undefined, used);
     } else if (effective.kind === 'smoke') {
       // A throw that cannot happen must say so — a silently swallowed smoke
       // order reads as "smoke is broken".
@@ -1935,7 +1952,7 @@ export class Sim {
       // Auto-top-floor garrison: the defend/ambush default, owned by orderLevel
       // so the preview can show the same storey the men will hold.
       const gl = orderLevel(this, effective.kind, effective.x, effective.y, effective.l);
-      this.moveSoldiersTo(team.soldierIds, effective.x, effective.y, gl, effective.facing, effective.width, effective.kind, effective.arc, used);
+      this.moveSoldiersTo(men(team.soldierIds), effective.x, effective.y, gl, effective.facing, effective.width, effective.kind, effective.arc, used);
     } else {
       // fire: no movement, members engage per updateSoldier's combat section
       team.orderState = { order: effective, phase: 'executing', reason };
@@ -1947,7 +1964,7 @@ export class Sim {
   // A direct order overrides any queued waypoint route. One `used` set spans
   // every team of the squad (and, when the caller passes one, every squad of
   // the commit), so neighbouring teams never resolve onto the same tile.
-  orderSquad(squadId: number, order: TeamOrder, used: Set<number> = new Set<number>()): void {
+  orderSquad(squadId: number, order: TeamOrder, used: Set<number> = new Set<number>(), routine = false): void {
     const squad = this.squads[squadId];
     if (!squad) return;
     this.squadWaypoints[squadId] = [];
@@ -1959,12 +1976,12 @@ export class Sim {
     // measured 4.1 m of scatter on a two-team squad, and it can push the far
     // team outside its own throw range. Only destination orders fan.
     if (!isMoveKind && order.kind !== 'defend' && order.kind !== 'ambush') {
-      squad.teamIds.forEach((teamId) => this.orderTeam(teamId, order, used));
+      squad.teamIds.forEach((teamId) => this.orderTeam(teamId, order, used, routine));
     } else if (order.facing === undefined) {
       // Legacy: fan teams along y axis only
       const offs = fanOffsets(n, TEAM_FAN);
       squad.teamIds.forEach((teamId, ti) => {
-        this.orderTeam(teamId, { ...order, y: order.y + offs[ti] }, used);
+        this.orderTeam(teamId, { ...order, y: order.y + offs[ti] }, used, routine);
       });
     } else {
       // Formation: fan teams along the facing axis within order.width
@@ -1975,7 +1992,7 @@ export class Sim {
       squad.teamIds.forEach((teamId, ti) => {
         const dx = cos * offs[ti];
         const dy = sin * offs[ti];
-        this.orderTeam(teamId, { ...order, x: order.x + dx, y: order.y + dy, width: share }, used);
+        this.orderTeam(teamId, { ...order, x: order.x + dx, y: order.y + dy, width: share }, used, routine);
       });
     }
   }
@@ -2626,7 +2643,7 @@ export class Sim {
       if (kind !== 'move' && kind !== 'assault') continue;
       if (Math.hypot(s.x - mx, s.y - my) > BREACH_REPATH_RADIUS) continue;
       const dest = s.path[s.path.length - 1];
-      this.pendingPaths.set(s.id, { spot: { x: Math.floor(dest.x), y: Math.floor(dest.y), l: dest.l ?? 0 } });
+      this.pendingPaths.set(s.id, { spot: { x: Math.floor(dest.x), y: Math.floor(dest.y), l: dest.l ?? 0 }, task: null });
     }
   }
 
