@@ -1,4 +1,3 @@
-import { cellXY } from './strategic/sector';
 import { advanceDays, fillReplacements, newCampaign, squadMembers, type BattleRecord, type Campaign } from './campaign/campaign';
 import { AudioEngine } from './render/audio';
 import { Camera } from './render/camera';
@@ -17,7 +16,8 @@ import { StrategicCommander, RED_DEFENDER, BLUE_ATTACKER } from './strategic/com
 import { operationStatus, REINFORCE_CYCLE_DAYS, REINFORCE_PER_COMPANY, type Chit, type Engagement, type Front } from './strategic/front';
 import { saveGame } from './strategic/save';
 import { makeDefaultSector } from './strategic/sector';
-import { emplacementOf, Hud, infantrySquads, type HudState } from './ui/hud';
+import { emplacementOf, Hud, infantrySquads } from './ui/hud';
+import { QUIET_PROMPT_S, quietPrompt } from './ui/battle-goal';
 import { StratHud } from './ui/strat-hud';
 import { drawOverlays, EventPings, type TeamPulse } from './ui/overlays';
 import { computeShot, pickAt, Tooltip } from './ui/tooltip';
@@ -235,6 +235,7 @@ let deployMsg = '';
 let deployMsgUntil = 0;
 const deployOverride = new URLSearchParams(location.search).get('deploy'); // ?deploy=atk,defLine — OQ19 tuning
 let winnerAt = -1; // ms timestamp when winner appeared
+let lastOrderTick = 0; // sim tick of the player's last order — the quiet-minute prompt counts from it
 let debriefShown = false;
 let needsBootFrame = false; // re-run bootCamera once the battle HUD is laid out
 const mouse = { x: 0, y: 0, onCanvas: false };
@@ -681,6 +682,7 @@ function bootBattle(staged: { sim: Sim; commander: RedCommander; blueCommander: 
   addMode = false;
   pings.reset();
   tooltip.clear();
+  lastOrderTick = 0;
 }
 
 function startEngagementBattle(e: Engagement): void {
@@ -1202,8 +1204,14 @@ function commitBox(additive: boolean): void {
   noteSelection();
 }
 
+function noteOrder(): void {
+  lastOrderTick = sim.tick;
+  tutorial?.notify('order-issued');
+}
+
 function tapSelect(sx: number, sy: number, additive: boolean): void {
   const [wx, wy] = cam.screenToWorld(sx, sy, view.w, view.h);
+  if (targetMode) lastOrderTick = sim.tick;
   if (targetMode === 'barrage' && !aiControl) {
     if (sim.callBarrage('blue', wx, wy)) {
       setTargetMode('');
@@ -1337,7 +1345,7 @@ function issueShortClick(wx: number, wy: number, squadForce: boolean, l?: number
       sim.orderSquad(id, order, used);
     }
   }
-  tutorial?.notify('order-issued');
+  noteOrder();
 }
 
 function commitOrder(sx: number, sy: number, opts: { squadForce: boolean; floors: boolean }): void {
@@ -1383,6 +1391,7 @@ function commitOrder(sx: number, sy: number, opts: { squadForce: boolean; floors
 
   if (selectedVehicle >= 0) {
     sim.orderVehicleMove(selectedVehicle, wx, wy);
+    lastOrderTick = sim.tick;
     rmbAnchor = null;
     return;
   }
@@ -1412,7 +1421,7 @@ function commitOrder(sx: number, sy: number, opts: { squadForce: boolean; floors
       const order: TeamOrder = { kind, x: ax, y: ay, facing, width: seg };
       sim.orderSquad(id, order, used);
     }
-    tutorial?.notify('order-issued');
+    noteOrder();
     if (useArmed) armedOrder = null;
   }
 
@@ -1837,7 +1846,7 @@ function frame(now: number): void {
   }
   if (mode === 'strategic' && S().v2) {
     const v2 = S().v2!;
-    hud.updateIdle('strategic', v2.selectedForce >= 0 || stratPaused);
+    hud.updateIdle(v2.selectedForce >= 0 || stratPaused);
     if (!stratPaused && !v2.pending && !opEnded) {
       stratAcc += (dtReal / 1000) * SPEEDS[speedIdx];
       while (stratAcc >= 1 && !v2.pending) {
@@ -1853,7 +1862,7 @@ function frame(now: number): void {
     theaterHud.update(v2.front, v2.goals, v2.selectedForce, stratPaused, speedIdx, v2.campaignCfg.supply, v2.campaignCfg.recon === 'contacts', v2.campaignCfg.nightTempo);
     if (touchHold) drawHoldRing(ctx, touchHold, now);
   } else if (mode === 'strategic') {
-    hud.updateIdle('strategic', selectedChit >= 0 || stratPaused);
+    hud.updateIdle(selectedChit >= 0 || stratPaused);
     if (!stratPaused && !pendingEngagement && !opEnded) {
       stratAcc += (dtReal / 1000) * SPEEDS[speedIdx];
       while (stratAcc >= 1 && !pendingEngagement) {
@@ -2054,27 +2063,10 @@ function frame(now: number): void {
     if (touchHold) drawHoldRing(ctx, touchHold, now);
     tooltip.update(sim, pick, shot, mouse.x, mouse.y, pick?.kind === 'terrain' && (primary >= 0 || selectedVehicle >= 0));
     const km = loadKeymap(localStorage);
-    let objective: HudState['objective'] = null;
-    if (pendingEngagement) {
-      const attacker = S().front.chits.find((c) => c.id === pendingEngagement!.attackerId);
-      const defender = S().front.chits.find((c) => c.id === pendingEngagement!.defenderId);
-      if (attacker && defender) {
-        const cell = S().front.sector.cells[pendingEngagement!.cell];
-        const xy = cellXY(S().front.sector, pendingEngagement!.cell);
-        const cellLabel = `${String.fromCharCode(65 + (xy.x % 26))}${xy.y + 1}`;
-        objective = {
-          kind: attacker.side === 'blue' ? 'attack' : 'defend',
-          cellLabel,
-          isObjective: cell.objective,
-          attackerName: attacker.name,
-          defenderName: defender.name,
-          attackerStrength: attacker.strength,
-          defenderStrength: defender.strength,
-        };
-      }
-    }
-    hud.update(sim, { selectedSquad: primary, selectedSquads, selectedTeam, selectedVehicle, paused, aiControl, targetMode, armedOrder, title: battleTitle, keymap: km, objective, floorFocus, boxMode, addMode });
-    hud.updateIdle('battle', targetMode !== '' || selectedSquads.length > 0 || selectedVehicle >= 0 || selectedTeam >= 0 || paused);
+    // A player who has given no order for a minute of battle is told the goal
+    // and where the enemy is. Sim time, so a pause neither starts nor ends it.
+    const quiet = !deployPhase && !sim.winner && !aiControl && (sim.tick - lastOrderTick) * DT >= QUIET_PROMPT_S;
+    hud.update(sim, { selectedSquad: primary, selectedSquads, selectedTeam, selectedVehicle, paused, aiControl, targetMode, armedOrder, title: battleTitle, keymap: km, prompt: quiet ? quietPrompt(sim) : null, floorFocus, boxMode, addMode });
     // A new battle re-indexes sim.soldiers, so an id held across one closes the panel.
     if (inspectedSoldier >= 0 && !sim.soldiers[inspectedSoldier]) inspectedSoldier = -1;
     healthPanel.update(sim, inspectedSoldier);

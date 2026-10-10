@@ -3,7 +3,7 @@ import { crewNear, friendlyHasLos, loadsReady, type Emplacement } from '../sim/e
 import { BALK_HINT, canArm, ORDER_AFFORDANCE, type ArmTarget, type OrderAffordance } from './order-data';
 import type { OrderKind } from '../sim/orders';
 import { canBreachByHand, type Sim, type Soldier, type Squad, type Vehicle } from '../sim/sim';
-import { objectiveStripText, type ObjectiveData } from './objective-strip';
+import { battleGoal, type SideStrength } from './battle-goal';
 import { formatBinding, loadKeymap, type Keymap } from './keymap';
 import { MOBILE } from '../render/view';
 import { patchChildren } from './patch';
@@ -59,7 +59,8 @@ export interface HudState {
   armedOrder: OrderKind | null;
   title: string;
   keymap: Keymap;
-  objective: ObjectiveData | null;
+  /** The quiet-minute line (goal and enemy bearing), or null while the player is giving orders. */
+  prompt: string | null;
   floorFocus?: number; // -1/undefined = all floors; 0..maxStories-1 = focus active
   boxMode?: boolean; // touch: drag draws a selection box instead of panning
   addMode?: boolean; // touch: sticky shift (add to selection / force squad order)
@@ -109,7 +110,6 @@ export class Hud {
   private ml: HTMLDivElement; // #modeline — moved to body so it works in both modes
   private idleTicks = 0;
   private idleShown = false;
-  private lastIdleMode: 'battle' | 'strategic' = 'battle';
   private tb: HTMLDivElement | null = null; // #touchbar — mobile only
   private lpFired = false; // a long-press opened the affordance card; swallow its click
 
@@ -122,14 +122,13 @@ export class Hud {
     this.root.innerHTML = `
       <div id="topbar">
         <div class="panel" id="tb-title"></div>
-        <div class="panel" id="tb-strength"></div>
+        <div class="panel" id="obj-strip"></div>
         <div id="tb-actions">
           <button class="hbtn" data-act="barrage" title="${fb(b.barrage)}"></button>
           <button class="hbtn" data-act="air" title="${fb(b.airstrike)}"></button>
           <button class="hbtn" data-act="pause" title="${fb(b.pause)}"></button>
         </div>
       </div>
-      <div id="obj-strip"></div>
       <div id="squads"></div>
       <div id="banner"></div>
       <div id="hint">
@@ -320,11 +319,11 @@ export class Hud {
   update(sim: Sim, st: HudState): void {
     this.lastSim = sim;
     this.lastSt = st;
-    const sig = `${(sim.tick / 5) | 0}|${primarySquad(st)}|${st.selectedTeam}|${st.selectedVehicle}|${st.paused}|${st.targetMode}|${st.armedOrder}|${sim.winner}|${st.title}|${st.selectedSquads.join(',')}|${this.km.version}|${st.floorFocus ?? -1}|${st.aiControl}|${st.boxMode ?? false}|${st.addMode ?? false}|${this.tb ? this.rosterOpen : false}`;
+    const sig = `${(sim.tick / 5) | 0}|${st.prompt}|${primarySquad(st)}|${st.selectedTeam}|${st.selectedVehicle}|${st.paused}|${st.targetMode}|${st.armedOrder}|${sim.winner}|${st.title}|${st.selectedSquads.join(',')}|${this.km.version}|${st.floorFocus ?? -1}|${st.aiControl}|${st.boxMode ?? false}|${st.addMode ?? false}|${this.tb ? this.rosterOpen : false}`;
     if (sig === this.sig) return;
     this.sig = sig;
     this.renderTop(sim, st);
-    this.renderObjectiveStrip(sim, st);
+    this.renderGoal(sim);
     this.renderSquads(sim, st);
     this.renderHint();
     if (this.tb) this.renderTouchbar(sim, st);
@@ -340,6 +339,11 @@ export class Hud {
       if (st.targetMode === 'empfire') this.ml.textContent = `MORTAR FIRE — click target · ${cancelKey} cancels`;
       if (st.targetMode === 'empsmoke') this.ml.textContent = `MORTAR SMOKE — click target · 4 rounds · ${cancelKey} cancels`;
       if (st.targetMode === 'breach') this.ml.textContent = `BREACH — click a wall · one aimed round opens it · ${cancelKey} cancels`;
+    } else if (st.prompt) {
+      this.ml.style.display = 'block';
+      this.ml.classList.remove('idle-hint');
+      this.idleShown = false;
+      this.ml.textContent = st.prompt;
     } else if (!this.idleShown) {
       this.ml.style.display = 'none';
     }
@@ -352,8 +356,8 @@ export class Hud {
     }
   }
 
-  /** Called every frame from main.ts in both modes. active = something selected / targetMode / paused. */
-  updateIdle(mode: 'battle' | 'strategic', active: boolean): void {
+  /** Called every strategic frame. active = something selected, or the clock is stopped. */
+  updateIdle(active: boolean): void {
     if (active) {
       this.idleTicks = 0;
       if (this.idleShown) {
@@ -365,29 +369,14 @@ export class Hud {
     }
     this.idleTicks++;
     if (this.idleTicks > 300 && !this.idleShown) {
-      this.lastIdleMode = mode;
-      this.ml.textContent = this.idleText(mode);
+      // Naming keys to a player holding a phone is worse than saying nothing.
+      this.ml.textContent = MOBILE
+        ? 'tap a chit · press and hold a cell to move · ▶ starts the clock'
+        : 'click a chit · right-click to move · 1/2/3 speed · Esc menu';
       this.ml.classList.add('idle-hint');
       this.ml.style.display = 'block';
       this.idleShown = true;
-    } else if (this.idleShown && this.lastIdleMode !== mode) {
-      this.lastIdleMode = mode;
-      this.ml.textContent = this.idleText(mode);
     }
-  }
-
-  // Naming keys to a player holding a phone is worse than saying nothing.
-  private idleText(mode: 'battle' | 'strategic'): string {
-    if (MOBILE) {
-      return mode === 'battle'
-        ? 'tap a soldier to select · drag to pan · pinch to zoom · press and hold to order'
-        : 'tap a chit · press and hold a cell to move · ▶ starts the clock';
-    }
-    const fb = formatBinding;
-    const b = this.km.bindings;
-    return mode === 'battle'
-      ? `select a squad [${fb(b.squad1)}-${fb(b.squad9)}] · drag to pan · scroll to zoom · ${fb(b.barrage)} barrage`
-      : 'click a chit · right-click to move · 1/2/3 speed · Esc menu';
   }
 
   private renderHint(): void {
@@ -429,52 +418,33 @@ export class Hud {
     floor.classList.toggle('active', focus >= 0);
   }
 
-  private renderObjectiveStrip(sim: Sim, st: HudState): void {
+  // The goal strip: what wins the battle, and how far off it is. Fed from the
+  // sim alone, so every battle shows it whichever campaign staged it.
+  private renderGoal(sim: Sim): void {
     const el = this.q('#obj-strip');
-    if (!st.objective) {
+    const g = battleGoal(sim);
+    if (!g) {
       el.style.display = 'none';
       return;
     }
-    let blue = 0;
-    let red = 0;
-    for (const s of sim.soldiers) {
-      if (!s.alive || s.downed) continue;
-      if (s.side === 'blue') blue++;
-      else if (sim.soldierVisibleTo('blue', s)) red++;
-    }
-    const bFloor = Math.max(2, Math.round(sim.startStrength.blue * 0.25));
-    const rFloor = Math.max(2, Math.round(sim.startStrength.red * 0.25));
-    const r = objectiveStripText(st.objective, blue, red, bFloor, rFloor);
-    if (!r) {
-      el.style.display = 'none';
-      return;
-    }
+    // Fill is the share of starting strength still fighting; the tick is the
+    // line the side breaks at. Team colours, and the player's own bar warns
+    // when it nears its line.
+    const bar = (s: SideStrength, color: string): string =>
+      `<span class="obj-bar"><i style="width:${Math.round((s.now / s.start) * 100)}%;background:${color}"></i>` +
+      `<b style="left:${Math.round((s.breakAt / s.start) * 100)}%"></b></span>`;
+    const own = g.own.state === 'steady' || g.own.state === 'shaken' ? TEAM.blue : STATE_COLOR[g.own.state];
     el.style.display = '';
     el.innerHTML =
-      `<div class="obj-left"><span class="obj-kind">${r.label}</span></div>` +
-      `<div class="obj-center">${r.condition}</div>` +
-      `<div class="obj-right">` +
-        `<span class="obj-bar-label us">US ${r.friendlyBar.value}</span>` +
-        `<span class="obj-bar"><i style="width:${Math.round((r.friendlyBar.value / Math.max(r.friendlyBar.max, 1)) * 100)}%;background:var(--state-${r.friendlyBar.state})"></i></span>` +
-        `<span class="obj-bar-label ge">GE ${sim.fowDisabled ? '' : '~'}${r.enemyBar.value}</span>` +
-        `<span class="obj-bar"><i style="width:${Math.round((r.enemyBar.value / Math.max(r.enemyBar.max, 1)) * 100)}%;background:var(--state-${r.enemyBar.state})"></i></span>` +
-      `</div>`;
+      `<span class="obj-kind">${g.label}</span>` +
+      `<span class="obj-side ge" title="They break at ${g.enemy.breakAt}">GE ${g.enemy.now} <em>\u2192 ${g.enemy.breakAt}</em>${bar(g.enemy, TEAM.red)}</span>` +
+      `<span class="obj-side us" title="You break at ${g.own.breakAt}">US ${g.own.now}${bar(g.own, own)}</span>`;
   }
 
   private renderTop(sim: Sim, st: HudState): void {
     const secs = Math.floor(sim.tick / 30);
     const clock = `T+${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`;
-    let us = 0;
-    let ge = 0; // fog of war: only the enemies we currently see
-    for (const s of sim.soldiers) {
-      if (!s.alive || s.downed) continue;
-      if (s.side === 'blue') us++;
-      else if (sim.soldierVisibleTo('blue', s)) ge++;
-    }
     this.q('#tb-title').innerHTML = `<b>${st.title}</b> · ${clock}${st.paused ? ' <span class="paused">⏸ PAUSED</span>' : ''}${st.aiControl ? ' <span class="paused">AI CONTROL</span>' : ''}${st.floorFocus !== undefined && st.floorFocus >= 0 ? ` <span class="paused">⬒ ${floorName(st.floorFocus)} only</span>` : ''}`;
-    this.q('#tb-strength').innerHTML =
-      `<span class="us">US ${us}</span><div class="ratio"><i style="flex:${us};background:#5b9bd5"></i><i style="flex:${ge};background:#d05c50"></i></div><span class="ge">GE ${sim.fowDisabled ? '' : '~'}${ge}</span>`;
-
     const btn = (act: string) => this.q(`[data-act="${act}"]`) as HTMLButtonElement;
     const f = formatBinding;
     btn('barrage').title = f(this.km.bindings.barrage);

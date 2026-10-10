@@ -93,20 +93,14 @@
   gap: var(--sp-2);
   padding: var(--sp-1) 10px;
 }
+/* The title gives way first: the goal and the buttons never wrap. */
+#topbar #tb-title { display: block; flex: 0 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 24px; }
+#tb-actions .hbtn { white-space: nowrap; }
 #tb-title b { color: var(--amber-bright); font-weight: var(--fw-label); }
 #tb-title .paused { color: var(--amber); letter-spacing: 1px; }
-#tb-strength .ratio {
-  width: 110px;
-  height: 6px;
-  display: flex;
-  overflow: hidden;
-  border-radius: 2px;
-  background: var(--track-bg);
-}
-#tb-strength .ratio i { display: block; height: 100%; }
 .us { color: var(--blue); font-weight: var(--fw-label); }
 .ge { color: var(--red); font-weight: var(--fw-label); }
-#tb-actions { margin-left: auto; display: flex; gap: 6px; }
+#tb-actions { margin-left: auto; display: flex; gap: 6px; flex: none; }
 button.hbtn {
   font: inherit;
   color: var(--paper);
@@ -122,14 +116,20 @@ button.hbtn:disabled { opacity: 0.4; cursor: default; }
 button.hbtn.active { background: var(--chip-active-bg); border-color: var(--amber); color: var(--amber-bright); }
 
 #modeline {
-  position: absolute;
+  position: fixed;
   top: 62px;
   left: 50%;
   transform: translateX(-50%);
+  z-index: 6;
   padding: 5px 14px;
+  background: var(--ink);
   color: var(--amber-bright);
-  border-color: #8a7434;
+  border: 1px solid #8a7434;
+  border-radius: 3px;
+  font: var(--fs-md) / 1.45 var(--font-hud);
   letter-spacing: 0.5px;
+  text-transform: uppercase;
+  pointer-events: none;
   animation: hud-pulse 1.2s ease-in-out infinite;
 }
 @keyframes hud-pulse { 50% { opacity: 0.6; } }
@@ -641,52 +641,22 @@ button.hbtn:focus-visible,
 }
 .veh-ammo { white-space: nowrap; }
 
-/* ============================================================
-   UI redesign T3 — objective strip
-   ============================================================ */
-#obj-strip {
-  position: absolute;
-  top: 38px;
-  left: var(--sp-2);
-  right: var(--sp-2);
-  display: flex;
-  align-items: center;
-  gap: var(--sp-3);
-  padding: 3px 10px;
-  font-size: var(--fs-sm);
-  background: rgba(var(--ink-rgb), 0.85);
-  border: 1px solid var(--border-soft);
-  border-top: none;
-  border-radius: 0 0 3px 3px;
-  backdrop-filter: var(--glass-blur);
-  -webkit-backdrop-filter: var(--glass-blur);
-}
-.obj-left { flex: none; }
-.obj-kind { color: var(--amber-bright); font-weight: var(--fw-label); letter-spacing: 0.5px; }
-.obj-center {
-  flex: 1;
-  text-align: center;
-  color: var(--muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.obj-right {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.obj-bar-label { font-weight: var(--fw-label); white-space: nowrap; }
+/* ---- the goal strip: what wins the battle, and how far off it is ----
+   A panel in the top bar (src/ui/hud.ts renderGoal). Each bar is the share of
+   starting strength still fighting; the tick is the line that side breaks at. */
+#obj-strip { flex: none; gap: var(--sp-3); white-space: nowrap; }
+.obj-kind { color: var(--amber-bright); font-weight: var(--fw-label); letter-spacing: 1px; text-transform: uppercase; }
+.obj-side { display: inline-flex; align-items: center; gap: 6px; }
+.obj-side em { font-style: normal; font-weight: var(--fw-reg); color: var(--muted); }
 .obj-bar {
-  width: 60px;
+  position: relative;
+  width: 72px;
   height: 6px;
   background: var(--track-bg);
   border-radius: 1px;
-  overflow: hidden;
 }
-.obj-bar i { display: block; height: 100%; transition: width 0.3s ease; }
-.obj-right .obj-bar + .obj-bar-label { margin-left: 6px; }
+.obj-bar i { display: block; height: 100%; border-radius: 1px; transition: width 0.3s ease; }
+.obj-bar b { position: absolute; top: -3px; bottom: -3px; width: 2px; margin-left: -1px; background: var(--paper); }
 
 /* ============================================================
    UI redesign T5a — strategic HUD
@@ -1253,33 +1223,19 @@ html.mobile .ctxrow .hbtn { min-height: 44px; padding: 6px 12px; font-size: var(
 html.mobile #hint { display: none; }
 html.mobile #banner { font-size: 22px; letter-spacing: 4px; }
 html.mobile #banner small { font-size: var(--fs-sm); letter-spacing: 1px; }
-html.mobile #obj-strip {
-  top: 38px;
-  top: calc(38px + env(safe-area-inset-top, 0px));
-  gap: var(--sp-2);
-}
-html.mobile #obj-strip .obj-center { display: none; }
-html.mobile #obj-strip .obj-bar { width: 40px; }
 html.mobile #topbar {
   top: var(--sp-2);
   top: calc(var(--sp-2) + env(safe-area-inset-top, 0px));
   font-size: var(--fs-sm);
 }
+html.mobile #topbar { flex-wrap: wrap; gap: var(--sp-1); }
 html.mobile #topbar .panel { padding: 2px 6px; }
+/* Beside the title where the screen is wide enough, under it where it is not. */
+html.mobile #obj-strip { flex: 1 1 auto; justify-content: space-between; }
 /* The action buttons moved into the touchbar; keeping both would put the only
    copy of Pause at the far end of a thumb's reach. */
 html.mobile #tb-actions { display: none; }
-html.mobile #tb-title {
-  display: block;
-  flex: 1;
-  min-width: 0;
-  line-height: 20px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-html.mobile #tb-strength { flex: none; }
-html.mobile #tb-strength .ratio { width: 52px; }
+html.mobile #topbar #tb-title { flex: 1 1 auto; line-height: 20px; }
 html.mobile #modeline {
   top: auto;
   bottom: calc(var(--touchbar-h, 60px) + 8px);

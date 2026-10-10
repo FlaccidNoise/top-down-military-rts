@@ -14,6 +14,7 @@ import { SUPPLY_AMMO_MULT, SUPPLY_LOW_MIN, SUPPLY_OUT_MIN } from '../src/strateg
 import { MOVE_MPM, REGION_PACE_MULT } from '../src/strategic/theater';
 import { BRIDGE_DWELL_MIN, CONTACT_M, FORD_CROSS_MIN } from '../src/strategic/theater/force';
 import { battleDuration, INFILTRATE_MIN, RETREAT_SETBACK_M } from '../src/strategic/theater/war';
+import { BREAK_FRACTION } from '../src/ui/battle-goal';
 import { ORDER_AFFORDANCE } from '../src/ui/order-data';
 import { HOLD_MS, TAP_SLOP, TWO_TAP_MS } from '../src/ui/touch';
 
@@ -99,6 +100,13 @@ describe('MANUAL — the numbers are live', () => {
     has(GARRISON_RADIUS, 'GARRISON_RADIUS');
   });
 
+  it('states how a battle is won from the break-off rule', () => {
+    const battle = MANUAL.find((c) => c.id === 'battle')!;
+    const entry = battle.entries.find((e) => e.heading === 'How a battle is won');
+    expect(entry, 'the battle chapter must say how a battle is won').toBeTruthy();
+    expect(entry!.body).toContain(`under ${BREAK_FRACTION * 100}% of the men`);
+  });
+
   it('quotes the battle-layer constants', () => {
     has(SPOT_RANGE, 'SPOT_RANGE');
     has(SPOT_INTERVAL * DT, 'the spotting cadence in seconds');
@@ -178,6 +186,7 @@ describe('manual-data source — drift tripwire', () => {
     [/\b185\b/, 'battleDuration(100, 100, false)'],
     [/\b240\b/, 'the battleDuration cap'],
     [/\b5 ?: ?1\b/, 'TRIVIAL_RATIO odds'],
+    [/\b25 ?%/, 'BREAK_FRACTION'],
   ];
 
   it('types no tracked game number by hand — every one arrives through ${...}', () => {
