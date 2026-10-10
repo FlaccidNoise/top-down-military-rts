@@ -1,7 +1,7 @@
 import { EMPLACEMENTS, WEAPONS, type WeaponDef } from './data';
 import { crewNear, friendlyHasLos, type Emplacement } from './emplacement';
 import { dangerScore, orderVerdict, type OrderKind, type TeamOrder } from './orders';
-import { CONTACT_TTL, EYE_CROUCH, EYE_STAND, MORTAR_BLAST, SPOT_INTERVAL, inArc, sightBetween, type Side, type Sim, type Squad, type Team } from './sim';
+import { CONTACT_TTL, EYE_CROUCH, EYE_STAND, MORTAR_BLAST, SMOKE_THROW_M, SPOT_INTERVAL, inArc, sightBetween, type Side, type Sim, type Squad, type Team } from './sim';
 
 // Red commander: issues squad orders through the same public order API the
 // player uses. Design requirement (decision log): must maneuver and
@@ -223,6 +223,9 @@ const FALLBACK_COOLDOWN_TICKS = 60 * 30;
 // A withdrawal its men would refuse (the ground back is seen) goes under the
 // squad's own smoke: one grenade SMOKE_M toward the nearest enemy, and the
 // move on the next eval. Not again inside SMOKE_TICKS: a puff lasts 60 s.
+// A reserve whose men refuse the counterattack does the same onto the post
+// it is going for, from as far as a man can throw: five counterattacks
+// watched in a browser before this were ordered, and all five were refused.
 const WITHDRAW_SMOKE_M = 10;
 const WITHDRAW_SMOKE_TICKS = 45 * 30;
 // COUNTERATTACK. A sector's reserve, still at RESERVE_FIT of its strength,
@@ -971,19 +974,12 @@ export class RedCommander {
     const lost = near > 0 && fit <= squad.soldierIds.length * FALLBACK_LOSS;
     // The decision stands across its own smoke, which hides the very enemy it was made on.
     if (!this.withdrawing.delete(squad.id) && !lost && behind < FLANK_MIN) return false;
-    const thrower = squad.teamIds.map((id) => sim.teams[id]).find((t) => t.smokeLeft > 0);
     if (
       nearest &&
-      thrower &&
-      sim.tick - (this.withdrawSmokeTick.get(squad.id) ?? -Infinity) >= WITHDRAW_SMOKE_TICKS &&
-      orderVerdict(sim, sim.teams[squad.teamIds[0]], { kind: 'move', x: next.x, y: next.y }).verdict === 'balk'
+      orderVerdict(sim, sim.teams[squad.teamIds[0]], { kind: 'move', x: next.x, y: next.y }).verdict === 'balk' &&
+      this.screen(sim, squad, nearest, Math.min(WITHDRAW_SMOKE_M, nd / 2))
     ) {
-      const c = this.centroid(sim, thrower.soldierIds);
-      const d = Math.hypot(nearest.x - c.x, nearest.y - c.y) || 1;
-      const reach = Math.min(WITHDRAW_SMOKE_M, d / 2);
-      this.withdrawSmokeTick.set(squad.id, sim.tick);
       this.withdrawing.add(squad.id);
-      sim.orderTeam(thrower.id, { kind: 'smoke', x: c.x + ((nearest.x - c.x) / d) * reach, y: c.y + ((nearest.y - c.y) / d) * reach }, undefined, true);
       return true;
     }
     this.lostPosts.push({ x: post.x, y: post.y, sector: this.cfg.sectorOf?.[squad.id] ?? -1, tick: sim.tick });
@@ -1018,7 +1014,21 @@ export class RedCommander {
     const lead = sim.teams[squad.teamIds[0]];
     if (lead.orderState.order?.kind === 'assault' && lead.orderState.phase === 'executing') return;
     const charge = dist <= ASSAULT_RANGE && orderVerdict(sim, lead, { kind: 'assault', x: post.x, y: post.y }).verdict !== 'balk';
+    if (!charge && orderVerdict(sim, lead, { kind: 'move', x: post.x, y: post.y }).verdict === 'balk' && this.screen(sim, squad, post, SMOKE_THROW_M - 1)) return;
     sim.orderSquad(squad.id, { kind: charge ? 'assault' : 'move', x: post.x, y: post.y }, undefined, true);
+  }
+
+  // One of the squad's own smoke grenades toward `at`, no farther than
+  // `reach`. False when it has none left or threw one inside SMOKE_TICKS.
+  private screen(sim: Sim, squad: Squad, at: { x: number; y: number }, reach: number): boolean {
+    const thrower = squad.teamIds.map((id) => sim.teams[id]).find((t) => t.smokeLeft > 0);
+    if (!thrower || sim.tick - (this.withdrawSmokeTick.get(squad.id) ?? -Infinity) < WITHDRAW_SMOKE_TICKS) return false;
+    const c = this.centroid(sim, thrower.soldierIds);
+    const d = Math.hypot(at.x - c.x, at.y - c.y) || 1;
+    const r = Math.min(reach, d);
+    this.withdrawSmokeTick.set(squad.id, sim.tick);
+    sim.orderTeam(thrower.id, { kind: 'smoke', x: c.x + ((at.x - c.x) / d) * r, y: c.y + ((at.y - c.y) / d) * r }, undefined, true);
+    return true;
   }
 
   // See RELAY_TICKS.

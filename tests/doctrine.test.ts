@@ -1267,6 +1267,20 @@ describe('a defence that moves (#794)', () => {
     expect(late.at(late.res)).toBeGreaterThan(145);
   });
 
+  it('a reserve whose men will not cross seen ground smokes the post and then goes in', () => {
+    const { sim, enemy, run, said, at, line, res } = stage({ reserve: true, green: true });
+    run(100);
+    res.soldierIds.forEach((id) => (sim.soldiers[id].x = 125.5)); // 25 m from the post: inside a throw
+    run(20);
+    line.soldierIds.forEach((id) => (sim.soldiers[id].alive = false));
+    enemy(101.5, 30.5);
+    run(400);
+    expect(said).toEqual(['counterattack@100']);
+    expect(sim.teams[res.teamIds[0]].smokeLeft).toBe(1);
+    run(1200);
+    expect(at(res)).toBeLessThan(110); // on the post it was sent for
+  });
+
   it('a squad on an arc with the enemy in range outside it turns the arc onto him, and leaves it alone while it has work', () => {
     const { sim, enemy, run, line, commander } = stage({ fallback: false });
     sim.soldiers[line.soldierIds[0]].weapon = 'mg42'; // a long-range squad: it fights from an arc on the approach
