@@ -669,12 +669,20 @@ export class RedCommander {
     return sim.soldiers.some((s) => s.side === this.cfg.side && s.alive && !s.downed && Math.hypot(s.x - p.x, s.y - p.y) <= POST_HELD_RADIUS);
   }
 
+  // The reserve joins the maneuver element (#763). It used to get one 'move'
+  // onto its briefed post and nothing after: runAttack only ever looped the
+  // maneuver set, so 50 of blue's 126 riflemen walked one leg and stood there
+  // for the rest of the battle (measured: 66 of 72 reserve teams ended idle).
+  // Appending to the array runAttack is iterating is deliberate — the loop
+  // reaches the new teams in this same eval, so they step off with the
+  // objective, flank and suppression reading everyone else is working from.
   private commitReserve(sim: Sim): void {
     this.reserveCommitted = true;
     for (const teamId of this.reserveTeamIds) {
-      const post = this.cfg.posts[sim.teams[teamId].squadId] ?? Object.values(this.cfg.posts)[0];
-      if (post) this.issue(sim, sim.teams[teamId], { kind: 'move', x: post.x, y: post.y });
+      this.maneuverTeamIds.push(teamId);
+      this.startStrength.set(teamId, sim.teams[teamId].soldierIds.filter((sid) => sim.soldiers[sid].alive).length);
     }
+    this.reserveTeamIds = [];
   }
 
   // Which side of the direct axis to the post scores lower danger (spec:

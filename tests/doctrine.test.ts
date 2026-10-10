@@ -394,6 +394,23 @@ describe('AI commander doctrine', () => {
     commander.update(sim);
     expect(reserveTeam.orderState.order).not.toBeNull(); // reserve committed
     expect(manTeam.orderState.order?.kind).toBe('assault'); // and the charge was NOT re-rolled
+
+    // #763: committed means commanded. The reserve used to get this one order
+    // and no other; it now maneuvers with the rest, bound after bound.
+    let reserveOrders = 0;
+    const orderTeam = sim.orderTeam.bind(sim);
+    sim.orderTeam = (teamId, order, used) => {
+      if (teamId === reserveTeam.id) reserveOrders++;
+      orderTeam(teamId, order, used);
+    };
+    const resX = () => mean(reserve.soldierIds.map((id) => sim.soldiers[id].x));
+    const x0 = resX();
+    for (let i = 0; i < 2400; i++) {
+      commander.update(sim);
+      sim.step();
+    }
+    expect(reserveOrders).toBeGreaterThanOrEqual(2);
+    expect(resX() - x0).toBeGreaterThan(45); // past the 35 m its first half-way bound alone would carry it
   });
 
   it('culmination: an attack bled past the threshold breaks off, consolidates, and does not un-break when the ratio recovers', () => {
