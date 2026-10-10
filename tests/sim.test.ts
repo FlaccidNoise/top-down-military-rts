@@ -4,7 +4,7 @@ import { ECLASS, EDGE, GameMap, edgeClass, los } from '../src/sim/map';
 import { astar } from '../src/sim/path';
 import { generateMap } from '../src/sim/mapgen';
 import { makeScenario } from '../src/sim/scenario';
-import { DT, Sim, sightBetween, smokePuff, type UnitEvent } from '../src/sim/sim';
+import { DT, RALLY_WINDOW_TICKS, Sim, sightBetween, smokePuff, type UnitEvent } from '../src/sim/sim';
 import { CANON_CLOCK_MIN } from '../src/sim/solar';
 
 describe('line of sight', () => {
@@ -362,6 +362,58 @@ describe('simulation', () => {
     expect(sim.takeUnitEvents()).toEqual([]); // queue drains
   });
 
+  // #766 and the FX lane's fields. Everything below is output only.
+  it('a kill carries the direction of the shot; a man who bleeds out carries none', () => {
+    const sim = new Sim(new GameMap(40, 20), 5);
+    sim.addSquad('blue', 'a', [{ name: 'A', weapon: 'garand', x: 5.5, y: 10.5 }]);
+    sim.addSquad('red', 'b', [{ name: 'B', weapon: 'kar98k', x: 25.5, y: 10.5, ammo: {} }]);
+    const [a, b] = sim.soldiers;
+    b.magLeft = 0;
+    const shots: { shooterId?: number; targetId?: number }[] = [];
+    const events: UnitEvent[] = [];
+    for (let i = 0; i < 30 * 120 && b.alive; i++) {
+      sim.step();
+      shots.push(...sim.takeEvents());
+      events.push(...sim.takeUnitEvents());
+    }
+    expect(b.alive).toBe(false);
+    expect(shots.length).toBeGreaterThan(0);
+    for (const sh of shots) expect([sh.shooterId, sh.targetId]).toEqual([a.id, b.id]);
+    const kia = events.find((e) => e.kind === 'kia')!;
+    expect(kia.dx).toBeCloseTo(1, 6); // due east, the way the round was going
+    expect(kia.dy).toBeCloseTo(0, 6);
+    for (const e of events.filter((e) => e.kind === 'downed' && e.dx !== undefined)) expect(Math.hypot(e.dx!, e.dy!)).toBeCloseTo(1, 6);
+
+    const lone = new Sim(new GameMap(10, 10), 1);
+    lone.addSquad('blue', 'a', [{ name: 'A', weapon: 'garand', x: 2.5, y: 2.5 }]);
+    lone.soldiers[0].wounds.push({ part: 0, dmg: 10 });
+    lone.soldiers[0].bloodLoss = 1;
+    lone.step();
+    const bled = lone.takeUnitEvents().find((e) => e.kind === 'kia')!;
+    expect(bled.dx).toBeUndefined();
+    expect(bled.dy).toBeUndefined();
+  });
+
+  it('a blast throws its casualties away from the burst, and says what burst', () => {
+    const sim = new Sim(new GameMap(40, 20), 6);
+    sim.addSquad('red', 'b', [{ name: 'B', weapon: 'kar98k', x: 23.5, y: 10.5 }]);
+    const b = sim.soldiers[0];
+    sim.callBarrage('blue', 20.5, 10.5);
+    const events: UnitEvent[] = [];
+    const booms = [];
+    for (let i = 0; i < 30 * 60; i++) {
+      sim.step();
+      booms.push(...sim.takeBooms());
+      events.push(...sim.takeUnitEvents());
+    }
+    expect(booms.length).toBeGreaterThan(0);
+    for (const boom of booms) expect([boom.kind, boom.r]).toEqual(['shell', 9]);
+    const hit = events.filter((e) => (e.kind === 'kia' || e.kind === 'downed') && e.dx !== undefined);
+    expect(hit.length).toBeGreaterThan(0); // the barrage got him
+    expect(b.wounds.length).toBeGreaterThan(0);
+    for (const e of hit) expect(Math.hypot(e.dx!, e.dy!)).toBeCloseTo(1, 6);
+  });
+
   it('waypoint queue dispatches legs in order; a direct order cancels it', () => {
     const sim = new Sim(new GameMap(60, 20), 1);
     sim.addSquad('blue', 'a', [{ name: 'A', weapon: 'garand', x: 2.5, y: 10.5 }]);
@@ -464,20 +516,64 @@ describe('morale drama events', () => {
     expect(kinds.filter((k) => k === 'pinned')).toHaveLength(1);
   });
 
-  it('pinned → steady fires one rallied', () => {
+  // The recovery below is NOT staged. The test this replaces wrote
+  // suppression = 0 by hand, which is the only way a man ever went from
+  // pinned to steady in one tick — so it passed for an event that fired 0
+  // times in 38 real battles (#766). Only the pin is forced; from there
+  // nothing is written and the psych model does the rest.
+  const recover = (sim: Sim, s: { mental: string }, maxTicks: number) => {
+    const kinds: string[] = [];
+    const states = new Set<string>();
+    for (let i = 0; i < maxTicks && s.mental !== 'steady'; i++) {
+      sim.step();
+      states.add(s.mental);
+      kinds.push(...sim.takeUnitEvents().map((e) => e.kind));
+    }
+    kinds.push(...run(sim, 60, () => {})); // and nothing more once he is steady
+    return { kinds, states };
+  };
+
+  it('a pinned man whose suppression decays rallies once, by way of shaken', () => {
     const { sim, s } = loner();
     run(sim, 20, () => {
       s.suppression = 1;
       s.morale = 0.8;
     });
     expect(s.mental).toBe('pinned');
-    const kinds = run(sim, 40, () => {
-      s.suppression = 0;
-      s.morale = 1;
-    });
+    const { kinds, states } = recover(sim, s, 30 * 60);
     expect(s.mental).toBe('steady');
+    expect(states.has('shaken')).toBe(true); // never straight from pinned
     expect(kinds.filter((k) => k === 'rallied')).toHaveLength(1);
     expect(kinds).not.toContain('pinned');
+  });
+
+  it('a broken man whose morale climbs back rallies once', () => {
+    const { sim, s } = loner();
+    run(sim, 20, () => {
+      s.suppression = 1;
+      s.morale = 0.1;
+    });
+    expect(s.mental).toBe('broken');
+    const { kinds, states } = recover(sim, s, 30 * 240);
+    expect(s.mental).toBe('steady');
+    expect(states.has('shaken')).toBe(true);
+    expect(kinds.filter((k) => k === 'rallied')).toHaveLength(1);
+  });
+
+  it('steadying long after the pin is not a rally', () => {
+    const { sim, s } = loner();
+    run(sim, 20, () => {
+      s.suppression = 1;
+      s.morale = 0.8;
+    });
+    // Kept rattled but not pinned until the window has run out.
+    run(sim, RALLY_WINDOW_TICKS + 1, () => {
+      s.suppression = 0.45;
+    });
+    expect(s.mental).toBe('shaken');
+    const { kinds } = recover(sim, s, 30 * 60);
+    expect(s.mental).toBe('steady');
+    expect(kinds).not.toContain('rallied');
   });
 
   it('broken → pinned is a recovery, not a pin', () => {
@@ -544,6 +640,29 @@ describe('morale drama events', () => {
       kinds.push(...sim.takeUnitEvents().map((e) => e.kind));
     }
     expect(kinds).toContain('pinned');
+  });
+
+  // Same staging, run to its end: the fire slackens as men go down, and the
+  // survivors come back up on their own.
+  it('a natural firefight ends with someone rallying', () => {
+    const sim = new Sim(new GameMap(60, 20), 7);
+    sim.addSquad('blue', 'A', [
+      { name: 'A1', weapon: 'garand', x: 10.5, y: 9.5 },
+      { name: 'A2', weapon: 'garand', x: 10.5, y: 10.5 },
+      { name: 'A3', weapon: 'bar', x: 10.5, y: 11.5 },
+    ]);
+    sim.addSquad('red', 'B', [
+      { name: 'B1', weapon: 'kar98k', x: 40.5, y: 9.5 },
+      { name: 'B2', weapon: 'kar98k', x: 40.5, y: 10.5 },
+      { name: 'B3', weapon: 'mg42', x: 40.5, y: 11.5 },
+    ]);
+    const kinds: string[] = [];
+    for (let i = 0; i < 30 * 240 && !kinds.includes('rallied'); i++) {
+      sim.step();
+      kinds.push(...sim.takeUnitEvents().map((e) => e.kind));
+    }
+    expect(kinds).toContain('pinned');
+    expect(kinds).toContain('rallied');
   });
 });
 
@@ -751,6 +870,174 @@ describe('casualty chain v2: succession, two-man carry, aidman', () => {
     for (let i = 0; i < 100; i++) sim.step(); // past the 10s mark
     expect(high.role).toBe('leader'); // highest xp, not the lower-xp teammate
     expect(low.role).not.toBe('leader');
+  });
+
+  // #766. A role is one field: the man promoted stops being what he was.
+  const leaderless = (seed: number, rest: { name: string; weapon: 'garand' | 'm1919'; xp: number; role?: 'gunner' | 'aidman' | 'assistant' | 'bearer' }[]) => {
+    const sim = new Sim(new GameMap(20, 20), seed);
+    sim.addSquad('blue', 'a', [{ name: 'L', weapon: 'garand', x: 10.5, y: 10.5 }, ...rest.map((m) => ({ name: m.name, weapon: m.weapon, x: 10.5, y: 10.5, xp: m.xp }))]);
+    const [leader, ...men] = sim.soldiers;
+    leader.role = 'leader';
+    rest.forEach((m, i) => {
+      if (m.role) men[i].role = m.role;
+    });
+    leader.wounds.push({ part: 0, dmg: 100 });
+    leader.bloodLoss = 1;
+    for (let i = 0; i < 360; i++) sim.step(); // past the 10 s vacancy
+    expect(leader.alive).toBe(false);
+    return Object.fromEntries(men.map((m) => [m.name, m.role]));
+  };
+
+  it('leader succession passes over the gunner and the aidman for a rifleman, whatever their xp', () => {
+    const roles = leaderless(54, [
+      { name: 'Gun', weapon: 'm1919', xp: 9, role: 'gunner' },
+      { name: 'Aid', weapon: 'garand', xp: 8, role: 'aidman' },
+      { name: 'Green', weapon: 'garand', xp: 1 },
+      { name: 'Old', weapon: 'garand', xp: 4 },
+    ]);
+    expect(roles).toEqual({ Gun: 'gunner', Aid: 'aidman', Green: 'rifleman', Old: 'leader' }); // highest xp among the riflemen
+  });
+
+  it('a specialist leads only when nobody else is left: bearer, assistant, aidman, then the gunner', () => {
+    expect(
+      leaderless(55, [
+        { name: 'Gun', weapon: 'm1919', xp: 9, role: 'gunner' },
+        { name: 'Asst', weapon: 'garand', xp: 8, role: 'assistant' },
+        { name: 'Bear', weapon: 'garand', xp: 1, role: 'bearer' },
+      ]),
+    ).toEqual({ Gun: 'gunner', Asst: 'assistant', Bear: 'leader' });
+    expect(
+      leaderless(56, [
+        { name: 'Gun', weapon: 'm1919', xp: 9, role: 'gunner' },
+        { name: 'Aid', weapon: 'garand', xp: 1, role: 'aidman' },
+      ]),
+    ).toEqual({ Gun: 'gunner', Aid: 'leader' });
+    expect(leaderless(57, [{ name: 'Gun', weapon: 'm1919', xp: 9, role: 'gunner' }])).toEqual({ Gun: 'leader' });
+  });
+
+  it('a bazooka man and a mortar man leave a dropped rifle where it lies', () => {
+    for (const weapon of ['bazooka', 'mortar60'] as const) {
+      const sim = new Sim(new GameMap(20, 20), 58);
+      sim.addSquad('blue', 's', [
+        { name: 'Dead', weapon: 'garand', x: 5.5, y: 5.5, ammo: { clip_3006: 8 } },
+        { name: 'Keeper', weapon, x: 6.0, y: 5.5, ammo: weapon === 'bazooka' ? { rocket_bazooka: 3 } : { shell_60: 12 } },
+      ]);
+      const [dead, keeper] = sim.soldiers;
+      dead.wounds.push({ part: 0, dmg: 100 });
+      dead.bloodLoss = 1;
+      for (let i = 0; i < 250; i++) sim.step();
+      expect(dead.alive).toBe(false);
+      expect(keeper.weapon, weapon).toBe(weapon); // was 'garand' inside 5 s
+      expect(keeper.ammo.clip_3006, weapon).toBeUndefined(); // and his rockets or shells were gone with it
+      expect(sim.droppedKit.length, weapon).toBe(1);
+    }
+  });
+
+  it("an AT gun's gunner does not trade his carbine for a rifle", () => {
+    const sim = new Sim(new GameMap(40, 20), 59);
+    const e = sim.addEmplacement('blue', 'at57', 10.5, 10.5, 0, 'deployed');
+    const crew = sim.teams[e.crewTeamId].soldierIds.map((id) => sim.soldiers[id]);
+    const gunner = crew.find((m) => m.role === 'gunner')!;
+    for (const m of crew) if (m !== gunner) m.x += 12; // staged: only the gunner stands by the rifle
+    const dead = sim.soldiers[sim.addSquad('blue', 'r', [{ name: 'Dead', weapon: 'garand', x: gunner.x, y: gunner.y, ammo: { clip_3006: 8 } }]).soldierIds[0]];
+    dead.wounds.push({ part: 0, dmg: 100 });
+    dead.bloodLoss = 1;
+    for (let i = 0; i < 250; i++) sim.step();
+    expect(gunner.weapon).toBe('carbine');
+    expect(sim.droppedKit.length).toBe(1);
+  });
+
+  it('a man who takes up a weapon keeps what he carries for other weapons', () => {
+    // A bearer with the gun's shells picks up a rifle: the carbine magazines
+    // go, the shells stay.
+    const sim = new Sim(new GameMap(40, 20), 60);
+    sim.addSquad('blue', 's', [
+      { name: 'Dead', weapon: 'garand', x: 5.5, y: 5.5, ammo: { clip_3006: 8 } },
+      { name: 'Bearer', weapon: 'carbine', x: 6.0, y: 5.5, ammo: { mag_carbine: 6, shell_57: 4 } },
+    ]);
+    const [dead, bearer] = sim.soldiers;
+    dead.wounds.push({ part: 0, dmg: 100 });
+    dead.bloodLoss = 1;
+    for (let i = 0; i < 250 && bearer.weapon !== 'garand'; i++) sim.step();
+    expect(bearer.weapon).toBe('garand');
+    expect(bearer.ammo).toEqual({ shell_57: 4, clip_3006: 8 });
+
+    // The assistant who takes over the MG42 adds the dead gunner's belts to
+    // the ones on his own back instead of swapping one stock for the other.
+    const sim2 = new Sim(new GameMap(60, 20), 61);
+    const e = sim2.addEmplacement('blue', 'mg42_lafette', 10.5, 10.5, 0, 'deployed');
+    const crew = sim2.teams[e.crewTeamId].soldierIds.map((id) => sim2.soldiers[id]);
+    const gunner = crew.find((m) => m.role === 'gunner')!;
+    const assistant = crew.find((m) => m.role === 'assistant')!;
+    const belts = (gunner.ammo.belt_792 ?? 0) + (assistant.ammo.belt_792 ?? 0);
+    expect(assistant.ammo.belt_792).toBeGreaterThan(0);
+    gunner.wounds.push({ part: 0, dmg: 100 });
+    gunner.bloodLoss = 1;
+    for (let i = 0; i < 400 && assistant.role !== 'gunner'; i++) sim2.step();
+    expect(assistant.role).toBe('gunner');
+    expect(assistant.ammo.belt_792).toBe(belts);
+  });
+
+  it('the quiet recoveries are announced: stabilized, back up, new leader, gun taken over, ammo brought up', () => {
+    const collect = (sim: Sim, ticks: number, until: (kinds: Set<string>) => boolean) => {
+      const out: UnitEvent[] = [];
+      const kinds = new Set<string>();
+      for (let i = 0; i < ticks && !until(kinds); i++) {
+        sim.step();
+        for (const e of sim.takeUnitEvents()) {
+          out.push(e);
+          kinds.add(e.kind);
+        }
+      }
+      return out;
+    };
+
+    // A man in shock is treated where he lies, and comes round as the pain eases.
+    const aid = new Sim(new GameMap(20, 20), 49);
+    aid.addSquad('blue', 'Able', [
+      { name: 'C', weapon: 'garand', x: 10.5, y: 10.5 },
+      { name: 'R', weapon: 'garand', x: 10.5, y: 10.5 },
+    ]);
+    const [c, r] = aid.soldiers;
+    r.bonds[c.id] = 1;
+    r.courage = 1;
+    c.wounds.push({ part: 0, dmg: 10 }); // pain only eases on a wounded man
+    c.pain = 0.9;
+    const aidEvents = collect(aid, 30 * 90, (k) => k.has('stabilized') && k.has('recovered'));
+    const team = aid.teams[c.teamId].name;
+    expect(aidEvents.filter((e) => e.kind === 'stabilized').map((e) => [e.id, e.team, e.side])).toEqual([[c.id, team, 'blue']]);
+    expect(aidEvents.filter((e) => e.kind === 'recovered').map((e) => [e.id, e.team])).toEqual([[c.id, team]]);
+
+    // The leader falls; ten seconds on a teammate has the job.
+    const led = new Sim(new GameMap(20, 20), 52);
+    led.addSquad('blue', 'a', [
+      { name: 'L', weapon: 'garand', x: 10.5, y: 10.5 },
+      { name: 'N', weapon: 'garand', x: 10.5, y: 10.5 },
+    ]);
+    led.soldiers[0].role = 'leader';
+    led.soldiers[0].wounds.push({ part: 0, dmg: 100 });
+    led.soldiers[0].bloodLoss = 1;
+    expect(collect(led, 400, (k) => k.has('promoted')).filter((e) => e.kind === 'promoted').map((e) => e.id)).toEqual([led.soldiers[1].id]);
+
+    // The gunner falls; the assistant takes the gun over.
+    const gun = new Sim(new GameMap(60, 20), 46);
+    const e = gun.addEmplacement('blue', 'mg42_lafette', 10.5, 10.5, 0, 'deployed');
+    const crew = gun.teams[e.crewTeamId].soldierIds.map((id) => gun.soldiers[id]);
+    const gunner = crew.find((s) => s.role === 'gunner')!;
+    const assistant = crew.find((s) => s.role === 'assistant')!;
+    gunner.wounds.push({ part: 0, dmg: 100 });
+    gunner.bloodLoss = 1;
+    expect(collect(gun, 400, (k) => k.has('took-over')).filter((x) => x.kind === 'took-over').map((x) => x.id)).toEqual([assistant.id]);
+
+    // A dry gunner gets belts from his bearer.
+    const dry = new Sim(new GameMap(20, 20), 70);
+    dry.addSquad('blue', 'g', [
+      { name: 'Gunner', weapon: 'mg42', x: 5.5, y: 5.5, ammo: { belt_792: 1 } },
+      { name: 'Bearer', weapon: 'kar98k', x: 6.5, y: 5.5, ammo: { belt_792: 4 } },
+    ]);
+    dry.soldiers[1].bonds[dry.soldiers[0].id] = 1;
+    dry.soldiers[1].courage = 0.8;
+    expect(collect(dry, 600, (k) => k.has('resupplied')).filter((x) => x.kind === 'resupplied').map((x) => x.id)).toEqual([dry.soldiers[0].id]);
   });
 
   it('an MG42 gunner killed on an emplacement is served by the assistant within ~10s, with a worse-aim penalty during the interim', () => {

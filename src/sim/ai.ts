@@ -1,6 +1,6 @@
 import { EMPLACEMENTS, WEAPONS, type WeaponDef } from './data';
 import { crewNear, friendlyHasLos, type Emplacement } from './emplacement';
-import { ASSAULT_DANGER_MULT, compliance, dangerScore } from './orders';
+import { dangerScore, orderVerdict, type OrderKind, type TeamOrder } from './orders';
 import { CONTACT_TTL, EYE_CROUCH, EYE_STAND, SPOT_INTERVAL, sightBetween, type Side, type Sim, type Team } from './sim';
 
 // Red commander: issues squad orders through the same public order API the
@@ -72,6 +72,18 @@ const BOF_SETTLE_RADIUS = 5; // close enough to the scored firing spot to stop m
 // without committing past the next re-score.
 const BOF_RANGE_FRAC = 0.8;
 const BOF_LEG = 20;
+// An order re-sent unchanged is not a no-op (#763): orderTeam re-rolls
+// compliance, restarts a bound at element A and re-paths every man, and
+// pathTo drops whatever rescue, ammo run or weapon hand-over he was on.
+// Sent every 5 s eval, that cancelled 21 of the attacker's 31 rescues a battle
+// (measured) — buddy aid alone takes 8 s. A team already carrying out the
+// kind the commander wants, toward a point this close to the one it wants,
+// is left to get on with it.
+const SAME_ORDER_RADIUS = 5;
+// Armour: a hull this close to the objective it was sent to has arrived, and
+// two hulls sent to one objective stand this far apart instead of on one tile.
+const HULL_ARRIVED_RADIUS = 25;
+const HULL_SPACING = 10;
 // Objective progression: a post with a live man of the commander's own side
 // within this radius is held, and a maneuver team this close to its own post
 // is standing on the objective.
@@ -152,6 +164,9 @@ export class RedCommander {
   private culminated = false; // one-way: the attack has broken off and is consolidating on what it holds
   private lastProgressTick = 0; // classification, then each objective taken: the culmination stall clock
   private breachSeen = 0; // how much of sim.breachLog this commander has already reacted to
+  private asked = new Map<number, OrderKind>(); // teamId -> the kind last sent it, which a cautious team may be executing as a plain 'move'
+  private flankLeg = new Map<number, { post: { x: number; y: number }; x: number; y: number }>(); // maneuver teamId -> the flank bound it is on
+  private hullPost = new Map<number, { x: number; y: number }>(); // vehicleId -> the objective it was last sent to
 
   constructor(private cfg: CommanderConfig) {}
 
@@ -245,13 +260,16 @@ export class RedCommander {
   // and maneuver rather than leaving maneuver empty.
   private assignGroups(sim: Sim): void {
     const redTeams = sim.teams.filter((t) => sim.squads[t.squadId].side === this.cfg.side && this.cfg.posts[t.squadId]);
-    const isBaseOfFire = (team: Team) =>
-      team.soldierIds.some((id) => {
-        const w: WeaponDef = WEAPONS[sim.soldiers[id].weapon];
-        return !!w.heat || !!w.arc || w.pen !== undefined;
-      });
+    const carries = (team: Team, is: (w: WeaponDef) => boolean): boolean => team.soldierIds.some((id) => is(WEAPONS[sim.soldiers[id].weapon]));
+    // A base of fire keeps heads down on the objective: a belt gun or a tube.
+    // A rocket launcher does neither. Counted as one, three bazooka teams made
+    // up three of blue's five "base of fire" teams and claimed suppression on
+    // posts they could do nothing to (#763). Tank hunters follow with the
+    // reserve instead of leading a rifle bound two men strong.
+    const isBaseOfFire = (team: Team) => carries(team, (w) => !!w.heat || !!w.arc);
+    const isTankHunter = (team: Team) => !isBaseOfFire(team) && carries(team, (w) => w.pen !== undefined);
     this.baseTeamIds = redTeams.filter(isBaseOfFire).map((t) => t.id);
-    const rifle = redTeams.filter((t) => !isBaseOfFire(t));
+    const rifle = redTeams.filter((t) => !isBaseOfFire(t) && !isTankHunter(t));
     const pool = rifle.length > 0 ? rifle : redTeams;
     // Half the pool maneuvers, half stays reserve. A flat two teams was a
     // company-sized attack fought by a dozen men — every other rifle team sat
@@ -259,7 +277,7 @@ export class RedCommander {
     // small force bounding by pairs.
     const maneuverCount = Math.max(2, Math.ceil(pool.length / 2));
     this.maneuverTeamIds = pool.slice(0, maneuverCount).map((t) => t.id);
-    this.reserveTeamIds = pool.slice(maneuverCount).map((t) => t.id);
+    this.reserveTeamIds = [...pool.slice(maneuverCount), ...(rifle.length > 0 ? redTeams.filter(isTankHunter) : [])].map((t) => t.id);
     for (const id of this.maneuverTeamIds) {
       this.startStrength.set(id, sim.teams[id].soldierIds.filter((sid) => sim.soldiers[sid].alive).length);
     }
@@ -299,13 +317,39 @@ export class RedCommander {
   // measured choice, not a shortcut: a withdrawal leg back to the assembly
   // area was probed (open seeds 3/4) and cost MORE than staying down — 71%
   // final KIA vs 51% on seed 4 — because the walk back re-crosses the same
-  // arcs that culminated the attack. Issued once; re-issuing every eval would
-  // re-roll compliance on a team that has already stopped, and a 'defend'
-  // that balked is a team staying exactly where consolidating wants it.
+  // arcs that culminated the attack. Issued once: the order stands until the
+  // commander has something else for the team. It cannot be refused — it
+  // moves nobody (orders.ts movesTeam).
   private consolidate(sim: Sim, team: Team): void {
     if (team.orderState.order?.kind === 'defend') return;
     const c = this.centroid(sim, team.soldierIds);
-    sim.orderTeam(team.id, { kind: 'defend', x: c.x, y: c.y });
+    this.issue(sim, team, { kind: 'defend', x: c.x, y: c.y });
+  }
+
+  // Every order the attack sends goes through here, so `asked` is always the
+  // commander's own last word to the team. A balked team is asked again: the
+  // re-roll is the only thing that un-sticks it once the danger has eased. So
+  // is a charge its team talked down to an advance — the charge is the point,
+  // and the eval that finds the men willing must be able to launch it.
+  private issue(sim: Sim, team: Team, order: TeamOrder): void {
+    const st = team.orderState;
+    if (
+      st.order &&
+      st.phase !== 'balked' &&
+      order.kind !== 'assault' &&
+      this.asked.get(team.id) === order.kind &&
+      Math.hypot(st.order.x - order.x, st.order.y - order.y) <= SAME_ORDER_RADIUS
+    ) {
+      return;
+    }
+    this.asked.set(team.id, order.kind);
+    sim.orderTeam(team.id, order);
+  }
+
+  // Whether the team is still walking the bound that ends at `p`.
+  private onLeg(team: Team, p: { x: number; y: number }): boolean {
+    const st = team.orderState;
+    return st.order?.kind === 'move' && st.phase !== 'balked' && st.order.x === p.x && st.order.y === p.y;
   }
 
   private centroid(sim: Sim, soldierIds: number[]): { x: number; y: number } {
@@ -350,10 +394,12 @@ export class RedCommander {
         // is kept: re-scoring it every eval is what makes a team chase a
         // marginally better patch of cover forever and never arrive (measured:
         // 1 of 5 support teams ever settled). A spot that cannot engage is
-        // merely the current displacement leg, so it is re-scored every eval —
-        // which is what walks the team forward.
+        // merely the current displacement leg: it is re-scored when the team
+        // has walked it (or refused it), which is what walks the team forward.
+        // Re-scoring it mid-leg moved the destination under the team every
+        // eval, and each new destination was a new order (#763).
         let spot = this.baseSpot.get(teamId);
-        if (!spot || !this.canEngage(sim, spot, post, reach)) {
+        if (!spot || (!this.canEngage(sim, spot, post, reach) && !this.onLeg(team, spot))) {
           spot = this.baseFiringSpot(sim, team, post, reach);
           this.baseSpot.set(teamId, spot);
         }
@@ -361,12 +407,12 @@ export class RedCommander {
         if (this.canEngage(sim, spot, post, reach) && Math.hypot(c.x - spot.x, c.y - spot.y) < BOF_SETTLE_RADIUS) {
           this.baseFiring.add(teamId); // arrived at a spot that can actually reach the post: fire from here on
         } else {
-          sim.orderTeam(teamId, { kind: 'move', x: spot.x, y: spot.y });
+          this.issue(sim, team, { kind: 'move', x: spot.x, y: spot.y });
           continue;
         }
       }
       const aim = this.aimPointFor(post);
-      sim.orderTeam(teamId, { kind: 'fire', x: aim.x, y: aim.y });
+      this.issue(sim, team, { kind: 'fire', x: aim.x, y: aim.y });
       if (!this.fireStartTick.has(teamId)) this.fireStartTick.set(teamId, sim.tick);
     }
 
@@ -423,19 +469,19 @@ export class RedCommander {
         // Forecast the same ladder orderTeam will run. A balked charge used to
         // be re-issued every eval until transient danger decayed and fed the
         // team into an unchanged defended lane (#216).
-        if (compliance(sim, team, dangerScore(sim, team, post) * ASSAULT_DANGER_MULT) === 'balk') {
+        if (orderVerdict(sim, team, { kind: 'assault', x: post.x, y: post.y }).verdict === 'balk') {
           this.divertRefusedAssault(sim, team, post);
           continue;
         }
         // Floor-aware town assault (#130): defend/ambush auto-garrisons the
         // top storey, so brief the charge to that same storey.
         const stories = sim.map.storiesAt(Math.floor(post.x), Math.floor(post.y));
-        sim.orderTeam(teamId, { kind: 'assault', x: post.x, y: post.y, l: stories >= 2 ? stories - 1 : 0 });
+        this.issue(sim, team, { kind: 'assault', x: post.x, y: post.y, l: stories >= 2 ? stories - 1 : 0 });
       } else if (suppressed || cleared) {
-        sim.orderTeam(teamId, { kind: 'fast', x: post.x, y: post.y });
+        this.issue(sim, team, { kind: 'fast', x: post.x, y: post.y });
       } else {
-        const flank = this.pickFlank(sim, team, post);
-        sim.orderTeam(teamId, { kind: 'move', x: flank.x, y: flank.y });
+        const flank = this.flankBound(sim, team, post);
+        this.issue(sim, team, { kind: 'move', x: flank.x, y: flank.y });
       }
     }
   }
@@ -631,12 +677,20 @@ export class RedCommander {
     return sim.soldiers.some((s) => s.side === this.cfg.side && s.alive && !s.downed && Math.hypot(s.x - p.x, s.y - p.y) <= POST_HELD_RADIUS);
   }
 
+  // The reserve joins the maneuver element (#763). It used to get one 'move'
+  // onto its briefed post and nothing after: runAttack only ever looped the
+  // maneuver set, so 50 of blue's 126 riflemen walked one leg and stood there
+  // for the rest of the battle (measured: 66 of 72 reserve teams ended idle).
+  // Appending to the array runAttack is iterating is deliberate — the loop
+  // reaches the new teams in this same eval, so they step off with the
+  // objective, flank and suppression reading everyone else is working from.
   private commitReserve(sim: Sim): void {
     this.reserveCommitted = true;
     for (const teamId of this.reserveTeamIds) {
-      const post = this.cfg.posts[sim.teams[teamId].squadId] ?? Object.values(this.cfg.posts)[0];
-      if (post) sim.orderTeam(teamId, { kind: 'move', x: post.x, y: post.y });
+      this.maneuverTeamIds.push(teamId);
+      this.startStrength.set(teamId, sim.teams[teamId].soldierIds.filter((sid) => sim.soldiers[sid].alive).length);
     }
+    this.reserveTeamIds = [];
   }
 
   // Which side of the direct axis to the post scores lower danger (spec:
@@ -655,12 +709,25 @@ export class RedCommander {
     return dangerScore(sim, team, left) <= dangerScore(sim, team, right) ? left : right;
   }
 
+  // The flank bound a maneuver team is on, or a fresh one. pickFlank works
+  // from where the team stands, so asking it again mid-bound moves the point
+  // every eval and flips its side whenever the two danger sums cross — the
+  // team never finished a bound it was sent on. A bound is held until the team
+  // has walked it, refused it, or been given another objective.
+  private flankBound(sim: Sim, team: Team, post: { x: number; y: number }): { x: number; y: number } {
+    const leg = this.flankLeg.get(team.id);
+    if (leg && leg.post === post && this.onLeg(team, leg)) return leg;
+    const p = this.pickFlank(sim, team, post);
+    this.flankLeg.set(team.id, { post, x: p.x, y: p.y });
+    return p;
+  }
+
   // A refused frontal becomes a feasible flank bound or a crouched hold while
   // smoke or new geometry changes the same danger reading. No hidden intel or RNG.
   private divertRefusedAssault(sim: Sim, team: Team, post: { x: number; y: number }): void {
-    const flank = this.pickFlank(sim, team, post);
-    if (compliance(sim, team, dangerScore(sim, team, flank)) !== 'balk') {
-      sim.orderTeam(team.id, { kind: 'move', x: flank.x, y: flank.y });
+    const flank = this.flankBound(sim, team, post);
+    if (orderVerdict(sim, team, { kind: 'move', x: flank.x, y: flank.y }).verdict !== 'balk') {
+      this.issue(sim, team, { kind: 'move', x: flank.x, y: flank.y });
     } else {
       this.consolidate(sim, team);
     }
@@ -757,18 +824,42 @@ export class RedCommander {
     }
   }
 
-  // Armor: attack stance pushes idle tanks at the first objective; defend
-  // stance holds them back as a mobile reserve near their spawn.
+  // Armour, attack stance: hulls go where the maneuver element is going and
+  // are sent on when it rolls forward (#763). They used to be sent to the
+  // first post in the briefing, once: they reached it in about 20 s, ahead of
+  // every rifleman, and stood there for the rest of the battle while the
+  // attack worked objectives 100 m further on. Defend stance issues nothing —
+  // a hull holds where it was staged. No cooperation doctrine here: the hull
+  // still drives straight to the objective.
   private updateVehicles(sim: Sim): void {
-    for (const v of sim.vehicles) {
-      if (!v.alive || v.side !== this.cfg.side || v.path) continue;
-      if (this.cfg.stance === 'attack' && !this.culminated) {
-        const firstPost = Object.values(this.cfg.posts)[0];
-        if (firstPost && Math.hypot(v.x - firstPost.x, v.y - firstPost.y) > 25) {
-          sim.orderVehicleMove(v.id, firstPost.x, firstPost.y);
-        }
-      }
+    if (this.cfg.stance !== 'attack' || this.culminated) return;
+    const post = this.maneuverPost(sim);
+    if (!post) return;
+    const hulls = sim.vehicles.filter((v) => v.side === this.cfg.side);
+    hulls.forEach((v, slot) => {
+      if (!v.alive) return;
+      const sent = this.hullPost.get(v.id);
+      const same = sent !== undefined && Math.hypot(sent.x - post.x, sent.y - post.y) < 1;
+      if (same && (v.path || Math.hypot(v.x - post.x, v.y - post.y) <= HULL_ARRIVED_RADIUS)) return;
+      this.hullPost.set(v.id, post);
+      sim.orderVehicleMove(v.id, post.x, post.y + (slot - (hulls.length - 1) / 2) * HULL_SPACING);
+    });
+  }
+
+  // The objective most of the living maneuver element is working this eval
+  // (teamPost, as postFor left it), ties to the earliest team.
+  private maneuverPost(sim: Sim): { x: number; y: number } | undefined {
+    const tally: { p: { x: number; y: number }; n: number }[] = [];
+    for (const id of this.maneuverTeamIds) {
+      const p = this.teamPost.get(id);
+      if (!p || !sim.teams[id].soldierIds.some((sid) => sim.soldiers[sid].alive)) continue;
+      const t = tally.find((o) => Math.hypot(o.p.x - p.x, o.p.y - p.y) < 1);
+      if (t) t.n++;
+      else tally.push({ p, n: 1 });
     }
+    let best: { p: { x: number; y: number }; n: number } | undefined;
+    for (const t of tally) if (!best || t.n > best.n) best = t;
+    return best?.p;
   }
 
   // One barrage on the densest cluster among its side's spotted contacts, once

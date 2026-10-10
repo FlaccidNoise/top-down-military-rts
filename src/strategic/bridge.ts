@@ -1,6 +1,6 @@
 import { applyBattleResults, fitRoster, squadMembers, type BattleRecord, type Campaign, type RosterEntry } from '../campaign/campaign';
 import { RedCommander } from '../sim/ai';
-import { EMPLACEMENTS, SQUADS, TEAMS, WEAPONS, type EmplacementKey, type SquadKey, type VehicleKey } from '../sim/data';
+import { EMPLACEMENTS, SQUADS, TEAMS, WEAPONS, type EmplacementKey, type SquadKey, type VehicleKey, type WeaponDef } from '../sim/data';
 import { BREACH_LIP, BREACH_WIDE, EDGE, type GameMap } from '../sim/map';
 import { generateMap, type Building, type MapKind, type Vec } from '../sim/mapgen';
 import { mulberry32, type Rng } from '../sim/rng';
@@ -106,9 +106,17 @@ const DEFENDER_EMPLACED: Partial<Record<SquadKey, EmplacementKey>> = {
 // (balance 2026-07): the measured defense fired its tubes dry inside 90
 // seconds against a company attack. Defender-emplaced crews only — an
 // attacker's crews carry what marching order allows.
+//
+// Tubes only (#765). The machine guns went dry in that measurement because
+// an emplaced gun spent a whole belt on every burst, and doubling the belts
+// bought 12 more bursts. A belt now lasts ammo.perUnit bursts, so an sMG42
+// crew's own 12 belts are some 3,000, more than a 30-minute battle can fire,
+// and the multiplier on them was a number nothing would ever reach.
 const STOCKPILE_MULT = 2;
 function stockpileAmmo(sim: Sim, e: { kind: EmplacementKey; crewTeamId: number }): void {
-  const type = WEAPONS[EMPLACEMENTS[e.kind].weapon].ammo.type;
+  const w: WeaponDef = WEAPONS[EMPLACEMENTS[e.kind].weapon];
+  if (!w.arc) return;
+  const type = w.ammo.type;
   for (const id of sim.teams[e.crewTeamId].soldierIds) {
     const s = sim.soldiers[id];
     if (s.ammo[type]) s.ammo[type] = s.ammo[type]! * STOCKPILE_MULT;

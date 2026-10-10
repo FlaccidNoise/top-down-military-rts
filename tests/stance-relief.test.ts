@@ -15,7 +15,7 @@ import {
 } from '../src/sim/sim';
 
 // V9: stance × relief, at the SIM level rather than the los() level — the
-// stance comes from a real order through the public API, the relief from
+// stance comes from the order the team holds, the relief from
 // relief.ts's own geometry, and the sense from the same funnel the AI uses.
 // Staged maps, not generated ones, so every assertion is exact (V3 has not
 // wired relief into mapgen yet, and these tests must not depend on it).
@@ -40,6 +40,15 @@ function bankMap(mirror = false): GameMap {
 
 const swap = (s: Side): Side => (s === 'blue' ? 'red' : 'blue');
 
+// The order a man holds, set on his team without issuing it. orderTeam would
+// also walk him onto the best cover tile nearby, and these cases pin one exact
+// tile against the bank. (They used to call orderTeam and stay put only
+// because the watcher made the order balk — #764 stopped an in-place order
+// being refused, and the men started moving.)
+function holding(sim: Sim, s: Soldier, kind: 'ambush' | 'defend'): void {
+  sim.teams[s.teamId].orderState = { order: { kind, x: s.x, y: s.y }, phase: 'executing', reason: '' };
+}
+
 function place(sim: Sim, side: Side, name: string, x: number, y: number): Soldier {
   const sq = sim.addSquad(side, name, [{ name, weapon: 'kar98k', x, y }]);
   return sim.soldiers[sq.soldierIds[0]];
@@ -58,22 +67,22 @@ describe('a hedge bank hides the stance that lies behind it', () => {
     expect(stanceOf(sim, hider)).toBe('stand');
     expect(sightToSoldier(sim, watcher.x, watcher.y, hider, 0, eyeOf(sim, watcher)).visible).toBe(true);
 
-    sim.orderTeam(hider.teamId, { kind: 'ambush', x: hider.x, y: hider.y });
+    holding(sim, hider, 'ambush');
     expect(stanceOf(sim, hider)).toBe('prone'); // the doctrine stance, from the order
     expect(sightToSoldier(sim, watcher.x, watcher.y, hider, 0, eyeOf(sim, watcher)).visible).toBe(false);
   });
 
   it('a defend order is not enough — a crouching man still clears a 1 m bank', () => {
     const { sim, watcher, hider } = stage();
-    sim.orderTeam(hider.teamId, { kind: 'defend', x: hider.x, y: hider.y });
+    holding(sim, hider, 'defend');
     expect(stanceOf(sim, hider)).toBe('crouch');
     expect(sightToSoldier(sim, watcher.x, watcher.y, hider, 0, eyeOf(sim, watcher)).visible).toBe(true);
   });
 
   it('the watcher lying down too does not restore the sightline', () => {
     const { sim, watcher, hider } = stage();
-    sim.orderTeam(hider.teamId, { kind: 'ambush', x: hider.x, y: hider.y });
-    sim.orderTeam(watcher.teamId, { kind: 'ambush', x: watcher.x, y: watcher.y });
+    holding(sim, hider, 'ambush');
+    holding(sim, watcher, 'ambush');
     expect(sightToSoldier(sim, watcher.x, watcher.y, hider, 0, eyeOf(sim, watcher)).visible).toBe(false);
   });
 
@@ -88,14 +97,14 @@ describe('a hedge bank hides the stance that lies behind it', () => {
     const v = sim.addVehicle('blue', 'sherman', 4.5, 6.5, 0);
     expect(sightBetween(sim, v.x, v.y, hider.x, hider.y, 0, hider.level, EYE_VEHICLE, eyeOf(sim, hider)).visible).toBe(true);
 
-    sim.orderTeam(hider.teamId, { kind: 'ambush', x: hider.x, y: hider.y });
+    holding(sim, hider, 'ambush');
     expect(sightBetween(sim, v.x, v.y, hider.x, hider.y, 0, hider.level, EYE_VEHICLE, eyeOf(sim, hider)).visible).toBe(false);
     expect(sightBetween(sim, hider.x, hider.y, v.x, v.y, hider.level, 0, eyeOf(sim, hider), HULL_VEHICLE).visible).toBe(false);
   });
 
   it('the fog-of-war sweep agrees with the raycast: an ambusher behind the bank goes unspotted', () => {
     const { sim, hider } = stage();
-    sim.orderTeam(hider.teamId, { kind: 'ambush', x: hider.x, y: hider.y });
+    holding(sim, hider, 'ambush');
     for (let i = 0; i < SPOT_INTERVAL + 1; i++) sim.step();
     expect(sim.soldierVisibleTo('blue', hider)).toBe(false);
 

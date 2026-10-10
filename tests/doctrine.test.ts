@@ -303,6 +303,108 @@ describe('AI commander doctrine', () => {
   });
 
 
+  it('an order the team is already carrying out is not sent again (#763)', () => {
+    // Every orderTeam call re-rolls compliance, restarts a bound and re-paths
+    // each man, and the re-path drops whatever rescue or hand-over he was on.
+    // The commander used to send its whole order sheet every 5 s eval.
+    const sim = new Sim(new GameMap(140, 60), 100);
+    const post = { x: 120, y: 30 };
+    const mg = sim.addSquad('red', 'MG', [
+      { name: 'G', weapon: 'mg42', x: 40.5, y: 30.5 },
+      { name: 'A1', weapon: 'kar98k', x: 41.5, y: 29.5 },
+      { name: 'A2', weapon: 'kar98k', x: 41.5, y: 31.5 },
+    ]);
+    const rifle = sim.addSquad(
+      'red',
+      'Rifle',
+      Array.from({ length: 6 }, (_, i) => ({ name: `R${i}`, weapon: 'kar98k' as const, x: 40.5, y: 20.5 + i, xp: 20 })),
+    );
+    sim.addSquad('blue', 'Garrison', [
+      { name: 'B1', weapon: 'kar98k', x: 122.5, y: 30.5 },
+      { name: 'B2', weapon: 'kar98k', x: 122.5, y: 31.5 },
+    ]);
+    const commander = new RedCommander({ side: 'red', stance: 'attack', posts: { [mg.id]: post, [rifle.id]: post } });
+
+    let sent = 0;
+    let repeats = 0;
+    const orderTeam = sim.orderTeam.bind(sim);
+    sim.orderTeam = (teamId, order, used) => {
+      const st = sim.teams[teamId].orderState;
+      sent++;
+      if (st.order && st.phase !== 'balked' && st.order.kind === order.kind && Math.hypot(st.order.x - order.x, st.order.y - order.y) <= 5) repeats++;
+      orderTeam(teamId, order, used);
+    };
+    for (let i = 0; i < 3000; i++) {
+      commander.update(sim);
+      sim.step();
+    }
+    expect(sent).toBeGreaterThan(2); // the commander did command
+    expect(repeats).toBe(0);
+  });
+
+  it('a rocket team is not a base of fire: it waits with the reserve (#763)', () => {
+    const sim = new Sim(new GameMap(140, 60), 106);
+    const post = { x: 120, y: 30 };
+    const mg = sim.addSquad('red', 'MG', [
+      { name: 'G', weapon: 'mg42', x: 40.5, y: 30.5 },
+      { name: 'A1', weapon: 'kar98k', x: 41.5, y: 29.5 },
+    ]);
+    const rifles = [0, 1, 2].map((q) =>
+      sim.addSquad(
+        'red',
+        `Rifle${q}`,
+        Array.from({ length: 4 }, (_, i) => ({ name: `R${q}${i}`, weapon: 'kar98k' as const, x: 40.5 + q * 2, y: 20.5 + i })),
+      ),
+    );
+    const rocket = sim.addSquad('red', 'Schreck', [
+      { name: 'S', weapon: 'schreck', x: 38.5, y: 36.5 },
+      { name: 'L', weapon: 'kar98k', x: 38.5, y: 37.5 },
+    ]);
+    sim.addSquad('blue', 'Garrison', [{ name: 'B1', weapon: 'kar98k', x: 122.5, y: 30.5 }]);
+    const posts = Object.fromEntries([mg, ...rifles, rocket].map((q) => [q.id, post]));
+    const commander = new RedCommander({ side: 'red', stance: 'attack', posts });
+    sim.tick = SPOT_INTERVAL;
+    commander.update(sim);
+    expect(commander['baseTeamIds']).toEqual([mg.teamIds[0]]);
+    expect(commander['reserveTeamIds']).toContain(rocket.teamIds[0]);
+    expect(sim.teams[mg.teamIds[0]].orderState.order).not.toBeNull(); // the gun was put to work
+    expect(sim.teams[rocket.teamIds[0]].orderState.order).toBeNull(); // the launcher was not sent to "suppress"
+  });
+
+  it('armour follows the maneuver element onto its next objective instead of parking on the first (#763)', () => {
+    const sim = new Sim(new GameMap(220, 60), 107);
+    const first = { x: 70, y: 30 };
+    const second = { x: 170, y: 30 };
+    const rifles = [0, 1].map((q) =>
+      sim.addSquad(
+        'red',
+        `Rifle${q}`,
+        Array.from({ length: 4 }, (_, i) => ({ name: `R${q}${i}`, weapon: 'kar98k' as const, x: 20.5, y: 22.5 + q * 10 + i })),
+      ),
+    );
+    const hulls = [sim.addVehicle('red', 'stug3', 8.5, 26.5, 0), sim.addVehicle('red', 'sdkfz251', 8.5, 34.5, 0)];
+    sim.addSquad('blue', 'Garrison', [
+      { name: 'B1', weapon: 'garand', x: 172.5, y: 29.5 },
+      { name: 'B2', weapon: 'garand', x: 172.5, y: 31.5 },
+    ]);
+    const commander = new RedCommander({
+      side: 'red',
+      stance: 'attack',
+      posts: Object.fromEntries(rifles.map((q) => [q.id, first])),
+      objectives: [first, second],
+    });
+    let onFirst = false;
+    for (let i = 0; i < 6000 && !hulls.every((v) => v.x > first.x + 40); i++) {
+      commander.update(sim);
+      sim.step();
+      if (hulls.every((v) => Math.hypot(v.x - first.x, v.y - first.y) <= 25)) onFirst = true;
+    }
+    expect(onFirst).toBe(true); // they went to the first objective
+    expect(commander['takenPosts'].length).toBeGreaterThan(0); // which the riflemen then took
+    for (const v of hulls) expect(v.x).toBeGreaterThan(first.x + 40); // and they were sent on
+    expect(Math.hypot(hulls[0].x - hulls[1].x, hulls[0].y - hulls[1].y)).toBeGreaterThan(3); // not parked on one tile
+  });
+
   it('reserve still commits when a maneuver team bleeds out mid-assault (the executing-assault guard must not skip the loss check)', () => {
     // Regression: the "an executing charge owns its team" continue-guard sits
     // above the reserve-commit check. If it short-circuits the loss check too,
@@ -355,6 +457,23 @@ describe('AI commander doctrine', () => {
     commander.update(sim);
     expect(reserveTeam.orderState.order).not.toBeNull(); // reserve committed
     expect(manTeam.orderState.order?.kind).toBe('assault'); // and the charge was NOT re-rolled
+
+    // #763: committed means commanded. The reserve used to get this one order
+    // and no other; it now maneuvers with the rest, bound after bound.
+    let reserveOrders = 0;
+    const orderTeam = sim.orderTeam.bind(sim);
+    sim.orderTeam = (teamId, order, used) => {
+      if (teamId === reserveTeam.id) reserveOrders++;
+      orderTeam(teamId, order, used);
+    };
+    const resX = () => mean(reserve.soldierIds.map((id) => sim.soldiers[id].x));
+    const x0 = resX();
+    for (let i = 0; i < 2400; i++) {
+      commander.update(sim);
+      sim.step();
+    }
+    expect(reserveOrders).toBeGreaterThanOrEqual(2);
+    expect(resX() - x0).toBeGreaterThan(45); // past the 35 m its first half-way bound alone would carry it
   });
 
   it('culmination: an attack bled past the threshold breaks off, consolidates, and does not un-break when the ratio recovers', () => {

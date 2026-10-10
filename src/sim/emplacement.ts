@@ -24,6 +24,7 @@ export interface Emplacement {
   loadsPresent: LoadKey[];
   cooldown: number;
   heat: number;
+  magLeft: number; // belt guns: bursts left in the belt on the gun (WeaponDef.ammo.perUnit to a belt). Unused by tubes and AT guns, which spend a round a shot
   towedBy: number; // vehicle id, -1 = not hitched
   targetX: number;
   targetY: number;
