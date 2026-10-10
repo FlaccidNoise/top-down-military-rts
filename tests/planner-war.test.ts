@@ -176,6 +176,39 @@ describe('the planner neither dithers nor grinds (jtbug #762)', () => {
   }, 30_000);
 });
 
+describe('battle variety (jtbug #793)', () => {
+  // Measured before the objectives and garrisons were spread: 51% of the
+  // battles in the 16 pin wars were bridge assaults.
+  it('no battle class is over 40% of the 16 pin wars, and at least four are over 8%', () => {
+    const mix = new Map<string, number>();
+    let total = 0;
+    for (let seed = 1; seed <= 16; seed++) {
+      const w = makeHeadlessWorld(seed, CFG, CAMP);
+      runHeadlessWar(w, 60 * 24 * 45, (r) => {
+        for (const x of r.resolved) {
+          mix.set(x.battleClass, (mix.get(x.battleClass) ?? 0) + 1);
+          total++;
+        }
+      });
+    }
+    const shares = [...mix.values()].map((n) => n / total);
+    expect(Math.max(...shares), JSON.stringify([...mix])).toBeLessThanOrEqual(0.4);
+    expect(shares.filter((s) => s > 0.08).length, JSON.stringify([...mix])).toBeGreaterThanOrEqual(4);
+  }, 30_000);
+
+  it('objectives and garrisons are not all crossings: every theater has an objective off the river line', () => {
+    for (let seed = 1; seed <= 16; seed++) {
+      const w = makeHeadlessWorld(seed, CFG, CAMP);
+      const t = w.front.theater;
+      const dry = t.objectiveNodes.filter((n) => t.nodes[n].crossing === null);
+      expect(dry.length, `seed ${seed}: objectives ${t.objectiveNodes}`).toBeGreaterThan(0);
+      expect(t.objectiveNodes.filter((n) => t.nodes[n].crossing !== null).length, `seed ${seed}`).toBeLessThanOrEqual(1);
+      const garrisons = w.front.forces.filter((f) => f.role === 'garrison');
+      for (const o of t.objectiveNodes) expect(garrisons.some((g) => g.homeNode === o), `seed ${seed}: objective ${o} has no garrison`).toBe(true);
+    }
+  });
+});
+
 describe('planner internals', () => {
   it('articulation nodes: a corridor graph names its cut vertex', () => {
     const { theater } = makeTheater(1, CFG);

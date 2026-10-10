@@ -268,6 +268,9 @@ describe('theater camera', () => {
   it('the map cannot be dragged out of the clear rectangle', () => {
     const v = view(PHONE);
     v.frameStart(world.front, PHONE.w, PHONE.h);
+    // Zoomed in far enough that the map is larger than the clear rectangle
+    // both ways. At the opening frame it may be shorter, and then it floats.
+    v.zoomMul = Math.max(v.zoomMul, 3);
     v.panX += 1e6;
     v.panY -= 1e6;
     v.clampPan(PHONE.w, PHONE.h);

@@ -7,7 +7,7 @@ import type { CampaignConfig } from '../../campaign/spec';
 import { fitStrength, type Campaign } from '../../campaign/campaign';
 import type { Side } from '../../sim/sim';
 import type { Theater } from '../theater';
-import { MAX_FORCES, type ForceInit } from '../theater/force';
+import { MAX_FORCES, route, type ForceInit } from '../theater/force';
 
 export class DispositionError extends Error {
   constructor(public readonly reason: 'no-entry-node' | 'garrison-starved' | 'establishment-zero', detail: string) {
@@ -26,6 +26,7 @@ const RED_GARRISON_BAND: Record<number, [number, number]> = {
   3: [60, 140],
   4: [90, 180],
 };
+const PICKETS = 3;
 const RED_MOBILE_COUNT: Record<number, number> = { 0: 0, 1: 1, 2: 2, 3: 2, 4: 3 };
 const RED_MOBILE_STRENGTH: Record<number, [number, number]> = {
   0: [0, 0],
@@ -78,10 +79,27 @@ export function makeDisposition(
   // -- Red: garrisons across objective nodes + crossings, strengths drawn on
   // the DISPOSITION stream inside the band; mobile line/reserve from the
   // same knob.
+  // v3 (jtbug #793): a garrison on every objective, and PICKETS more on the
+  // river line: one crossing, then the places just behind the crossings, each
+  // on ground no picket holds yet. Garrisoning every crossing made the bridge
+  // the only place a war was fought.
   const band = RED_GARRISON_BAND[cfg.redStrength];
-  const garrisonable = theater.nodes
-    .filter((n) => (theater.objectiveNodes.includes(n.id) || n.crossing !== null) && control[n.id] === 'red')
-    .sort((a, b) => a.id - b.id);
+  const isObjective = (id: number): boolean => theater.objectiveNodes.includes(id);
+  const groundOf = (n: Theater['nodes'][number]): string => (n.crossing ? 'crossing' : n.kind === 'town' || n.kind === 'village' ? n.kind : (theater.regions[n.regionId]?.terrainClass ?? 'farmland'));
+  const redFree = theater.nodes.filter((n) => control[n.id] === 'red' && !isObjective(n.id)).sort((a, b) => a.id - b.id);
+  const crossings = redFree.filter((n) => n.crossing !== null);
+  const nextTo = (n: Theater['nodes'][number], set: readonly Theater['nodes'][number][]): boolean =>
+    theater.edges.some((e) => e.moveClass !== 'rail' && ((e.a === n.id && set.some((c) => c.id === e.b)) || (e.b === n.id && set.some((c) => c.id === e.a))));
+  const behind = redFree.filter((n) => n.crossing === null && n.kind !== 'halt' && nextTo(n, theater.nodes.filter((c) => c.crossing !== null)));
+  const pickets: Theater['nodes'][number][] = crossings.slice(0, 1);
+  while (pickets.length < PICKETS) {
+    const rest = behind.filter((n) => !pickets.includes(n));
+    const have = new Set(pickets.map(groundOf));
+    const next = rest.find((n) => !have.has(groundOf(n))) ?? rest[0] ?? crossings.find((n) => !pickets.includes(n));
+    if (!next) break;
+    pickets.push(next);
+  }
+  const garrisonable = [...theater.nodes.filter((n) => isObjective(n.id) && control[n.id] === 'red'), ...pickets].sort((a, b) => a.id - b.id);
   if (cfg.redStrength > 0) {
     if (garrisonable.length < 2) {
       throw new DispositionError('garrison-starved', `redStrength ${cfg.redStrength} with only ${garrisonable.length} garrisonable nodes`);
@@ -101,18 +119,25 @@ export function makeDisposition(
         queuedAt: null,
       });
     }
-    // Mobile red: line + reserve at the deepest red towns (fallback: any red
-    // node), so the goal-driven commander has something to attack WITH.
+    // Mobile red stands where it can reach what it must hold. The line groups
+    // take the red nodes with the least total march to the objectives, off
+    // the river line and off the garrisoned places. The reserve stands at the
+    // depot, on the supply line it exists to keep open. All of them stood at
+    // the two eastmost nodes before, a day's march from anything.
+    const held = new Set(garrisonable.map((n) => n.id));
+    const marchTo = (from: number): number => theater.objectiveNodes.reduce((a, o) => a + (route(theater, from, o)?.minutes ?? 1e6), 0);
     const redRear = theater.nodes
-      .filter((n) => control[n.id] === 'red' && n.crossing === null)
-      .sort((a, b) => b.pos.x - a.pos.x || a.id - b.id);
+      .filter((n) => control[n.id] === 'red' && n.crossing === null && !held.has(n.id))
+      .map((n) => ({ n, cost: marchTo(n.id) }))
+      .sort((a, b) => a.cost - b.cost || a.n.id - b.n.id)
+      .map((x) => x.n);
     const mobiles = RED_MOBILE_COUNT[cfg.redStrength];
     const mBand = RED_MOBILE_STRENGTH[cfg.redStrength];
     for (let i = 0; i < mobiles && redRear.length > 0; i++) {
       forces.push({
         side: 'red',
         name: i === mobiles - 1 && mobiles > 1 ? 'Reserve-Kampfgruppe' : `Kampfgruppe ${['Ost', 'Nord', 'Süd'][i]}`,
-        pos: { kind: 'node', nodeId: redRear[i % redRear.length].id },
+        pos: { kind: 'node', nodeId: i === mobiles - 1 && mobiles > 1 ? (theater.sources.red[0] ?? redRear[0].id) : redRear[i % redRear.length].id },
         path: [],
         dwellMin: 0,
         strength: Math.round(rng.range(mBand[0], mBand[1])),

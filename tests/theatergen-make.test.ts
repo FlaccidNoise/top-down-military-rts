@@ -198,10 +198,9 @@ describe('TheaterGenError', () => {
   });
 });
 
-// Re-recorded 2026-07-28 with GEN_VERSION 2 (spur-source fix: one supply
-// source per connected component of own-controlled nodes — a fragment
-// severed by red-held crossings gets its own map-edge lifeline, so no force
-// starts the war cut off by generation).
-const PIN_1 = 413659900;
-const PIN_2 = 2784287443;
-const PIN_3 = 1138076689;
+// Re-recorded 2026-10-10 with GEN_VERSION 3 (jtbug #793: objectives spread
+// over towns, one bridge, and villages or junctions in open country. Nodes,
+// edges, regions and rivers did not move: objectiveNodes did).
+const PIN_1 = 3550743288;
+const PIN_2 = 842259899;
+const PIN_3 = 1551319621;

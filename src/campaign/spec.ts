@@ -11,7 +11,10 @@ import { mulberry32, type Rng } from '../sim/rng';
 // one version, two readers, never two constants.
 // v2 (2026-07-28): supply sources pick from each side's largest connected
 // component — the spur-source fix (T_OBJECTIVES output moved; no rng change).
-export const GEN_VERSION = 2;
+// v3 (2026-10-10, jtbug #793): objectives and garrisons spread over towns,
+// villages, junctions and crossings (T_OBJECTIVES output and the disposition
+// both moved; no draw added to the theater stages).
+export const GEN_VERSION = 3;
 
 export type TheaterSizeKm = 18 | 24 | 32;
 export type TerrainMix = 'bocage' | 'open' | 'wooded' | 'marshland';
