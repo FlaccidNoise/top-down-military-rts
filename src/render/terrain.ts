@@ -2386,7 +2386,7 @@ export class TerrainLayer {
     }
     for (const p of this.props.get(`${cx},${cy}`) ?? []) drawProp(g, p, band, d);
     drawEnclosurePlanting(g, this.map, this.enclos, tx0, ty0, tx1, ty1, band, d);
-    if(false)    drawShopfronts(g, this.shops, tx0, ty0, tx1, ty1, d);
+    drawShopfronts(g, this.shops, tx0, ty0, tx1, ty1, d);
     // Free-standing masonry owns its own edges — drawEdge's generic hairline
     // would sit under the rubble as a dark seam and, on a gate, draw a second
     // door leaf across the plank one.
