@@ -83,7 +83,11 @@ function nudgePassable(map: GameMap, x: number, y: number): Vec {
   return { x, y };
 }
 
-const DIRECT_FIRE = new Set<SquadKey>(['de_gruppe', 'de_smg42']);
+// The squads that take a sector's anchors nearest the approach. The American
+// keys were missing until #794: a defending US company was sited back to
+// front, its rifle squads on the anchors farthest from the attack like so
+// many mortar teams, and its mortars and bazookas in the front line.
+const DIRECT_FIRE = new Set<SquadKey>(['de_gruppe', 'de_smg42', 'us_rifle', 'us_m1919']);
 // Crew-served staging (balance 2026-07): these squads field as DEPLOYED
 // emplacements bound to their own crew squad (addEmplacement roster
 // passthrough keeps campaign names/pids/attrition), instead of bare foot

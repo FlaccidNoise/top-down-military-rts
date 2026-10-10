@@ -1287,6 +1287,32 @@ describe('a defence that moves (#794)', () => {
     expect(commander['relaidTick'].size).toBe(1);
   });
 
+  it('either side defending puts its rifle squads forward of its mortars, sector by sector', () => {
+    for (const def of ['red', 'blue'] as const) {
+      const c = newCampaign(3);
+      const front = newFront(c, makeDefaultSector());
+      const able = front.chits.find((ch) => ch.side === 'blue')!;
+      const garrison = front.chits.find((ch) => ch.name === 'Garnison St-Aubin')!;
+      const e = def === 'red' ? { attackerId: able.id, defenderId: garrison.id, cell: garrison.cell } : { attackerId: garrison.id, defenderId: able.id, cell: able.cell };
+      const staged = makeStrategicBattle(c, front, e, 3);
+      const cfg = (def === 'red' ? staged.commander : staged.blueCommander)['cfg'];
+      const back = (id: number): number => Math.hypot(cfg.posts[id].x - cfg.approach!.x, cfg.posts[id].y - cfg.approach!.y);
+      const squads = staged.sim.squads.filter((sq) => sq.side === def && cfg.posts[sq.id]);
+      const rifles = squads.filter((sq) => sq.soldierIds.length >= 9);
+      const tubes = squads.filter((sq) => sq.soldierIds.some((id) => staged.sim.soldiers[id].weapon.startsWith('mortar')));
+      expect(rifles.length, def).toBeGreaterThan(3);
+      expect(tubes.length, def).toBeGreaterThan(0);
+      let compared = 0;
+      for (const t of tubes) {
+        const mates = rifles.filter((r) => cfg.sectorOf![r.id] === cfg.sectorOf![t.id]);
+        if (mates.length === 0) continue;
+        compared++;
+        expect(Math.min(...mates.map((r) => back(r.id))), `${def} sector ${cfg.sectorOf![t.id]}`).toBeLessThanOrEqual(back(t.id));
+      }
+      expect(compared, def).toBeGreaterThan(0);
+    }
+  });
+
   it('the briefing: fallbacks lie a bound or more behind the post, a dug-in gun has none, one reserve to a sector at most', () => {
     for (const [atk, def] of [['blue', 'red'], ['red', 'blue']] as const) {
       const c = newCampaign(3);
