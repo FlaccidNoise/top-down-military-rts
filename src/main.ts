@@ -647,20 +647,17 @@ function viewportInset(): { left: number; top: number; bottom: number } {
 // a short screen the bar sits IN the column and takes nothing from the top.
 function theaterInset(): ViewInset {
   const out: ViewInset = { left: 0, top: 0, right: 0, bottom: 0 };
-  const box = (sel: string): DOMRect | null => {
+  // A panel that is narrow and stands against the left edge is part of a side
+  // column and takes width. Any other panel is a strip across the top or the
+  // bottom and takes height. Asked of each panel by itself: the test used to
+  // be "is the side column at least half the screen high", and on a phone on
+  // its side one more line in the bar took the column under that, so every
+  // panel in it was read as a strip and the map was framed into a stamp.
+  for (const sel of ['.th-head', '.th-strip', '.th-force', '.th-log', '.th-contact']) {
     const r = theaterHud.root.querySelector(sel)?.getBoundingClientRect();
-    return r && r.width > 0 && r.height > 0 ? r : null;
-  };
-  const side = box('.th-side');
-  const column = side && side.height >= view.h * 0.5 && side.width < view.w * 0.5 ? side : null;
-  if (column) out.left = column.right;
-  const inColumn = (r: DOMRect): boolean => column !== null && r.right <= column.right + 1;
-  const head = box('.th-head');
-  if (head && !inColumn(head)) out.top = head.bottom;
-  for (const sel of ['.th-strip', '.th-force', '.th-log', '.th-contact']) {
-    const r = box(sel);
-    if (!r || inColumn(r)) continue;
-    if (r.top + r.height / 2 < view.h / 2) out.top = Math.max(out.top, r.bottom);
+    if (!r || r.width <= 0 || r.height <= 0) continue;
+    if (r.left < 24 && r.width < view.w * 0.5) out.left = Math.max(out.left, r.right);
+    else if (r.top + r.height / 2 < view.h / 2) out.top = Math.max(out.top, r.bottom);
     else out.bottom = Math.max(out.bottom, view.h - r.top);
   }
   return out;
