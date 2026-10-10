@@ -2,7 +2,7 @@ import { TERRAIN, type TerrainKey } from '../sim/data';
 import { BREACH_WIDE, EDGE, type GameMap } from '../sim/map';
 import type { Building } from '../sim/mapgen';
 import type { Camera } from './camera';
-import { AO_ALPHA, SUN, SUN_PIN_BAND, shadowAlpha, shadowOffset, shadowOffsetLegible, shadowSoftAlpha, sun, sunStepFor } from './light';
+import { AO_ALPHA, SUN, SUN_PIN_BAND, capsulePath, shadowAlpha, shadowOffset, shadowOffsetLegible, shadowSoftAlpha, sun, sunStepFor } from './light';
 import { MOBILE } from './view';
 
 // Terrain is rendered lazily into 16x16-tile chunk canvases at the nearest
@@ -68,7 +68,8 @@ export function chunkSpan(t0: number, t1: number, n: number): [number, number] {
 }
 
 import { cornerCuts, cutOnH, cutOnV, HARD, reliefShade, smoothElev, type ReliefLight } from './ground';
-import { hash, vec } from './noise';
+import { buildHedgerows, hedgeLobes, type Hedgerows } from './hedgerow';
+import { hash, soft, vec } from './noise';
 import { stamp, stampRect } from './stamps';
 import { SPRITE as CANOPY_SPRITE, canopySprite, drawLog } from './canopy';
 import { PatchIndex, type BuildingBox, type Patch } from './patches';
@@ -304,121 +305,112 @@ function bakeRelief(sm: Float32Array, w: number, h: number, light: ReliefLight):
   return c;
 }
 
-// Path for a hedge tile's continuous mass: a stroke segment toward each
-// hedge-tagged neighbor (round line caps turn a zero-length segment into a
-// dot), so adjacent hedge tiles fuse into one capsule instead of four gappy
-// pompoms. `odx/ody` offsets the whole path (used to draw the shadow/AO
-// passes without rebuilding the neighbor logic).
-function hedgePath(g: Ctx, x: number, y: number, n: boolean, s: boolean, w: boolean, e: boolean, odx: number, ody: number): void {
-  const cx = x + 0.5 + odx;
-  const cy = y + 0.5 + ody;
-  g.beginPath();
-  if (!n && !s && !w && !e) {
-    g.moveTo(cx, cy);
-    g.lineTo(cx, cy);
-    return;
-  }
-  if (n) {
-    g.moveTo(cx, cy);
-    g.lineTo(x + 0.5 + odx, y + ody);
-  }
-  if (s) {
-    g.moveTo(cx, cy);
-    g.lineTo(x + 0.5 + odx, y + 1 + ody);
-  }
-  if (w) {
-    g.moveTo(cx, cy);
-    g.lineTo(x + odx, y + 0.5 + ody);
-  }
-  if (e) {
-    g.moveTo(cx, cy);
-    g.lineTo(x + 1 + odx, y + 0.5 + ody);
-  }
-}
+// Hedge tones, dark to light. The mass is opaque, so it can be filled a tone
+// at a time: a handful of fills for the chunk instead of one per lobe.
+const HEDGE_TONES = [0.8, 0.88, 0.96, 1.04, 1.12].map((f) => shade(HEDGE_GREEN, f));
 
-// Hedge capsule strokes for a tile range, one visual layer at a time across
-// ALL hedge tiles (AO → cast shadow → green mass → sun rim → foliage dabs).
-// Width/shade vary via the smooth 8m/28m noise fields, not per-tile hash, so
-// adjacent tiles never show a width or value step at the boundary.
-function drawHedgeRun(g: Ctx, map: GameMap, tx0: number, ty0: number, tx1: number, ty1: number, d: Detail): void {
-  const isHedge = (tx: number, ty: number) => map.inBounds(tx, ty) && map.terrainKeyAt(tx, ty) === 'hedge';
-  const tiles: { x: number; y: number; n: boolean; s: boolean; w: boolean; e: boolean; width: number }[] = [];
-  for (let y = ty0; y < ty1; y++) {
-    for (let x = tx0; x < tx1; x++) {
-      if (!isHedge(x, y)) continue;
-      tiles.push({ x, y, n: isHedge(x, y - 1), s: isHedge(x, y + 1), w: isHedge(x - 1, y), e: isHedge(x + 1, y), width: 0.58 + coarse(x, y) * 0.3 });
-    }
-  }
-  if (tiles.length === 0) return;
+// The hedgerows (see hedgerow.ts for where the lobes come from), one visual
+// layer at a time across every lobe in range: AO → cast shadow → earth bank →
+// rim → mass → shaded and lit flanks → flecks → twigs. Each translucent layer
+// is ONE union fill. The lobes overlap by design, and filling them one by one
+// would darken every overlap into a string of beads.
+function drawHedgerows(g: Ctx, hr: Hedgerows, tx0: number, ty0: number, tx1: number, ty1: number, d: Detail): void {
+  // One tile wider than the bake range: a link is owned by its north/west end,
+  // and the lobes of one that starts just outside the range still reach in.
+  const L = hedgeLobes(hr, tx0 - 1, ty0 - 1, tx1 + 1, ty1 + 1, d === 0 ? 0 : 2);
+  if (L.length === 0) return;
+  const TAU = Math.PI * 2;
   const [sdx, sdy] = shadowOffsetLegible(0.4);
-  const oLen = Math.hypot(sdx, sdy);
-  const pass = (widthOf: (t: (typeof tiles)[0]) => number, styleOf: (t: (typeof tiles)[0]) => string, odx: number, ody: number) => {
-    for (const t of tiles) {
-      g.lineWidth = widthOf(t);
-      g.strokeStyle = styleOf(t);
-      hedgePath(g, t.x, t.y, t.n, t.s, t.w, t.e, odx, ody);
-      g.stroke();
+  const discs = (k: number, ox: number, oy: number): void => {
+    g.beginPath();
+    for (let i = 0; i < L.length; i += 3) {
+      g.moveTo(L[i] + ox + L[i + 2] * k, L[i + 1] + oy);
+      g.arc(L[i] + ox, L[i + 1] + oy, L[i + 2] * k, 0, TAU);
     }
+    g.fill();
+  };
+  // Every lobe SWEPT from its foot along the sun, as the canopies are: the
+  // up-sun edge stays anchored under the hedge at any rake.
+  const swept = (k: number, reach: number): void => {
+    g.beginPath();
+    for (let i = 0; i < L.length; i += 3) capsulePath(g, L[i], L[i + 1], L[i] + sdx * reach, L[i + 1] + sdy * reach, L[i + 2] * k);
+    g.fill();
   };
   // base AO: subtle all-around ground darkening at the hedge's foot
-  pass((t) => t.width * 1.3, () => `rgba(8,10,7,${AO_ALPHA * 0.6})`, 0, 0);
-  // Soft two-layer cast shadow, SWEPT: stroked at half throw and widened by
-  // the throw, so the down-sun edge lands exactly where the translated stroke
-  // used to and the up-sun edge stays anchored under the hedge — at the dawn
-  // rake the old full-offset stroke floated as a parallel sausage a metre off
-  // its own hedge. (Alpha rides the sun's own ramp.)
-  pass((t) => t.width * 1.15 + oLen * 1.6, () => `rgba(10,14,8,${shadowSoftAlpha()})`, sdx * 0.8, sdy * 0.8);
-  pass((t) => t.width * 1.1 + oLen, () => `rgba(10,14,8,${shadowAlpha()})`, sdx * 0.5, sdy * 0.5);
+  g.fillStyle = `rgba(8,10,7,${AO_ALPHA * 0.6})`;
+  discs(1.3, 0, 0);
+  g.fillStyle = `rgba(10,14,8,${shadowSoftAlpha()})`;
+  swept(1.15, 1.6);
+  g.fillStyle = `rgba(10,14,8,${shadowAlpha()})`;
+  swept(1.1, 1);
   // earth bank under the foliage: a bocage hedge grows out of a raised bank,
   // and without it the run reads as a green sausage lying on the lawn
-  pass((t) => t.width * 1.25, () => 'rgba(72,58,38,0.35)', 0.06, 0.08);
-  pass((t) => 0.05, () => 'rgba(14,18,10,0.4)', 0.06 + sdx * 0.5, 0.08 + sdy * 0.5);
-  // hedge mass — yellower, denser green than woods
-  pass((t) => t.width, (t) => shade(HEDGE_GREEN, 0.82 + macro(t.x, t.y) * 0.3), 0, 0);
-  // NW rim catching the sun
-  pass((t) => t.width * 0.3, (t) => `rgba(190,215,150,${0.1 + coarse(t.x, t.y) * 0.12})`, -sdx * 0.3, -sdy * 0.3);
-  // foliage dabs: the per-tile lumpiness the old hash width/shade jitter gave,
-  // without the boundary steps — small blobs never cross a tile seam visibly
-  const dabs = d === 0 ? 0 : d === 1 ? 3 : 6;
-  for (const t of tiles) {
-    const vertical = (t.n || t.s) && !(t.w || t.e);
-    for (let i = 0; i < dabs; i++) {
-      const k = t.x * 8 + i;
-      let dx = t.x + 0.28 + hash(k, t.y, 54) * 0.44;
-      let dy = t.y + 0.28 + hash(k, t.y, 55) * 0.44;
-      // two dabs ride the silhouette so the run's outline goes ragged instead
-      // of staying a smooth capsule; they stay near the mass tone, because a
-      // dark blob half-off the hedge reads as a floating speck on the grass
-      const rim = i < 2;
-      if (rim) {
-        const s = i === 0 ? 1 : -1;
-        const u = 0.2 + hash(k, t.y, 58) * 0.6;
-        dx = vertical ? t.x + 0.5 + s * t.width * 0.5 : t.x + u;
-        dy = vertical ? t.y + u : t.y + 0.5 + s * t.width * 0.5;
-      }
-      const light = hash(k, t.y, 56) > 0.5;
-      g.fillStyle = shade(HEDGE_GREEN, rim ? (light ? 1.05 : 0.78) : light ? 1.22 : 0.64);
-      g.beginPath();
-      g.arc(dx, dy, 0.06 + hash(k, t.y, 57) * 0.08, 0, Math.PI * 2);
-      g.fill();
+  g.fillStyle = 'rgba(72,58,38,0.35)';
+  discs(1.25, 0.06, 0.08);
+  // One silhouette pass gives the whole run a dark rim for a single fill. At
+  // far zoom it is most of what separates a hedge from the pasture round it.
+  g.fillStyle = 'rgba(0,0,0,0.22)';
+  discs(1.07, 0, 0);
+  // hedge mass — yellower, denser green than woods. Tone drifts along the run
+  // on the macro field, with a per-lobe roll so neighbouring lobes separate.
+  for (let t = 0; t < HEDGE_TONES.length; t++) {
+    g.fillStyle = HEDGE_TONES[t];
+    g.beginPath();
+    for (let i = 0; i < L.length; i += 3) {
+      const tone = macro(L[i], L[i + 1]) * 0.6 + hash(i, Math.round(L[i] * 16), 606) * 0.4;
+      if (Math.min(HEDGE_TONES.length - 1, (tone * HEDGE_TONES.length) | 0) !== t) continue;
+      g.moveTo(L[i] + L[i + 2], L[i + 1]);
+      g.arc(L[i], L[i + 1], L[i + 2], 0, TAU);
     }
+    g.fill();
   }
+  // The flank away from the sun in shade, the flank toward it lit, and a small
+  // hot spot on each lobe: what makes a row of discs read as a row of bushes.
+  g.fillStyle = 'rgba(14,22,12,0.22)';
+  discs(0.82, SUN.dx * 0.07, SUN.dy * 0.07);
+  g.fillStyle = 'rgba(190,214,148,0.16)';
+  discs(0.7, -SUN.dx * 0.08, -SUN.dy * 0.08);
+  if (d === 0) return;
+  // Leaf masses catching the light and the gaps between them. On some lobes
+  // only: one on every lobe is a row of identical beads.
+  const flecks = (style: string, salt: number, r0: number, r1: number): void => {
+    g.fillStyle = style;
+    g.beginPath();
+    for (let i = 0; i < L.length; i += 3) {
+      for (let k = 0; k < d; k++) {
+        if (hash(i, k, salt) < 0.4) continue;
+        const a = hash(i, k, salt + 1) * TAU;
+        const rr = Math.sqrt(hash(i, k, salt + 2)) * L[i + 2] * 0.75;
+        const fx = L[i] + Math.cos(a) * rr - SUN.dx * 0.05;
+        const fy = L[i + 1] + Math.sin(a) * rr - SUN.dy * 0.05;
+        const fr = r0 + hash(i, k, salt + 3) * (r1 - r0);
+        g.moveTo(fx + fr, fy);
+        g.arc(fx, fy, fr, 0, TAU);
+      }
+    }
+    g.fill();
+  };
+  flecks('rgba(206,224,158,0.2)', 611, 0.05, 0.11);
+  flecks('rgba(12,20,10,0.3)', 615, 0.025, 0.055);
   if (d < 2) return;
   // bare twigs where a run stops — the cut end of a hedgerow is sticks, not foliage
   g.strokeStyle = 'rgba(58,50,34,0.5)';
   g.lineWidth = 0.035;
-  for (const t of tiles) {
-    if (Number(t.n) + Number(t.s) + Number(t.w) + Number(t.e) > 1) continue;
-    for (let i = 0; i < 3; i++) {
-      const k = t.x * 4 + i;
-      const a = hash(k, t.y, 59) * Math.PI * 2;
-      const sx = t.x + 0.35 + hash(k, t.y, 60) * 0.3;
-      const sy = t.y + 0.35 + hash(k, t.y, 61) * 0.3;
-      const l = 0.2 + hash(k, t.y, 62) * 0.2;
-      g.beginPath();
-      g.moveTo(sx, sy);
-      g.lineTo(sx + Math.cos(a) * l, sy + Math.sin(a) * l);
-      g.stroke();
+  for (let y = Math.max(0, ty0); y < Math.min(hr.h, ty1); y++) {
+    for (let x = Math.max(0, tx0); x < Math.min(hr.w, tx1); x++) {
+      const deg = hr.deg[y * hr.w + x];
+      if (deg < 0 || deg > 1) continue;
+      for (let i = 0; i < 3; i++) {
+        const k = x * 4 + i;
+        const a = hash(k, y, 59) * Math.PI * 2;
+        const sx = x + 0.35 + hash(k, y, 60) * 0.3;
+        const sy = y + 0.35 + hash(k, y, 61) * 0.3;
+        const l = 0.2 + hash(k, y, 62) * 0.2;
+        g.beginPath();
+        g.moveTo(sx, sy);
+        g.lineTo(sx + Math.cos(a) * l, sy + Math.sin(a) * l);
+        g.stroke();
+      }
     }
   }
 }
@@ -697,7 +689,44 @@ function cobbleStamp(v: number, band: number): HTMLCanvasElement {
 // square with an alpha ramp at its rim. Buildings used to grow straight out of
 // lawn and the crossroads was bare dirt road; this is what makes the village
 // read as a built place.
-function drawPaving(g: Ctx, map: GameMap, patches: PatchIndex, tx0: number, ty0: number, tx1: number, ty1: number, band: number, d: Detail): void {
+// One scratch canvas for a pass that has to be composed before it goes down
+// (the paving). A chunk bake is synchronous, so one is enough: it is sized to
+// the chunk being baked, cleared, and given that chunk's transform.
+let scratch: HTMLCanvasElement | null = null;
+function scratchFor(g: Ctx): Ctx {
+  scratch ??= document.createElement('canvas');
+  if (scratch.width !== g.canvas.width || scratch.height !== g.canvas.height) {
+    scratch.width = g.canvas.width;
+    scratch.height = g.canvas.height;
+  }
+  const s = scratch.getContext('2d')!;
+  s.globalCompositeOperation = 'source-over';
+  s.setTransform(1, 0, 0, 1, 0, 0);
+  s.clearRect(0, 0, scratch.width, scratch.height);
+  s.setTransform(g.getTransform());
+  return s;
+}
+
+// The paving weight of every tile centre as the alpha of one pixel, so that
+// drawn through with smoothing on it is the ramp itself and not a step a tile.
+function bakePaveMask(patches: PatchIndex, w: number, h: number): HTMLCanvasElement {
+  const c = document.createElement('canvas');
+  c.width = w;
+  c.height = h;
+  const cg = c.getContext('2d')!;
+  const img = cg.createImageData(w, h);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const o = (y * w + x) * 4;
+      img.data[o] = img.data[o + 1] = img.data[o + 2] = 255;
+      img.data[o + 3] = Math.round(patches.pavedAt(x, y) * 255);
+    }
+  }
+  cg.putImageData(img, 0, 0);
+  return c;
+}
+
+function drawPaving(g: Ctx, map: GameMap, patches: PatchIndex, tx0: number, ty0: number, tx1: number, ty1: number, band: number, d: Detail, mask: HTMLCanvasElement | null): void {
   for (const b of patches.buildings) {
     if (b.maxX + 1 < tx0 || b.minX - 1 > tx1 || b.maxY + 1 < ty0 || b.minY - 1 > ty1) continue;
     g.strokeStyle = 'rgba(150,138,112,0.22)';
@@ -757,7 +786,7 @@ function drawPaving(g: Ctx, map: GameMap, patches: PatchIndex, tx0: number, ty0:
       }
     }
   }
-  if (patches.squares.length === 0) return;
+  if (patches.squares.length === 0 || !mask) return;
   const roadAt = (x: number, y: number) => map.inBounds(x, y) && map.terrainKeyAt(x, y) === 'road';
   const pavable = (x: number, y: number) => {
     if (!map.inBounds(x, y)) return false;
@@ -768,41 +797,127 @@ function drawPaving(g: Ctx, map: GameMap, patches: PatchIndex, tx0: number, ty0:
     return roadAt(x - 1, y) || roadAt(x + 1, y) || roadAt(x, y - 1) || roadAt(x, y + 1);
   };
   const weight = (x: number, y: number) => (pavable(x, y) ? patches.pavedAt(x, y) : 0);
-  for (let y = ty0; y < ty1; y++) {
-    for (let x = tx0; x < tx1; x++) {
-      const a = weight(x, y);
-      if (a <= 0.01) continue;
-      g.globalAlpha = a;
-      if (d >= 1) g.drawImage(cobbleStamp((hash(x, y, 278) * 6) | 0, band), x, y, 1, 1);
-      else {
-        g.fillStyle = 'rgb(122,115,102)';
-        g.fillRect(x, y, 1, 1);
+  // The setts used to go down a tile at a time, each at its own alpha: the
+  // ramp at the rim of a square was a flight of 1 m steps, and its outline
+  // followed the tiles. Both are now what softenGround does for the ground:
+  // the WEIGHT is the ramp itself, drawn through a one-pixel-per-tile mask
+  // with smoothing on, and the OUTLINE has its staircase corners cut
+  // (ground.ts cornerCuts) so it runs on the diagonal it stood for. Built in a
+  // scratch canvas because the two multiply: setts, minus the cut corners,
+  // times the ramp.
+  const cls = (x: number, y: number): number => (weight(x, y) > 0.01 ? 1 : groundClass(map, patches, x, y) === HARD ? HARD : 2);
+  let any = false;
+  for (let y = ty0; y < ty1 && !any; y++) for (let x = tx0; x < tx1 && !any; x++) any = cls(x, y) === 1;
+  if (!any) return;
+  const s = scratchFor(g);
+  const sett = (x: number, y: number): void => {
+    if (d >= 1) s.drawImage(cobbleStamp((hash(x, y, 278) * 6) | 0, band), x, y, 1, 1);
+    else {
+      s.fillStyle = 'rgb(122,115,102)';
+      s.fillRect(x, y, 1, 1);
+    }
+  };
+  for (let y = ty0; y < ty1; y++) for (let x = tx0; x < tx1; x++) if (cls(x, y) === 1) sett(x, y);
+  // Corner cuts. `ends` records which end of which tile edge a cut took, so
+  // the kerb below stops where the paving now does. A cut is [corner, point on
+  // the horizontal edge, point on the vertical edge, the lone tile].
+  const ends = new Set<string>();
+  const cuts: [number, number, number, number, number, number][] = [];
+  for (let y = ty0; y <= ty1; y++) {
+    for (let x = tx0; x <= tx1; x++) {
+      const m = cornerCuts(cls(x - 1, y - 1), cls(x, y - 1), cls(x - 1, y), cls(x, y));
+      if (m === 0) continue;
+      for (let bit = 0; bit < 4; bit++) {
+        if (!(m & (1 << bit))) continue;
+        const lx = x - 1 + (bit & 1); // the tile that stands alone
+        const ly = y - 1 + (bit >> 1);
+        cuts.push([x, y, cutOnH(lx, y), cutOnV(x, ly), lx, ly]);
+        ends.add(`h${lx},${y},${bit & 1 ? 0 : 1}`); // 0: the edge's west end, 1: its east end
+        ends.add(`v${x},${ly},${bit >> 1 ? 0 : 1}`); // 0: north end, 1: south end
       }
-      g.globalAlpha = 1;
     }
   }
-  // kerb: hard civic boundary wherever paving meets unpaved ground
-  for (let y = ty0; y < ty1; y++) {
-    for (let x = tx0; x < tx1; x++) {
-      if (weight(x, y) <= 0.35) continue;
-      const sides: [number, number, number, number, number, number][] = [
-        [0, -1, x, y, 1, 0.1],
-        [0, 1, x, y + 0.9, 1, 0.1],
-        [-1, 0, x, y, 0.1, 1],
-        [1, 0, x + 0.9, y, 0.1, 1],
-      ];
-      for (const [dx, dy, rx, ry, rw, rh] of sides) {
-        if (weight(x + dx, y + dy) > 0.35) continue;
-        // only where paving meets soft ground — a kerb across the open road
-        // where the ramp happens to fade would cut the run in half
-        if (roadAt(x + dx, y + dy)) continue;
-        g.fillStyle = 'rgba(158,150,132,0.50)';
-        g.fillRect(rx, ry, rw, rh);
-        g.fillStyle = 'rgba(30,26,20,0.30)';
-        g.fillRect(rx + dx * 0.1, ry + dy * 0.1, dx !== 0 ? 0.04 : rw, dy !== 0 ? 0.04 : rh);
+  const tri = (c: (typeof cuts)[0]): void => {
+    s.beginPath();
+    s.moveTo(c[0], c[1]);
+    s.lineTo(c[2], c[1]);
+    s.lineTo(c[0], c[3]);
+    s.closePath();
+  };
+  for (const c of cuts) {
+    if (cls(c[4], c[5]) === 1) continue;
+    // the lone tile is bare and the paving closes over its corner
+    s.save();
+    tri(c);
+    s.clip();
+    sett(c[4], c[5]);
+    s.restore();
+  }
+  s.globalCompositeOperation = 'destination-out';
+  s.fillStyle = '#000';
+  for (const c of cuts) {
+    if (cls(c[4], c[5]) !== 1) continue;
+    tri(c);
+    s.fill();
+  }
+  s.globalCompositeOperation = 'destination-in';
+  s.imageSmoothingEnabled = true; // bilinear between tile centres: this IS the ramp
+  const mx0 = Math.max(0, tx0);
+  const my0 = Math.max(0, ty0);
+  s.drawImage(mask, mx0, my0, tx1 - mx0, ty1 - my0, mx0, my0, tx1 - mx0, ty1 - my0);
+  s.globalCompositeOperation = 'source-over';
+  g.save();
+  g.setTransform(1, 0, 0, 1, 0, 0);
+  g.drawImage(s.canvas, 0, 0);
+  g.restore();
+  if (d === 0) return; // a 10 cm kerb is a tenth of a pixel out here
+  // Kerb: hard civic boundary wherever paving meets unpaved ground. Only
+  // where it meets SOFT ground — a kerb across the open road where the ramp
+  // happens to fade would cut the run in half.
+  const kerbed = (ax: number, ay: number, bx: number, by: number): boolean => weight(ax, ay) > 0.35 && weight(bx, by) <= 0.35 && !roadAt(bx, by);
+  // One stone course along a boundary segment, with its shadow line on the
+  // side (nx, ny) the bare ground is on.
+  const light: Seg[] = [];
+  const dark: Seg[] = [];
+  const kerb = (ax: number, ay: number, bx: number, by: number, nx: number, ny: number): void => {
+    light.push([ax - nx * 0.05, ay - ny * 0.05, bx - nx * 0.05, by - ny * 0.05]);
+    dark.push([ax + nx * 0.02, ay + ny * 0.02, bx + nx * 0.02, by + ny * 0.02]);
+  };
+  for (let y = ty0; y <= ty1; y++) {
+    for (let x = tx0; x <= tx1; x++) {
+      // the edge along y between (x, y-1) and (x, y), then the one along x
+      // between (x-1, y) and (x, y); each from whichever side is paved
+      for (const horiz of [true, false]) {
+        const [px, py] = horiz ? [x, y - 1] : [x - 1, y];
+        const out = kerbed(px, py, x, y) ? 1 : kerbed(x, y, px, py) ? -1 : 0;
+        if (out === 0) continue;
+        const key = horiz ? `h${x},${y}` : `v${x},${y}`;
+        const cut = horiz ? cutOnH(x, y) : cutOnV(x, y);
+        const lo = ends.has(`${key},0`) ? cut : horiz ? x : y;
+        const hi = ends.has(`${key},1`) ? cut : (horiz ? x : y) + 1;
+        if (hi <= lo) continue;
+        if (horiz) kerb(lo, y, hi, y, 0, out);
+        else kerb(x, lo, x, hi, out, 0);
       }
     }
   }
+  for (const c of cuts) {
+    // the cut's own edge, where the paved party is paved enough to have a kerb
+    const lonePaved = cls(c[4], c[5]) === 1;
+    const sx = c[4] < c[0] ? c[4] + 1 : c[4] - 1; // the tile beside the lone one, across the corner
+    const [pvx, bx] = lonePaved ? [c[4], sx] : [sx, c[4]];
+    if (weight(pvx, c[5]) <= 0.35 || roadAt(bx, c[5])) continue;
+    // Unit normal of the cut, turned toward the corner. The corner's side of
+    // the cut is the piece that changed hands: bare ground if the lone tile
+    // was the paved one, paving if it was not.
+    const turn = ((c[0] - c[2]) * (c[1] - c[3]) > 0 ? 1 : -1) * (lonePaved ? 1 : -1);
+    const len = Math.hypot(c[3] - c[1], c[0] - c[2]);
+    kerb(c[2], c[1], c[0], c[3], (-(c[3] - c[1]) * turn) / len, ((c[0] - c[2]) * turn) / len);
+  }
+  g.lineCap = 'butt';
+  strokeSegs(g, light, 0.1, 'rgba(158,150,132,0.50)');
+  strokeSegs(g, dark, 0.04, 'rgba(30,26,20,0.30)');
+  g.lineCap = 'round';
 }
 
 // Crop rows (G4). Everything is keyed on the PARCEL — one 4-connected field
@@ -864,10 +979,15 @@ function drawCropRows(g: Ctx, map: GameMap, patches: PatchIndex, tx0: number, ty
   const roots: [number, number][][] = [[], []];
   const turn: Seg[] = [];
   const geom = new Map<number, RowGeom>();
-  const fieldAt = (tx: number, ty: number) => map.inBounds(tx, ty) && map.terrainKeyAt(tx, ty) === 'field';
+  // A hedge counts as field here, twice over. Its tile carries its host
+  // parcel's rows (hedgeHost), and a field tile beside it gets no headland:
+  // both the bare tile and the headland row ran down the tile staircase, in
+  // plain view beside a hedgerow that no longer follows it.
+  const fieldAt = (tx: number, ty: number) => map.inBounds(tx, ty) && (map.terrainKeyAt(tx, ty) === 'field' || map.terrainKeyAt(tx, ty) === 'hedge');
   for (let y = ty0; y < ty1; y++) {
     for (let x = tx0; x < tx1; x++) {
-      const pid = patches.id[y * map.w + x];
+      const host = map.terrainKeyAt(x, y) === 'hedge' ? hedgeHost(map, x, y) : null;
+      const pid = host ? patches.id[host[1] * map.w + host[0]] : patches.id[y * map.w + x];
       if (pid < 0) continue;
       const p = patches.patches[pid];
       if (p.kind !== 'field') continue;
@@ -1519,6 +1639,7 @@ function drawTileBase(
   // random step per tile as well: on a field or a lane, which have no stamp
   // over them to hide it, that was a 1 m checkerboard.
   const v = 0.95 + coarse(x, y) * 0.1;
+  const host = t === 'hedge' ? hedgeHost(map, x, y) : null;
   if (t === 'grass') {
     drawGrassBase(g, x, y);
     if (d >= 1) {
@@ -1603,25 +1724,27 @@ function drawTileBase(
   } else if (t === 'woods') {
     drawSubTileGround(g, x, y);
     if (d >= 1) g.drawImage(litterStamp((hash(x, y, 265) * 8) | 0, d, band), x, y, 1, 1);
-  } else if (t === 'hedge') {
-    // Ground under the hedge only — the capsule strokes are drawn by
-    // drawHedgeRun in whole-run passes (per-tile stroke stacks let a tile's
-    // dark AO/shadow overpaint the neighbor's green mass, which is what read
-    // as per-tile capsule segmentation at 24 px/m). It is the ordinary grass
-    // base, not the dark woods floor: a hedge run is narrower than its tiles,
-    // and the dark tone left a 1 m square halo around every hedge tile.
+  } else if (t === 'hedge' && !host) {
+    // Ground under the hedge only: the hedgerow itself is drawn by
+    // drawHedgerows in whole-run passes. It is the ordinary grass base —
+    // never a tone of its own, which leaves a 1 m square halo around every
+    // hedge tile.
     drawGrassBase(g, x, y);
-  } else if (t === 'field') {
+  } else if (t === 'field' || t === 'hedge') {
     // The crop the parcel is under picks the palette family; macro drift still
     // separates two neighbouring parcels of the same crop. Row geometry is a
     // whole-parcel post-pass (drawCropRows) — per-tile furrows could never be
-    // continuous across a tile seam.
-    const p = patches.patchAt(x, y);
+    // continuous across a tile seam. A hedge beside a field is that field's
+    // earth to the far edge of its tile (hedgeHost).
+    const p = host ? patches.patchAt(host[0], host[1]) : patches.patchAt(x, y);
     const c = p ? cropOf(p.seed) : 1;
     g.fillStyle = shade(blendPalette([CROP_A[c], CROP_B[c]], macro(x, y)), v);
     g.fillRect(x, y, 1, 1);
-    // darker boundary strip where the field meets non-field
-    const fieldAt = (tx: number, ty: number) => map.inBounds(tx, ty) && map.terrainKeyAt(tx, ty) === 'field';
+    if (host) return;
+    // Darker boundary strip where the field meets non-field. A hedge is not
+    // such a meeting: the strip would rule the tile staircase down the flank
+    // of a hedgerow that no longer follows it.
+    const fieldAt = (tx: number, ty: number) => map.inBounds(tx, ty) && (map.terrainKeyAt(tx, ty) === 'field' || map.terrainKeyAt(tx, ty) === 'hedge');
     g.fillStyle = 'rgba(40,32,20,0.18)';
     if (!fieldAt(x, y - 1)) g.fillRect(x, y, 1, 0.08);
     if (!fieldAt(x, y + 1)) g.fillRect(x, y + 0.92, 1, 0.08);
@@ -1653,12 +1776,15 @@ function drawTileBase(
 // The class a tile's ground belongs to for the boundary pass (ground.ts): two
 // tiles of one class have nothing between them to soften. Fields are classed
 // by parcel, so two crops side by side get a boundary too. A hedge stands on
-// grass. Everything with an edge that must stay ruled is HARD.
+// its host's ground. Everything with an edge that must stay ruled is HARD.
 function groundClass(map: GameMap, patches: PatchIndex, x: number, y: number): number {
   if (!map.inBounds(x, y)) return HARD;
   switch (map.terrainKeyAt(x, y)) {
+    case 'hedge': {
+      const host = hedgeHost(map, x, y);
+      return host ? 16 + patches.patchIdAt(host[0], host[1]) : 1;
+    }
     case 'grass':
-    case 'hedge':
       return 1;
     case 'woods':
       return 2;
@@ -1671,10 +1797,26 @@ function groundClass(map: GameMap, patches: PatchIndex, x: number, y: number): n
   }
 }
 
+// The field a hedge tile stands in: its first field neighbour, or null where
+// it stands on grass. The tile used to be a square of grass whatever was round
+// it, which nobody saw while the hedge was drawn square on its tile. A
+// hedgerow that crosses its tiles on the diagonal uncovers their corners, and
+// between two fields those corners were a green staircase down both flanks.
+function hedgeHost(map: GameMap, x: number, y: number): [number, number] | null {
+  for (const [dx, dy] of [[0, -1], [-1, 0], [0, 1], [1, 0]]) {
+    if (map.inBounds(x + dx, y + dy) && map.terrainKeyAt(x + dx, y + dy) === 'field') return [x + dx, y + dy];
+  }
+  return null;
+}
+
 // The flat tone of a tile's ground: what its neighbour is given where the
 // boundary between them moves. The same palettes drawTileBase reads, without
 // the per-tile jitter.
 function groundTone(map: GameMap, patches: PatchIndex, x: number, y: number): string {
+  if (map.terrainKeyAt(x, y) === 'hedge') {
+    const host = hedgeHost(map, x, y);
+    if (host) return groundTone(map, patches, host[0], host[1]);
+  }
   switch (map.terrainKeyAt(x, y)) {
     case 'woods':
       return shade(WOODS_GROUND, 0.96);
@@ -1797,23 +1939,6 @@ function softenGround(g: Ctx, map: GameMap, patches: PatchIndex, tx0: number, ty
 export const SURROUND_M = 160; // metres of it on every side
 const SURROUND_Q = 4; // metres per baked pixel
 export const SURROUND_FAR: [number, number, number] = [22, 21, 16]; // what it fades to, and what the renderer fills the rest of the view with
-// Value noise with smoothstep weights. `macro` is bilinear, which is right
-// for a tone drift across textured ground; stretched bare over a hundred
-// metres of out-of-focus country its lattice shows as creases.
-function soft(x: number, y: number, cell: number, salt: number): number {
-  const gx = x / cell;
-  const gy = y / cell;
-  const ix = Math.floor(gx);
-  const iy = Math.floor(gy);
-  const fx = gx - ix;
-  const fy = gy - iy;
-  const ux = fx * fx * (3 - 2 * fx);
-  const uy = fy * fy * (3 - 2 * fy);
-  const a = hash(ix, iy, salt) * (1 - ux) + hash(ix + 1, iy, salt) * ux;
-  const b = hash(ix, iy + 1, salt) * (1 - ux) + hash(ix + 1, iy + 1, salt) * ux;
-  return a * (1 - uy) + b * uy;
-}
-
 function bakeSurround(w: number, h: number): HTMLCanvasElement {
   const cw = Math.ceil((w + SURROUND_M * 2) / SURROUND_Q);
   const chh = Math.ceil((h + SURROUND_M * 2) / SURROUND_Q);
@@ -2053,6 +2178,8 @@ export class TerrainLayer {
   private hasStairs: boolean;
   private bakeBudget = 0;
   private patches: PatchIndex;
+  private hedges: Hedgerows;
+  private paveMask: HTMLCanvasElement | null = null; // bakePaveMask, built on the first chunk of a map that has a square
   private yards: Yard[];
   // props bucketed by chunk key on their DRAWN extent (a telegraph wire spans
   // 6 m past its pole), so a chunk bake pays only for the clutter it shows and
@@ -2094,6 +2221,7 @@ export class TerrainLayer {
     this.hasStairs = map.stairs.some((s) => s !== 0);
     this.chunksW = Math.ceil(map.w / CHUNK);
     this.patches = new PatchIndex(map);
+    this.hedges = buildHedgerows((x, y) => map.terrainKeyAt(x, y) === 'hedge', map.w, map.h);
     this.rail = railIndex(map);
     const churchTiles = new Uint8Array(map.w * map.h);
     for (const b of buildings) {
@@ -2219,7 +2347,8 @@ export class TerrainLayer {
     // after the rows, so a cut corner is not ruled with its old parcel's
     // furrows; before the paving and the wear, which lie on top of the ground
     softenGround(g, this.map, this.patches, tx0, ty0, tx1, ty1, d);
-    drawPaving(g, this.map, this.patches, tx0, ty0, tx1, ty1, band, d);
+    if (this.patches.squares.length > 0) this.paveMask ??= bakePaveMask(this.patches, this.map.w, this.map.h);
+    drawPaving(g, this.map, this.patches, tx0, ty0, tx1, ty1, band, d, this.paveMask);
     drawRoadWear(g, this.map, tx0, ty0, tx1, ty1, d, (x, y) => this.patches.pavedAt(x, y));
     // after the wear pass, which would otherwise lay ruts across the timbers
     if (this.rail) {
@@ -2236,7 +2365,7 @@ export class TerrainLayer {
     drawRugs(g, this.map, this.roleAt, tx0, ty0, tx1, ty1, d);
     drawFurniture(g, this.map, this.roleAt, this.acrossAt, tx0, ty0, tx1, ty1, band);
     drawYardStructures(g, this.map, this.patches, this.yards, tx0, ty0, tx1, ty1, d);
-    drawHedgeRun(g, this.map, tx0, ty0, tx1, ty1, d);
+    drawHedgerows(g, this.hedges, tx0, ty0, tx1, ty1, d);
     if (d >= 1) {
       // Fallen trunks, deep inside a stand only, ~1 per 50 woods tiles. Drawn
       // before the canopies so a tree overlaps the log rather than the log
