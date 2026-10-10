@@ -472,16 +472,53 @@ describe('order vocabulary: fire/smoke/defend/ambush', () => {
   });
 
   it('defend arc ignores a flanking target until the arc is updated to cover it', () => {
-    const sim = new Sim(new GameMap(30, 20), 12);
-    sim.addSquad('blue', 'a', [{ name: 'A', weapon: 'garand', x: 10.5, y: 10.5 }]);
-    sim.addSquad('red', 'r', [{ name: 'R', weapon: 'kar98k', x: 5.5, y: 10.5, ammo: {} }]); // due west: angle pi
+    const sim = new Sim(new GameMap(120, 20), 12);
+    sim.addSquad('blue', 'a', [{ name: 'A', weapon: 'garand', x: 80.5, y: 10.5 }]);
+    sim.addSquad('red', 'r', [{ name: 'R', weapon: 'kar98k', x: 20.5, y: 10.5, ammo: {} }]); // due west, 60 m: angle pi
     sim.soldiers[1].magLeft = 0; // dry: won't shoot blue and confound the arc assertion
-    sim.orderTeam(0, { kind: 'defend', x: 10.5, y: 10.5, arc: [0, Math.PI / 2] });
+    sim.orderTeam(0, { kind: 'defend', x: 80.5, y: 10.5, arc: [0, Math.PI / 2] });
     for (let i = 0; i < 60; i++) sim.step();
     expect(sim.soldiers[0].targetId).toBe(-1);
-    sim.orderTeam(0, { kind: 'defend', x: 10.5, y: 10.5, arc: [Math.PI - 0.3, Math.PI + 0.3] });
+    sim.orderTeam(0, { kind: 'defend', x: 80.5, y: 10.5, arc: [Math.PI - 0.3, Math.PI + 0.3] });
     for (let i = 0; i < 60; i++) sim.step();
     expect(sim.soldiers[0].targetId).toBe(1);
+  });
+
+  // #794. 9 % of all defenders in 17 probed battles never fired because the
+  // only enemy they ever had in sight and in range stood outside the arc, at a
+  // median of 11 m.
+  it('an arc is where a man watches, not a blindfold: inside 50 m he engages an enemy outside it, and prefers one inside it', () => {
+    const stage = (west: number, east?: number) => {
+      const sim = new Sim(new GameMap(160, 20), 12);
+      sim.addSquad('blue', 'a', [{ name: 'A', weapon: 'garand', x: 80.5, y: 10.5 }]);
+      const ids = [sim.addSquad('red', 'w', [{ name: 'W', weapon: 'kar98k', x: 80.5 - west, y: 10.5, ammo: {} }]).soldierIds[0]];
+      if (east !== undefined) ids.push(sim.addSquad('red', 'e', [{ name: 'E', weapon: 'kar98k', x: 80.5 + east, y: 10.5, ammo: {} }]).soldierIds[0]);
+      for (const id of ids) sim.soldiers[id].magLeft = 0;
+      sim.orderTeam(0, { kind: 'defend', x: 80.5, y: 10.5, arc: [-Math.PI / 4, Math.PI / 4] }); // watching east
+      // asked directly: a man with rounds would act on the answer and remove it
+      return { target: (sim as never as { acquire(s: unknown): number }).acquire(sim.soldiers[0]), ids };
+    };
+    const behind = stage(49);
+    expect(behind.target).toBe(behind.ids[0]); // 49 m behind him: ARC_SELF_DEFENCE is 50
+    expect(stage(51).target).toBe(-1);
+    const both = stage(10, 70);
+    expect(both.target).toBe(both.ids[1]); // the man in the arc, though the one behind is seven times nearer
+  });
+
+  it('an ambush is sprung by an enemy outside its arc once he is inside 50 m', () => {
+    const stage = (west: number) => {
+      const sim = new Sim(new GameMap(160, 20), 13);
+      sim.addSquad('blue', 'a', [{ name: 'A', weapon: 'm1919', x: 80.5, y: 10.5, xp: 30 }]);
+      sim.soldiers[0].role = 'leader';
+      sim.soldiers[0].morale = 1;
+      sim.addSquad('red', 'r', [{ name: 'R', weapon: 'kar98k', x: 80.5 - west, y: 10.5, ammo: {} }]);
+      sim.soldiers[1].magLeft = 0;
+      sim.orderTeam(0, { kind: 'ambush', x: 80.5, y: 10.5, arc: [-Math.PI / 4, Math.PI / 4] });
+      for (let i = 0; i < 60; i++) sim.step();
+      return sim.teams[0].orderState.order?.kind;
+    };
+    expect(stage(55)).toBe('ambush'); // inside an MG's 60 m trigger, behind him, outside 50 m: it holds
+    expect(stage(45)).toBe('defend');
   });
 
   it('ambush holds fire at 70m and opens (with the first-volley bonus) once the enemy closes to 40m', () => {

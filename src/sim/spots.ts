@@ -23,9 +23,9 @@
 //   ordered formation spots — the "large behaviour change" done on purpose as
 //   its own reviewed feature (design §2.3).
 
-import { EDGE } from './map';
-import type { OrderKind } from './orders';
-import { eligible, fanOffsets, formationSlots, SQUAD_FAN, TEAM_FAN, type Sim, type Soldier, type Stance } from './sim';
+import { EDGE, los } from './map';
+import { STAY_RADIUS, type OrderKind } from './orders';
+import { EYE_CROUCH, EYE_STAND, eligible, fanOffsets, formationSlots, SQUAD_FAN, TEAM_FAN, type Sim, type Soldier, type Stance } from './sim';
 
 export const SNAP_R = 3; // cover-snap ring bound (tiles) — the coherence cap (§1.2)
 const FALLBACK_R = 5; // legacy findSpot reach (sim.ts findSpot, r <= 5)
@@ -36,6 +36,22 @@ const W_DIR = 2.0; // directional cover against the threat bearing — the point
 const W_NOOK = 1.0; // × nook()'s {0, 2} — window/breach firing position (garrisonScore's +2)
 const W_TILE = 0.5; // on-tile cover body (woods 0.3 / furn_light 0.25 / hedge 0.35)
 const SLOT_PENALTY = 0.15; // per Chebyshev tile of drift from the formation slot; ties break toward it
+// Field of fire, defend and ambush only (#794). A firing position is first a
+// place a man can fire FROM: a tile with a sight line toward the threat beats
+// any tile without one, whatever cover the blind tile has, and is looked for
+// out to STAY_RADIUS from the slot (the same "shake out where you stand"
+// reach orders.ts uses). The scorer knew cover and it knew windows, but a
+// window on the far wall scored like one facing the enemy, and a man behind
+// the house scored like the man in front of it. Probed over 17 battles: 20 %
+// of all defenders never fired because no enemy inside their weapon's range
+// was ever in their sight, 278 of those 389 men inside a building.
+// Three rays from a crouching eye, the bearing and FIELD_SPREAD either side,
+// to a standing man FIELD_REACH out. W_FIELD is above the most a blind tile
+// can score (a covered nook behind a hedge lip, about 4), and the share of
+// rays that are clear breaks ties toward the wider view.
+const FIELD_REACH = 40;
+const FIELD_SPREAD = Math.PI / 6;
+const W_FIELD = 5;
 // A 1 m bank blocks a 0.4 m prone eye outright (the relief rule, sim.ts
 // stance heights), so at prone it scores like a hedge lip; a crouching or
 // standing man sees straight over it and gets no directional credit.
@@ -233,6 +249,20 @@ function nook(sim: Sim, x: number, y: number): number {
   const m = sim.map;
   const isNook = (e: number) => e === EDGE.WINDOW || e === EDGE.BREACH;
   return isNook(m.hEdge(x, y)) || isNook(m.hEdge(x, y + 1)) || isNook(m.vEdge(x, y)) || isNook(m.vEdge(x + 1, y)) ? 2 : 0;
+}
+
+// Share of the three field-of-fire rays that are clear from this tile: 0, 1/3,
+// 2/3 or 1. Map only (no smoke, no men), so it draws nothing and a placement
+// does not change with who happens to be standing where.
+function fieldOfFire(sim: Sim, x: number, y: number, level: number, bearing: number): number {
+  const m = sim.map;
+  let clear = 0;
+  for (const off of [0, FIELD_SPREAD, -FIELD_SPREAD]) {
+    const tx = Math.max(0.5, Math.min(m.w - 0.5, x + 0.5 + Math.cos(bearing + off) * FIELD_REACH));
+    const ty = Math.max(0.5, Math.min(m.h - 0.5, y + 0.5 + Math.sin(bearing + off) * FIELD_REACH));
+    if (los(m, x + 0.5, y + 0.5, tx, ty, level, 0, EYE_CROUCH, EYE_STAND).visible) clear++;
+  }
+  return clear / 3;
 }
 
 // What a tile is WORTH as a firing position, threat bearing included. Shared
@@ -446,7 +476,8 @@ export function resolveDeployment(
 // garrison reach); accepted only when the best score is > 0, else the legacy
 // plain ring walk; else the man is skipped (findSpot-null parity — the
 // caller/UI surfaces it, design §3.4). A slot inside a building resolves
-// inside one (M3).
+// inside one (M3). Defend and ambush add the field of fire (W_FIELD) and
+// look for it out to STAY_RADIUS.
 export function resolveMoveSpots(sim: Sim, q: SpotQuery, used: Set<number>): ResolvedSpot[] {
   const out: ResolvedSpot[] = [];
   const n = q.soldierIds.length;
@@ -456,6 +487,19 @@ export function resolveMoveSpots(sim: Sim, q: SpotQuery, used: Set<number>): Res
   const slots = formationSlots(n, q.facing, q.width);
   const map = sim.map;
   const level = q.l ?? 0;
+  const holds = q.kind === 'defend' || q.kind === 'ambush';
+  const reach = holds ? STAY_RADIUS : FALLBACK_R; // read here, not at module scope: orders.ts and this file import each other through sim.ts
+  // The men of a team stand a metre or two apart and walk the same tiles.
+  const fields = new Map<number, number>();
+  const field = (x: number, y: number): number => {
+    const k = y * map.w + x;
+    let f = fields.get(k);
+    if (f === undefined) {
+      f = fieldOfFire(sim, x, y, level, bearing);
+      fields.set(k, f);
+    }
+    return f > 0 ? W_FIELD + f : 0;
+  };
   for (let i = 0; i < n; i++) {
     const [ox, oy] = slots[i];
     const sx = Math.floor(q.x + ox);
@@ -472,7 +516,7 @@ export function resolveMoveSpots(sim: Sim, q: SpotQuery, used: Set<number>): Res
     let bestScore = 0; // snap only on a strictly positive score (§1.2)
     let plain: { x: number; y: number } | null = null;
     let plainOut: { x: number; y: number } | null = null;
-    for (let r = 0; r <= FALLBACK_R; r++) {
+    for (let r = 0; r <= reach; r++) {
       for (let dy = -r; dy <= r; dy++) {
         for (let dx = -r; dx <= r; dx++) {
           if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
@@ -493,12 +537,15 @@ export function resolveMoveSpots(sim: Sim, q: SpotQuery, used: Set<number>): Res
             if (!plainOut) plainOut = { x: nx, y: ny };
             continue;
           }
-          if (!plain) plain = { x: nx, y: ny };
+          if (!plain && r <= FALLBACK_R) plain = { x: nx, y: ny };
           // Past SNAP_R only a firing position is worth breaking formation for.
           // That is findSpot's garrison reach exactly — it scored the whole
           // r <= 5 ring — and capping the nook at SNAP_R left an eighth of a
-          // garrison in the room instead of at its windows (M3 audit).
-          const sc = r <= SNAP_R ? scoreTile(sim, nx, ny, r, bearing, stance) : W_NOOK * nook(sim, nx, ny) - SLOT_PENALTY * r;
+          // garrison in the room instead of at its windows (M3 audit). Past
+          // FALLBACK_R only a tile with a field of fire is.
+          const f = holds ? field(nx, ny) : 0;
+          if (r > FALLBACK_R && f === 0) continue;
+          const sc = f + (r <= SNAP_R ? scoreTile(sim, nx, ny, r, bearing, stance) : W_NOOK * nook(sim, nx, ny) - SLOT_PENALTY * r);
           if (sc > bestScore) {
             bestScore = sc;
             best = { x: nx, y: ny };

@@ -99,6 +99,12 @@ const CLOSING_RADIUS = 20;
 export const RALLY_WINDOW_TICKS = 120 * 30;
 // Melee (decision log 2026-07-23): proximity-triggered close combat.
 const MELEE_ENGAGE = 2.0; // m — an enemy this close (and reachable on foot) locks both into melee
+// A defend or ambush arc is where a man watches, not a blindfold (#794). With
+// nobody to shoot inside it he engages an enemy he can see inside this range
+// wherever that enemy stands, and such an enemy springs an ambush. Probed
+// over 17 battles: 9 % of all defenders never fired because the only enemy
+// they ever saw in range was outside the arc, at a median of 11 m.
+export const ARC_SELF_DEFENCE = 50;
 // The rout (#790). A broken man runs for his own rear (away from
 // sim.threatAxis), to the nearest leader of his side who is still in hand
 // and not forward of him, and stops inside GATHER of that leader. With no
@@ -2231,8 +2237,8 @@ export class Sim {
       const thresh = ambushThreshold(WEAPONS[s.weapon]);
       for (const e of this.soldiers) {
         if (!e.alive || e.downed || e.captured || e.side !== enemySide) continue;
-        if (order.arc && !this.inArc(s.x, s.y, e.x, e.y, order.arc)) continue;
         const d = Math.hypot(e.x - s.x, e.y - s.y);
+        if (order.arc && d > ARC_SELF_DEFENCE && !this.inArc(s.x, s.y, e.x, e.y, order.arc)) continue;
         if (d <= thresh && sightToSoldier(this, s.x, s.y, e, s.level, eyeOf(this, s)).visible) {
           triggered = true;
           break outer;
@@ -2998,11 +3004,12 @@ export class Sim {
     return false;
   }
 
-  // `arc` restricts candidates to a facing sector (defend/ambush: spec's
-  // "members only acquire targets inside arc"). Vehicle crew are normally
+  // `arc` restricts candidates to a facing sector (defend/ambush). With no
+  // visible target inside it, an enemy inside `near` is taken wherever he is
+  // (ARC_SELF_DEFENCE; the emplaced guns pass none). Vehicle crew are normally
   // hull-protected and untargetable — except an open-top vehicle's pintle
   // gunner, who's standing up in the back exposed to small arms.
-  private acquireSoldierTarget(x: number, y: number, side: Side, range: number, arc?: [number, number], l0 = 0, e0 = EYE_H): number {
+  private acquireSoldierTarget(x: number, y: number, side: Side, range: number, arc?: [number, number], l0 = 0, e0 = EYE_H, near = 0): number {
     const candidates: { id: number; d: number }[] = [];
     for (const e of this.soldiers) {
       if (!e.alive || e.downed || e.captured || e.side === side) continue;
@@ -3018,6 +3025,12 @@ export class Sim {
       const e = this.soldiers[c.id];
       if (arc && !this.inArc(x, y, e.x, e.y, arc)) continue;
       if (sightToSoldier(this, x, y, e, l0, e0).visible) return c.id;
+    }
+    if (!arc) return -1;
+    for (const c of candidates) {
+      if (c.d > near) break;
+      const e = this.soldiers[c.id];
+      if (!this.inArc(x, y, e.x, e.y, arc) && sightToSoldier(this, x, y, e, l0, e0).visible) return c.id;
     }
     return -1;
   }
@@ -4764,7 +4777,7 @@ export class Sim {
   private acquire(s: Soldier): number {
     const order = this.teams[s.teamId].orderState.order;
     const arc = (order?.kind === 'defend' || order?.kind === 'ambush') ? order.arc : undefined;
-    return this.acquireSoldierTarget(s.x, s.y, s.side, WEAPONS[s.weapon].range, arc, s.level, eyeOf(this, s));
+    return this.acquireSoldierTarget(s.x, s.y, s.side, WEAPONS[s.weapon].range, arc, s.level, eyeOf(this, s), ARC_SELF_DEFENCE);
   }
 
   private fire(s: Soldier, t: Soldier): void {
