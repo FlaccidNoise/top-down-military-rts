@@ -187,20 +187,16 @@ button.hbtn.active { background: var(--chip-active-bg); border-color: var(--ambe
 .srow .chip { width: 8px; height: 8px; border-radius: 2px; flex: none; }
 .srow .nm { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .srow .wp { color: var(--muted); flex: none; }
-.srow .am { color: var(--muted); flex: none; font-size: var(--fs-sm); }
-.srow .bars { width: 36px; flex: none; display: flex; flex-direction: column; gap: 2px; }
+.srow .am { flex: none; font-size: var(--fs-sm); color: var(--state-pinned); letter-spacing: 0.5px; }
+.srow .st { flex: none; font-size: var(--fs-sm); font-weight: var(--fw-head); letter-spacing: 1px; }
 .srow.kia { color: #6a6a5a; text-decoration: line-through; }
 .srow.urgent { background: rgba(var(--red-rgb), 0.08); }
 .srow.urgent:hover { background: rgba(var(--red-rgb), 0.18); }
-.srow .down { color: var(--red); font-weight: var(--fw-head); flex: none; animation: hud-pulse 1.3s ease-in-out infinite; }
+.srow .st.down { animation: hud-pulse 1.3s ease-in-out infinite; }
 .bar { height: 4px; background: var(--track-bg); border-radius: 1px; overflow: hidden; }
 .bar i { display: block; height: 100%; }
 .flag { color: var(--red); flex: none; }
 .flag.stab { color: #f2efe4; }
-.bars-key { display: flex; align-items: center; gap: var(--sp-1); color: var(--muted); font-size: var(--fs-sm); letter-spacing: 0.3px; padding: 1px 0 var(--sp-1) 14px; }
-.bars-key .sw { width: 8px; height: 3px; border-radius: 1px; display: inline-block; }
-.bars-key .sw.sup { background: #e0a83c; }
-.bars-key .sw.mor { background: var(--state-steady); margin-left: var(--sp-2); }
 
 /* ---- the order bar: one on both platforms, outside the roster ----
    Desktop: bottom centre of the screen. Phone: the touch bar's top rows. */
@@ -601,7 +597,8 @@ button.hbtn:focus-visible,
   font-size: 9px;
 }
 
-/* ---- squad-aggregate ammo chip ---- */
+/* ---- squad card warning chip: ammunition short, vehicle burning ---- */
+.sam-chip.low { color: var(--state-pinned); }
 .sam-chip {
   font-size: var(--fs-sm);
   color: var(--muted);
@@ -1254,6 +1251,7 @@ html.mobile #squads.open { display: flex; }
     grid-template-columns: 1fr 1fr;
     column-gap: var(--sp-1);
     align-content: start;
+    align-items: start;
   }
   html.mobile #squads .wpn-divider { grid-column: 1 / -1; }
 }

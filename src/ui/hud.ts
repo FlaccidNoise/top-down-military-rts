@@ -7,6 +7,7 @@ import { battleGoal, goalText, type SideStrength } from './battle-goal';
 import { formatBinding, loadKeymap, type Keymap } from './keymap';
 import { MOBILE } from '../render/view';
 import { patchChildren } from './patch';
+import { manAmmo, manStatus, shortNames, squadAmmoLow, type ManStatus } from './roster';
 import { placeBubble, visibleRect } from './coach';
 import type { BattleSpeed } from './battle-speed';
 
@@ -100,8 +101,6 @@ const CTX_ACTIONS: Record<string, keyof HudCallbacks> = {
   hitch: 'hitchVehicle',
   unhitch: 'unhitchVehicle',
 };
-
-const BARS_LEGEND = '<div class="bars-key"><i class="sw sup"></i>suppression<i class="sw mor"></i>morale</div>';
 
 function primarySquad(st: HudState): number {
   return st.selectedSquads.length > 0 ? st.selectedSquads[st.selectedSquads.length - 1] : st.selectedSquad;
@@ -544,14 +543,15 @@ export class Hud {
       if (v.side !== 'blue') continue;
       const crew = v.crewIds.map((id) => sim.soldiers[id]);
       const aliveCrew = crew.filter((c) => c.alive).length;
-      const burnChip = v.alive && v.burning ? ' <span style="color:#d05c50">BURNING</span>' : '';
+      const burnChip = v.alive && v.burning ? '<span class="sam-chip low">BURNING</span>' : '';
       const ammoLine = v.alive ? `<span class="veh-ammo">AP ${v.ammo.ap} · HE ${v.ammo.he}</span>` : '';
-      const extra = (burnChip || ammoLine) ? `<div class="veh-extra">${burnChip}${burnChip && ammoLine ? ' · ' : ''}${ammoLine}</div>` : '';
       const sel = v.id === st.selectedVehicle;
+      // One line like every other card. The rounds left open with the card.
+      const extra = sel && ammoLine ? `<div class="veh-extra">${ammoLine}</div>` : '';
       const rows = sel && v.alive ? vehicleContext(sim, v) : '';
       cards.push(
         `<div class="card panel${sel ? ' sel' : ''}" data-vehicle="${v.id}" tabindex="0" role="button">` +
-          `<div class="card-head"><b>${VEHICLES[v.kind].name}</b><span class="n">${v.alive ? `crew ${aliveCrew}/${crew.length}` : 'DESTROYED'}</span></div>${extra}${rows}</div>`,
+          `<div class="card-head"><b>${VEHICLES[v.kind].name}</b>${burnChip}<span class="n">${v.alive ? `${aliveCrew}/${crew.length}` : 'DESTROYED'}</span></div>${extra}${rows}</div>`,
       );
     }
     // Rifle squads (2 teams) vs. crewed weapons/scout squads (1 team, the
@@ -559,11 +559,12 @@ export class Hud {
     // team count so the 18-squad roster fits under a "WEAPONS" divider
     // instead of one long undifferentiated list.
     const infantry = infantrySquads(sim);
+    const names = new Map(shortNames(infantry.map((q) => q.name)).map((n, i) => [infantry[i].id, n]));
     const rifleSquads = infantry.filter((q) => q.teamIds.length > 1);
     const weaponSquads = infantry.filter((q) => q.teamIds.length === 1);
-    for (const q of rifleSquads) cards.push(squadCard(sim, q, st, this.km));
+    for (const q of rifleSquads) cards.push(squadCard(sim, q, names.get(q.id)!, st, this.km));
     if (weaponSquads.length) cards.push('<div class="wpn-divider">WEAPONS</div>');
-    for (const q of weaponSquads) cards.push(squadCard(sim, q, st, this.km));
+    for (const q of weaponSquads) cards.push(squadCard(sim, q, names.get(q.id)!, st, this.km));
 
     const panel = this.q('#squads');
     // In place, never innerHTML: this runs every 5 ticks while the battle
@@ -584,7 +585,9 @@ export class Hud {
   }
 }
 
-function squadCard(sim: Sim, sq: Squad, st: HudState, km: Keymap): string {
+// One line per squad: its name, a word only when ammunition is short, the men
+// alive and a dot per man. The selected squad opens to its men.
+function squadCard(sim: Sim, sq: Squad, name: string, st: HudState, km: Keymap): string {
   const men = sq.soldierIds.map((id) => sim.soldiers[id]);
   const isPrimary = sq.id === primarySquad(st);
   const sel = st.selectedSquads.includes(sq.id) || (st.selectedSquads.length === 0 && sq.id === st.selectedSquad);
@@ -595,14 +598,7 @@ function squadCard(sim: Sim, sq: Squad, st: HudState, km: Keymap): string {
       return `<i title="${m.name} — ${label}" style="${m.alive && m.downed ? `border:1px solid ${c}` : `background:${c}`}"></i>`;
     })
     .join('');
-  // squad-aggregate ammo
-  let squadAmmo = '';
-  {
-    let total = 0, max = 0;
-    for (const m of men) { total += Object.values(m.ammo).reduce((a, n) => a + (n ?? 0), 0); max += m.ammoStart; }
-    if (max > 0) squadAmmo = `<span class="sam-chip">Ammo ${total}/${max}</span>`;
-  }
-  const showLegend = isPrimary && men.some((m) => m.alive && !m.downed);
+  const ammo = squadAmmoLow(men) ? '<span class="sam-chip low">AMMO LOW</span>' : '';
   const emp = isPrimary ? emplacementOf(sim, sq.id) : null;
   // balk chip
   let balkChip = '';
@@ -620,11 +616,11 @@ function squadCard(sim: Sim, sq: Squad, st: HudState, km: Keymap): string {
   const widen = MOBILE ? '' : ` <i>(${formatBinding(km.bindings.cancel)} widens)</i>`;
   const focus = isPrimary && st.selectedTeam >= 0 ? `<div class="focus">Team: ${sim.teams[st.selectedTeam]?.name ?? ''}${widen}</div>` : '';
   const rows = isPrimary
-    ? focus + balkChip + empStateRow + (emp ? emplacementContext(sim, emp) : squadContext(men)) + (showLegend ? BARS_LEGEND : '') + men.map((m) => soldierRow(m)).join('')
+    ? focus + balkChip + empStateRow + (emp ? emplacementContext(sim, emp) : squadContext(men)) + men.map((m) => soldierRow(m)).join('')
     : '';
   return (
-    `<div class="card panel${sel ? ' sel' : ''}" data-squad="${sq.id}" tabindex="0" role="button">` +
-    `<div class="card-head"><b>${sq.name}</b>${squadAmmo}<span class="n">${men.filter((m) => m.alive).length}/${men.length}</span><div class="dots">${dots}</div></div>${rows}</div>`
+    `<div class="card panel${sel ? ' sel' : ''}" data-squad="${sq.id}" tabindex="0" role="button" title="${sq.name}">` +
+    `<div class="card-head"><b>${name}</b>${ammo}<span class="n">${men.filter((m) => m.alive).length}/${men.length}</span><div class="dots">${dots}</div></div>${rows}</div>`
   );
 }
 
@@ -637,23 +633,24 @@ function squadContext(men: Soldier[]): string {
   return armed ? `<div class="ctxrow"><button class="hbtn" data-ctx="breach">Breach</button></div>` : '';
 }
 
-export const reserveAmmo = (s: Soldier): number => Object.values(s.ammo).reduce((a, n) => a + (n ?? 0), 0);
+const STATUS_COLOR: Record<Exclude<ManStatus, ''>, string> = { KIA: '#6a6a5a', DOWN: '#d05c50', BROKEN: STATE_COLOR.broken, PINNED: STATE_COLOR.pinned, SHAKEN: STATE_COLOR.shaken };
 
+// A man: his state colour, name, weapon, and a word only for what is wrong
+// with him. Morale and suppression as numbers live in the hover card and the
+// health panel a click on the row opens.
 function soldierRow(m: Soldier): string {
-  if (!m.alive) return `<div class="srow kia"><span class="chip" style="background:#4a4a3e" title="KIA"></span><span class="nm">${m.name}</span></div>`;
-  const wpn = `<span class="wp">${WEAPONS[m.weapon].name}</span>`;
-  const ammo = `<span class="am" title="mag/belt left + reserve units">${m.magLeft}+${reserveAmmo(m)}</span>`;
+  const status = manStatus(m);
+  if (status === 'KIA') return `<div class="srow kia"><span class="chip" style="background:#4a4a3e"></span><span class="nm">${m.name}</span><span class="st">KIA</span></div>`;
+  const ammo = manAmmo(m);
   const cross = m.wounds.length ? `<span class="flag${m.stabilized || m.bleedRate <= 0 ? ' stab' : ''}">✚</span>` : '';
-  if (m.downed) {
-    return `<div class="srow urgent" data-soldier="${m.id}" tabindex="0" role="button" title="click to inspect ${m.name}"><span class="chip" style="background:#d05c50" title="DOWN"></span><span class="nm">${m.name}</span>${wpn}${cross}<span class="down">DOWN</span></div>`;
-  }
-  const supPct = Math.round(m.suppression * 100);
-  const morPct = Math.round(m.morale * 100);
   return (
-    `<div class="srow" data-soldier="${m.id}" tabindex="0" role="button" title="click to inspect ${m.name}"><span class="chip" style="background:${STATE_COLOR[m.mental]}" title="${m.mental.toUpperCase()}"></span>` +
-    `<span class="nm">${m.name}</span>${wpn}${ammo}${cross}` +
-    `<span class="bars"><span class="bar" title="Suppression ${supPct}%"><i style="width:${supPct}%;background:#e0a83c"></i></span>` +
-    `<span class="bar" title="Morale ${morPct}%"><i style="width:${morPct}%;background:#7fbf6a"></i></span></span></div>`
+    `<div class="srow${status === 'DOWN' ? ' urgent' : ''}" data-soldier="${m.id}" tabindex="0" role="button" title="click to inspect ${m.name}">` +
+    `<span class="chip" style="background:${status === 'DOWN' ? '#d05c50' : STATE_COLOR[m.mental]}"></span>` +
+    `<span class="nm">${m.name}</span><span class="wp">${WEAPONS[m.weapon].name}</span>` +
+    (ammo ? `<span class="am low">${ammo}</span>` : '') +
+    cross +
+    (status ? `<span class="st${status === 'DOWN' ? ' down' : ''}" style="color:${STATUS_COLOR[status]}">${status}</span>` : '') +
+    `</div>`
   );
 }
 

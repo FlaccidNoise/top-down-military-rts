@@ -2,7 +2,8 @@ import type { Camera } from '../render/camera';
 import { woundLabel } from '../sim/body';
 import { TERRAIN, VEHICLES, WEAPONS, type TerrainDef, type TerrainKey, type WeaponDef } from '../sim/data';
 import { EYE_VEHICLE, HULL_VEHICLE, eyeOf, sightBetween, sightToSoldier, type Sim, type Soldier, type Vehicle } from '../sim/sim';
-import { floorName, reserveAmmo, STATE_COLOR } from './hud';
+import { floorName, STATE_COLOR } from './hud';
+import { reserveAmmo } from './roster';
 import { formatCoverBreakdown, formatCoverBreakdownForFloor } from './tooltip-format';
 import { MOBILE } from '../render/view';
 
