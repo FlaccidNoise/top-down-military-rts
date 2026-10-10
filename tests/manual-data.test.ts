@@ -1,9 +1,10 @@
 // @ts-expect-error no @types/node in this project; node:fs still resolves fine at runtime under vitest
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { MANUAL, manualText } from '../src/ui/manual-data';
+import { buildManual, controlRows, MANUAL, manualText } from '../src/ui/manual-data';
+import { DEFAULTS, formatBinding, type ActionId } from '../src/ui/keymap';
 import { MIN_WAR_DAYS } from '../src/campaign/spec';
-import { PRESETS } from '../src/campaign/presets';
+import { FIRST_PRESET, PRESETS } from '../src/campaign/presets';
 import { CONTACT_TTL, DT, hideFloorOf, SPOT_INTERVAL, SPOT_RANGE } from '../src/sim/sim';
 import { GARRISON_RADIUS, TRIVIAL_RATIO } from '../src/strategic/bridge';
 import { DEPLOY_ATK_DEPTH, DEPLOY_DEF_DEFAULT, DEPLOY_DEF_LINE } from '../src/strategic/deploy';
@@ -14,6 +15,7 @@ import { SUPPLY_AMMO_MULT, SUPPLY_LOW_MIN, SUPPLY_OUT_MIN } from '../src/strateg
 import { MOVE_MPM, REGION_PACE_MULT } from '../src/strategic/theater';
 import { BRIDGE_DWELL_MIN, CONTACT_M, FORD_CROSS_MIN } from '../src/strategic/theater/force';
 import { battleDuration, INFILTRATE_MIN, RETREAT_SETBACK_M } from '../src/strategic/theater/war';
+import { BREAK_FRACTION } from '../src/ui/battle-goal';
 import { ORDER_AFFORDANCE } from '../src/ui/order-data';
 import { HOLD_MS, TAP_SLOP, TWO_TAP_MS } from '../src/ui/touch';
 
@@ -56,9 +58,53 @@ describe('MANUAL — shape', () => {
     }
   });
 
-  it('gives the touch chapter a touch key on every entry', () => {
+  it('gives the controls chapter a desktop and a touch binding on every entry', () => {
     const touch = MANUAL.find((c) => c.id === 'touch')!;
-    for (const e of touch.entries) expect(e.keys?.touch, e.heading).toBeTruthy();
+    for (const e of touch.entries) {
+      expect(e.keys?.desktop, e.heading).toBeTruthy();
+      expect(e.keys?.touch, e.heading).toBeTruthy();
+    }
+  });
+
+  it('keeps every entry short: a manual is consulted, not read', () => {
+    for (const c of MANUAL) for (const e of c.entries) expect(e.body.split(/\s+/).length, `${c.id}/${e.heading}: ${e.body}`).toBeLessThanOrEqual(30);
+  });
+
+  it('says where a new campaign starts and how to set one up, in the words on the menu', () => {
+    const menu = MANUAL.find((c) => c.id === 'operation')!.entries.find((e) => e.heading === 'The menu')!;
+    expect(menu.body).toContain(`on the ${FIRST_PRESET.name} preset`);
+    for (const label of ['New campaign', 'Custom operation', 'Training']) expect(menu.body, label).toContain(label);
+  });
+});
+
+// The controls card behind the ? control is the one place the HUD states a
+// binding. It is the Controls chapter and nothing else, read with the player's
+// own bindings.
+describe('controlRows — the controls card', () => {
+  it('is the Controls chapter, row for row', () => {
+    const chapter = MANUAL.find((c) => c.id === 'touch')!;
+    expect(controlRows().map((r) => r.action)).toEqual(chapter.entries.map((e) => e.heading));
+  });
+
+  it('names every rebindable battle key the old legend carried', () => {
+    const desktop = controlRows().map((r) => r.desktop).join(' | ');
+    const want: ActionId[] = ['squad1', 'squad9', 'order1', 'order8', 'barrage', 'airstrike', 'pause', 'cancel', 'menu', 'floorFocus', 'battleSpeed', 'mute', 'panUp'];
+    for (const a of want) expect(desktop, a).toContain(formatBinding(DEFAULTS[a]));
+  });
+
+  it('follows a rebind: the card states the key the player bound', () => {
+    const rebound = { ...DEFAULTS, pause: { code: 'KeyZ' }, barrage: { code: 'KeyQ' } };
+    const rows = controlRows(rebound);
+    expect(rows.find((r) => r.action === 'Pause')!.desktop).toBe('Z');
+    expect(rows.find((r) => r.action === 'Barrage and airstrike')!.desktop).toContain('Q');
+    expect(controlRows().find((r) => r.action === 'Pause')!.desktop).toBe('Space');
+  });
+
+  it('the manual follows the same rebind, in prose and in key tables', () => {
+    const rebound = buildManual({ ...DEFAULTS, pause: { code: 'KeyZ' } });
+    const clock = rebound.find((c) => c.id === 'theater')!.entries.find((e) => e.heading === 'The clock')!;
+    expect(clock.body).toContain('Pause with Z');
+    expect(clock.keys!.desktop).toContain('Z pauses');
   });
 });
 
@@ -97,6 +143,13 @@ describe('MANUAL — the numbers are live', () => {
     has(DEPLOY_DEF_DEFAULT, 'DEPLOY_DEF_DEFAULT');
     for (const [kind, x] of Object.entries(DEPLOY_DEF_LINE)) expect(text).toContain(`${kind} ${x}`);
     has(GARRISON_RADIUS, 'GARRISON_RADIUS');
+  });
+
+  it('states how a battle is won from the break-off rule', () => {
+    const battle = MANUAL.find((c) => c.id === 'battle')!;
+    const entry = battle.entries.find((e) => e.heading === 'How a battle is won');
+    expect(entry, 'the battle chapter must say how a battle is won').toBeTruthy();
+    expect(entry!.body).toContain(`under ${BREAK_FRACTION * 100}% of the men`);
   });
 
   it('quotes the battle-layer constants', () => {
@@ -178,6 +231,7 @@ describe('manual-data source — drift tripwire', () => {
     [/\b185\b/, 'battleDuration(100, 100, false)'],
     [/\b240\b/, 'the battleDuration cap'],
     [/\b5 ?: ?1\b/, 'TRIVIAL_RATIO odds'],
+    [/\b25 ?%/, 'BREAK_FRACTION'],
   ];
 
   it('types no tracked game number by hand — every one arrives through ${...}', () => {

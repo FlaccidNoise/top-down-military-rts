@@ -1,9 +1,9 @@
 // The Field Manual screen. Renders src/ui/manual-data.ts and nothing else —
 // no copy lives here. Opened only on demand (main menu, pause menu, tutorial),
 // never on its own: the art sweep must never see it.
-import { coach } from './coach';
 import { esc } from './mainmenu';
-import { MANUAL, type ManualChapter } from './manual-data';
+import { loadKeymap } from './keymap';
+import { buildManual, MANUAL, type ManualChapter } from './manual-data';
 
 /**
  * Case-insensitive substring match over chapter title, heading, body and both
@@ -11,10 +11,10 @@ import { MANUAL, type ManualChapter } from './manual-data';
  * the player reads in the rail, and typing one back must never answer that
  * nothing matches.
  */
-export function filterManual(term: string): ManualChapter[] {
+export function filterManual(term: string, manual: ManualChapter[] = MANUAL): ManualChapter[] {
   const q = term.trim().toLowerCase();
-  if (!q) return MANUAL;
-  return MANUAL
+  if (!q) return manual;
+  return manual
     .map((c) => c.title.toLowerCase().includes(q) ? c : {
       ...c,
       entries: c.entries.filter((e) => {
@@ -43,6 +43,7 @@ export class ManualScreen {
   private _open = false;
   private term = '';
   private active = '';
+  private manual: ManualChapter[] = MANUAL;
   private onKey: (e: KeyboardEvent) => void;
 
   constructor() {
@@ -66,7 +67,8 @@ export class ManualScreen {
     this._open = true;
     this.term = '';
     this.active = chapterId ?? '';
-    coach.hide(); // a live coachmark (z 20) would float over the manual (z 12)
+    // Built on open with the player's own bindings: a rebound key reads as bound.
+    this.manual = buildManual(loadKeymap(localStorage).bindings);
     this.render();
     this.el.style.display = 'flex';
     window.addEventListener('keydown', this.onKey, true);
@@ -101,7 +103,7 @@ export class ManualScreen {
   }
 
   private renderBody(): void {
-    const chapters = filterManual(this.term);
+    const chapters = filterManual(this.term, this.manual);
     const rail = this.el.querySelector('.mn-rail')!;
     const content = this.el.querySelector('.mn-content')!;
 

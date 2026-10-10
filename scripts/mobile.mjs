@@ -73,7 +73,7 @@ function framing(page) {
       const r = e.getBoundingClientRect();
       return r.width > 0 && r.height > 0 ? r : null;
     };
-    const panels = ['squads', 'topbar', 'obj-strip', 'hint', 'touchbar'].map((id) => ({ id, r: box(id) })).filter((p) => p.r);
+    const panels = ['squads', 'topbar', 'touchbar'].map((id) => ({ id, r: box(id) })).filter((p) => p.r);
     const clear = { left: 0, top: 0, right: cw, bottom: ch };
     for (const p of panels) {
       if (p.r.width > cw * 0.7) {
@@ -84,18 +84,25 @@ function framing(page) {
       else clear.right = Math.min(clear.right, p.r.left);
     }
     const blue = g.sim.soldiers.filter((s) => s.alive && s.side === 'blue');
-    let cx = 0;
-    let cy = 0;
+    const inWindow = (wx, wy) => {
+      // how many men a camera centring (wx, wy) in the clear region would show
+      const hw = (clear.right - clear.left) / 2 / g.cam.scale;
+      const hh = (clear.bottom - clear.top) / 2 / g.cam.scale;
+      return blue.filter((s) => Math.abs(s.x - wx) <= hw && Math.abs(s.y - wy) <= hh).length;
+    };
     let inClear = 0;
     for (const s of blue) {
       const [x, y] = g.cam.worldToScreen(s.x, s.y, cw, ch);
-      cx += x;
-      cy += y;
       if (x >= clear.left && x <= clear.right && y >= clear.top && y <= clear.bottom) inClear++;
     }
+    // The most men ANY frame of this size could hold. A company deploys in a
+    // line some 220 m long: no phone shows half of it at a zoom where a man
+    // reads as a man, so the honest bar is the best frame, not half the force.
+    let best = 0;
+    for (const s of blue) best = Math.max(best, inWindow(s.x, s.y));
     return {
       blue: blue.length,
-      centroid: { x: Math.round(cx / blue.length), y: Math.round(cy / blue.length) },
+      best,
       inClear,
       clear: { left: Math.round(clear.left), top: Math.round(clear.top), right: Math.round(clear.right), bottom: Math.round(clear.bottom) },
       scale: Math.round(g.cam.scale * 100) / 100,
@@ -213,30 +220,40 @@ async function phoneRun(device) {
   await shot('battle-boot');
   const f = await framing(page);
   console.log(`  framing ${JSON.stringify(f)}`);
-  check(
-    f.centroid.x >= f.clear.left && f.centroid.x <= f.clear.right && f.centroid.y >= f.clear.top && f.centroid.y <= f.clear.bottom,
-    `${device} blue centroid inside the clear region`,
-  );
-  check(f.inClear / f.blue >= 0.5, `${device} >=50% of blue in the clear region (${f.inClear}/${f.blue})`);
+  const { READ_PX_M } = await page.evaluate(() => import('/src/render/framing.ts').then((m) => ({ READ_PX_M: m.READ_PX_M })));
+  check(f.scale >= READ_PX_M, `${device} the battle opens at a zoom where a man reads as a man (${f.scale} px/m, floor ${READ_PX_M})`);
+  check(f.inClear >= 12, `${device} at least a squad of the player's men is on the clear map at boot (${f.inClear}/${f.blue})`);
+  check(f.inClear >= f.best * 0.9, `${device} the boot frame is on the densest part of the force (${f.inClear} shown, ${f.best} the most any frame this size could show)`);
   await noOverflow('battle boot');
 
-  // (c) the touch bar is the control surface: every chip a real target
-  const chips = await page.evaluate(() => {
-    const bar = document.getElementById('touchbar');
-    if (!bar) return null;
-    const r = bar.getBoundingClientRect();
-    return {
-      barH: Math.round(r.height),
-      acts: [...bar.querySelectorAll('.tb-acts .hbtn')].map((e) => {
+  // (c) the touch bar is the control surface: every chip a real target, and
+  // none of them off screen in a scrolling row (jtbug #783).
+  const readChips = (sel) =>
+    page.evaluate((sel) => {
+      const vw = document.documentElement.clientWidth;
+      return [...document.querySelectorAll(sel)].map((e) => {
         const b = e.getBoundingClientRect();
-        return { tb: e.dataset.tb, w: Math.round(b.width), h: Math.round(b.height), x: b.left + b.width / 2, y: b.top + b.height / 2 };
-      }),
-    };
-  });
-  check(!!chips, `${device} #touchbar exists`);
-  check(chips.acts.length === 9, `${device} touch bar has all 9 action chips (${chips.acts.length})`);
-  check(chips.acts.every((c) => c.h >= 44 && c.w >= 44), `${device} every action chip >= 44x44 (min ${Math.min(...chips.acts.map((c) => Math.min(c.w, c.h)))})`);
-  const chip = (name) => chips.acts.find((c) => c.tb === name);
+        return { tb: e.dataset.tb ?? e.dataset.order ?? e.dataset.ob, w: Math.round(b.width), h: Math.round(b.height), x: b.left + b.width / 2, y: b.top + b.height / 2, on: b.width > 0 && b.left >= 0 && b.right <= vw };
+      });
+    }, sel);
+  const row = await readChips('#touchbar .tb-acts [data-tb]');
+  check(await page.evaluate(() => !!document.getElementById('touchbar')), `${device} #touchbar exists`);
+  const ROW = ['roster', 'all', 'more', 'speed', 'pause', 'menu'];
+  check(ROW.every((n) => row.some((c) => c.tb === n)), `${device} the bar's row carries ${ROW.join(', ')} (${row.map((c) => c.tb).join(', ')})`);
+  check(row.every((c) => c.on), `${device} every chip in the row is on screen without scrolling (${row.filter((c) => !c.on).map((c) => c.tb).join(', ') || 'all on'})`);
+  check(row.every((c) => c.h >= 44 && c.w >= 44), `${device} every chip in the row >= 44x44 (min ${Math.min(...row.map((c) => Math.min(c.w, c.h)))})`);
+  const chip = (name) => row.find((c) => c.tb === name);
+  // The modifiers and support calls sit one tap away, behind ⋯.
+  await page.touchscreen.tap(chip('more').x, chip('more').y);
+  await page.waitForTimeout(200);
+  const over = await readChips('#touchbar .tb-over [data-tb]');
+  const OVER = ['select', 'add', 'cancel', 'barrage', 'air'];
+  check(OVER.every((n) => over.some((c) => c.tb === n && c.on)), `${device} ⋯ opens ${OVER.join(', ')} on screen (${over.filter((c) => c.on).map((c) => c.tb).join(', ')})`);
+  check(over.filter((c) => c.on).every((c) => c.h >= 44 && c.w >= 44), `${device} every overflow chip >= 44x44`);
+  await shot('overflow-open');
+  await page.touchscreen.tap(chip('more').x, chip('more').y);
+  await page.waitForTimeout(150);
+  check((await readChips('#touchbar .tb-over [data-tb]')).every((c) => !c.on), `${device} ⋯ folds the overflow away again`);
 
   // (d) roster sheet
   await page.touchscreen.tap(chip('roster').x, chip('roster').y);
@@ -245,10 +262,21 @@ async function phoneRun(device) {
     const e = document.getElementById('squads');
     const r = e.getBoundingClientRect();
     const bar = document.getElementById('touchbar').getBoundingClientRect();
-    return { open: e.classList.contains('open'), top: Math.round(r.top), bottom: Math.round(r.bottom), barTop: Math.round(bar.top), cards: e.querySelectorAll('.card').length };
+    const top = document.getElementById('topbar').getBoundingClientRect();
+    return {
+      open: e.classList.contains('open'), top: Math.round(r.top), bottom: Math.round(r.bottom), right: Math.round(r.right), barTop: Math.round(bar.top), topBottom: Math.round(top.bottom),
+      cards: e.querySelectorAll('.card').length, landscape: matchMedia('(orientation: landscape)').matches, stage: window.__game.stage(), w: innerWidth, h: innerHeight,
+    };
   });
   check(sheet.open && sheet.cards > 0, `${device} roster sheet opens with ${sheet.cards} cards`);
   check(sheet.bottom <= sheet.barTop + 1, `${device} roster sheet sits above the touch bar (${sheet.bottom} <= ${sheet.barTop})`);
+  // In landscape the roster is a column: it leaves both bars whole and most of the map.
+  if (sheet.landscape) {
+    check(sheet.top >= sheet.topBottom, `${device} the roster column starts under the top bar (${sheet.top} >= ${sheet.topBottom})`);
+    check(sheet.right <= sheet.w * 0.4, `${device} the roster column takes no more than 40% of the width (${sheet.right} of ${sheet.w})`);
+    const mapW = sheet.stage.right - sheet.stage.left, mapH = sheet.stage.bottom - sheet.stage.top;
+    check(sheet.stage.left >= sheet.right - 1 && mapW >= sheet.w * 0.55 && mapH >= sheet.h * 0.5, `${device} with the roster open the map keeps ${Math.round(mapW)}x${Math.round(mapH)} of ${sheet.w}x${sheet.h}`);
+  }
   await shot('roster-open');
   await noOverflow('roster open');
 
@@ -263,16 +291,34 @@ async function phoneRun(device) {
   const afterSelect = await page.evaluate(() => ({
     sel: window.__game.getSelection().squads,
     rosterOpen: document.getElementById('squads').classList.contains('open'),
-    orders: [...document.querySelectorAll('#touchbar .tb-orders .ord')].map((e) => {
-      const r = e.getBoundingClientRect();
-      return { k: e.dataset.order, w: Math.round(r.width), h: Math.round(r.height) };
-    }),
   }));
   check(afterSelect.sel.length === 1, `${device} tapping a card selects one squad`);
-  check(!afterSelect.rosterOpen, `${device} the sheet auto-collapses on selection`);
-  check(afterSelect.orders.length === 8, `${device} 8 order chips appear once a squad is selected`);
-  check(afterSelect.orders.every((o) => o.h >= 44), `${device} order chips >= 44px tall`);
+  if (sheet.landscape) {
+    check(afterSelect.rosterOpen, `${device} the roster column stays open on selection`);
+    await shot('roster-column-selected');
+    await page.touchscreen.tap(chip('roster').x, chip('roster').y);
+    await page.waitForTimeout(200);
+    check(!(await page.evaluate(() => document.getElementById('squads').classList.contains('open'))), `${device} the Roster chip closes the column`);
+  } else check(!afterSelect.rosterOpen, `${device} the sheet auto-collapses on selection`);
+  // One order bar: four primary orders and More, all on screen, no scrolling.
+  const primary = await readChips('#orderbar .ob-main [data-order], #orderbar [data-ob="more"]');
+  check(primary.map((c) => c.tb).join(',') === 'move,fire,smoke,assault,more', `${device} the order bar shows Move, Fire, Smoke, Assault and More (${primary.map((c) => c.tb).join(',')})`);
+  check(primary.every((c) => c.on && c.h >= 44 && c.w >= 44), `${device} every order chip is on screen and >= 44x44 (min ${Math.min(...primary.map((c) => Math.min(c.w, c.h)))})`);
   await shot('order-chips');
+  const moreBtn = primary.find((c) => c.tb === 'more');
+  await page.touchscreen.tap(moreBtn.x, moreBtn.y);
+  await page.waitForTimeout(200);
+  const rest = await readChips('#orderbar .ob-more [data-order]');
+  check(rest.map((c) => c.tb).join(',') === 'fast,sneak,defend,ambush', `${device} More opens Fast, Sneak, Defend and Ambush (${rest.map((c) => c.tb).join(',')})`);
+  check(rest.every((c) => c.on && c.h >= 44 && c.w >= 44), `${device} the four behind More are on screen and >= 44x44`);
+  const ambush = rest.find((c) => c.tb === 'ambush');
+  await page.touchscreen.tap(ambush.x, ambush.y);
+  await page.waitForTimeout(150);
+  check((await page.evaluate(() => window.__game.getSelection().armedOrder)) === 'ambush', `${device} a chip behind More arms its order`);
+  await page.touchscreen.tap(ambush.x, ambush.y);
+  await shot('order-chips-more');
+  await page.touchscreen.tap(moreBtn.x, moreBtn.y);
+  await page.waitForTimeout(150);
 
   // (f) press-and-hold = the right-click equivalent. Captured mid-hold so the
   // growing ring and the docked tooltip are both on screen.
@@ -296,8 +342,11 @@ async function phoneRun(device) {
   check(ordered !== null && ordered.some((k) => k !== null), `${device} press-and-hold issues an order (${JSON.stringify(ordered)})`);
   console.log(`  tip display mid-hold: ${holdArmed}`);
 
-  // (g) SELECT box mode — the deferred touch box-select
-  await page.touchscreen.tap(chip('select').x, chip('select').y);
+  // (g) SELECT box mode — the deferred touch box-select, behind ⋯
+  await page.touchscreen.tap(chip('more').x, chip('more').y);
+  await page.waitForTimeout(200);
+  const selectChip = (await readChips('#touchbar .tb-over [data-tb="select"]'))[0];
+  await page.touchscreen.tap(selectChip.x, selectChip.y);
   await page.waitForTimeout(150);
   check(await page.evaluate(() => document.querySelector('#touchbar [data-tb="select"]').classList.contains('active')), `${device} SELECT latches`);
   const boxed = await page.evaluate(() => {
@@ -305,6 +354,12 @@ async function phoneRun(device) {
     const cw = innerWidth;
     const ch = innerHeight;
     const blue = g.sim.soldiers.filter((s) => s.alive && s.side === 'blue');
+    // View-only staging: the battle opens on one or two squads at a readable
+    // zoom, and a box over several needs several on screen. Pull back first,
+    // as a player would with a pinch.
+    g.cam.scale = 3.5;
+    g.cam.x = blue.reduce((a, s) => a + s.x, 0) / blue.length + cw / 2 / g.cam.scale - 12;
+    g.cam.y = blue.reduce((a, s) => a + s.y, 0) / blue.length;
     let x0 = 1e9;
     let y0 = 1e9;
     let x1 = -1e9;

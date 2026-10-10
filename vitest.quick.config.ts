@@ -6,6 +6,7 @@ import base from './vitest.config';
 const SLOW = [
   'tests/doctrine.test.ts', // 112s — commander soak sims, 6k-80k ticks
   'tests/perf.test.ts', // 64s
+  'tests/drill-sweep.test.ts', // 46s — the drill on 20 seeds, three players each
   'tests/bourg.test.ts', // 36s — full 320x240 map regen per case
   'tests/strategic-command.test.ts', // 12s
   'tests/sim.test.ts', // 12s

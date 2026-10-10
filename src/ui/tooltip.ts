@@ -2,8 +2,9 @@ import type { Camera } from '../render/camera';
 import { woundLabel } from '../sim/body';
 import { TERRAIN, VEHICLES, WEAPONS, type TerrainDef, type TerrainKey, type WeaponDef } from '../sim/data';
 import { EYE_VEHICLE, HULL_VEHICLE, eyeOf, sightBetween, sightToSoldier, type Sim, type Soldier, type Vehicle } from '../sim/sim';
-import { floorName, reserveAmmo, STATE_COLOR } from './hud';
-import { formatCoverBreakdown, formatCoverBreakdownForFloor } from './tooltip-format';
+import { floorName, STATE_COLOR } from './hud';
+import { reserveAmmo } from './roster';
+import { coverWord, formatCoverBreakdown, formatCoverBreakdownForFloor } from './tooltip-format';
 import { MOBILE } from '../render/view';
 
 export type Pick =
@@ -182,7 +183,8 @@ export class Tooltip {
     this.el.style.display = 'none';
   }
 
-  update(sim: Sim, pick: Pick, shot: ShotSolution | null, mx: number, my: number, moveHint: boolean): void {
+  /** `detail` = the player asked for the numbers behind the terrain line (Alt, or a long hold). */
+  update(sim: Sim, pick: Pick, shot: ShotSolution | null, mx: number, my: number, moveHint: boolean, detail: boolean): void {
     if (!pick) {
       if (this.key) {
         this.key = '';
@@ -191,14 +193,15 @@ export class Tooltip {
       return;
     }
     const id = pick.kind === 'soldier' ? `s${pick.s.id}` : pick.kind === 'vehicle' ? `v${pick.v.id}` : `t${Math.floor(pick.x)},${Math.floor(pick.y)}`;
-    const key = `${id}|${(sim.tick / 5) | 0}|${shot?.title ?? ''}|${shot?.acc.toFixed(2) ?? ''}|${moveHint}`;
+    const key = `${id}|${(sim.tick / 5) | 0}|${shot?.title ?? ''}|${shot?.acc.toFixed(2) ?? ''}|${moveHint}|${detail}`;
     if (key !== this.key) {
       this.key = key;
       this.el.style.display = 'block';
       this.el.innerHTML =
         pick.kind === 'soldier' ? soldierCard(sim, pick.s, shot)
         : pick.kind === 'vehicle' ? vehicleCard(sim, pick.v, shot)
-        : terrainCard(sim, pick.x, pick.y, moveHint);
+        : terrainCard(sim, pick.x, pick.y, moveHint, detail);
+      this.el.classList.toggle('tt-line', pick.kind === 'terrain' && !detail);
     }
     // No cursor to follow, and a card pinned under the finger would hide the
     // ground the order is about to be given on: ui.css docks it above the
@@ -320,10 +323,14 @@ function vehicleCard(sim: Sim, v: Vehicle, shot: ShotSolution | null): string {
 // never ship nameless.
 const TERRAIN_NAME: Record<TerrainKey, string> = { grass: 'Open ground', road: 'Road', woods: 'Woods', floor: 'Building interior', hedge: 'Hedgerow', field: 'Plowed field', water: 'River', bank: 'Embankment', rail: 'Railway', furn_heavy: 'Heavy furniture', furn_light: 'Clutter', hearth: 'Hearth', altar: 'Altar' };
 
-function terrainCard(sim: Sim, wx: number, wy: number, moveHint: boolean): string {
+// Ground is one line: its name and what it does for a man ("Hedgerow · good
+// cover"). The numbers behind the word, and the control reminders, are the
+// detail card: Alt on desktop, a long hold on touch.
+function terrainCard(sim: Sim, wx: number, wy: number, moveHint: boolean, detail: boolean): string {
   const stories = sim.map.storiesAt(Math.floor(wx), Math.floor(wy));
   const k = sim.map.terrainKeyAt(Math.floor(wx), Math.floor(wy));
   const t: TerrainDef = TERRAIN[k];
+  if (!detail) return `<b>${TERRAIN_NAME[k]}</b> · ${coverWord(k, t)}${stories >= 2 ? ` · ${stories} floors` : ''}`;
   const lines = k === 'floor' ? formatCoverBreakdownForFloor() : formatCoverBreakdown(t);
   // An impassable tile has a moveCost, but quoting it reads as an invitation to
   // walk onto a river or a pew block.

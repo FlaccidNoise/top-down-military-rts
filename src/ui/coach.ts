@@ -1,119 +1,205 @@
-// One-time contextual coachmarks. localStorage-gated, no forced tutorial.
-// Pure logic (loadDismissed, saveDismissed) extractable for testing.
+// The one teaching bubble. The tutorial driver is its only owner: nothing else
+// may put text in this slot, so a step is never evicted by a second system.
+//
+// The bubble is `position: fixed` and is re-placed every frame against the
+// LAYOUT viewport. An absolutely positioned bubble hung off a chip that had
+// scrolled out of its row once grew the document, Chrome grew innerWidth to
+// match, and every fixed HUD layer laid out against the larger viewport
+// (jtbug #783). A fixed box cannot grow the document, and the clamp reads
+// documentElement.clientWidth/Height, which the document cannot inflate.
 
-export const COACH_STORAGE_KEY = 'rts.coach.v1';
-
-export function loadDismissed(storage?: Pick<Storage, 'getItem'>): Set<string> {
-  const s = new Set<string>();
-  if (!storage) return s;
-  try {
-    const raw = storage.getItem(COACH_STORAGE_KEY);
-    if (raw) {
-      const arr: unknown = JSON.parse(raw);
-      if (Array.isArray(arr)) for (const v of arr) if (typeof v === 'string') s.add(v);
-    }
-  } catch { /* corrupt */ }
-  return s;
+export interface Rect {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
 }
 
-export function saveDismissed(dismissed: ReadonlySet<string>, storage?: Pick<Storage, 'setItem'>): void {
-  if (!storage) return;
-  try { storage.setItem(COACH_STORAGE_KEY, JSON.stringify([...dismissed])); } catch { /* quota */ }
+export interface Placement {
+  left: number;
+  top: number;
+  side: 'below' | 'above' | 'right' | 'left';
+  /** Offset of the pointer along the bubble's near edge, in px. */
+  arrow: number;
+}
+
+const GAP = 10; // bubble to the thing it points at
+const EDGE = 8; // bubble to the viewport edge
+const ARROW_INSET = 14;
+
+const clamp = (v: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, v));
+
+/**
+ * Where a w×h bubble goes so that it points at `anchor`, stays inside `bounds`
+ * and covers no part of `clear` (the control the step names). `bounds` is the
+ * layout viewport for a control, and the map clear of the HUD for a point in
+ * the world. Pure. Sides are tried below, above, right, left; the first that
+ * fits whole wins. When none fits the bubble takes the roomier of below and
+ * above and is clamped inside the bounds — a bubble the player can read beats
+ * one that is correct and clipped.
+ */
+export function placeBubble(anchor: Rect, clear: Rect, w: number, h: number, bounds: Rect): Placement {
+  const cx = (anchor.left + anchor.right) / 2;
+  const cy = (anchor.top + anchor.bottom) / 2;
+  const minLeft = bounds.left + EDGE;
+  const minTop = bounds.top + EDGE;
+  const maxLeft = Math.max(minLeft, bounds.right - EDGE - w);
+  const maxTop = Math.max(minTop, bounds.bottom - EDGE - h);
+  const across = clamp(cx - w / 2, minLeft, maxLeft);
+  const down = clamp(cy - h / 2, minTop, maxTop);
+  const arrowX = (left: number): number => clamp(cx - left, ARROW_INSET, Math.max(ARROW_INSET, w - ARROW_INSET));
+  const arrowY = (top: number): number => clamp(cy - top, ARROW_INSET, Math.max(ARROW_INSET, h - ARROW_INSET));
+  // A side fits only if the box lands whole inside the bounds there: an
+  // anchor that is itself off screen must not carry the bubble off with it.
+  const fitsY = (top: number): boolean => top >= minTop && top <= maxTop;
+  const fitsX = (left: number): boolean => left >= minLeft && left <= maxLeft;
+  const below = clear.bottom + GAP;
+  const above = clear.top - GAP - h;
+  if (fitsY(below)) return { left: across, top: below, side: 'below', arrow: arrowX(across) };
+  if (fitsY(above)) return { left: across, top: above, side: 'above', arrow: arrowX(across) };
+  const right = clear.right + GAP;
+  const left = clear.left - GAP - w;
+  if (fitsX(right)) return { left: right, top: down, side: 'right', arrow: arrowY(down) };
+  if (fitsX(left)) return { left, top: down, side: 'left', arrow: arrowY(down) };
+  const roomBelow = bounds.bottom - clear.bottom;
+  const roomAbove = clear.top - bounds.top;
+  return roomBelow >= roomAbove
+    ? { left: across, top: clamp(below, minTop, maxTop), side: 'below', arrow: arrowX(across) }
+    : { left: across, top: clamp(above, minTop, maxTop), side: 'above', arrow: arrowX(across) };
+}
+
+const overlaps = (a: Rect, b: Rect): boolean => a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+const within = (a: Rect, b: Rect): boolean => a.left >= b.left && a.right <= b.right && a.top >= b.top && a.bottom <= b.bottom;
+
+/**
+ * placeBubble, and then off anything in `avoid` it landed on: panels beside
+ * the control that the player still reads while the step waits. A panel the
+ * bubble covers joins what it must clear and the bubble is placed again, so it
+ * ends past the panel with its pointer still aimed at the control. Each pass
+ * adds one panel, so it ends. Pure.
+ */
+export function placeAvoiding(anchor: Rect, clear: Rect, w: number, h: number, bounds: Rect, avoid: readonly Rect[]): Placement {
+  let keep = clear;
+  let p = placeBubble(anchor, keep, w, h, bounds);
+  for (let i = 0; i < avoid.length; i++) {
+    const box: Rect = { left: p.left, top: p.top, right: p.left + w, bottom: p.top + h };
+    const hit = avoid.find((r) => overlaps(box, r) && !within(r, keep));
+    if (!hit) break;
+    keep = { left: Math.min(keep.left, hit.left), top: Math.min(keep.top, hit.top), right: Math.max(keep.right, hit.right), bottom: Math.max(keep.bottom, hit.bottom) };
+    p = placeBubble(anchor, keep, w, h, bounds);
+  }
+  return p;
+}
+
+/**
+ * An element's rect as far as the player can see it: clipped by every
+ * scrolling ancestor. A chip scrolled out of its row resolves to the row, so a
+ * bubble can never be anchored to a point that is off screen. null = the
+ * element is not laid out at all.
+ */
+export function visibleRect(el: Element): Rect | null {
+  const b = el.getBoundingClientRect();
+  if (b.width <= 0 || b.height <= 0) return null;
+  let r: Rect = { left: b.left, top: b.top, right: b.right, bottom: b.bottom };
+  for (let p = el.parentElement; p && p !== document.body; p = p.parentElement) {
+    const cs = getComputedStyle(p);
+    // An ancestor with no box of its own (display: contents) clips nothing.
+    if (cs.display === 'contents' || (cs.overflowX === 'visible' && cs.overflowY === 'visible')) continue;
+    const c = p.getBoundingClientRect();
+    const cut: Rect = { left: Math.max(r.left, c.left), top: Math.max(r.top, c.top), right: Math.min(r.right, c.right), bottom: Math.min(r.bottom, c.bottom) };
+    r = cut.right > cut.left && cut.bottom > cut.top ? cut : { left: c.left, top: c.top, right: c.right, bottom: c.bottom };
+  }
+  return r;
+}
+
+export interface BubbleSpec {
+  text: string;
+  /**
+   * Read every frame. The anchor moves with the camera, is replaced when the
+   * HUD re-renders, or is not laid out yet; null hides the bubble for that
+   * frame instead of leaving it pointing at nothing.
+   */
+  locate(): { anchor: Rect; clear: Rect; bounds?: Rect; avoid?: readonly Rect[] } | null;
+  onDismiss(): void;
+  onSkip(): void;
 }
 
 export class Coach {
-  private dismissed: Set<string>;
-  private storage?: Pick<Storage, 'setItem'>;
-  private currentEl: HTMLDivElement | null = null;
+  private el: HTMLDivElement | null = null;
+  private spec: BubbleSpec | null = null;
+  private placed = '';
+  private box: Rect | null = null;
 
-  constructor(storage?: Pick<Storage, 'getItem' | 'setItem'>) {
-    this.storage = storage;
-    this.dismissed = loadDismissed(storage);
+  /** Where the bubble is on screen. null = none, or hidden this frame. */
+  get rect(): Rect | null {
+    return this.box;
   }
 
-  isDismissed(id: string): boolean {
-    return this.dismissed.has(id);
-  }
-
-  maybeShow(id: string, target: HTMLElement, text: string): void {
-    if (this.dismissed.has(id) || typeof document === 'undefined') return;
-    this.bubble(target, text, () => this.dismiss(id), null);
-  }
-
-  /**
-   * A tutorial-driver bubble: the same chrome plus a "Skip tutorial" link. The
-   * driver owns its own gating and its own storage, so nothing here reads or
-   * writes the coach dismissed set.
-   */
-  showStep(target: HTMLElement, text: string, onDismiss: () => void, onSkip: () => void): void {
+  show(spec: BubbleSpec): void {
     if (typeof document === 'undefined') return;
-    this.bubble(target, text, onDismiss, onSkip);
+    this.hide();
+    const el = document.createElement('div');
+    el.className = 'coach';
+    const text = document.createElement('span');
+    text.className = 'coach-text';
+    text.textContent = spec.text;
+    const skip = document.createElement('button');
+    skip.className = 'coach-skip';
+    skip.textContent = 'Skip tutorial';
+    skip.addEventListener('click', () => { this.hide(); spec.onSkip(); });
+    const x = document.createElement('button');
+    x.className = 'coach-x';
+    x.textContent = '✕';
+    x.title = 'Dismiss';
+    x.setAttribute('aria-label', 'Dismiss');
+    x.addEventListener('click', () => { this.hide(); spec.onDismiss(); });
+    el.append(text, skip, x);
+    document.body.appendChild(el);
+    this.el = el;
+    this.spec = spec;
+    // Placed in the same task as the append: a bubble corrected one frame
+    // later renders once in the wrong place.
+    this.reflow(false);
   }
 
   hide(): void {
-    this.hideCurrent();
+    this.el?.remove();
+    this.el = null;
+    this.spec = null;
+    this.placed = '';
+    this.box = null;
   }
 
-  private bubble(target: HTMLElement, text: string, onDismiss: () => void, onSkip: (() => void) | null): void {
-    this.hideCurrent();
-    const el = document.createElement('div');
-    el.className = 'coach';
-    const skip = onSkip ? '<button class="coach-skip">Skip tutorial</button>' : '';
-    el.innerHTML = `<span class="coach-text">${text}</span>${skip}<button class="coach-x" aria-label="Dismiss" title="Dismiss">\u2715</button>`;
-    el.querySelector('.coach-x')!.addEventListener('click', () => { this.hideCurrent(); onDismiss(); });
-    if (onSkip) el.querySelector('.coach-skip')!.addEventListener('click', () => { this.hideCurrent(); onSkip(); });
-    const r = target.getBoundingClientRect();
-    el.style.position = 'absolute';
-    el.style.top = `${r.bottom + window.scrollY + 8}px`;
-    el.style.left = `${r.left + window.scrollX + r.width / 2}px`;
-    el.style.transform = 'translateX(-50%)';
-    el.style.zIndex = '20';
-    document.body.appendChild(el);
-    // Measured and placed in the same task as the append: a bubble corrected one
-    // frame later renders once in the wrong place, and anything reading its rect
-    // before that frame reads a lie.
-    const cr = el.getBoundingClientRect();
-    const vw = window.innerWidth;
-    const vh = window.innerHeight;
-    const l = parseFloat(el.style.left);
-    if (cr.left < 8) el.style.left = `${l + 8 - cr.left}px`;
-    else if (cr.right > vw - 8) el.style.left = `${l - (cr.right - (vw - 8))}px`;
-    // Below the target by default. Flip above only when below runs off the
-    // bottom AND the bubble fits up there: anchoring to full-height chrome
-    // (#squads) leaves no room either way, and a bubble flipped off the TOP
-    // loses the first line — the one the player has not read yet. When neither
-    // side fits whole, clamp so the text starts on screen.
-    const below = r.bottom + 8;
-    const above = r.top - cr.height - 8;
-    const fitsBelow = below + cr.height <= vh - 8;
-    if (!fitsBelow && above >= 8) {
-      el.classList.add('above');
-      el.style.top = `${above + window.scrollY}px`;
-    } else if (!fitsBelow) {
-      el.style.top = `${Math.max(8, vh - 8 - cr.height) + window.scrollY}px`;
+  /** Once per frame. `suppressed` = a full-screen menu owns the screen. */
+  reflow(suppressed: boolean): void {
+    const el = this.el;
+    if (!el || !this.spec) return;
+    const at = suppressed ? null : this.spec.locate();
+    if (!at) {
+      if (this.placed !== 'hidden') {
+        el.style.display = 'none';
+        this.placed = 'hidden';
+        this.box = null;
+      }
+      return;
     }
-    this.currentEl = el;
-  }
-
-  dismissAll(): void {
-    this.dismissed.clear();
-    this.store();
-    this.hideCurrent();
-  }
-
-  private dismiss(id: string): void {
-    this.dismissed.add(id);
-    this.store();
-    this.hideCurrent();
-  }
-
-  private hideCurrent(): void {
-    if (this.currentEl) { this.currentEl.remove(); this.currentEl = null; }
-  }
-
-  private store(): void {
-    if (this.storage) saveDismissed(this.dismissed, this.storage);
+    if (this.placed === 'hidden') el.style.display = '';
+    // The layout viewport, which the document cannot inflate. `bounds` only
+    // ever narrows it.
+    const root = document.documentElement;
+    const vp: Rect = { left: 0, top: 0, right: root.clientWidth, bottom: root.clientHeight };
+    const b = at.bounds;
+    const bounds: Rect = b
+      ? { left: Math.max(vp.left, b.left), top: Math.max(vp.top, b.top), right: Math.min(vp.right, b.right), bottom: Math.min(vp.bottom, b.bottom) }
+      : vp;
+    const p = placeAvoiding(at.anchor, at.clear, el.offsetWidth, el.offsetHeight, bounds, at.avoid ?? []);
+    this.box = { left: p.left, top: p.top, right: p.left + el.offsetWidth, bottom: p.top + el.offsetHeight };
+    const key = `${Math.round(p.left)},${Math.round(p.top)},${p.side},${Math.round(p.arrow)}`;
+    if (key === this.placed) return;
+    this.placed = key;
+    el.style.left = `${Math.round(p.left)}px`;
+    el.style.top = `${Math.round(p.top)}px`;
+    el.dataset.side = p.side;
+    el.style.setProperty('--coach-arrow', `${Math.round(p.arrow)}px`);
   }
 }
-
-export const coach = new Coach(typeof localStorage !== 'undefined' ? localStorage : undefined);
