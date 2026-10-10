@@ -6,7 +6,7 @@ import type { Camera } from './camera';
 import { DecalLayer } from './decals';
 import { bandFor, CRAWL_FRAMES, DUDE_SCALE, getShadowSprite, getSprite, glintSprite, headOffset, kitVariant, SPRITE_MIN_SCALE, SPRITE_SPAN, tier, WALK_FRAMES, weaponClass, type Pose } from './dudes';
 import { emplacementBandFor, emplacementFootprintRadius, emplacementSpan, getEmplacementShadow, getEmplacementSprite } from './emplacements';
-import { ballistic, blastOf, blastScale, blit, FLASH, flashClass, fxDetail, fxScale, hazeBand, hotPass, SPIKE_SIDES, traceOvershoot, WIND, type BlastSpec, type FlashSpec, type FxKind, type Overshoot } from './fx';
+import { ballistic, blastOf, blastScale, blit, FLASH, flashClass, fxDetail, fxScale, hazeBand, hotPass, lightPool, SPIKE_SIDES, traceOvershoot, WIND, type BlastSpec, type FlashSpec, type FxKind, type Overshoot } from './fx';
 import { SUN, shadowSoftAlpha, sun } from './light';
 import { MarkLayer } from './marks';
 import { PallLayer } from './pall';
@@ -92,6 +92,15 @@ interface Boom {
 // A barrage is a dozen rounds and each now hangs for five to nine seconds. The
 // oldest are thin smoke by the time the cap is reached, so they go first.
 const MAX_BOOMS = MOBILE ? 14 : 36;
+
+// Night light (gradeWorld). The grade is drawn at 1/LIGHT_DIV of the view and
+// scaled up: a pool of light has no detail to lose, and the fill is what
+// costs. A phone gets a coarser canvas and half the lights.
+const LIGHT_DIV = MOBILE ? 8 : 6;
+const MAX_LIGHTS = MOBILE ? 12 : 24;
+const LIGHT_CUT = 0.85; // how much of the grade the brightest light removes — never all of it: it is still night
+const MUZZLE_GLOW_MS = 110; // a muzzle flash's light decays on this constant instead of cutting
+const GRADE_PAD = 24; // px past the view on every side, so the shake never shows an ungraded edge
 
 // Pall density one round adds at the muzzle (pall.ts). Thirty-odd rifle shots
 // from one spot, or seven MG42 bursts, fill a puff.
@@ -304,6 +313,8 @@ export class Renderer {
   private fires = new Map<number, Fire>();
   private lit: Fire[] = []; // this frame's visible fires, shared by the cool and hot passes
   private licks: number[] = []; // flat (x, y, r, alpha) quads — flame cores queued for the fire hot pass
+  private lights: number[] = []; // flat (x, y, r, strength) quads — this frame's holes in the night grade
+  private gradeCanvas: HTMLCanvasElement | null = null; // the grade at 1/LIGHT_DIV, only ever built at night with a light in view
   private birds: Bird[] = [];
   private boomSeq = 0;
   private haze: { x: number; y: number; len: number; hgt: number; a: number }[];
@@ -732,7 +743,7 @@ export class Renderer {
     // Ambient grade (N7): one source-over lerp toward the hour's tint, the
     // last world-space draw — everything the sun lights sits under it. Sized
     // past the viewport so the shake translate never exposes an ungraded edge.
-    this.gradeWorld(ctx, cw, ch);
+    this.gradeWorld(ctx, cam, now, cw, ch);
     // The frame's ONE additive batch, hoisted ABOVE the grade: 'lighter' adds
     // a fixed increment, so the same flash over a graded-dark floor gains
     // contrast for free — night punch nobody has to tune (§3.3). The cost,
@@ -753,11 +764,106 @@ export class Renderer {
   // and the canonical hour renders untouched by construction. Drawn INSIDE the
   // worldShake envelope (world layers only); the DOM HUD and everything
   // main.ts draws after renderer.draw() returns stay full-brightness.
-  private gradeWorld(ctx: CanvasRenderingContext2D, cw: number, ch: number): void {
+  //
+  // Night light. The grade is the only thing that makes it night, so a light
+  // is a hole in the grade: where a muzzle flashes, a shell bursts or a house
+  // burns, the tint is cut away and the day-lit art under it shows — the man
+  // firing, the two metres of ground round him, the wall behind the blast.
+  // The grade is painted into a low-resolution canvas, the pools are erased
+  // out of it, and it is scaled up over the world in one blit; the upscale is
+  // what makes the pools soft. Pools are light without direction, so no cast
+  // shadow changes and the one-sun rule holds. With no light in view this is
+  // the single fillRect it always was, which is what a static night scene
+  // (and every night crop of the art sweep) still gets.
+  private gradeWorld(ctx: CanvasRenderingContext2D, cam: Camera, now: number, cw: number, ch: number): void {
     const [r, g, b, a] = sun().ambient;
     if (a <= 0) return;
+    const n = this.gatherLights(cam, now, cw, ch);
     ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${a})`;
-    ctx.fillRect(-24, -24, cw + 48, ch + 48);
+    if (n === 0) {
+      ctx.fillRect(-GRADE_PAD, -GRADE_PAD, cw + GRADE_PAD * 2, ch + GRADE_PAD * 2);
+      return;
+    }
+    const w = Math.ceil((cw + GRADE_PAD * 2) / LIGHT_DIV);
+    const h = Math.ceil((ch + GRADE_PAD * 2) / LIGHT_DIV);
+    if (!this.gradeCanvas || this.gradeCanvas.width !== w || this.gradeCanvas.height !== h) {
+      this.gradeCanvas = document.createElement('canvas');
+      this.gradeCanvas.width = w;
+      this.gradeCanvas.height = h;
+    }
+    const lg = this.gradeCanvas.getContext('2d')!;
+    lg.globalCompositeOperation = 'copy';
+    lg.globalAlpha = 1;
+    lg.fillStyle = ctx.fillStyle;
+    lg.fillRect(0, 0, w, h);
+    lg.globalCompositeOperation = 'destination-out';
+    const pool = lightPool();
+    const L = this.lights;
+    for (let i = 0; i < n * 4; i += 4) {
+      const lr = L[i + 2] / LIGHT_DIV;
+      lg.globalAlpha = L[i + 3];
+      lg.drawImage(pool, (L[i] + GRADE_PAD) / LIGHT_DIV - lr, (L[i + 1] + GRADE_PAD) / LIGHT_DIV - lr, lr * 2, lr * 2);
+    }
+    ctx.drawImage(this.gradeCanvas, -GRADE_PAD, -GRADE_PAD, w * LIGHT_DIV, h * LIGHT_DIV);
+  }
+
+  // This frame's lights, into `lights` as flat (x, y, radius px, strength)
+  // quads, strongest first when there are more than the cap. Returns how many.
+  // Screen space, culled to the view: a light that cannot reach the screen
+  // costs nothing.
+  private gatherLights(cam: Camera, now: number, cw: number, ch: number): number {
+    const L = this.lights;
+    L.length = 0;
+    const S = cam.scale;
+    const add = (x: number, y: number, rad: number, i: number): void => {
+      // written so NaN fails every test and the light is dropped
+      if (!(i > 0.03) || !(rad > 0) || !(x > -rad && y > -rad && x < cw + rad && y < ch + rad)) return;
+      L.push(x, y, rad, Math.min(1, i) * LIGHT_CUT);
+    };
+    // A muzzle flash: full for the flash, then a short afterglow, so a burst
+    // is a flicker of light on the firer and not a strobe of single frames.
+    for (const t of this.tracers) {
+      const fc = FLASH[flashClass(t.weapon)];
+      let lit = 0;
+      for (let k = 0; k < t.taps; k++) {
+        const age = now - t.at - k * t.gap;
+        if (age < 0) break;
+        lit = Math.max(lit, Math.exp(-age / MUZZLE_GLOW_MS));
+      }
+      if (lit <= 0.03) continue;
+      const g = this.shotGeom(cam, t, cw, ch);
+      add(g.mx, g.my, (2 + fc.r * 4.5) * S, lit * 0.9);
+    }
+    // A blast lights the street for as long as it burns.
+    for (const b of this.booms) {
+      const age = now - b.at;
+      if (age >= b.spec.burn) continue;
+      const [x, y] = cam.worldToScreen(b.x, b.y, cw, ch);
+      add(x, y, (b.spec.flash * 2 + b.spec.ring) * 0.8 * b.k * S, (1 - age / b.spec.burn) ** 0.6);
+    }
+    // A fire lights its block, and breathes.
+    for (const f of this.lit) {
+      const it = this.intensity(f);
+      const [x, y] = cam.worldToScreen(f.x, f.y, cw, ch);
+      const [, , hw, hh, , reach] = this.fireBox(f);
+      const flick = 0.9 + 0.1 * Math.sin(now * 0.011 + f.key);
+      add(x, y, (Math.min(reach, Math.hypot(hw, hh)) + 7 + 8 * it) * S, 0.9 * it * flick);
+    }
+    const n = L.length / 4;
+    if (n <= MAX_LIGHTS) return n;
+    // Over the cap: keep the strongest. Selection, not a sort — there are a
+    // few dozen at most and only the first MAX_LIGHTS slots are read.
+    for (let i = 0; i < MAX_LIGHTS; i++) {
+      let best = i;
+      for (let j = i + 1; j < n; j++) if (L[j * 4 + 3] > L[best * 4 + 3]) best = j;
+      if (best === i) continue;
+      for (let q = 0; q < 4; q++) {
+        const tmp = L[i * 4 + q];
+        L[i * 4 + q] = L[best * 4 + q];
+        L[best * 4 + q] = tmp;
+      }
+    }
+    return MAX_LIGHTS;
   }
 
   // The frame's single additive batch (§3.3), AFTER the grade: shot flashes
@@ -1251,8 +1357,12 @@ export class Renderer {
       const [, , hw, hh, , reach] = this.fireBox(f);
       const span = Math.min(reach, Math.hypot(hw, hh));
       // Warm ground pool: a light POOL, not a light DIRECTION — no cast
-      // shadow anywhere changes, so the one-sun rule still holds.
-      blit(ctx, 'fire', x, y, (span + 2.5) * it * S, FIRE_POOL_ALPHA);
+      // shadow anywhere changes, so the one-sun rule still holds. It widens
+      // and warms as the grade comes down: by day a fire lights a few metres,
+      // at night it is what the street is seen by (gradeWorld cuts the hole,
+      // this puts the firelight colour in it).
+      const dark = sun().ambient[3];
+      blit(ctx, 'fire', x, y, (span + 2.5 + 9 * dark) * it * S, FIRE_POOL_ALPHA * (1 + dark));
       if (f.vid >= 0) {
         this.eachPop(f, now, (t, k) => {
           // A round or a rack going: a hard white flash, a jet of flame out of

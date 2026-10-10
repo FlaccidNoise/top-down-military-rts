@@ -356,6 +356,23 @@ export function hazeBand(): HTMLCanvasElement {
   return c;
 }
 
+// A pool of light, as alpha: what the night grade is cut away by (renderer.ts
+// gradeWorld). Not in the particle atlas — it is never blitted onto the scene,
+// only erased out of the grade's own low-resolution canvas.
+let lightCache: HTMLCanvasElement | null = null;
+export function lightPool(): HTMLCanvasElement {
+  if (lightCache) return lightCache;
+  const [c, g] = newCanvas(64);
+  radial(g, 32, 32, 32, [
+    [0, 'rgba(255,255,255,1)'],
+    [0.3, 'rgba(255,255,255,0.8)'],
+    [0.65, 'rgba(255,255,255,0.3)'],
+    [1, 'rgba(255,255,255,0)'],
+  ]);
+  lightCache = c;
+  return c;
+}
+
 function radial(g: Ctx, cx: number, cy: number, r: number, stops: [number, string][]): void {
   const grad = g.createRadialGradient(cx, cy, 0, cx, cy, r);
   for (const [o, col] of stops) grad.addColorStop(o, col);
