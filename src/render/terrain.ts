@@ -856,10 +856,15 @@ function drawCropRows(g: Ctx, map: GameMap, patches: PatchIndex, tx0: number, ty
   const roots: [number, number][][] = [[], []];
   const turn: Seg[] = [];
   const geom = new Map<number, RowGeom>();
-  const fieldAt = (tx: number, ty: number) => map.inBounds(tx, ty) && map.terrainKeyAt(tx, ty) === 'field';
+  // A hedge counts as field here, twice over. Its tile carries its host
+  // parcel's rows (hedgeHost), and a field tile beside it gets no headland:
+  // both the bare tile and the headland row ran down the tile staircase, in
+  // plain view beside a hedgerow that no longer follows it.
+  const fieldAt = (tx: number, ty: number) => map.inBounds(tx, ty) && (map.terrainKeyAt(tx, ty) === 'field' || map.terrainKeyAt(tx, ty) === 'hedge');
   for (let y = ty0; y < ty1; y++) {
     for (let x = tx0; x < tx1; x++) {
-      const pid = patches.id[y * map.w + x];
+      const host = map.terrainKeyAt(x, y) === 'hedge' ? hedgeHost(map, x, y) : null;
+      const pid = host ? patches.id[host[1] * map.w + host[0]] : patches.id[y * map.w + x];
       if (pid < 0) continue;
       const p = patches.patches[pid];
       if (p.kind !== 'field') continue;
@@ -1511,6 +1516,7 @@ function drawTileBase(
   // random step per tile as well: on a field or a lane, which have no stamp
   // over them to hide it, that was a 1 m checkerboard.
   const v = 0.95 + coarse(x, y) * 0.1;
+  const host = t === 'hedge' ? hedgeHost(map, x, y) : null;
   if (t === 'grass') {
     drawGrassBase(g, x, y);
     if (d >= 1) {
@@ -1595,25 +1601,27 @@ function drawTileBase(
   } else if (t === 'woods') {
     drawSubTileGround(g, x, y);
     if (d >= 1) g.drawImage(litterStamp((hash(x, y, 265) * 8) | 0, d, band), x, y, 1, 1);
-  } else if (t === 'hedge') {
-    // Ground under the hedge only — the capsule strokes are drawn by
-    // drawHedgeRun in whole-run passes (per-tile stroke stacks let a tile's
-    // dark AO/shadow overpaint the neighbor's green mass, which is what read
-    // as per-tile capsule segmentation at 24 px/m). It is the ordinary grass
-    // base, not the dark woods floor: a hedge run is narrower than its tiles,
-    // and the dark tone left a 1 m square halo around every hedge tile.
+  } else if (t === 'hedge' && !host) {
+    // Ground under the hedge only: the hedgerow itself is drawn by
+    // drawHedgerows in whole-run passes. It is the ordinary grass base —
+    // never a tone of its own, which leaves a 1 m square halo around every
+    // hedge tile.
     drawGrassBase(g, x, y);
-  } else if (t === 'field') {
+  } else if (t === 'field' || t === 'hedge') {
     // The crop the parcel is under picks the palette family; macro drift still
     // separates two neighbouring parcels of the same crop. Row geometry is a
     // whole-parcel post-pass (drawCropRows) — per-tile furrows could never be
-    // continuous across a tile seam.
-    const p = patches.patchAt(x, y);
+    // continuous across a tile seam. A hedge beside a field is that field's
+    // earth to the far edge of its tile (hedgeHost).
+    const p = host ? patches.patchAt(host[0], host[1]) : patches.patchAt(x, y);
     const c = p ? cropOf(p.seed) : 1;
     g.fillStyle = shade(blendPalette([CROP_A[c], CROP_B[c]], macro(x, y)), v);
     g.fillRect(x, y, 1, 1);
-    // darker boundary strip where the field meets non-field
-    const fieldAt = (tx: number, ty: number) => map.inBounds(tx, ty) && map.terrainKeyAt(tx, ty) === 'field';
+    if (host) return;
+    // Darker boundary strip where the field meets non-field. A hedge is not
+    // such a meeting: the strip would rule the tile staircase down the flank
+    // of a hedgerow that no longer follows it.
+    const fieldAt = (tx: number, ty: number) => map.inBounds(tx, ty) && (map.terrainKeyAt(tx, ty) === 'field' || map.terrainKeyAt(tx, ty) === 'hedge');
     g.fillStyle = 'rgba(40,32,20,0.18)';
     if (!fieldAt(x, y - 1)) g.fillRect(x, y, 1, 0.08);
     if (!fieldAt(x, y + 1)) g.fillRect(x, y + 0.92, 1, 0.08);
@@ -1645,12 +1653,15 @@ function drawTileBase(
 // The class a tile's ground belongs to for the boundary pass (ground.ts): two
 // tiles of one class have nothing between them to soften. Fields are classed
 // by parcel, so two crops side by side get a boundary too. A hedge stands on
-// grass. Everything with an edge that must stay ruled is HARD.
+// its host's ground. Everything with an edge that must stay ruled is HARD.
 function groundClass(map: GameMap, patches: PatchIndex, x: number, y: number): number {
   if (!map.inBounds(x, y)) return HARD;
   switch (map.terrainKeyAt(x, y)) {
+    case 'hedge': {
+      const host = hedgeHost(map, x, y);
+      return host ? 16 + patches.patchIdAt(host[0], host[1]) : 1;
+    }
     case 'grass':
-    case 'hedge':
       return 1;
     case 'woods':
       return 2;
@@ -1663,10 +1674,26 @@ function groundClass(map: GameMap, patches: PatchIndex, x: number, y: number): n
   }
 }
 
+// The field a hedge tile stands in: its first field neighbour, or null where
+// it stands on grass. The tile used to be a square of grass whatever was round
+// it, which nobody saw while the hedge was drawn square on its tile. A
+// hedgerow that crosses its tiles on the diagonal uncovers their corners, and
+// between two fields those corners were a green staircase down both flanks.
+function hedgeHost(map: GameMap, x: number, y: number): [number, number] | null {
+  for (const [dx, dy] of [[0, -1], [-1, 0], [0, 1], [1, 0]]) {
+    if (map.inBounds(x + dx, y + dy) && map.terrainKeyAt(x + dx, y + dy) === 'field') return [x + dx, y + dy];
+  }
+  return null;
+}
+
 // The flat tone of a tile's ground: what its neighbour is given where the
 // boundary between them moves. The same palettes drawTileBase reads, without
 // the per-tile jitter.
 function groundTone(map: GameMap, patches: PatchIndex, x: number, y: number): string {
+  if (map.terrainKeyAt(x, y) === 'hedge') {
+    const host = hedgeHost(map, x, y);
+    if (host) return groundTone(map, patches, host[0], host[1]);
+  }
   switch (map.terrainKeyAt(x, y)) {
     case 'woods':
       return shade(WOODS_GROUND, 0.96);
