@@ -67,6 +67,7 @@ export function chunkSpan(t0: number, t1: number, n: number): [number, number] {
   ];
 }
 
+import { cornerCuts, cutOnH, cutOnV, HARD, reliefShade, smoothElev, type ReliefLight } from './ground';
 import { hash, vec } from './noise';
 import { stamp, stampRect } from './stamps';
 import { SPRITE as CANOPY_SPRITE, canopySprite, drawLog } from './canopy';
@@ -243,57 +244,64 @@ function vergeStamp(v: number, side: number, band: number): HTMLCanvasElement {
   });
 }
 
-// One-sun hillshade (height phase D): lambertian shade per elev tile from the
+// One-sun hillshade (height phase D): lambertian shade off the elevation, from the
 // shared sun. Direction TO the sun is the opposite of the shadow direction in
 // light.ts; the art convention's sun height stays fixed (tan ≈ 0.84) — only
 // the horizontal component rotates with the day. Shade is expressed as a
 // delta from the flat-surface lambert term so perfectly flat ground is
-// untouched even before the hasElev early-out.
+// untouched even on a map that has relief.
 //
 // N4: the light vector is memoized PER SUN STEP, never a module constant — a
 // module constant is exactly the "reader that caches across frames without
 // the step in its key" that light.ts's header forbids. Callers sit inside
 // chunk bakes whose key records the step, so a per-step memo is sound.
 const SUN_Z = 0.84;
-const HILLSHADE = 0.45; // subtle multiply/overlay strength
-interface HillLight {
-  x: number;
-  y: number;
-  z: number;
-  flat: number; // n·L for n = (0,0,1)
-}
 let hillStep = -1;
-let hillLight: HillLight = { x: 0, y: 0, z: 0, flat: 0 };
-function hillLightNow(): HillLight {
+let hillLight: ReliefLight = { x: 0, y: 0, z: 0, flat: 0 };
+function hillLightNow(): ReliefLight {
   const s = sun();
   if (s.step !== hillStep) {
     hillStep = s.step;
-    // Same ops, same order as the shipped module constants — at the canonical
-    // step this must land on bit-identical doubles or every baseline moves.
     const len = Math.hypot(s.dir[0], s.dir[1], SUN_Z);
     hillLight = { x: -s.dir[0] / len, y: -s.dir[1] / len, z: SUN_Z / len, flat: SUN_Z / len };
   }
   return hillLight;
 }
 
-// Lambertian shade overlay for one tile: central differences on elev
-// (clamped) give the normal; the dot delta from FLAT_DOT lights sun-facing
-// slopes and darkens the ones facing away.
-function drawHillshade(g: Ctx, map: GameMap, x: number, y: number, LIGHT: HillLight): void {
-  const dzdx = Math.max(-8, Math.min(8, (map.elevAt(x + 1, y) - map.elevAt(x - 1, y)) / 2));
-  const dzdy = Math.max(-8, Math.min(8, (map.elevAt(x, y + 1) - map.elevAt(x, y - 1)) / 2));
-  if (dzdx === 0 && dzdy === 0) return;
-  // sqrt, not hypot (verticality design §2.5): undulation gives essentially
-  // every tile a non-zero gradient, so the zero early-out above stops firing
-  // and this becomes 76,800 calls per full bake. Math.hypot is a slow,
-  // overflow-guarded library call; the magnitudes here are bounded by the
-  // clamp, so the guard buys nothing.
-  const nl = Math.sqrt(dzdx * dzdx + dzdy * dzdy + 1);
-  const dot = (-dzdx * LIGHT.x + -dzdy * LIGHT.y + LIGHT.z) / nl;
-  const d = (dot - LIGHT.flat) * HILLSHADE;
-  if (Math.abs(d) < 0.004) return;
-  g.fillStyle = d > 0 ? `rgba(255,250,235,${Math.min(0.5, d)})` : `rgba(8,10,14,${Math.min(0.5, -d)})`;
-  g.fillRect(x, y, 1, 1);
+// Relief shade for the whole map at one pixel per tile: warm light on the
+// slopes that face the sun, cool dark on the ones that face away. A chunk
+// bake draws its piece of this up to bake size with smoothing on, so the
+// shade is interpolated between tile CENTRES and no tile has an edge. It used
+// to be a filled square per tile, off an elevation field that only changes at
+// terrace steps: that was the lattice (see ground.ts). One image for the map
+// rather than one per chunk, because the upload of a fresh ImageData cost more
+// per bake than the whole old pass.
+function bakeRelief(sm: Float32Array, w: number, h: number, light: ReliefLight): HTMLCanvasElement {
+  const c = document.createElement('canvas');
+  c.width = w;
+  c.height = h;
+  const sg = c.getContext('2d')!;
+  const img = sg.createImageData(w, h);
+  const px = img.data;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const d = reliefShade(sm, w, h, x, y, light);
+      if (Math.abs(d) < 0.004) continue;
+      const o = (y * w + x) * 4;
+      if (d > 0) {
+        px[o] = 255;
+        px[o + 1] = 250;
+        px[o + 2] = 235;
+      } else {
+        px[o] = 8;
+        px[o + 1] = 10;
+        px[o + 2] = 14;
+      }
+      px[o + 3] = Math.round(Math.abs(d) * 255);
+    }
+  }
+  sg.putImageData(img, 0, 0);
+  return c;
 }
 
 // Path for a hedge tile's continuous mass: a stroke segment toward each
@@ -1507,7 +1515,10 @@ function drawTileBase(
   rail: RailIndex | null,
 ): void {
   const t = map.terrainKeyAt(x, y);
-  const v = 0.93 + coarse(x, y) * 0.1 + hash(x, y) * 0.04;
+  // Tone drift only, off the smooth 8 m lattice. This used to carry a 4%
+  // random step per tile as well: on a field or a lane, which have no stamp
+  // over them to hide it, that was a 1 m checkerboard.
+  const v = 0.95 + coarse(x, y) * 0.1;
   if (t === 'grass') {
     drawGrassBase(g, x, y);
     if (d >= 1) {
@@ -1636,6 +1647,143 @@ function drawTileBase(
     // interior keys share this branch and the piece itself goes down later, in
     // drawFurniture's post-pass.
     drawFloorTile(g, x, y, roleAt(x, y), apron ? apron[y * map.w + x] : 0, band, d);
+  }
+}
+
+// The class a tile's ground belongs to for the boundary pass (ground.ts): two
+// tiles of one class have nothing between them to soften. Fields are classed
+// by parcel, so two crops side by side get a boundary too. A hedge stands on
+// grass. Everything with an edge that must stay ruled is HARD.
+function groundClass(map: GameMap, patches: PatchIndex, x: number, y: number): number {
+  if (!map.inBounds(x, y)) return HARD;
+  switch (map.terrainKeyAt(x, y)) {
+    case 'grass':
+    case 'hedge':
+      return 1;
+    case 'woods':
+      return 2;
+    case 'road':
+      return map.isBridge(x, y) ? HARD : 3;
+    case 'field':
+      return 16 + patches.patchIdAt(x, y);
+    default:
+      return HARD;
+  }
+}
+
+// The flat tone of a tile's ground: what its neighbour is given where the
+// boundary between them moves. The same palettes drawTileBase reads, without
+// the per-tile jitter.
+function groundTone(map: GameMap, patches: PatchIndex, x: number, y: number): string {
+  switch (map.terrainKeyAt(x, y)) {
+    case 'woods':
+      return shade(WOODS_GROUND, 0.96);
+    case 'road':
+      return shade(ROAD, 0.98);
+    case 'field': {
+      const p = patches.patchAt(x, y);
+      const c = p ? cropOf(p.seed) : 1;
+      return shade(blendPalette([CROP_A[c], CROP_B[c]], macro(x, y)), 0.98);
+    }
+    default:
+      return shade(blendPalette([GRASS, GRASS_DRY], macro(x, y)), 0.96);
+  }
+}
+
+// Soft ground boundaries. Two things, both over the finished tile bases:
+//
+// The CUT. At every tile corner where one tile stands alone against the two
+// beside it, its corner is given to them (ground.ts cornerCuts). A boundary
+// that ran as a staircase becomes the diagonal it stood for. This is geometry,
+// not blur: the new edge is as crisp as the old one, so it is applied to roads
+// too, with the shoulder line drawn down the cut.
+//
+// The FRAY. Along every edge between two kinds of open ground, a few tufts of
+// each side's tone are thrown a little way over the line, so a field does not
+// end on a ruled edge. Not on a road: a lane keeps its shoulder.
+function softenGround(g: Ctx, map: GameMap, patches: PatchIndex, tx0: number, ty0: number, tx1: number, ty1: number, d: Detail): void {
+  const cw = tx1 - tx0 + 2;
+  const chh = ty1 - ty0 + 2;
+  // classes for the block plus a one-tile ring, so every corner sees four
+  const cls = new Int32Array(cw * chh);
+  let mixed = false;
+  for (let y = 0; y < chh; y++) {
+    for (let x = 0; x < cw; x++) {
+      const c = groundClass(map, patches, tx0 - 1 + x, ty0 - 1 + y);
+      cls[y * cw + x] = c;
+      if (c !== cls[0]) mixed = true;
+    }
+  }
+  if (!mixed) return; // one kind of ground from edge to edge: nothing to do
+  const at = (x: number, y: number): number => cls[(y - ty0 + 1) * cw + (x - tx0 + 1)];
+  const tone = (x: number, y: number): string => groundTone(map, patches, x, y);
+  const tri = (ax: number, ay: number, bx: number, by: number, cx: number, cy: number, fill: string, lined: boolean): void => {
+    g.fillStyle = fill;
+    g.beginPath();
+    g.moveTo(ax, ay);
+    g.lineTo(bx, by);
+    g.lineTo(cx, cy);
+    g.closePath();
+    g.fill();
+    if (!lined) return;
+    // the edge line the tile bases draw along a straight boundary, carried
+    // down the cut so it does not stop at every corner
+    g.strokeStyle = 'rgba(30,24,14,0.2)';
+    g.lineWidth = 0.08;
+    g.beginPath();
+    g.moveTo(bx, by);
+    g.lineTo(cx, cy);
+    g.stroke();
+  };
+  const lined = (a: number, b: number): boolean => a === 3 || b === 3 || a >= 16 || b >= 16;
+  for (let y = ty0; y <= ty1; y++) {
+    for (let x = tx0; x <= tx1; x++) {
+      const nw = at(x - 1, y - 1);
+      const ne = at(x, y - 1);
+      const sw = at(x - 1, y);
+      const se = at(x, y);
+      const m = cornerCuts(nw, ne, sw, se);
+      if (m === 0) continue;
+      if (m & 1) tri(x, y, cutOnH(x - 1, y), y, x, cutOnV(x, y - 1), tone(x, y - 1), lined(nw, ne));
+      if (m & 2) tri(x, y, cutOnH(x, y), y, x, cutOnV(x, y - 1), tone(x - 1, y - 1), lined(ne, nw));
+      if (m & 4) tri(x, y, cutOnH(x - 1, y), y, x, cutOnV(x, y), tone(x - 1, y - 1), lined(sw, nw));
+      if (m & 8) tri(x, y, cutOnH(x, y), y, x, cutOnV(x, y), tone(x, y - 1), lined(se, ne));
+    }
+  }
+  // The fray. `open` is ground with no made edge: grass, woods floor, a field.
+  const open = (c: number): boolean => c === 1 || c === 2 || c >= 16;
+  const n = d >= 1 ? 3 : 2;
+  const tuft = (cx: number, cy: number, r: number, fill: string): void => {
+    g.fillStyle = fill;
+    g.beginPath();
+    g.ellipse(cx, cy, r, r * 0.8, 0, 0, Math.PI * 2);
+    g.fill();
+  };
+  for (let y = ty0; y < ty1; y++) {
+    for (let x = tx0; x < tx1; x++) {
+      const c = at(x, y);
+      if (!open(c)) continue;
+      // each boundary edge once, from the tile on its low side: east and south
+      for (let s = 0; s < 2; s++) {
+        const ox = x + (s === 0 ? 1 : 0);
+        const oy = y + (s === 0 ? 0 : 1);
+        const o = at(ox, oy);
+        if (o === c || !open(o)) continue;
+        // not round a hedge: it stands on a strip of grass, and tufts thrown
+        // off that strip were a green fuzz down both sides of every hedgerow
+        if (map.terrainKeyAt(x, y) === 'hedge' || map.terrainKeyAt(ox, oy) === 'hedge') continue;
+        const mine = tone(x, y);
+        const theirs = tone(ox, oy);
+        for (let i = 0; i < n * 2; i++) {
+          const k = (x * 73 + y * 151 + s) * 8 + i;
+          const along = hash(k, 0, 813);
+          const over = (0.04 + hash(k, 0, 814) * 0.2) * (i & 1 ? 1 : -1); // odd tufts are mine, thrown their way
+          const r = 0.1 + hash(k, 0, 815) * 0.17;
+          if (s === 0) tuft(x + 1 + over, y + along, r, i & 1 ? mine : theirs);
+          else tuft(x + along, y + 1 + over, r, i & 1 ? mine : theirs);
+        }
+      }
+    }
   }
 }
 
@@ -1833,7 +1981,12 @@ export class TerrainLayer {
   private pixels = 0;
   private vers = new Versions();
   private chunksW: number;
-  private hasElev: boolean;
+  // Elevation with its whole-metre terraces smoothed back into slopes, for
+  // the relief shade (ground.ts). Null on a flat map, whose chunks then take
+  // exactly the path they took before there was any height.
+  private relief: Float32Array | null;
+  private reliefImg: HTMLCanvasElement | null = null; // its shade at one pixel per tile, under `reliefFor`
+  private reliefFor: ReliefLight | null = null; // hillLightNow() hands out a new object per sun step
   private hasStairs: boolean;
   private bakeBudget = 0;
   private patches: PatchIndex;
@@ -1874,9 +2027,7 @@ export class TerrainLayer {
   private prevStep = sun().step;
 
   constructor(private map: GameMap, buildings: readonly Building[] = []) {
-    // Flat maps (all elev 0, no stairs) early-out everywhere below, so their
-    // chunks stay byte-identical to the pre-height renderer.
-    this.hasElev = map.elev.some((e) => e !== 0);
+    this.relief = map.elev.some((e) => e !== 0) ? smoothElev(map.elev, map.w, map.h) : null;
     this.hasStairs = map.stairs.some((s) => s !== 0);
     this.chunksW = Math.ceil(map.w / CHUNK);
     this.patches = new PatchIndex(map);
@@ -2002,6 +2153,9 @@ export class TerrainLayer {
       for (let x = tx0; x < tx1; x++) drawTileBase(g, this.map, this.patches, x, y, band, d, this.roleAt, this.apron, this.rail);
     }
     drawCropRows(g, this.map, this.patches, tx0, ty0, tx1, ty1, d);
+    // after the rows, so a cut corner is not ruled with its old parcel's
+    // furrows; before the paving and the wear, which lie on top of the ground
+    softenGround(g, this.map, this.patches, tx0, ty0, tx1, ty1, d);
     drawPaving(g, this.map, this.patches, tx0, ty0, tx1, ty1, band, d);
     drawRoadWear(g, this.map, tx0, ty0, tx1, ty1, d, (x, y) => this.patches.pavedAt(x, y));
     // after the wear pass, which would otherwise lay ruts across the timbers
@@ -2063,11 +2217,22 @@ export class TerrainLayer {
       }
     }
     drawEnclosureWalls(g, this.enclos, tx0, ty0, tx1, ty1, d);
-    if (this.hasElev) {
+    if (this.relief) {
       const light = hillLightNow();
-      for (let y = ty0; y < ty1; y++) {
-        for (let x = tx0; x < tx1; x++) drawHillshade(g, this.map, x, y, light);
+      if (!this.reliefImg || this.reliefFor !== light) {
+        this.reliefImg = bakeRelief(this.relief, this.map.w, this.map.h, light);
+        this.reliefFor = light;
       }
+      // Two tiles of margin: one for the chunk's gutter, one so the
+      // interpolation at the gutter's edge has a real neighbour to read
+      // rather than the clamped edge of the source rect, which would show as
+      // a seam between chunks.
+      const rx0 = Math.max(0, x0 - 2);
+      const ry0 = Math.max(0, y0 - 2);
+      const rw = Math.min(this.map.w, x0 + CHUNK + 2) - rx0;
+      const rh = Math.min(this.map.h, y0 + CHUNK + 2) - ry0;
+      g.imageSmoothingEnabled = true; // bilinear between tile centres: this IS the softening
+      g.drawImage(this.reliefImg, rx0, ry0, rw, rh, rx0, ry0, rw, rh);
     }
     this.cache.set(key, { c, ver });
     this.pixels += c.width * c.height;
