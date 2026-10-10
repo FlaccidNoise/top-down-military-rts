@@ -1508,6 +1508,34 @@ html.mobile #theater-hud .hbtn { min-height: 44px; }
 #theater-hud .th-ev[data-ev] { cursor: pointer; }
 #theater-hud .th-ev[data-ev]:hover { text-decoration: underline; }
 html.mobile #theater-hud .th-ev[data-ev] { padding: 6px 0; }
+/* The contact card: the decision, with the map still up behind it. Bottom
+   centre on a desktop, a bottom sheet on a phone. */
+#theater-hud .th-contact {
+  position: absolute;
+  left: 50%;
+  bottom: 10px;
+  transform: translateX(-50%);
+  width: min(560px, calc(100vw - 20px));
+  padding: 12px 16px 14px;
+  border-color: #c9803c;
+}
+#theater-hud .th-contact h1 { margin: 0 0 2px; font-size: 15px; letter-spacing: 4px; color: #f0963c; }
+#theater-hud .th-contact .fc-place { letter-spacing: 1px; color: var(--paper); }
+#theater-hud .th-contact p { margin: 0 0 4px; }
+#theater-hud .th-contact .fc-kind { color: var(--amber-bright); }
+#theater-hud .th-contact .fc { display: flex; align-items: center; gap: 10px; margin: 6px 0; padding: 6px 10px; border: 1px solid var(--border-soft); border-radius: 3px; }
+#theater-hud .th-contact .fc-col { flex: 1; min-width: 0; }
+#theater-hud .th-contact .fc-col h4 { margin: 0; font-size: var(--fs-lg); font-weight: var(--fw-head); }
+#theater-hud .th-contact .fc-col.us h4 { color: var(--blue); }
+#theater-hud .th-contact .fc-col.ge h4 { color: var(--red); }
+#theater-hud .th-contact .fc-col p { margin: 0; }
+#theater-hud .th-contact .fc-state { color: var(--muted); font-size: 11px; }
+#theater-hud .th-contact .fc-vs { color: var(--muted); font-size: 10px; }
+#theater-hud .th-contact .fc-forced, #theater-hud .th-contact .fc-facts { color: var(--muted); }
+#theater-hud .th-contact .fc-actions { display: flex; gap: 8px; margin-top: 8px; }
+#theater-hud .th-contact .fc-actions .hbtn { padding: 6px 16px; }
+#theater-hud .th-contact .hbtn.primary { background: var(--chip-active-bg); border-color: var(--amber); color: var(--amber-bright); font-weight: var(--fw-label); }
+#theater-hud.in-contact .th-force, #theater-hud.in-contact .th-log { display: none; }
 /* Parts the HUD shows and hides in place. Keep this after the rules above:
    several of them set display, and at equal specificity the later one wins. */
 #theater-hud [hidden] { display: none; }
@@ -1541,11 +1569,15 @@ html.mobile #theater-hud .th-ev[data-ev] { padding: 6px 0; }
     gap: 6px;
   }
   #theater-hud .th-force,
-  #theater-hud .th-log {
+  #theater-hud .th-log,
+  #theater-hud .th-contact {
     position: static;
+    transform: none;
     width: auto;
     margin: 0 4px;
   }
+  #theater-hud .th-contact { margin-bottom: 4px; }
+  #theater-hud .th-contact .fc-actions .hbtn { flex: 1; }
   #theater-hud .th-log { max-height: 22vh; margin-bottom: 4px; }
 }
 

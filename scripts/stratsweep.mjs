@@ -63,6 +63,15 @@ const STATES = {
     const v2 = window.__game.getV2();
     v2.selectedForce = v2.front.forces.find((f) => f.side === 'blue').id;
   },
+  // The contact decision: Able marches on the nearest garrisoned objective
+  // until contact. The card is up and the map is centred on the fight.
+  contact: async () => {
+    const { orderMove } = await import('/src/strategic/theater/step.ts');
+    const v2 = window.__game.getV2();
+    orderMove(v2.front, v2.front.forces.find((x) => x.side === 'blue').id, v2.front.theater.objectiveNodes[0]);
+    window.__game.stepTheater(600);
+    if (!v2.pending) throw new Error('contact: the march met nobody in ten hours');
+  },
   // A battle in progress: Able marches on the nearest garrisoned objective
   // until contact, and the contact is opened as a timed battle.
   battle: async () => {
@@ -75,7 +84,10 @@ const STATES = {
     if (!v2.pending) throw new Error('battle: the march met nobody in ten hours');
     openBattle(v2.front, v2.pending);
     v2.pending = null;
-    for (const id of ['debrief', 'contact']) { const el = document.getElementById(id); if (el) el.style.display = 'none'; }
+    // The battle is open, so the card has no question left to ask: put it away
+    // the way TheaterHud.hideContact does.
+    document.getElementById('contact').hidden = true;
+    document.getElementById('theater-hud').classList.remove('in-contact');
     window.__game.freezeFx(1960); // 40% through a beat: the ring is out and still strong
   },
   // 02:00 on day 2: the night wash.

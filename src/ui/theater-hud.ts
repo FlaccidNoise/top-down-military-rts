@@ -50,6 +50,8 @@ export class TheaterHud {
   private readonly sup: HTMLElement;
   private readonly halt: HTMLElement;
   private readonly log: HTMLElement;
+  /** The contact card. main.ts fills it; a panel here, so the camera frames around it. */
+  readonly contact: HTMLElement;
 
   constructor(private readonly cb: TheaterHudCallbacks) {
     this.root = document.createElement('div');
@@ -75,7 +77,8 @@ export class TheaterHud {
         <span class="th-sup" hidden></span>
         <button class="hbtn th-halt" data-th="halt" hidden>■ Halt</button>
       </div>
-      <div class="panel th-log"></div>`;
+      <div class="panel th-log"></div>
+      <div class="panel th-contact" id="contact" hidden></div>`;
     const q = (sel: string): HTMLElement => this.root.querySelector<HTMLElement>(sel)!;
     this.top = q('.th-top');
     this.obj = q('.th-obj');
@@ -91,6 +94,7 @@ export class TheaterHud {
     this.sup = q('.th-sup');
     this.halt = q('.th-halt');
     this.log = q('.th-log');
+    this.contact = q('.th-contact');
     document.body.appendChild(this.root);
     this.root.addEventListener('click', (e) => {
       if ((e.target as HTMLElement).closest('[data-th="menu"]')) { this.cb.openMenu(); return; }
@@ -177,6 +181,19 @@ export class TheaterHud {
         })
         .join('') || `<div class="th-ev">${EMPTY_LOG}</div>`;
     }
+  }
+
+  // While a contact waits for its answer the card owns the bottom of the
+  // screen: the company card and the log step aside.
+  showContact(html: string): void {
+    this.contact.innerHTML = html;
+    this.contact.hidden = false;
+    this.root.classList.add('in-contact');
+  }
+
+  hideContact(): void {
+    this.contact.hidden = true;
+    this.root.classList.remove('in-contact');
   }
 
   private setState(cls: string, text: string): void {

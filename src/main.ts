@@ -31,6 +31,7 @@ import { ManualScreen } from './ui/manual';
 import { Tutorial } from './ui/tutorial';
 import { TheaterView } from './render/theater-view';
 import { TheaterHud } from './ui/theater-hud';
+import { contactBrief } from './ui/contact-brief';
 import { fmtEta, type MarchPreview, type ViewInset } from './render/theater-view';
 import { CustomizeScreen } from './ui/customize';
 import { DEFAULT_PRESET, presetSpec } from './campaign/presets';
@@ -140,6 +141,9 @@ interface SessionV2 {
   // Frame the player's sector once the theater HUD is laid out: the boot
   // camera measures the panels, and they do not exist until the first frame.
   needsFrame: boolean;
+  // Centre the map here on the next frame, once the HUD has laid out the
+  // panel that made the request (the contact card changes the clear rectangle).
+  centerNext: { x: number; y: number } | null;
 }
 interface Session {
   campaign: Campaign;
@@ -841,39 +845,39 @@ function stepTheaterMinuteV2(v2: SessionV2): void {
   }
 }
 
+// The contact decision. A card in the theater HUD, not a screen over it: the
+// map stays up and is centred on the fight, because where the fight is, what
+// stands near it and what ground it is on are the decision.
 function showContactModalV2(c: Contact): void {
   const v2 = S().v2!;
   const atk = v2.front.forces.find((f) => f.id === c.attackerId)!;
   const def = v2.front.forces.find((f) => f.id === c.defenderId)!;
-  const playerAttacks = atk.side === 'blue';
-  const trivial =
-    atk.strength > 0 && def.strength > 0 &&
-    (atk.strength >= def.strength * TRIVIAL_RATIO || def.strength >= atk.strength * TRIVIAL_RATIO);
-  const siteName = c.site.kind === 'node' ? v2.front.theater.nodes[c.site.nodeId].name : 'the road';
-  // Odds in plain words: the man reading this should not have to divide.
-  const own = playerAttacks ? atk : def;
-  const foe = playerAttacks ? def : atk;
-  const ratio = Math.max(own.strength, foe.strength) / Math.max(1, Math.min(own.strength, foe.strength));
-  const rtxt = ratio < 2 ? ratio.toFixed(1) : Math.round(ratio).toString();
-  const odds =
-    ratio < 1.1 ? 'Even match.' : own.strength > foe.strength ? `You outnumber them ${rtxt}:1.` : `They outnumber you ${rtxt}:1.`;
-  const oddsLine = trivial ? `${odds} Auto-resolve is available at ${TRIVIAL_RATIO}:1.` : odds;
-  const col = (f: typeof atk): string =>
-    `<div class="fc-col ${f.side === 'blue' ? 'us' : 'ge'}"><h4>${f.name}</h4><p class="fc-str">${f.strength} men</p></div>`;
-  debriefEl.innerHTML = `<div class="db-scroll"><div class="db">
-    <h1>CONTACT</h1>
-    <p class="sub">${atk.name} has met ${def.name} at ${siteName}.</p>
-    <div class="fc">${col(atk)}<div class="fc-vs">VS</div>${col(def)}</div>
-    <p class="fc-odds">${oddsLine}</p>
-    ${playerAttacks ? '' : '<p class="fc-odds fc-forced">They chose this fight. A defender cannot stand down.</p>'}
-    </div></div>
-    <div class="db-actions">
-      <button id="fight" class="primary">${playerAttacks ? 'Attack' : 'Defend'}</button>
-      ${trivial ? '<button id="autoresolve">Auto-resolve</button>' : ''}
-      ${playerAttacks ? '<button id="standdown">Stand down</button>' : ''}
-    </div>`;
-  debriefEl.style.display = 'flex';
+  const b = contactBrief(v2.front, c, { supply: v2.campaignCfg.supply, fog: v2.campaignCfg.recon === 'contacts' });
+  const { playerAttacks, trivial } = b;
+  const col = (s: (typeof b.sides)[number]): string =>
+    `<div class="fc-col ${s.side === 'blue' ? 'us' : 'ge'}"><h4>${s.name}</h4><p class="fc-str">${s.men}</p><p class="fc-state">${s.state}</p></div>`;
+  theaterHud.showContact(`
+    <h1>CONTACT <span class="fc-place">${b.title}</span></h1>
+    <p class="fc-kind">${b.kind}</p>
+    <div class="fc">${col(b.sides[0])}<div class="fc-vs">VS</div>${col(b.sides[1])}</div>
+    <p class="fc-odds">${b.odds}</p>
+    ${b.forced ? `<p class="fc-odds fc-forced">${b.forced}</p>` : ''}
+    <p class="fc-facts">${b.facts.join(' ')}</p>
+    <div class="fc-actions">
+      <button id="fight" class="hbtn primary">${playerAttacks ? 'Attack' : 'Defend'}</button>
+      ${trivial ? '<button id="autoresolve" class="hbtn">Auto-resolve</button>' : ''}
+      ${playerAttacks ? '<button id="standdown" class="hbtn">Stand down</button>' : ''}
+    </div>`);
+  v2.selectedForce = -1;
+  v2.centerNext = c.site.kind === 'node' ? v2.front.theater.nodes[c.site.nodeId].pos : v2.view.forceXY(def);
+  const close = (): void => {
+    theaterHud.hideContact();
+    tutorial?.notify('contact-closed');
+  };
   document.getElementById('fight')!.onclick = () => {
+    close();
+    startTheaterBattle(c);
+  };  document.getElementById('fight')!.onclick = () => {
     debriefEl.style.display = 'none';
     tutorial?.notify('contact-closed');
     startTheaterBattle(c);
@@ -887,15 +891,13 @@ function showContactModalV2(c: Contact): void {
       // exact dominance OQ3 exists to kill, mirrored.
       openBattle(v2.front, c);
       v2.view.flash(`${atk.name} engages ${def.name} — outcome shortly`);
-      debriefEl.style.display = 'none';
       v2.pending = null;
-      tutorial?.notify('contact-closed');
+      close();
       save();
     };
   }
   if (playerAttacks) {
     document.getElementById('standdown')!.onclick = () => {
-      debriefEl.style.display = 'none';
       // Breaking contact is a MOVE, not a wish: a force left halted inside
       // CONTACT_M re-contacts every minute and the modal never stops. The
       // §3.6 retreat parks it beyond threat range; trapped = hold (a
@@ -903,7 +905,7 @@ function showContactModalV2(c: Contact): void {
       retreatForce(v2.front, atk, null, { trapped: 'stay' });
       v2.pending = null;
       save();
-      tutorial?.notify('contact-closed');
+      close();
     };
   }
   tutorial?.notify('contact-open');
@@ -1107,6 +1109,7 @@ function startCampaignV2(
         pending: null,
         selectedForce: -1,
         needsFrame: true,
+        centerNext: null,
       },
     };
     // §4.8: a reloaded red keeps its axes — restore the persisted plan.
@@ -1437,6 +1440,7 @@ function commitOrder(sx: number, sy: number, opts: { squadForce: boolean; floors
 function stratTapSelect(sx: number, sy: number): void {
   const v2 = S().v2;
   if (v2) {
+    if (v2.pending) return; // a contact waits for its answer: the map is for looking
     v2.selectedForce = v2.view.forceAtScreen(v2.front, 'blue', sx, sy, view.w, view.h);
     if (v2.selectedForce >= 0) tutorial?.notify('force-selected');
     return;
@@ -1482,7 +1486,7 @@ function theaterPreview(v2: SessionV2): MarchPreview | null {
 function stratOrderMove(sx: number, sy: number): void {
   const v2 = S().v2;
   if (v2) {
-    if (v2.selectedForce < 0) return;
+    if (v2.selectedForce < 0 || v2.pending) return;
     const n = v2.view.nodeAtScreen(sx, sy, view.w, view.h);
     if (n < 0) return;
     const r = orderMove(v2.front, v2.selectedForce, n, { nightTempo: v2.campaignCfg.nightTempo });
@@ -1946,6 +1950,10 @@ function frame(now: number): void {
     if (v2.needsFrame) {
       v2.needsFrame = false;
       v2.view.frameStart(v2.front, view.w, view.h);
+    }
+    if (v2.centerNext) {
+      v2.view.centerOn(v2.centerNext, view.w, view.h);
+      v2.centerNext = null;
     }
     v2.view.clampPan(view.w, view.h);
     v2.view.preview = theaterPreview(v2);
