@@ -11,6 +11,7 @@ import type { Side } from '../../sim/sim';
 import { lightAt } from '../../sim/solar';
 import {
   BRIDGE_DWELL_MIN,
+  CONTACT_M,
   edgeById,
   FORD_CROSS_MIN,
   leaveDefile,
@@ -23,6 +24,7 @@ import {
   type MoveReject,
   type TheaterEvent,
 } from './force';
+import { graphGap } from './contact';
 import { supplyTierOf } from './supply';
 
 // -- March kernel constants (S51 fatigue / S52 night tempo) ----------------
@@ -296,6 +298,28 @@ export function planMove(front: FrontV2, f: Force, destNodeId: number): (Pick<Fo
   const back = leg(pos.dir === 1 ? -1 : 1);
   const best = back && (!ahead || back.min < ahead.min) ? back : ahead;
   return best && { pos: { ...pos, dir: best.dir }, path: [pos.edgeId, ...best.edges], nominalMin: best.min };
+}
+
+// The first minute a planned march comes inside contact range of any of
+// `enemies`, and where the force stands then. No new rule: the SAME shadow
+// march forceEtaMinutes runs, tested each minute with the SAME
+// graphGap <= CONTACT_M that detectContacts applies. The enemies are taken
+// as standing still: it reports what is known now, not a forecast.
+export function firstContactOnMarch(
+  front: FrontV2,
+  f: Force,
+  march: Pick<Force, 'pos' | 'path'>,
+  enemies: readonly Force['pos'][],
+  opts: MoveKernelOpts = {},
+): { etaMin: number; stop: Force['pos'] } | null {
+  const clone: Force = { ...f, pos: { ...march.pos }, path: [...march.path] };
+  for (let min = 1; min <= 43200 && clone.path.length > 0; min++) {
+    const clock = front.clockMin + min;
+    fatigueMinute(front, clone, clock);
+    advanceForce(front, clone, 1, [], paceMult(clone.fatigue, clock, opts), true);
+    if (enemies.some((e) => graphGap(front.theater, clone.pos, e) <= CONTACT_M)) return { etaMin: min, stop: clone.pos };
+  }
+  return null;
 }
 
 export type HaltOrder = { ok: true } | { ok: false; reason: MoveReject };

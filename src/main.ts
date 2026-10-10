@@ -42,7 +42,7 @@ import { DEPLOY_ATK_DEPTH, DEPLOY_DEF_LINE, DEPLOY_DEF_DEFAULT } from './strateg
 import { ContactIntel, OmniscientIntel, type IntelView } from './strategic/intel';
 import { Commander2, RED_V2 } from './strategic/planner';
 import { addForce, type CoarseBattle, type FrontV2, type MoveReject } from './strategic/theater/force';
-import { orderHalt, orderMove, previewMove } from './strategic/theater/step';
+import { firstContactOnMarch, orderHalt, orderMove, previewMove } from './strategic/theater/step';
 import { battleCatchUpMin, openBattle, retreatForce, stepWar } from './strategic/theater/war';
 import { syncStrengthsV2 } from './strategic/theater/sync';
 import type { Contact } from './strategic/theater/contact';
@@ -1456,7 +1456,14 @@ function theaterPreview(v2: SessionV2): MarchPreview | null {
   if (key !== previewKey) {
     previewKey = key;
     const p = previewMove(v2.front, v2.selectedForce, n, { nightTempo: v2.campaignCfg.nightTempo });
-    previewCached = p.ok ? { ok: true, pos: p.pos, path: p.path, etaMin: p.etaMin } : p.reason === 'already-there' ? null : { ok: false, nodeId: n };
+    // What the player knows of the enemy: last-seen reports under fog, the
+    // forces themselves otherwise.
+    const enemies = v2.campaignCfg.recon === 'contacts'
+      ? (v2.front.intel?.blue ?? []).map((c) => c.pos)
+      : v2.front.forces.filter((x) => x.side === 'red' && x.strength > 0).map((x) => x.pos);
+    previewCached = !p.ok
+      ? p.reason === 'already-there' ? null : { ok: false, nodeId: n }
+      : { ok: true, pos: p.pos, path: p.path, etaMin: p.etaMin, contact: f ? firstContactOnMarch(v2.front, f, p, enemies, { nightTempo: v2.campaignCfg.nightTempo }) : null };
   }
   return previewCached;
 }

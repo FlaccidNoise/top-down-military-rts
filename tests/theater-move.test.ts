@@ -3,13 +3,15 @@ import { makeTheater } from '../src/strategic/theatergen';
 import {
   addForce,
   BRIDGE_DWELL_MIN,
+  CONTACT_M,
   FORD_CROSS_MIN,
   MAX_FORCES,
   route,
   type Force,
   type FrontV2,
 } from '../src/strategic/theater/force';
-import { forceEtaMinutes, orderHalt, orderMove, previewMove, stepMovement } from '../src/strategic/theater/step';
+import { firstContactOnMarch, forceEtaMinutes, orderHalt, orderMove, previewMove, stepMovement } from '../src/strategic/theater/step';
+import { graphGap } from '../src/strategic/theater/contact';
 import { MOVE_MPM, type Theater, type TheaterEdge, type Vec } from '../src/strategic/theater';
 
 // Synthetic fixture: precise control over lengths and crossings.
@@ -248,6 +250,24 @@ describe('turning and halting (jtbug #762)', () => {
     // The reject ladder is the same one.
     expect(previewMove(fr, f.id, 3)).toEqual({ ok: false, reason: 'destination-unholdable' });
     expect(previewMove(fr, 999, 0)).toEqual({ ok: false, reason: 'unknown-force' });
+  });
+
+  it('firstContactOnMarch names the minute the real march comes inside contact range', () => {
+    const fr = front();
+    const f = blue(fr);
+    const p = previewMove(fr, f.id, 4); // the ford route, through node 2
+    if (!p.ok) throw new Error('no plan');
+    const guard = { kind: 'node', nodeId: 2 } as const;
+    const hit = firstContactOnMarch(fr, f, p, [guard])!;
+    expect(hit.etaMin).toBeLessThan(p.etaMin); // the fight comes before the destination
+    expect(firstContactOnMarch(fr, f, p, [{ kind: 'node', nodeId: 1 }])).toBeNull(); // the bridge is not on this route
+    // The real march: outside contact range the minute before, inside it on the minute named.
+    orderMove(fr, f.id, 4);
+    walk(fr, hit.etaMin - 1);
+    expect(graphGap(fr.theater, f.pos, guard)).toBeGreaterThan(CONTACT_M);
+    walk(fr, 1);
+    expect(graphGap(fr.theater, f.pos, guard)).toBeLessThanOrEqual(CONTACT_M);
+    expect(f.pos).toEqual(hit.stop);
   });
 
   it('halt stops a company on the road; it stands there and takes a new order', () => {

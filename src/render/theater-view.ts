@@ -94,13 +94,48 @@ export function fmtEta(min: number): string {
 // The march the player is pointing at, not yet ordered. `ok: false` is a
 // place the selected company cannot be sent.
 export type MarchPreview =
-  | { ok: true; pos: Force['pos']; path: number[]; etaMin: number }
+  // `contact`: the first known enemy the march runs into, and where the
+  // company stands when it does. The march stops there.
+  | { ok: true; pos: Force['pos']; path: number[]; etaMin: number; contact: { etaMin: number; stop: Force['pos'] } | null }
   | { ok: false; nodeId: number };
 
 const ARROW_OWN = '#a9c4f5';
 const ARROW_SEL = '#d4e3ff';
 const ARROW_PREVIEW = '#ffe9a0';
 const ARROW_CASE = 'rgba(12, 10, 6, 0.85)';
+const FIGHT = '#f0963c'; // contact and battle: one colour, one mark
+
+// Cut a polyline at the point on it nearest to `p`.
+function splitAt(pts: readonly Vec[], p: Vec): [Vec[], Vec[]] {
+  let best = { d: Infinity, i: 0, q: pts[0] };
+  for (let i = 0; i < pts.length - 1; i++) {
+    const a = pts[i], b = pts[i + 1];
+    const len2 = (b.x - a.x) ** 2 + (b.y - a.y) ** 2;
+    const t = len2 === 0 ? 0 : Math.max(0, Math.min(1, ((p.x - a.x) * (b.x - a.x) + (p.y - a.y) * (b.y - a.y)) / len2));
+    const q = { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
+    const d = Math.hypot(p.x - q.x, p.y - q.y);
+    if (d < best.d) best = { d, i, q };
+  }
+  return [[...pts.slice(0, best.i + 1), best.q], [best.q, ...pts.slice(best.i + 1)]];
+}
+
+// The mark for a fight: an eight-point burst. Used where a previewed march
+// will meet the enemy and, larger and alive, where a battle is being fought.
+function burst(ctx: CanvasRenderingContext2D, x: number, y: number, r: number, spin = 0): void {
+  ctx.beginPath();
+  for (let i = 0; i < 16; i++) {
+    const a = spin + (i * Math.PI) / 8;
+    const rr = i % 2 === 0 ? r : r * 0.48;
+    if (i === 0) ctx.moveTo(x + Math.cos(a) * rr, y + Math.sin(a) * rr);
+    else ctx.lineTo(x + Math.cos(a) * rr, y + Math.sin(a) * rr);
+  }
+  ctx.closePath();
+  ctx.fillStyle = FIGHT;
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(12, 10, 6, 0.9)';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+}
 
 export class TheaterView {
   zoomMul = 1;
@@ -565,10 +600,28 @@ export class TheaterView {
     // Drawn over the counters, because it is what the player is looking at.
     if (this.preview?.ok) {
       const pts = this.routePts(this.preview.pos, this.preview.path);
-      this.arrow(ctx, pts, w, h, ARROW_PREVIEW, 3.5);
       const end = pts[pts.length - 1];
       const [ex, ey] = this.toScreen(end.x, end.y, w, h);
-      this.chip(ctx, fmtEta(this.preview.etaMin), ex, ey, w, ARROW_PREVIEW);
+      const hit = this.preview.contact;
+      if (!hit) {
+        this.arrow(ctx, pts, w, h, ARROW_PREVIEW, 3.5);
+        this.chip(ctx, fmtEta(this.preview.etaMin), ex, ey, w, ARROW_PREVIEW);
+      } else {
+        // The march stops at the first fight. Bright as far as that, a dim
+        // dashed remainder to the place asked for, and the fight marked where
+        // the company will stand.
+        const stop = hit.stop.kind === 'node' ? this.theater.nodes[hit.stop.nodeId].pos : pointAlong(this.theater.edges[hit.stop.edgeId], hit.stop.s);
+        const [near, far] = splitAt(pts, stop);
+        ctx.save();
+        ctx.globalAlpha = 0.5;
+        ctx.setLineDash([6, 6]);
+        this.arrow(ctx, far, w, h, ARROW_PREVIEW, 2.5);
+        ctx.restore();
+        this.arrow(ctx, near, w, h, ARROW_PREVIEW, 3.5, false);
+        const [cx, cy] = this.toScreen(stop.x, stop.y, w, h);
+        burst(ctx, cx, cy, 9);
+        this.chip(ctx, `contact ${fmtEta(hit.etaMin)}`, cx, cy, w, FIGHT);
+      }
     } else if (this.preview) {
       const n = this.theater.nodes[this.preview.nodeId].pos;
       const [ex, ey] = this.toScreen(n.x, n.y, w, h);
@@ -634,7 +687,7 @@ export class TheaterView {
   }
 
   // A cased line with an arrowhead at its end.
-  private arrow(ctx: CanvasRenderingContext2D, pts: readonly Vec[], w: number, h: number, color: string, width: number): void {
+  private arrow(ctx: CanvasRenderingContext2D, pts: readonly Vec[], w: number, h: number, color: string, width: number, withHead = true): void {
     if (pts.length < 2) return;
     const s = pts.map((p) => this.toScreen(p.x, p.y, w, h));
     const tip = s[s.length - 1];
@@ -651,6 +704,7 @@ export class TheaterView {
       ctx.beginPath();
       s.forEach(([x, y], i) => (i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y)));
       ctx.stroke();
+      if (!withHead) continue;
       const grow = style === ARROW_CASE ? 2 : 0;
       ctx.beginPath();
       ctx.moveTo(tip[0] + Math.cos(a) * grow, tip[1] + Math.sin(a) * grow);
@@ -666,8 +720,11 @@ export class TheaterView {
   private chip(ctx: CanvasRenderingContext2D, text: string, x: number, y: number, w: number, color: string): void {
     ctx.font = 'bold 12px ui-monospace, monospace';
     const tw = ctx.measureText(text).width + 12;
-    const bx = x + 20 + tw > w - 4 ? x - 20 - tw : x + 20;
-    const by = Math.max(this.inset.top + 4, y - 10);
+    // Right of the point when it fits. Otherwise left and raised, so it does
+    // not sit on the line it describes.
+    const right = x + 20 + tw <= w - 4;
+    const bx = right ? x + 20 : Math.max(4, x - 12 - tw);
+    const by = Math.max(this.inset.top + 4, right ? y - 10 : y - 34);
     ctx.beginPath();
     ctx.roundRect(bx, by, tw, 20, 4);
     ctx.fillStyle = 'rgba(14, 12, 8, 0.92)';
