@@ -27,12 +27,17 @@ export interface Force {
   // approach; a force standing ON the node would otherwise have forgotten
   // which bank it came from.
   lastEdgeId: number | null;
+  // The minute this force last LOST a battle and lived. The planner keeps it
+  // off the attack while it reorganises (REORG_MIN). Player orders ignore it.
+  repulsedAtMin: number | null;
+  // Strength at muster. The counter's bar reads strength against it.
+  establishment: number;
 }
 
 // Creation shape: the realism fields default to fresh at the ONE chokepoint
 // (addForce), so disposition and test literals never carry boilerplate zeros.
-export type ForceInit = Omit<Force, 'id' | 'untracedMin' | 'fatigue' | 'lastEdgeId'> &
-  Partial<Pick<Force, 'untracedMin' | 'fatigue' | 'lastEdgeId'>>;
+export type ForceInit = Omit<Force, 'id' | 'untracedMin' | 'fatigue' | 'lastEdgeId' | 'repulsedAtMin' | 'establishment'> &
+  Partial<Pick<Force, 'untracedMin' | 'fatigue' | 'lastEdgeId' | 'repulsedAtMin' | 'establishment'>>;
 
 export interface CoarseBattle {
   id: number;
@@ -48,7 +53,7 @@ export interface CoarseBattle {
 
 export interface TheaterEvent {
   min: number;
-  kind: 'contact' | 'battle-resolved' | 'capture' | 'arrival' | 'retreat' | 'overrun' | 'stall';
+  kind: 'contact' | 'battle-resolved' | 'capture' | 'arrival' | 'retreat' | 'overrun' | 'stall' | 'replacements';
   text: string;
   forceIds: number[];
   nodeId?: number;
@@ -94,9 +99,28 @@ export function addForce(front: FrontV2, f: ForceInit): Force {
   if (front.forces.length >= MAX_FORCES) {
     throw new Error(`addForce: MAX_FORCES (${MAX_FORCES}) reached — the force cap is asserted here and in makeDisposition, never at generation`);
   }
-  const force: Force = { untracedMin: 0, fatigue: 0, lastEdgeId: null, ...f, id: front.nextForceId++ };
+  const force: Force = { untracedMin: 0, fatigue: 0, lastEdgeId: null, repulsedAtMin: null, establishment: f.strength, ...f, id: front.nextForceId++ };
   front.forces.push(force);
   return force;
+}
+
+// A force lets go of the bridge defile: off the FIFO, no longer waiting.
+export function leaveDefile(front: FrontV2, f: Force): void {
+  f.queuedAt = null;
+  for (const q of Object.values(front.defileQueues)) {
+    const i = q.indexOf(f.id);
+    if (i >= 0) q.splice(i, 1);
+  }
+}
+
+// The ONE way a force stops marching: contact, battle join, retreat, crossing
+// setback. Path and dwell clear AND the defile lets go. The force mid-crossing
+// heads its queue with queuedAt null, so a dequeue keyed on queuedAt left it
+// there and the bridge stayed shut for the rest of the war (jtbug #760).
+export function standForce(front: FrontV2, f: Force): void {
+  f.path = [];
+  f.dwellMin = 0;
+  leaveDefile(front, f);
 }
 
 // -- Graph helpers ---------------------------------------------------------
@@ -196,6 +220,7 @@ export type MoveReject =
   | 'engaged'
   | 'queued-at-defile'
   | 'already-there'
+  | 'not-moving'
   | 'no-route'
   | 'destination-unholdable';
 
@@ -205,10 +230,17 @@ export type MoveOrder = { ok: true; etaMin: number } | { ok: false; reason: Move
 // (S51/S52): the ETA is a SHADOW run of the same per-minute arithmetic the
 // live step executes — a closed form here would lie across dusk and fatigue.
 
+// The nodes a march from `pos` along `path` reaches, in order. Empty when it
+// stands.
+export function pathNodes(t: Theater, pos: NetPos, path: number[]): number[] {
+  if (path.length === 0) return [];
+  let at = anchorNode(t, pos);
+  const out = pos.kind === 'edge' ? [at] : [];
+  for (const eid of pos.kind === 'edge' ? path.slice(1) : path) out.push((at = otherEnd(edgeById(t, eid), at)));
+  return out;
+}
+
 // Where a force's current path ends, or null when it stands.
 export function pathDestination(t: Theater, f: Force): number | null {
-  if (f.path.length === 0) return null;
-  let at = anchorNode(t, f.pos);
-  for (const eid of f.pos.kind === 'edge' ? f.path.slice(1) : f.path) at = otherEnd(edgeById(t, eid), at);
-  return at;
+  return pathNodes(t, f.pos, f.path).at(-1) ?? null;
 }

@@ -11,17 +11,20 @@ import type { Side } from '../../sim/sim';
 import { lightAt } from '../../sim/solar';
 import {
   BRIDGE_DWELL_MIN,
+  CONTACT_M,
   edgeById,
   FORD_CROSS_MIN,
-  otherEnd,
+  leaveDefile,
   pushEvent,
   route,
-  anchorNode,
+  standForce,
   type Force,
   type FrontV2,
   type MoveOrder,
+  type MoveReject,
   type TheaterEvent,
 } from './force';
+import { graphGap } from './contact';
 import { supplyTierOf } from './supply';
 
 // -- March kernel constants (S51 fatigue / S52 night tempo) ----------------
@@ -148,11 +151,7 @@ function advanceForce(front: FrontV2, f: Force, budget: number, out: TheaterEven
       if (f.dwellMin < dwellNeed - 1e-9 || budget <= 1e-9) return;
     }
     // Dwell (if any) complete: release the defile slot and step onto the edge.
-    if (!shadow && node.crossing?.kind === 'bridge') {
-      const q = front.defileQueues[nodeId] ?? [];
-      const i = q.indexOf(f.id);
-      if (i >= 0) q.splice(i, 1);
-    }
+    if (!shadow && node.crossing?.kind === 'bridge') leaveDefile(front, f);
     f.dwellMin = 0;
     const e = edgeById(front.theater, f.path[0]);
     const dir: 1 | -1 = e.a === nodeId ? 1 : -1;
@@ -240,7 +239,12 @@ export function forceEtaMinutes(front: FrontV2, f: Force, destNodeId: number, op
 // §3.7: every arm maps to a visible flash string at the UI layer; silent
 // returns die here. Lives beside the kernel because the returned ETA runs
 // the shadow march.
-export function orderMove(front: FrontV2, forceId: number, destNodeId: number, opts: MoveKernelOpts = {}): MoveOrder {
+export type MovePreview = { ok: true; etaMin: number; pos: Force['pos']; path: number[] } | { ok: false; reason: MoveReject };
+
+// What orderMove WOULD do, with nothing changed: the same reject ladder, the
+// same plan, the same shadow-march ETA. The map draws its route preview from
+// this, so the preview cannot promise a march the order then refuses.
+export function previewMove(front: FrontV2, forceId: number, destNodeId: number, opts: MoveKernelOpts = {}): MovePreview {
   const f = front.forces.find((x) => x.id === forceId);
   if (!f) return { ok: false, reason: 'unknown-force' };
   if (f.engagedIn !== null) return { ok: false, reason: 'engaged' };
@@ -253,13 +257,83 @@ export function orderMove(front: FrontV2, forceId: number, destNodeId: number, o
   // live: 'Gué-de-Ifs', a town objective the player could not order onto.
   if (dest.kind === 'ford') return { ok: false, reason: 'destination-unholdable' };
   if (f.pos.kind === 'node' && f.pos.nodeId === destNodeId) return { ok: false, reason: 'already-there' };
+  const plan = planMove(front, f, destNodeId);
+  if (!plan) return { ok: false, reason: 'no-route' };
+  return { ok: true, pos: plan.pos, path: plan.path, etaMin: forceEtaMinutes(front, { ...f, pos: plan.pos, path: plan.path }, destNodeId, opts) };
+}
 
-  const start = anchorNode(front.theater, f.pos);
-  const r = route(front.theater, start, destNodeId);
-  if (!r) return { ok: false, reason: 'no-route' };
-  // Mid-edge: the remaining metres of the current edge precede the route.
-  f.path = f.pos.kind === 'edge' ? [f.pos.edgeId, ...r.edges] : [...r.edges];
-  // A force already mid-edge keeps its position; its first path entry is its
-  // own edge, consumed as it reaches the anchor node.
-  return { ok: true, etaMin: forceEtaMinutes(front, f, destNodeId, opts) };
+export function orderMove(front: FrontV2, forceId: number, destNodeId: number, opts: MoveKernelOpts = {}): MoveOrder {
+  const p = previewMove(front, forceId, destNodeId, opts);
+  if (!p.ok) return p;
+  const f = front.forces.find((x) => x.id === forceId)!;
+  f.pos = p.pos;
+  f.path = p.path;
+  return { ok: true, etaMin: p.etaMin };
+}
+
+// The march a force would make to a node: the path, and the position it
+// steps off from. At a node that is the fastest route. Mid-edge the force may
+// leave by EITHER end of its own road, whichever is faster in nominal minutes
+// (ahead on a tie), so a company ten minutes out is ten minutes from where it
+// started. Routing only from the node ahead made it finish the road and walk
+// it again (jtbug #762). The first path entry mid-edge is the force's own
+// edge, consumed as it reaches that end. One function for orderMove and the
+// planner's dawn check, so the decision and the march cannot disagree.
+export function planMove(front: FrontV2, f: Force, destNodeId: number): (Pick<Force, 'pos' | 'path'> & { nominalMin: number }) | null {
+  const t = front.theater;
+  const pos = f.pos;
+  if (pos.kind === 'node') {
+    const r = route(t, pos.nodeId, destNodeId);
+    return r && { pos, path: r.edges, nominalMin: r.minutes };
+  }
+  const e = edgeById(t, pos.edgeId);
+  const leg = (dir: 1 | -1): { dir: 1 | -1; edges: number[]; min: number } | null => {
+    const end = dir === 1 ? e.b : e.a;
+    const r = route(t, end, destNodeId);
+    if (!r) return null;
+    const metres = dir === 1 ? e.lengthM - pos.s : pos.s;
+    return { dir, edges: r.edges, min: metres / e.paceMpm + crossingDwell(front, end, end !== destNodeId) + r.minutes };
+  };
+  const ahead = leg(pos.dir);
+  const back = leg(pos.dir === 1 ? -1 : 1);
+  const best = back && (!ahead || back.min < ahead.min) ? back : ahead;
+  return best && { pos: { ...pos, dir: best.dir }, path: [pos.edgeId, ...best.edges], nominalMin: best.min };
+}
+
+// The first minute a planned march comes inside contact range of any of
+// `enemies`, and where the force stands then. No new rule: the SAME shadow
+// march forceEtaMinutes runs, tested each minute with the SAME
+// graphGap <= CONTACT_M that detectContacts applies. The enemies are taken
+// as standing still: it reports what is known now, not a forecast.
+export function firstContactOnMarch(
+  front: FrontV2,
+  f: Force,
+  march: Pick<Force, 'pos' | 'path'>,
+  enemies: readonly Force['pos'][],
+  opts: MoveKernelOpts = {},
+): { etaMin: number; stop: Force['pos'] } | null {
+  const clone: Force = { ...f, pos: { ...march.pos }, path: [...march.path] };
+  for (let min = 1; min <= 43200 && clone.path.length > 0; min++) {
+    const clock = front.clockMin + min;
+    fatigueMinute(front, clone, clock);
+    advanceForce(front, clone, 1, [], paceMult(clone.fatigue, clock, opts), true);
+    if (enemies.some((e) => graphGap(front.theater, clone.pos, e) <= CONTACT_M)) return { etaMin: min, stop: clone.pos };
+  }
+  return null;
+}
+
+export type HaltOrder = { ok: true } | { ok: false; reason: MoveReject };
+
+// Halt: the force stops where it stands. Mid-road is legal: a force on an
+// edge with no path is the kernel's parked state (contact halts and retreat
+// setbacks already make it), and advanceForce never moves it. The ETA shadow
+// only ever marches a force that has a path, so it stays exact. A queued
+// force may halt: that is its way out of the queue.
+export function orderHalt(front: FrontV2, forceId: number): HaltOrder {
+  const f = front.forces.find((x) => x.id === forceId);
+  if (!f) return { ok: false, reason: 'unknown-force' };
+  if (f.engagedIn !== null) return { ok: false, reason: 'engaged' };
+  if (f.path.length === 0) return { ok: false, reason: 'not-moving' };
+  standForce(front, f);
+  return { ok: true };
 }

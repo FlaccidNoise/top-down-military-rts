@@ -106,8 +106,8 @@ export const STEPS: readonly Step[] = [
     // a bubble can point at.
     anchor: { desktop: '#theater-hud .th-top', touch: '#theater-hud .th-top' },
     text: {
-      desktop: 'Right-click a gold-ringed town to march there. The path and the ETA preview before you commit.',
-      touch: 'Press and hold a gold-ringed town to march there. The path and the ETA preview before you commit.',
+      desktop: 'Point at a gold-ringed town: the route and the ETA show. Right-click to march there.',
+      touch: 'Press and hold a gold-ringed town: the route and the ETA show. Let go to march there.',
     },
   },
   {

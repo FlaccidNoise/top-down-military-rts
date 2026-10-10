@@ -21,7 +21,7 @@ import {
   type WeaponDef,
   type WeaponKey,
 } from './data';
-import { crewDegrade, crewHasLos, crewNear, friendlyHasLos, loadsReady, pickFirer, type Emplacement } from './emplacement';
+import { CREW_RADIUS, crewDegrade, crewHasLos, crewNear, friendlyHasLos, loadsReady, pickFirer, type Emplacement } from './emplacement';
 import {
   BREACH_LIP,
   BREACH_THRESH,
@@ -74,6 +74,12 @@ const BOUND_LEG = 15; // meters per bounding rush (spec's "15m legs")
 // ~0.4 vs a ~0.85 threshold) — then owned the team to the far map edge. Under
 // fire, the same ladder re-runs every 2s, staggered by team id.
 const REAUDIT_TICKS = 60;
+// A crewman who ran from his gun goes back to it once he has steadied, unless
+// an enemy stands this close to it (#787).
+const GUN_HELD_RADIUS = 10;
+// A movement order ending this close to a standing enemy is headed for ground
+// that enemy holds (noteClosing). The commander's own "held" radius.
+const CLOSING_RADIUS = 20;
 // A man who steadies within this long of being pinned or broken has rallied
 // (#766). The crossing never happens in one tick: suppression decays at most
 // 0.0023 a tick and morale climbs 0.00013, so he always passes through
@@ -276,6 +282,8 @@ export interface Soldier {
   grenadeCooldownUntil: number; // tick when next grenade throw is allowed
   entryHoldUntil: number; // waits outside an opening until his own grenade bursts (#217)
   captured: boolean; // alive, out of the fight, untargetable (surrendered at melee contact)
+  fledGun: boolean; // broke and ran while crewing a deployed gun, and has not yet gone back to it
+  meleeResume: { x: number; y: number; l: number } | null; // where he was walking to when a melee took his path, null = nowhere
   lastCowedTick: number; // tick he was last pinned or broken. Output only: it times the 'rallied' event and nothing in the sim reads it, so it is not in snapshot()
   // The last wound that came from somewhere: unit vector away from its source,
   // and the tick. Output only (the kia/downed events' dx, dy), not in snapshot().
@@ -427,7 +435,18 @@ export interface UnitEvent {
     | 'promoted' // a teammate became leader after the leader fell
     | 'stabilized' // a casualty's bleeding was stopped by a squadmate
     | 'recovered' // a downed man is back on his feet
-    | 'resupplied'; // a runner handed ammunition to a dry gunner
+    | 'resupplied' // a runner handed ammunition to a dry gunner
+    // A commander's own reports (#787), written through Sim.report. They are
+    // for that commander's side and nobody else: an enemy commander's reserve
+    // or culmination is not something a man across the field can see, so a
+    // consumer shows them for its own side only.
+    | 'reserve-committed'
+    | 'culminated'
+    | 'smoke-objective'
+    // A team seen moving onto ground the other side holds. Raised by the sim
+    // off what that other side can see, never by a commander: `id` is a man
+    // of the team its enemy has in sight.
+    | 'closing';
   x: number;
   y: number;
   side: Side;
@@ -881,6 +900,7 @@ export class Sim {
   breachLog: BreachEvent[] = [];
   private pendingPlanes: { x0: number; y: number; x1: number }[] = [];
   private pendingUnitEvents: UnitEvent[] = [];
+  private closingSaid = new WeakSet<TeamOrder>(); // orders already announced by noteClosing. Output only
   private pendingMeleeEvents: MeleeEvent[] = [];
   // Per-squad move state, indexed by squad id. Read-only for the UI (route preview).
   squadDest: ({ x: number; y: number } | null)[] = [];
@@ -904,7 +924,7 @@ export class Sim {
   // Staggered dismount: one passenger every 0.5s (spec: "1 per 0.5s").
   private dismountQueue: { vehicleId: number; soldierId: number; tick: number }[] = [];
   private pathBudget = PATH_BUDGET_PER_TICK;
-  private pendingPaths = new Map<number, { spot: { x: number; y: number; l: number } }>();
+  private pendingPaths = new Map<number, { spot: { x: number; y: number; l: number }; task: Soldier['task'] }>(); // `task`: what he was on when the search was queued
 
   constructor(readonly map: GameMap, seed: number) {
     this.rng = mulberry32(seed);
@@ -992,6 +1012,8 @@ export class Sim {
       grenadeCooldownUntil: 0,
       entryHoldUntil: 0,
       captured: false,
+      fledGun: false,
+      meleeResume: null,
       lastCowedTick: -Infinity,
       hitDx: 0,
       hitDy: 0,
@@ -1819,7 +1841,7 @@ export class Sim {
         this.pathBudget--;
         this.pathTo(s, spot);
       } else {
-        this.pendingPaths.set(sid, { spot });
+        this.pendingPaths.set(sid, { spot, task: s.task });
       }
     }
   }
@@ -1838,6 +1860,7 @@ export class Sim {
       s.path = path.slice(1).map((p) => ({ x: p.x + 0.5, y: p.y + 0.5, l: p.l }));
       s.pathI = 0;
       s.fleeing = false;
+      s.meleeResume = null; // a path given since the lock is the one he walks
     }
   }
 
@@ -1848,6 +1871,14 @@ export class Sim {
       this.pendingPaths.delete(sid);
       const s = this.soldiers[sid];
       if (!this.eligible(s)) continue; // died/broke while queued: drop it
+      // A man pathed at once can still leave the march for a casualty a
+      // moment later, and does. One whose search was queued must have the
+      // same choice (#787): if he has taken up a task SINCE the order, the
+      // queued search is the stale half, and running it dropped the rescue he
+      // had just started — 5.8 of the 7.6 rescues a battle that an order
+      // cancelled. A task he already had when the order came is what the
+      // order was meant to override, and still is.
+      if (s.task && s.task !== req.task) continue;
       this.pathBudget--;
       this.pathTo(s, req.spot);
     }
@@ -1866,6 +1897,13 @@ export class Sim {
     return this.soldiers[id].path !== null || this.pendingPaths.has(id);
   }
 
+  // Not yet where his order sent him: on the way, or held up in a melee. A
+  // lock takes a man's path (enterMelee), and reading him as arrived ended
+  // the order of any team whose last walking man it took (#787).
+  private enRoute(id: number): boolean {
+    return this.marching(id) || this.soldiers[id].meleeId >= 0;
+  }
+
   // Men who stop where they are — the half that holds while the other rushes,
   // a team that balks mid-move: halted, and not about to be started again by
   // a search still queued from before.
@@ -1878,8 +1916,8 @@ export class Sim {
 
   // A leg dispatched inside a running order is a continuation of it, not a
   // new order: a man who left the bound to reach a casualty, carry belts or
-  // take over a gun is not pulled off it by the next leg. pathTo's task drop
-  // is for real orders.
+  // take over a gun is not pulled off it by the next leg. Nor by a routine
+  // order (orderTeam). pathTo's task drop is for a direct one.
   private offTask(ids: number[]): number[] {
     return ids.filter((id) => !this.soldiers[id].task);
   }
@@ -1889,9 +1927,18 @@ export class Sim {
   // `used` is the ONE tile-reservation set of the whole player commit —
   // orderSquad shares it across its teams and a multi-squad click shares it
   // across squads, so clumped anchors cannot resolve two men onto one tile.
-  orderTeam(teamId: number, order: TeamOrder, used?: Set<number>): void {
+  //
+  // `routine` is how a commander orders (#787). A direct order overrides a
+  // rescue, an ammo run or a weapon hand-over: the player pointed, the man
+  // goes. A commander tasks every team again each time a bound ends, and on
+  // that footing no rescue outlived the next bound — 17.5 of 29.9 a battle
+  // were cut short, 10 of them with the rescuer already kneeling over the
+  // casualty. A routine order leaves a man on a task to finish it; he falls
+  // in on the team's next order.
+  orderTeam(teamId: number, order: TeamOrder, used?: Set<number>, routine = false): void {
     const team = this.teams[teamId];
     if (!team) return;
+    const men = (ids: number[]): number[] => (routine ? this.offTask(ids) : ids);
     const eligibleIds = team.soldierIds.filter((id) => this.eligible(this.soldiers[id]));
     if (eligibleIds.length === 0) return;
 
@@ -1904,6 +1951,11 @@ export class Sim {
     if (verdict === 'balk') {
       team.orderState = { order, phase: 'balked', reason: order.kind === 'assault' ? CHARGE_BALK_REASON : BALK_REASON };
       if (order.kind === 'sneak') this.sneakBaseline[team.id] = this.woundCount(team); // a refused sneak still holds fire until someone is hit
+      // A team that will not go stops (#787). The order it was on is gone —
+      // orderState now holds the refused one — and its men used to walk that
+      // old order out under a chip reading WON'T ADVANCE. A man on a rescue
+      // keeps his errand: the refusal changed nothing for him.
+      this.halt(this.offTask(eligibleIds));
       return;
     }
     const cautious = verdict === 'cautious';
@@ -1914,13 +1966,13 @@ export class Sim {
     if (effective.kind === 'move' && (cautious || this.teamUnderFire(team))) {
       team.orderState = { order: effective, phase: 'bounding_a', reason };
       const [a, b] = this.teamHalves(team);
-      this.halt(b);
-      this.dispatchLeg(a, effective, used);
+      this.halt(men(b));
+      this.dispatchLeg(men(a), effective, used);
     } else if (effective.kind === 'move' || effective.kind === 'fast' || effective.kind === 'sneak' || effective.kind === 'assault') {
       team.orderState = { order: effective, phase: 'executing', reason };
       if (effective.kind === 'sneak') this.sneakBaseline[team.id] = this.woundCount(team);
       const gl = orderLevel(this, effective.kind, effective.x, effective.y, effective.l);
-      this.moveSoldiersTo(team.soldierIds, effective.x, effective.y, gl, effective.facing, effective.width, effective.kind, undefined, used);
+      this.moveSoldiersTo(men(team.soldierIds), effective.x, effective.y, gl, effective.facing, effective.width, effective.kind, undefined, used);
     } else if (effective.kind === 'smoke') {
       // A throw that cannot happen must say so — a silently swallowed smoke
       // order reads as "smoke is broken".
@@ -1935,7 +1987,7 @@ export class Sim {
       // Auto-top-floor garrison: the defend/ambush default, owned by orderLevel
       // so the preview can show the same storey the men will hold.
       const gl = orderLevel(this, effective.kind, effective.x, effective.y, effective.l);
-      this.moveSoldiersTo(team.soldierIds, effective.x, effective.y, gl, effective.facing, effective.width, effective.kind, effective.arc, used);
+      this.moveSoldiersTo(men(team.soldierIds), effective.x, effective.y, gl, effective.facing, effective.width, effective.kind, effective.arc, used);
     } else {
       // fire: no movement, members engage per updateSoldier's combat section
       team.orderState = { order: effective, phase: 'executing', reason };
@@ -1947,7 +1999,7 @@ export class Sim {
   // A direct order overrides any queued waypoint route. One `used` set spans
   // every team of the squad (and, when the caller passes one, every squad of
   // the commit), so neighbouring teams never resolve onto the same tile.
-  orderSquad(squadId: number, order: TeamOrder, used: Set<number> = new Set<number>()): void {
+  orderSquad(squadId: number, order: TeamOrder, used: Set<number> = new Set<number>(), routine = false): void {
     const squad = this.squads[squadId];
     if (!squad) return;
     this.squadWaypoints[squadId] = [];
@@ -1959,12 +2011,12 @@ export class Sim {
     // measured 4.1 m of scatter on a two-team squad, and it can push the far
     // team outside its own throw range. Only destination orders fan.
     if (!isMoveKind && order.kind !== 'defend' && order.kind !== 'ambush') {
-      squad.teamIds.forEach((teamId) => this.orderTeam(teamId, order, used));
+      squad.teamIds.forEach((teamId) => this.orderTeam(teamId, order, used, routine));
     } else if (order.facing === undefined) {
       // Legacy: fan teams along y axis only
       const offs = fanOffsets(n, TEAM_FAN);
       squad.teamIds.forEach((teamId, ti) => {
-        this.orderTeam(teamId, { ...order, y: order.y + offs[ti] }, used);
+        this.orderTeam(teamId, { ...order, y: order.y + offs[ti] }, used, routine);
       });
     } else {
       // Formation: fan teams along the facing axis within order.width
@@ -1975,7 +2027,7 @@ export class Sim {
       squad.teamIds.forEach((teamId, ti) => {
         const dx = cos * offs[ti];
         const dy = sin * offs[ti];
-        this.orderTeam(teamId, { ...order, x: order.x + dx, y: order.y + dy, width: share }, used);
+        this.orderTeam(teamId, { ...order, x: order.x + dx, y: order.y + dy, width: share }, used, routine);
       });
     }
   }
@@ -2029,7 +2081,7 @@ export class Sim {
     const [a, b] = this.teamHalves(team);
     const activeIds = st.phase === 'bounding_a' ? a : b;
     const otherIds = st.phase === 'bounding_a' ? b : a;
-    if (activeIds.some((id) => this.eligible(this.soldiers[id]) && this.marching(id))) return; // mid-leg
+    if (activeIds.some((id) => this.eligible(this.soldiers[id]) && this.enRoute(id))) return; // mid-leg
     const centroid = this.centroidOf(team.soldierIds);
     const done = (): void => {
       st.order = null;
@@ -2253,6 +2305,45 @@ export class Sim {
     return p;
   }
 
+  // A commander's report for its own side's ticker. Output only: it joins the
+  // drain queue and nothing in the sim reads it back.
+  report(e: UnitEvent): void {
+    this.pendingUnitEvents.push(e);
+  }
+
+  // "They are coming for the ground we hold" (#787), said once per order and
+  // only off what the side holding the ground can see: a team on a movement
+  // order, a man of it in that side's sight (soldierVisibleTo), and a
+  // destination within CLOSING_RADIUS of one of that side's standing men.
+  // Run on the spotting cadence, straight after the sweep it reads. Draws no
+  // rng and writes nothing the sim reads.
+  private noteClosing(): void {
+    for (const team of this.teams) {
+      const st = team.orderState;
+      const order = st.order;
+      if (!order || st.phase === 'balked' || this.closingSaid.has(order)) continue;
+      if (order.kind !== 'move' && order.kind !== 'fast' && order.kind !== 'assault') continue;
+      const side = this.squads[team.squadId].side;
+      const other: Side = side === 'blue' ? 'red' : 'blue';
+      let seen: Soldier | null = null;
+      for (const id of team.soldierIds) {
+        const m = this.soldiers[id];
+        if (this.eligible(m) && this.soldierVisibleTo(other, m)) {
+          seen = m;
+          break;
+        }
+      }
+      if (!seen) continue;
+      for (const o of this.soldiers) {
+        if (o.side !== other || !o.alive || o.downed || o.captured || o.inVehicle >= 0) continue;
+        if (Math.hypot(o.x - order.x, o.y - order.y) > CLOSING_RADIUS) continue;
+        this.closingSaid.add(order);
+        this.pendingUnitEvents.push({ kind: 'closing', x: seen.x, y: seen.y, side, name: seen.name, id: seen.id, team: team.name });
+        break;
+      }
+    }
+  }
+
   takeUnitEvents(): UnitEvent[] {
     const e = this.pendingUnitEvents;
     this.pendingUnitEvents = [];
@@ -2286,6 +2377,7 @@ export class Sim {
     if (this.tick % SPOT_INTERVAL === 0) {
       this.updateSpotting('blue');
       this.updateSpotting('red');
+      this.noteClosing();
     }
     let blue = 0;
     let red = 0;
@@ -2417,7 +2509,7 @@ export class Sim {
         this.continueBounding(team, order, st);
       } else if ((order.kind === 'move' || order.kind === 'fast' || order.kind === 'sneak') && st.phase === 'executing') {
         const eligibleIds = team.soldierIds.filter((id) => this.eligible(this.soldiers[id]));
-        if (eligibleIds.length > 0 && eligibleIds.every((id) => !this.marching(id))) {
+        if (eligibleIds.length > 0 && eligibleIds.every((id) => !this.enRoute(id))) {
           st.order = null;
           st.phase = 'idle';
           st.reason = '';
@@ -2626,7 +2718,7 @@ export class Sim {
       if (kind !== 'move' && kind !== 'assault') continue;
       if (Math.hypot(s.x - mx, s.y - my) > BREACH_REPATH_RADIUS) continue;
       const dest = s.path[s.path.length - 1];
-      this.pendingPaths.set(s.id, { spot: { x: Math.floor(dest.x), y: Math.floor(dest.y), l: dest.l ?? 0 } });
+      this.pendingPaths.set(s.id, { spot: { x: Math.floor(dest.x), y: Math.floor(dest.y), l: dest.l ?? 0 }, task: null });
     }
   }
 
@@ -3029,6 +3121,7 @@ export class Sim {
         s.path = null;
         s.targetId = -1;
         s.meleeId = -1;
+        s.meleeResume = null;
         if (s.task) this.dropTask(s);
         this.triggerSuccession(s);
       }
@@ -3073,6 +3166,7 @@ export class Sim {
       this.pendingUnitEvents.push({ kind: 'rallied', x: s.x, y: s.y, side: s.side, name: s.name, id: s.id });
     }
     if (s.mental === 'broken' && wasMental !== 'broken') {
+      if (s.inEmplacement >= 0 && this.emplacements[s.inEmplacement].state === 'deployed') s.fledGun = true;
       this.pendingUnitEvents.push({ kind: 'broken', x: s.x, y: s.y, side: s.side, name: s.name, id: s.id });
       // Overwhelmed at contact: ≥2 enemies within MELEE_ENGAGE → capture
       // instead of flee. Count BEFORE flee clears state (a broken man clears
@@ -3111,6 +3205,13 @@ export class Sim {
     // tasks, orders, and ranged fire until it resolves (kill, down, or rout)
     if (s.meleeId < 0 && s.mental !== 'pinned' && s.mental !== 'broken' && (this.tick + s.id) % 10 === 0) this.considerMelee(s);
     if (s.meleeId >= 0 && this.updateMelee(s)) return;
+    // The fight is over and he came through it: back onto the walk it
+    // interrupted, if his team is still on that order. Queued, like a breach
+    // repath — he re-solves the journey he was on, he is not re-ordered.
+    if (s.meleeResume) {
+      if (this.eligible(s) && this.legInProgress(this.teams[s.teamId].orderState)) this.pendingPaths.set(s.id, { spot: s.meleeResume, task: null });
+      s.meleeResume = null;
+    }
 
     // rescue / ammo run / weapon succession: a bonded squadmate may pull a
     // casualty out of the fight, ferry belts to a dry gunner, or take over a
@@ -3126,6 +3227,7 @@ export class Sim {
       this.considerAmmoRunner(s);
       this.considerPickup(s);
       this.considerLoadPickup(s);
+      this.considerRemanGun(s);
     }
 
     // stamina: recovers when settled and not under heavy fire (drain lives in advance())
@@ -3261,10 +3363,7 @@ export class Sim {
     // updateEmplacement's fire loop bails on state before ever reaching
     // pickFirer, so excluding personal fire here too would just strand the
     // crew unarmed. Packed, everyone fights with whatever's in their hands.
-    if (s.inEmplacement >= 0) {
-      const emp = this.emplacements[s.inEmplacement];
-      if (emp && emp.state === 'deployed' && (s.weapon === EMPLACEMENTS[emp.kind].weapon || pickFirer(this, emp)?.id === s.id)) return;
-    }
+    if (this.servedGun(s)) return;
 
     // Order-level fire discipline: sneak and (untriggered) ambush hold fire
     // entirely; fast holds fire only while actually sprinting.
@@ -3676,6 +3775,27 @@ export class Sim {
       return;
     }
     s.task = null;
+  }
+
+  // A crewman who broke and ran from a deployed gun walks back to it once he
+  // is steady again (#787). Nothing else brought him back: the defending
+  // commander re-posts a squad only when an enemy stands on its post, so a
+  // crew that routed 30 m and recovered sat out the battle beside a gun that
+  // was still in working order (probed: one MG42 crew alive and off its gun
+  // for a whole 30-minute battle, the gun silent). He waits while an enemy
+  // holds the gun, and gives up the errand if the gun is no longer set up.
+  private considerRemanGun(s: Soldier): void {
+    if (!s.fledGun || s.task || s.path || s.mental !== 'steady' || s.meleeId >= 0) return;
+    const e = s.inEmplacement >= 0 ? this.emplacements[s.inEmplacement] : null;
+    if (!e || e.state !== 'deployed' || Math.hypot(s.x - e.x, s.y - e.y) <= CREW_RADIUS) {
+      s.fledGun = false;
+      return;
+    }
+    for (const o of this.soldiers) {
+      if (o.side !== s.side && o.alive && !o.downed && !o.captured && Math.hypot(o.x - e.x, o.y - e.y) <= GUN_HELD_RADIUS) return;
+    }
+    const spot = this.findSpot(Math.floor(e.x), Math.floor(e.y), new Set());
+    if (spot) this.pathTo(s, { x: spot.x, y: spot.y, l: 0 });
   }
 
   // Idle soldier within 2m of a same-side dropped kit that outranks his
@@ -4340,6 +4460,10 @@ export class Sim {
     m.meleeId = oppId;
     m.meleePhase = 0.4; // start at guard; first strike after the windup below
     m.meleeTempo = 1 / this.rng.range(0.9, 1.5);
+    if (m.path) {
+      const dest = m.path[m.path.length - 1];
+      m.meleeResume = { x: Math.floor(dest.x), y: Math.floor(dest.y), l: dest.l ?? 0 };
+    }
     m.path = null;
     m.targetId = -1;
     m.mountTarget = -1;
@@ -4552,6 +4676,29 @@ export class Sim {
     }
   }
 
+  // The deployed gun this man's hands are on, if any: he holds its gunner
+  // slot, or he is the one firing it this tick. The rule updateSoldier gates
+  // his personal fire on, in one place.
+  private servedGun(s: Soldier): Emplacement | null {
+    if (s.inEmplacement < 0) return null;
+    const emp = this.emplacements[s.inEmplacement];
+    return emp && emp.state === 'deployed' && (s.weapon === EMPLACEMENTS[emp.kind].weapon || pickFirer(this, emp)?.id === s.id) ? emp : null;
+  }
+
+  // The ammunition a man is actually firing from, for the UI (#787). On foot
+  // that is his own magazine and everything he carries. Serving a deployed
+  // gun it is the gun's: the belt on it (tubes and AT guns load a round a
+  // shot, so 0) and the stock its crew at the gun can feed it — the same men
+  // consumeEmplacementAmmo draws on. His own magLeft says nothing there: a
+  // tripod gunner's read 250 while the gun changed belts beside him.
+  firingAmmo(s: Soldier): { mag: number; reserve: number } {
+    const emp = this.servedGun(s);
+    if (!emp) return { mag: s.magLeft, reserve: Object.values(s.ammo).reduce((a: number, n) => a + (n ?? 0), 0) };
+    const w: WeaponDef = WEAPONS[EMPLACEMENTS[emp.kind].weapon];
+    const reserve = crewNear(this, emp).reduce((a, m) => a + (m.ammo[w.ammo.type] ?? 0), 0);
+    return { mag: w.arc || w.pen !== undefined ? 0 : emp.magLeft, reserve };
+  }
+
   woundSummary(s: Soldier): string {
     return s.wounds.map(woundLabel).slice(-2).join(', ');
   }
@@ -4600,6 +4747,8 @@ export class Sim {
         s.grenadeCooldownUntil,
         s.entryHoldUntil,
         s.captured,
+        s.fledGun,
+        s.meleeResume ? `${s.meleeResume.x},${s.meleeResume.y},${s.meleeResume.l}` : '',
         Math.round((s.crewSkill.mg ?? 0) * 1e6),
         Math.round((s.crewSkill.mortar ?? 0) * 1e6),
         Math.round((s.crewSkill.gun ?? 0) * 1e6),

@@ -414,6 +414,51 @@ describe('simulation', () => {
     for (const e of hit) expect(Math.hypot(e.dx!, e.dy!)).toBeCloseTo(1, 6);
   });
 
+  it('a team seen moving onto ground the other side holds is announced once, to that side (#787)', () => {
+    const stage = (wall: boolean) => {
+      const map = new GameMap(80, 20);
+      if (wall) for (let y = 0; y < 20; y++) map.setTerrain(40, y, 'hedge'), map.setTerrain(41, y, 'hedge'), map.setTerrain(42, y, 'hedge');
+      const sim = new Sim(map, 12);
+      sim.addSquad('blue', 'Able', [{ name: 'A', weapon: 'garand', x: 20.5, y: 10.5, ammo: {} }]);
+      const red = sim.addSquad('red', 'Gruppe', [
+        { name: 'R1', weapon: 'kar98k', x: 60.5, y: 10.5, ammo: {}, xp: 40 },
+        { name: 'R2', weapon: 'kar98k', x: 60.5, y: 11.5, ammo: {}, xp: 40 },
+      ]);
+      sim.soldiers[red.soldierIds[0]].role = 'leader'; // led veterans: they will walk at a rifle in the open
+      for (const s of sim.soldiers) {
+        s.magLeft = 0;
+        s.morale = 1;
+      }
+      return { sim, team: sim.teams[red.teamIds[0]] };
+    };
+    const closing = (sim: Sim, ticks: number) => {
+      const out: UnitEvent[] = [];
+      for (let i = 0; i < ticks; i++) {
+        sim.step();
+        out.push(...sim.takeUnitEvents().filter((e) => e.kind === 'closing'));
+      }
+      return out;
+    };
+
+    // In plain sight, ordered onto the blue man's position.
+    const open = stage(false);
+    open.sim.orderTeam(open.team.id, { kind: 'move', x: 22, y: 10.5 });
+    const seen = closing(open.sim, 120);
+    expect(seen.map((e) => [e.side, e.team])).toEqual([['red', open.team.name]]); // once for the order, not once a sweep
+    expect(open.sim.soldierVisibleTo('blue', open.sim.soldiers[seen[0].id!])).toBe(true); // the man named is one blue can see
+
+    // In plain sight, but walking somewhere blue is not.
+    const away = stage(false);
+    away.sim.orderTeam(away.team.id, { kind: 'move', x: 60.5, y: 4.5 });
+    expect(closing(away.sim, 120)).toEqual([]);
+
+    // Coming for the same ground behind a hedgerow nobody can see through.
+    const hidden = stage(true);
+    hidden.sim.orderTeam(hidden.team.id, { kind: 'move', x: 22, y: 10.5 });
+    expect(closing(hidden.sim, 30)).toEqual([]);
+    expect(hidden.sim.soldierVisibleTo('blue', hidden.sim.soldiers[1])).toBe(false);
+  });
+
   it('waypoint queue dispatches legs in order; a direct order cancels it', () => {
     const sim = new Sim(new GameMap(60, 20), 1);
     sim.addSquad('blue', 'a', [{ name: 'A', weapon: 'garand', x: 2.5, y: 10.5 }]);

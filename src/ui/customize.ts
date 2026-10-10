@@ -38,7 +38,6 @@ const ADV_THEATER: [keyof TheaterConfig, string, (number | string)[]][] = [
 const ADV_CAMPAIGN: [keyof CampaignConfig, string, (number | string | boolean)[]][] = [
   ['victory', 'Victory', ['objectives', 'majority']],
   ['blueCompanies', 'US companies', [2, 3, 4]],
-  ['redDoctrine', 'Enemy doctrine', ['defensive', 'offensive']],
   // The OQ5 player-facing realism toggles — each a live system with a
   // legible off-state (supply S50, recon S53, night tempo S52).
   ['supply', 'Supply lines', [true, false]],

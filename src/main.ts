@@ -33,6 +33,8 @@ import { ManualScreen } from './ui/manual';
 import { drawMarkRing, Tutorial, type Circle, type WorldMark } from './ui/tutorial';
 import { TheaterView } from './render/theater-view';
 import { TheaterHud } from './ui/theater-hud';
+import { contactBrief } from './ui/contact-brief';
+import { fmtEta, type MarchPreview, type ViewInset } from './render/theater-view';
 import { CustomizeScreen } from './ui/customize';
 import { DEFAULT_PRESET, presetSpec } from './campaign/presets';
 import { SPEC_TAG, specStream, type CampaignConfig, type TheaterConfig } from './campaign/spec';
@@ -42,8 +44,8 @@ import { makeWarGoals, warStatus, type WarGoals } from './strategic/goals';
 import { DEPLOY_ATK_DEPTH, DEPLOY_DEF_LINE, DEPLOY_DEF_DEFAULT } from './strategic/deploy';
 import { ContactIntel, OmniscientIntel, type IntelView } from './strategic/intel';
 import { Commander2, RED_V2 } from './strategic/planner';
-import { addForce, type CoarseBattle, type FrontV2, type MoveReject } from './strategic/theater/force';
-import { orderMove } from './strategic/theater/step';
+import { addForce, pushEvent, type CoarseBattle, type FrontV2, type MoveReject } from './strategic/theater/force';
+import { firstContactOnMarch, orderHalt, orderMove, previewMove } from './strategic/theater/step';
 import { battleCatchUpMin, openBattle, retreatForce, stepWar } from './strategic/theater/war';
 import { syncStrengthsV2 } from './strategic/theater/sync';
 import type { Contact } from './strategic/theater/contact';
@@ -138,6 +140,12 @@ interface SessionV2 {
   battle: { b: CoarseBattle; tb: TheaterBattle } | null;
   pending: Contact | null;
   selectedForce: number;
+  // Frame the player's sector once the theater HUD is laid out: the boot
+  // camera measures the panels, and they do not exist until the first frame.
+  needsFrame: boolean;
+  // Centre the map here on the next frame, once the HUD has laid out the
+  // panel that made the request (the contact card changes the clear rectangle).
+  centerNext: { x: number; y: number } | null;
 }
 interface Session {
   campaign: Campaign;
@@ -405,6 +413,25 @@ const theaterHud = new TheaterHud({
   togglePause: () => { stratPaused = !stratPaused; tutorial?.notify('speed-changed'); },
   setSpeed: (i) => { speedIdx = i; tutorial?.notify('speed-changed'); },
   openMenu: () => { openPauseMenu(); },
+  fitAll: () => { S().v2?.view.fitAll(view.w, view.h); },
+  focusNode: (n) => {
+    const v2 = S().v2;
+    if (v2) v2.view.centerOn(v2.front.theater.nodes[n].pos, view.w, view.h);
+  },
+  focus: (e) => {
+    const v2 = S().v2;
+    if (!v2) return;
+    // The place, else one of OUR forces in it: never the enemy's true position.
+    const own = v2.front.forces.find((f) => f.side === 'blue' && e.forceIds.includes(f.id));
+    const at = e.nodeId !== undefined ? v2.front.theater.nodes[e.nodeId].pos : own ? v2.view.forceXY(own) : null;
+    if (at) v2.view.centerOn(at, view.w, view.h);
+  },
+  halt: () => {
+    const v2 = S().v2;
+    if (!v2) return;
+    const r = orderHalt(v2.front, v2.selectedForce);
+    v2.view.flash(r.ok ? `${v2.front.forces.find((f) => f.id === v2.selectedForce)!.name} halts` : MOVE_REJECT_TEXT[r.reason]);
+  },
 });
 const tooltip = new Tooltip(hud.root);
 const healthPanel = new HealthPanel(hud.root, () => { inspectedSoldier = -1; });
@@ -645,6 +672,32 @@ function viewportInset(): { left: number; top: number; bottom: number } {
   };
 }
 
+// The theater's counterpart: which borders of the canvas the theater HUD
+// covers, measured from its blocks. On a desktop the side column takes the
+// left edge and the bar the top. On a phone in portrait there is no column:
+// the bar and the strip stack on top, the card and the log at the bottom. On
+// a short screen the bar sits IN the column and takes nothing from the top.
+function theaterInset(): ViewInset {
+  const out: ViewInset = { left: 0, top: 0, right: 0, bottom: 0 };
+  const box = (sel: string): DOMRect | null => {
+    const r = theaterHud.root.querySelector(sel)?.getBoundingClientRect();
+    return r && r.width > 0 && r.height > 0 ? r : null;
+  };
+  const side = box('.th-side');
+  const column = side && side.height >= view.h * 0.5 && side.width < view.w * 0.5 ? side : null;
+  if (column) out.left = column.right;
+  const inColumn = (r: DOMRect): boolean => column !== null && r.right <= column.right + 1;
+  const head = box('.th-head');
+  if (head && !inColumn(head)) out.top = head.bottom;
+  for (const sel of ['.th-strip', '.th-force', '.th-log', '.th-contact']) {
+    const r = box(sel);
+    if (!r || inColumn(r)) continue;
+    if (r.top + r.height / 2 < view.h / 2) out.top = Math.max(out.top, r.bottom);
+    else out.bottom = Math.max(out.bottom, view.h - r.top);
+  }
+  return out;
+}
+
 const MOBILE_CAP_FRAC = 0.35;
 
 function bootCamera(s: Sim, cw: number, ch: number): { x: number; y: number; scale: number } {
@@ -725,6 +778,7 @@ const MOVE_REJECT_TEXT: Record<MoveReject, string> = {
   engaged: 'Engaged — they fight where they stand',
   'queued-at-defile': 'Queued at the bridge — wait for the crossing',
   'already-there': 'Already holding that ground',
+  'not-moving': 'Already halted',
   'no-route': 'No road reaches there',
   'destination-unholdable': "Can't hold open water — take the bridge or the bank",
 };
@@ -826,7 +880,10 @@ function stepTheaterMinuteV2(v2: SessionV2): void {
     advanceDays(S().campaign, v2.front.day - prevDay);
     if (v2.front.day % REINFORCE_CYCLE_DAYS === 0) {
       const arrived = fillReplacements(S().campaign, v2.front.day * 31 + 7, REINFORCE_PER_COMPANY);
-      if (arrived > 0) v2.view.flash(`+${arrived} replacements arrived`);
+      if (arrived > 0) {
+        v2.view.flash(`+${arrived} replacements arrived`);
+        pushEvent(v2.front, { min: v2.front.clockMin, kind: 'replacements', text: `${arrived} replacements arrive`, forceIds: [] });
+      }
     }
     syncStrengthsV2(S().campaign, v2.front);
     prevDay = v2.front.day;
@@ -841,39 +898,39 @@ function stepTheaterMinuteV2(v2: SessionV2): void {
   }
 }
 
+// The contact decision. A card in the theater HUD, not a screen over it: the
+// map stays up and is centred on the fight, because where the fight is, what
+// stands near it and what ground it is on are the decision.
 function showContactModalV2(c: Contact): void {
   const v2 = S().v2!;
   const atk = v2.front.forces.find((f) => f.id === c.attackerId)!;
   const def = v2.front.forces.find((f) => f.id === c.defenderId)!;
-  const playerAttacks = atk.side === 'blue';
-  const trivial =
-    atk.strength > 0 && def.strength > 0 &&
-    (atk.strength >= def.strength * TRIVIAL_RATIO || def.strength >= atk.strength * TRIVIAL_RATIO);
-  const siteName = c.site.kind === 'node' ? v2.front.theater.nodes[c.site.nodeId].name : 'the road';
-  // Odds in plain words: the man reading this should not have to divide.
-  const own = playerAttacks ? atk : def;
-  const foe = playerAttacks ? def : atk;
-  const ratio = Math.max(own.strength, foe.strength) / Math.max(1, Math.min(own.strength, foe.strength));
-  const rtxt = ratio < 2 ? ratio.toFixed(1) : Math.round(ratio).toString();
-  const odds =
-    ratio < 1.1 ? 'Even match.' : own.strength > foe.strength ? `You outnumber them ${rtxt}:1.` : `They outnumber you ${rtxt}:1.`;
-  const oddsLine = trivial ? `${odds} Auto-resolve is available at ${TRIVIAL_RATIO}:1.` : odds;
-  const col = (f: typeof atk): string =>
-    `<div class="fc-col ${f.side === 'blue' ? 'us' : 'ge'}"><h4>${f.name}</h4><p class="fc-str">${f.strength} men</p></div>`;
-  debriefEl.innerHTML = `<div class="db-scroll"><div class="db">
-    <h1>CONTACT</h1>
-    <p class="sub">${atk.name} has met ${def.name} at ${siteName}.</p>
-    <div class="fc">${col(atk)}<div class="fc-vs">VS</div>${col(def)}</div>
-    <p class="fc-odds">${oddsLine}</p>
-    ${playerAttacks ? '' : '<p class="fc-odds fc-forced">They chose this fight. A defender cannot stand down.</p>'}
-    </div></div>
-    <div class="db-actions">
-      <button id="fight" class="primary">${playerAttacks ? 'Attack' : 'Defend'}</button>
-      ${trivial ? '<button id="autoresolve">Auto-resolve</button>' : ''}
-      ${playerAttacks ? '<button id="standdown">Stand down</button>' : ''}
-    </div>`;
-  debriefEl.style.display = 'flex';
+  const b = contactBrief(v2.front, c, { supply: v2.campaignCfg.supply, fog: v2.campaignCfg.recon === 'contacts' });
+  const { playerAttacks, trivial } = b;
+  const col = (s: (typeof b.sides)[number]): string =>
+    `<div class="fc-col ${s.side === 'blue' ? 'us' : 'ge'}"><h4>${s.name}</h4><p class="fc-str">${s.men}</p><p class="fc-state">${s.state}</p></div>`;
+  theaterHud.showContact(`
+    <h1>CONTACT <span class="fc-place">${b.title}</span></h1>
+    <p class="fc-kind">${b.kind}</p>
+    <div class="fc">${col(b.sides[0])}<div class="fc-vs">VS</div>${col(b.sides[1])}</div>
+    <p class="fc-odds">${b.odds}</p>
+    ${b.forced ? `<p class="fc-odds fc-forced">${b.forced}</p>` : ''}
+    <p class="fc-facts">${b.facts.join(' ')}</p>
+    <div class="fc-actions">
+      <button id="fight" class="hbtn primary">${playerAttacks ? 'Attack' : 'Defend'}</button>
+      ${trivial ? '<button id="autoresolve" class="hbtn">Auto-resolve</button>' : ''}
+      ${playerAttacks ? '<button id="standdown" class="hbtn">Stand down</button>' : ''}
+    </div>`);
+  v2.selectedForce = -1;
+  v2.centerNext = c.site.kind === 'node' ? v2.front.theater.nodes[c.site.nodeId].pos : v2.view.forceXY(def);
+  const close = (): void => {
+    theaterHud.hideContact();
+    tutorial?.notify('contact-closed');
+  };
   document.getElementById('fight')!.onclick = () => {
+    close();
+    startTheaterBattle(c);
+  };  document.getElementById('fight')!.onclick = () => {
     debriefEl.style.display = 'none';
     tutorial?.notify('contact-closed');
     startTheaterBattle(c);
@@ -887,15 +944,13 @@ function showContactModalV2(c: Contact): void {
       // exact dominance OQ3 exists to kill, mirrored.
       openBattle(v2.front, c);
       v2.view.flash(`${atk.name} engages ${def.name} — outcome shortly`);
-      debriefEl.style.display = 'none';
       v2.pending = null;
-      tutorial?.notify('contact-closed');
+      close();
       save();
     };
   }
   if (playerAttacks) {
     document.getElementById('standdown')!.onclick = () => {
-      debriefEl.style.display = 'none';
       // Breaking contact is a MOVE, not a wish: a force left halted inside
       // CONTACT_M re-contacts every minute and the modal never stops. The
       // §3.6 retreat parks it beyond threat range; trapped = hold (a
@@ -903,7 +958,7 @@ function showContactModalV2(c: Contact): void {
       retreatForce(v2.front, atk, null, { trapped: 'stay' });
       v2.pending = null;
       save();
-      tutorial?.notify('contact-closed');
+      close();
     };
   }
   tutorial?.notify('contact-open');
@@ -1110,6 +1165,8 @@ function startCampaignV2(
         battle: null,
         pending: null,
         selectedForce: -1,
+        needsFrame: true,
+        centerNext: null,
       },
     };
     // §4.8: a reloaded red keeps its axes — restore the persisted plan.
@@ -1450,6 +1507,7 @@ function commitOrder(sx: number, sy: number, opts: { squadForce: boolean; floors
 function stratTapSelect(sx: number, sy: number): void {
   const v2 = S().v2;
   if (v2) {
+    if (v2.pending) return; // a contact waits for its answer: the map is for looking
     v2.selectedForce = v2.view.forceAtScreen(v2.front, 'blue', sx, sy, view.w, view.h);
     if (v2.selectedForce >= 0) tutorial?.notify('force-selected');
     return;
@@ -1459,16 +1517,45 @@ function stratTapSelect(sx: number, sy: number): void {
   selectedChit = chit ? chit.id : -1;
 }
 
+// The march the player is pointing at: the cursor on desktop, the held finger
+// on touch. Asked of previewMove, so what is drawn is what the order will do.
+// Cached per minute: the ETA is a shadow march, and the pointer sits still
+// for many frames.
+let stratHoldAt: { x: number; y: number } | null = null;
+let previewKey = '';
+let previewCached: MarchPreview | null = null;
+function theaterPreview(v2: SessionV2): MarchPreview | null {
+  const at = stratHoldAt ?? (mouse.onCanvas && !stratDrag?.panning ? mouse : null);
+  if (!at || v2.selectedForce < 0 || v2.pending || menu.isOpen) return null;
+  const n = v2.view.nodeAtScreen(at.x, at.y, view.w, view.h);
+  if (n < 0) return null;
+  const f = v2.front.forces.find((x) => x.id === v2.selectedForce);
+  const key = `${v2.selectedForce}:${n}:${v2.front.clockMin}:${f?.path.join(',')}`;
+  if (key !== previewKey) {
+    previewKey = key;
+    const p = previewMove(v2.front, v2.selectedForce, n, { nightTempo: v2.campaignCfg.nightTempo });
+    // What the player knows of the enemy: last-seen reports under fog, the
+    // forces themselves otherwise.
+    const enemies = v2.campaignCfg.recon === 'contacts'
+      ? (v2.front.intel?.blue ?? []).map((c) => c.pos)
+      : v2.front.forces.filter((x) => x.side === 'red' && x.strength > 0).map((x) => x.pos);
+    previewCached = !p.ok
+      ? p.reason === 'already-there' ? null : { ok: false, nodeId: n }
+      : { ok: true, pos: p.pos, path: p.path, etaMin: p.etaMin, contact: f ? firstContactOnMarch(v2.front, f, p, enemies, { nightTempo: v2.campaignCfg.nightTempo }) : null };
+  }
+  return previewCached;
+}
+
 function stratOrderMove(sx: number, sy: number): void {
   const v2 = S().v2;
   if (v2) {
-    if (v2.selectedForce < 0) return;
+    if (v2.selectedForce < 0 || v2.pending) return;
     const n = v2.view.nodeAtScreen(sx, sy, view.w, view.h);
     if (n < 0) return;
     const r = orderMove(v2.front, v2.selectedForce, n, { nightTempo: v2.campaignCfg.nightTempo });
     if (!r.ok) v2.view.flash(MOVE_REJECT_TEXT[r.reason]);
     else {
-      v2.view.flash(`${v2.front.forces.find((f) => f.id === v2.selectedForce)!.name} moving — ETA ${Math.round(r.etaMin / 60)}h${Math.round(r.etaMin % 60)}m`);
+      v2.view.flash(`${v2.front.forces.find((f) => f.id === v2.selectedForce)!.name} moving — ETA ${fmtEta(r.etaMin)}`);
       tutorial?.notify('move-ordered');
     }
     return;
@@ -1501,8 +1588,13 @@ function escapeLadder(): boolean {
   return false;
 }
 
+// Theater drag-pan: a left press that travels past the slop is a pan, and its
+// release does not select.
+const STRAT_DRAG_SLOP = 4;
+let stratDrag: { x: number; y: number; panning: boolean } | null = null;
 canvas.addEventListener('mousedown', (e) => {
   if (mode === 'menu') return;
+  if (e.button === 0 && mode === 'strategic' && S().v2) stratDrag = { x: e.clientX, y: e.clientY, panning: false };
   if (e.button === 0) beginBox(e.clientX, e.clientY);
   if (e.button === 2) beginOrderAnchor(e.clientX, e.clientY);
 });
@@ -1511,6 +1603,17 @@ window.addEventListener('mousemove', (e) => {
   mouse.y = e.clientY;
   mouse.onCanvas = e.target === canvas;
   trackAlt(e);
+  if (stratDrag && e.buttons & 1 && mode === 'strategic') {
+    const v2 = S().v2;
+    if (!stratDrag.panning && Math.hypot(e.clientX - stratDrag.x, e.clientY - stratDrag.y) > STRAT_DRAG_SLOP) stratDrag.panning = true;
+    if (v2 && stratDrag.panning) {
+      v2.view.panX += e.clientX - stratDrag.x;
+      v2.view.panY += e.clientY - stratDrag.y;
+      v2.view.clampPan(view.w, view.h);
+      stratDrag.x = e.clientX;
+      stratDrag.y = e.clientY;
+    }
+  }
   if (mode !== 'battle') return;
   if (dragStart && e.buttons & 1) updateBox(e.clientX, e.clientY);
 });
@@ -1524,7 +1627,7 @@ canvas.addEventListener('mouseup', (e) => {
   if (e.button !== 0 || mode === 'menu') return;
 
   if (mode === 'strategic') {
-    stratTapSelect(e.clientX, e.clientY);
+    if (!stratDrag?.panning) stratTapSelect(e.clientX, e.clientY);
     dragStart = null;
     boxRect = null;
     return;
@@ -1550,6 +1653,7 @@ canvas.addEventListener('contextmenu', (e) => {
   // separate listener below.
 });
 window.addEventListener('mouseup', (e) => {
+  if (e.button === 0) stratDrag = null; // after the canvas handler has read it
   if (e.button !== 2) return;
   if (!rmbDown || !rmbAnchor) { rmbDown = false; rmbAnchor = null; return; }
   rmbDown = false;
@@ -1650,14 +1754,21 @@ const stratTouch: TouchHandlers = {
     cam2.panY += dy;
     cam2.clampPan(view.w, view.h);
   },
-  holdStart: () => {},
-  holdMove: () => {},
-  holdEnd: (x, y) => stratOrderMove(x, y),
-  holdCancel: () => {},
+  holdStart: (x, y) => { stratHoldAt = { x, y }; },
+  holdMove: (x, y) => { stratHoldAt = { x, y }; },
+  holdEnd: (x, y) => { stratHoldAt = null; stratOrderMove(x, y); },
+  holdCancel: () => { stratHoldAt = null; },
   pinch: (factor, mx, my, dmx, dmy) => {
+    const v2 = S().v2;
+    if (v2) {
+      v2.view.panX += dmx;
+      v2.view.panY += dmy;
+      v2.view.zoomAt(factor, mx, my, view.w, view.h);
+      return;
+    }
     const cam2 = stratCam();
     const before = cam2.zoomMul;
-    cam2.zoomMul = Math.max(STRAT_ZOOM[0], Math.min(STRAT_ZOOM[1] * (S().v2 ? 2 : 1), before * factor));
+    cam2.zoomMul = Math.max(STRAT_ZOOM[0], Math.min(STRAT_ZOOM[1], before * factor));
     // keep the map point under the pinch midpoint fixed
     const k = cam2.zoomMul / before;
     cam2.panX = mx - k * (mx - cam2.panX) + dmx;
@@ -1674,13 +1785,17 @@ const stratTouch: TouchHandlers = {
 bindTouch(canvas, () => (mode === 'battle' ? battleTouch : stratTouch));
 canvas.addEventListener('wheel', (e) => {
   e.preventDefault();
-  if (mode !== 'battle') return;
   // scroll = zoom (trackpad two-finger scroll, pinch, and mouse wheel alike);
   // ~1.003^px: a trackpad flick ramps fast, a mouse notch (dy≈100) ≈1.35×
   const dy = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;
+  const factor = Math.pow(1.003, -dy);
+  // Two cameras, one wheel. The theater zooms about the cursor at once
+  // (TheaterView.zoomAt owns its own clamps). The battle camera is eased.
+  if (mode === 'strategic') S().v2?.view.zoomAt(factor, e.clientX, e.clientY, view.w, view.h);
+  if (mode !== 'battle') return;
   // The wheel sets where the zoom is GOING; the frame loop eases the camera
   // there (easeCamera). A notch applied in one step is a jump cut.
-  zoomGoal = Math.min(cam.maxScale, Math.max(cam.minScale, (zoomGoal || cam.scale) * Math.pow(1.003, -dy)));
+  zoomGoal = Math.min(cam.maxScale, Math.max(cam.minScale, (zoomGoal || cam.scale) * factor));
   zoomAtX = e.clientX;
   zoomAtY = e.clientY;
 });
@@ -1875,6 +1990,26 @@ function cycleFloorFocus(): void {
   selectVehicle: (i: number) => selectVehicle(i),
   getCampaign: () => S().campaign,
   getV2: () => S().v2,
+  // Advance the theater by exact minutes through the SAME tick the frame loop
+  // runs (red planner, war step, day roll). scripts/stratsweep.mjs stages its
+  // states with this: a wall-clock run at 60x never stops on the same minute
+  // twice. Returns the minutes stepped; stops at a contact.
+  // Freeze (or with null, release) the theater's render clock, so a mark that
+  // animates is the same frame on every run of the sweep.
+  freezeFx: (t: number | null) => {
+    const v2 = S().v2;
+    if (v2) v2.view.frozenAt = t;
+  },
+  stepTheater: (minutes: number): number => {
+    const v2 = S().v2;
+    let n = 0;
+    while (v2 && n < minutes && !v2.pending) {
+      stepTheaterMinuteV2(v2);
+      n++;
+    }
+    if (v2?.pending) showContactModalV2(v2.pending); // as the frame loop does
+    return n;
+  },
   startEngagementBattle,
   showDebrief,
   setFow: (on: boolean) => {
@@ -1915,6 +2050,7 @@ function frame(now: number): void {
   if (!(mode === 'battle' ? paused : stratPaused) && !held) fxNow += dtReal;
   if (mode === 'battle') easeCamera(dtReal);
   hud.root.style.display = mode === 'battle' ? '' : 'none';
+  document.documentElement.classList.toggle('in-battle', mode === 'battle'); // gates the portrait guidance (ui.css)
   stratHud.root.style.display = mode === 'strategic' && !S().v2 ? '' : 'none';
   theaterHud.root.style.display = mode === 'strategic' && S().v2 ? '' : 'none';
   if (mode === 'menu') {
@@ -1934,9 +2070,19 @@ function frame(now: number): void {
       const st = warStatus(v2.front, v2.goals);
       if (st.state === 'decided') showOperationEnd(st.winner === 'blue' ? 'won' : 'lost');
     }
-    v2.view.clampPan(view.w, view.h);
-    v2.view.draw(ctx, v2.front, v2.selectedForce, stratPaused, SPEEDS[speedIdx], view.w, view.h);
     theaterHud.update(v2.front, v2.goals, v2.selectedForce, stratPaused, speedIdx, v2.campaignCfg.supply, v2.campaignCfg.recon === 'contacts', v2.campaignCfg.nightTempo);
+    v2.view.inset = theaterInset();
+    if (v2.needsFrame) {
+      v2.needsFrame = false;
+      v2.view.frameStart(v2.front, view.w, view.h);
+    }
+    if (v2.centerNext) {
+      v2.view.centerOn(v2.centerNext, view.w, view.h);
+      v2.centerNext = null;
+    }
+    v2.view.clampPan(view.w, view.h);
+    v2.view.preview = theaterPreview(v2);
+    v2.view.draw(ctx, v2.front, v2.selectedForce, stratPaused, SPEEDS[speedIdx], view.w, view.h);
     if (touchHold) drawHoldRing(ctx, touchHold, now);
   } else if (mode === 'strategic') {
     hud.updateIdle(selectedChit >= 0 || stratPaused);

@@ -9,9 +9,10 @@
 import { lightAt } from '../sim/solar';
 import type { Side } from '../sim/sim';
 import { coarseOdds, TRIVIAL_RATIO } from './bridge';
-import { battleSiteOf, COARSE_DEF_MULT, CROSSING_ASSAULT_MULT, type Theater } from './theater';
-import { anchorNode, CONTACT_M, route, type Force, type FrontV2 } from './theater/force';
-import { forceEtaMinutes, orderMove } from './theater/step';
+import { battleSiteOf, COARSE_DEF_MULT, CROSSING_ASSAULT_MULT, type NetPos, type Theater } from './theater';
+import { CONTACT_M, pathNodes, route, type Force, type FrontV2 } from './theater/force';
+import { forceEtaMinutes, orderMove, planMove } from './theater/step';
+import { THREAT_M } from './theater/war';
 import { graphGap } from './theater/contact';
 import { combatMult, effStrength } from './theater/combat';
 import type { IntelView } from './intel';
@@ -51,6 +52,14 @@ export interface OperationalPlan {
   axes: Axis[];
   reserveIds: number[];
 }
+
+// A force beaten in a fight reorganises this long before the planner orders
+// it to ATTACK again (it may still advance onto open ground or withdraw).
+// Measured over the 16 pin wars at 0, 120, 180, 240 and 360: blue-destroyed
+// stays at 0-1 and blue wins at 3-6 with no trend, so the length is a
+// doctrine choice, not a tuned value. What it buys is tempo: planner attacks
+// on the node a force was just thrown back from, inside the hour, go 7 -> 0.
+export const REORG_MIN = 240;
 
 export type StallCode = 'no-forces' | 'no-reachable-objective' | 'no-viable-attack' | 'goals-met-holding';
 export interface PlannerReport {
@@ -214,19 +223,76 @@ export class Commander2 {
     let viableSeen = false;
     let attackConsidered = false;
 
+    const threatAt = (pos: NetPos): number =>
+      intel
+        .contacts()
+        .filter((c) => graphGap(t, pos, c.pos) <= THREAT_M)
+        .reduce((a, c) => a + c.strength, 0);
+    // The withdraw test, asked of a march BEFORE it is ordered: nominal
+    // minutes to `dest`, or null when there is no route or the force would be
+    // overwhelmed somewhere along it. Without this the arms disagreed: one
+    // marched a force at an enemy the withdraw arm then turned it away from,
+    // every eval, and a withdrawal picked its rear node by id and could route
+    // THROUGH the enemy it was fleeing (jtbug #762: blue destroyed on 5 of 16
+    // pin seeds, up to 86 mid-march reversals in one war).
+    const safeMarchMin = (f: Force, dest: number): number | null => {
+      const march = planMove(front, f, dest);
+      if (!march) return null;
+      const limit = this.doctrine.withdrawRatio * effStrength(f);
+      if (pathNodes(t, march.pos, march.path).some((n) => threatAt({ kind: 'node', nodeId: n }) > limit)) return null;
+      // An enemy standing mid-road, further than THREAT_M from both ends, is
+      // invisible from the nodes: count what stands on each road of the march
+      // (on the force's own road, only what lies ahead of it).
+      const from = march.pos;
+      const blocked = march.path.some((eid, i) => {
+        let on = 0;
+        for (const c of intel.contacts()) {
+          if (c.pos.kind !== 'edge' || c.pos.edgeId !== eid) continue;
+          if (i === 0 && from.kind === 'edge' && (c.pos.s - from.s) * from.dir < 0) continue;
+          on += c.strength;
+        }
+        return on > limit;
+      });
+      return blocked ? null : march.nominalMin;
+    };
+
+    // The first place a march to `dest` meets the enemy: a defended node on
+    // the path, or an enemy standing on one of its roads. Null when the way
+    // is open as far as intel knows.
+    const firstFight = (f: Force, dest: number): { site: NetPos; defEff: number } | null => {
+      const march = planMove(front, f, dest);
+      if (!march) return null;
+      const nodes = pathNodes(t, march.pos, march.path);
+      const defendersNear = (site: NetPos): number =>
+        intel
+          .contacts()
+          .filter((c) => graphGap(t, site, c.pos) <= CONTACT_M)
+          .reduce((a, c) => a + c.strength, 0);
+      for (let i = 0; i < march.path.length; i++) {
+        const own = i === 0 && march.pos.kind === 'edge' ? march.pos : null;
+        const onRoad = intel
+          .contacts()
+          .filter((c) => c.pos.kind === 'edge' && c.pos.edgeId === march.path[i] && (!own || (c.pos.s - own.s) * own.dir >= 0))
+          .sort((p, q) => p.forceId - q.forceId)[0];
+        if (onRoad) return { site: onRoad.pos, defEff: defendersNear(onRoad.pos) };
+        const node: NetPos = { kind: 'node', nodeId: nodes[i] };
+        const at = defendersNear(node);
+        if (at > 0) return { site: node, defEff: at };
+      }
+      return null;
+    };
+
     for (const f of own) {
       if (f.role === 'garrison' || f.engagedIn !== null || f.queuedAt !== null) continue;
 
-      // Withdraw arm: local enemies overwhelm.
-      const localEnemy = intel
-        .contacts()
-        .filter((c) => graphGap(t, f.pos, c.pos) <= 1500)
-        .reduce((a, c) => a + c.strength, 0);
-      if (localEnemy > this.doctrine.withdrawRatio * effStrength(f)) {
+      // Withdraw arm: local enemies overwhelm. Fall back on the NEAREST
+      // friendly node that is clear of the enemy and can be reached clear.
+      if (threatAt(f.pos) > this.doctrine.withdrawRatio * effStrength(f)) {
         const rear = t.nodes
-          .filter((n) => intel.control(n.id) === this.side)
-          .filter((n) => intel.contacts().every((c) => graphGap(t, { kind: 'node', nodeId: n.id }, c.pos) > 1500))
-          .sort((a, b) => a.id - b.id);
+          .filter((n) => intel.control(n.id) === this.side && threatAt({ kind: 'node', nodeId: n.id }) === 0)
+          .map((n) => ({ id: n.id, min: safeMarchMin(f, n.id) }))
+          .filter((x): x is { id: number; min: number } => x.min !== null)
+          .sort((a, b) => a.min - b.min || a.id - b.id);
         for (const n of rear) {
           const r = orderMove(front, f.id, n.id);
           if (r.ok) {
@@ -251,6 +317,7 @@ export class Commander2 {
             .filter((c) => ids.includes(c.forceId))
             .reduce((a, c) => a + c.strength, 0);
           if (mine.length > 0 && mineEff < theirsEff && b.site.kind === 'node') {
+            if (safeMarchMin(f, b.site.nodeId) === null) break;
             const r = orderMove(front, f.id, b.site.nodeId);
             if (r.ok) orders.push({ forceId: f.id, dest: b.site.nodeId, why: 'commit-reserve' });
             break;
@@ -264,9 +331,15 @@ export class Commander2 {
       const here = f.pos.kind === 'node' && f.pos.nodeId === target;
       if (here) continue; // holding the objective
 
-      const defEff = this.defendersAt(front, intel, target);
-      if (defEff > 0) {
+      // The decision is taken on the FIRST fight the march would have, which
+      // is not always at the objective: an 'advance' on an open objective
+      // used to walk through a defended town on the way with no decision at
+      // all (64 of 369 battles in the 16 pin wars opened that way).
+      const fight = firstFight(f, target);
+      const defEff = fight?.defEff ?? 0;
+      if (fight) {
         attackConsidered = true;
+        if (f.repulsedAtMin !== null && front.clockMin - f.repulsedAtMin < REORG_MIN) continue;
         // The attack decision weighs the AXIS'S MASS — concentration is the
         // point: individual companies advance because the mass they belong
         // to clears the floor, and the reinforcement-join machinery stacks
@@ -278,7 +351,7 @@ export class Commander2 {
         const ownEff = Math.max(axisEff, effStrength(f));
         // Trivial doctrine: never attack INTO a trivial defender.
         if (defEff >= ownEff * TRIVIAL_RATIO) continue;
-        const { battleClass } = battleSiteOf(t, { kind: 'node', nodeId: target });
+        const { battleClass } = battleSiteOf(t, fight.site);
         let mult = COARSE_DEF_MULT[battleClass];
         if (battleClass === 'bridge-assault' || battleClass === 'ford-assault') mult *= CROSSING_ASSAULT_MULT;
         if (lightAt(front.clockMin) < 0.25) mult *= 1.0; // nightMult 1.0 until OQ7 lands a value
@@ -292,15 +365,15 @@ export class Commander2 {
         // the SAME shadow kernel over the prospective path orderMove would
         // set, so the decision and the march cannot disagree.
         if (this.opts.nightTempo) {
-          const r0 = route(t, anchorNode(t, f.pos), target);
-          if (r0) {
-            const prospective = f.pos.kind === 'edge' ? [f.pos.edgeId, ...r0.edges] : [...r0.edges];
-            const eta = forceEtaMinutes(front, { ...f, path: prospective }, target, { nightTempo: true });
+          const prospective = planMove(front, f, target);
+          if (prospective) {
+            const eta = forceEtaMinutes(front, { ...f, ...prospective }, target, { nightTempo: true });
             if (lightAt(front.clockMin + eta) < 0.25) continue;
           }
         }
         viableSeen = true;
       }
+      if (safeMarchMin(f, target) === null) continue;
       const r = orderMove(front, f.id, target);
       if (r.ok) orders.push({ forceId: f.id, dest: target, why: defEff > 0 ? 'attack' : 'advance' });
       else if (r.reason === 'already-there' || r.reason === 'engaged') continue;

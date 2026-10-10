@@ -8,13 +8,14 @@ import { lightAt } from '../../sim/solar';
 import type { Campaign } from '../../campaign/campaign';
 import { applyCoarseBlueLosses, coarseOutcome, TRIVIAL_RATIO } from '../bridge';
 import type { BattleRecord } from '../../campaign/campaign';
-import { battleSiteOf, COARSE_DEF_MULT, CROSSING_ASSAULT_MULT, type BattleClass } from '../theater';
+import { battleSiteOf, COARSE_DEF_MULT, CROSSING_ASSAULT_MULT, type BattleClass, type NetPos, type TheaterEdge } from '../theater';
 import {
   edgeById,
   incidentFoot,
   otherEnd,
   pushEvent,
   route,
+  standForce,
   type CoarseBattle,
   type Force,
   type FrontV2,
@@ -95,7 +96,7 @@ export function openBattle(front: FrontV2, c: Contact): CoarseBattle {
 // guaranteed winner.
 export function joinBattle(front: FrontV2, battle: CoarseBattle, f: Force): void {
   f.engagedIn = battle.id;
-  f.path = [];
+  standForce(front, f);
   battle.joined.push(f.id);
   const sides = battleSides(front, battle);
   battle.forced = trivialForcedStr(sides.atkStrength, sides.defStrength);
@@ -136,6 +137,51 @@ export function battleSides(front: FrontV2, battle: CoarseBattle): BattleSides {
   };
 }
 
+// Where a force set back `m` metres from `fromNode` down edge `e` stands:
+// PARKED there, or at the far end of a shorter road.
+function setbackOn(e: TheaterEdge, fromNode: number, m = RETREAT_SETBACK_M): NetPos {
+  const dir: 1 | -1 = e.a === fromNode ? 1 : -1;
+  return { kind: 'edge', edgeId: e.id, s: dir === 1 ? Math.min(e.lengthM, m) : Math.max(0, e.lengthM - m), dir };
+}
+
+// The setback on a road, pulled in when an enemy stands on the full one: a
+// remnant thrown back down this road earlier is parked at exactly
+// RETREAT_SETBACK_M. Each try is more than contact range short of the last,
+// so one of them stands clear of that remnant. Null when none is clear.
+// Dropping the whole road instead left a force with one road out nowhere to
+// go, and it was overrun where it could have stood 400 m short.
+const SETBACK_STEP_M = CONTACT_M + 100;
+function clearLanding(front: FrontV2, f: Force, e: TheaterEdge, fromNode: number): NetPos | null {
+  for (let m = RETREAT_SETBACK_M; m > CONTACT_M; m -= SETBACK_STEP_M) {
+    const pos = setbackOn(e, fromNode, m);
+    if (clearOfEnemies(front, f, pos)) return pos;
+  }
+  return null;
+}
+
+// A retreat that ends inside contact range of an enemy is not a retreat: the
+// two re-contact the same minute. Measured over the 16 pin wars: 6 beaten
+// forces were in a new battle the minute they fell back, 5 of them standing
+// on the exact metre an earlier loser of the other side was parked on.
+function clearOfEnemies(front: FrontV2, f: Force, pos: NetPos): boolean {
+  return front.forces.every((g) => g.side === f.side || g.strength <= 0 || graphGap(front.theater, pos, g.pos) > CONTACT_M);
+}
+
+// A beaten crossing assault is thrown back down its approach. When that
+// landing is not clear (a short road, an enemy on it) the force falls back
+// through the node behind it instead, by the same graph retreat as any loser.
+export function throwBack(front: FrontV2, f: Force, approach: TheaterEdge, siteNode: number): void {
+  const landing = clearLanding(front, f, approach, siteNode);
+  if (landing) {
+    f.pos = landing;
+    standForce(front, f);
+    pushEvent(front, { min: front.clockMin, kind: 'retreat', text: `${f.name} thrown back from the crossing`, forceIds: [f.id] });
+    return;
+  }
+  f.pos = { kind: 'node', nodeId: otherEnd(approach, siteNode) };
+  retreatForce(front, f, approach.id);
+}
+
 // §3.6 graph retreat, replacing the east-first DIRS bias: candidate incident
 // edges minus the enemy approach axis minus edges with an enemy inside
 // THREAT_M of their far node; score far-node control, then threat distance,
@@ -168,17 +214,16 @@ export function retreatForce(
     .map((e) => {
       const far = otherEnd(e, nodeId);
       const control = front.controlByNode[far] === f.side ? 0 : front.controlByNode[far] === null ? 1 : 2;
-      return { e, far, control, threat: -nearEnemy(far), len: e.lengthM };
+      return { e, far, control, threat: -nearEnemy(far), len: e.lengthM, landing: clearLanding(front, f, e, nodeId) };
     })
+    // The far node being clear is not enough: an enemy thrown back earlier
+    // can be parked on this very road, at this very setback.
+    .filter((c): c is typeof c & { landing: NetPos } => c.landing !== null)
     .sort((p, q) => p.control - q.control || p.threat - q.threat || p.len - q.len || p.e.id - q.e.id);
 
   if (candidates.length > 0) {
-    const { e } = candidates[0];
-    const dir: 1 | -1 = e.a === nodeId ? 1 : -1;
-    const s = dir === 1 ? Math.min(e.lengthM, RETREAT_SETBACK_M) : Math.max(0, e.lengthM - RETREAT_SETBACK_M);
-    f.pos = { kind: 'edge', edgeId: e.id, s, dir };
-    f.path = [];
-    f.dwellMin = 0;
+    f.pos = candidates[0].landing;
+    standForce(front, f);
     pushEvent(front, { min: front.clockMin, kind: 'retreat', text: `${f.name} falls back`, forceIds: [f.id] });
     return;
   }
@@ -187,8 +232,7 @@ export function retreatForce(
     // Voluntary break-off with nowhere to go: HOLD — and hold means stand
     // still whatever the caller left in the path, not resume the march
     // that caused the contact.
-    f.path = [];
-    f.dwellMin = 0;
+    standForce(front, f);
     return;
   }
 
@@ -205,8 +249,7 @@ export function retreatForce(
     }
     if (best) {
       f.pos = { kind: 'node', nodeId: best.n };
-      f.path = [];
-      f.dwellMin = 0;
+      standForce(front, f);
       pushEvent(front, { min: front.clockMin, kind: 'retreat', text: `${f.name} infiltrates to ${t.nodes[best.n].name}`, forceIds: [f.id], nodeId: best.n });
       return;
     }
@@ -291,14 +334,12 @@ export function resolveBattleV2(
       pushEvent(front, { min: front.clockMin, kind: 'overrun', text: `${l.name} is destroyed`, forceIds: [l.id] });
       continue;
     }
+    l.repulsedAtMin = front.clockMin;
     const beatenAssault = !attackerWins && (battleClass === 'bridge-assault' || battleClass === 'ford-assault') && sides.attackers.includes(l);
     if (beatenAssault && battle.approachEdgeId !== null) {
       const e = edgeById(t, battle.approachEdgeId);
       const siteNode = battle.site.kind === 'node' ? battle.site.nodeId : (l.pos.kind === 'edge' && l.pos.dir === 1 ? e.b : e.a);
-      const dir: 1 | -1 = e.a === siteNode ? 1 : -1;
-      const s = dir === 1 ? Math.min(e.lengthM, RETREAT_SETBACK_M) : Math.max(0, e.lengthM - RETREAT_SETBACK_M);
-      f2Park(l, e.id, s, dir);
-      pushEvent(front, { min: front.clockMin, kind: 'retreat', text: `${l.name} thrown back from the crossing`, forceIds: [l.id] });
+      throwBack(front, l, e, siteNode);
     } else {
       retreatForce(front, l, battle.approachEdgeId);
     }
@@ -313,12 +354,6 @@ export function resolveBattleV2(
   };
   pushEvent(front, ev);
   return { attackerWon: attackerWins, battleClass, record };
-}
-
-function f2Park(f: Force, edgeId: number, s: number, dir: 1 | -1): void {
-  f.pos = { kind: 'edge', edgeId, s, dir };
-  f.path = [];
-  f.dwellMin = 0;
 }
 
 function siteName(t: FrontV2['theater'], site: CoarseBattle['site']): string {
@@ -344,7 +379,11 @@ export interface StepResult {
 // §3.3 composition, one strategic minute.
 export function stepWar(front: FrontV2, campaign: Campaign, opts: StepOptions = {}): StepResult {
   front.clockMin++;
-  if (front.clockMin >= (front.day + 1) * 1440) front.day++;
+  // Day d runs from midnight to midnight: [(d - 1) x 1440, d x 1440). Day 1
+  // starts at 06:00 and is the short one. The roll used to sit a day late
+  // ((day + 1) x 1440), so "Day 1" lasted 42 hours and a war of D days ran
+  // D + 1 of them.
+  if (front.clockMin >= front.day * 1440) front.day++;
   // 0) Hourly supply trace (S50) — before battles resolve, so a fight ending
   // on the hour reads the tier of the hour it ends in.
   if (opts.supply) updateSupplyMinute(front);

@@ -760,6 +760,16 @@ const RECOVERY: Partial<Record<UnitEvent['kind'], string>> = {
   recovered: 'MAN BACK UP',
   resupplied: 'AMMO BROUGHT UP',
 };
+// The commander's voice (#787), heard when the player hands blue to the AI:
+// what his own headquarters has just decided. Blue only by construction of
+// the rule, not by accident — the red commander writes the same events for
+// its own side, and a decision made in the enemy's headquarters is not
+// something anybody on the field can see.
+const COMMAND: Partial<Record<UnitEvent['kind'], [string, string]>> = {
+  'reserve-committed': ['RESERVE COMMITTED', C_STEADY],
+  culminated: ['ATTACK CALLED OFF', C_WARN],
+  'smoke-objective': ['SMOKE ON OBJECTIVE', C_STEADY],
+};
 const MAX_KIAS = 12;
 const KIA_CELL = 8; // world meters — casualties inside a cell share one stack
 const KIA_LINE_H = 11;
@@ -775,7 +785,7 @@ export class EventPings {
   private kias: WorldKia[] = [];
   private pin = new Map<number, { majority: boolean; lastPin: number; lastRally: number }>();
   private balk = new Map<number, boolean>();
-  private recovery = new Map<string, number>(); // "team|kind" -> tick it was last announced
+  private recovery = new Map<string, number>(); // "subject|kind" -> tick it was last announced
 
   add(events: UnitEvent[], tick: number, teams: TeamPulse[] = []): void {
     for (const e of events) {
@@ -801,12 +811,15 @@ export class EventPings {
       } else if (e.side === 'blue' && RECOVERY[e.kind]) {
         // Same cooldown as the pin lines, per team and per kind: a squad
         // patching up three men after a barrage says so once.
-        const team = e.team ?? e.name;
-        const key = `${team}|${e.kind}`;
-        if (tick - (this.recovery.get(key) ?? -PIN_COOLDOWN) >= PIN_COOLDOWN) {
-          this.recovery.set(key, tick);
-          this.push(e.side, team, RECOVERY[e.kind]!, C_STEADY, tick, true);
-        }
+        this.quiet(e.side, e.team ?? e.name, e.kind, RECOVERY[e.kind]!, C_STEADY, tick);
+      } else if (e.side === 'blue' && COMMAND[e.kind]) {
+        this.quiet(e.side, e.name, e.kind, COMMAND[e.kind]![0], COMMAND[e.kind]![1], tick);
+      } else if (e.side !== 'blue' && e.kind === 'closing') {
+        // The one thing the ticker says about enemy intent, and it is not
+        // intent: a German team was SEEN moving onto ground blue holds (the
+        // sim raises it off blue's own sightings). Blue's own advances raise
+        // the same event for the other side and say nothing here.
+        this.quiet(e.side, e.team ?? e.name, e.kind, 'CLOSING IN', C_ENEMY, tick);
       }
       // 'pinned' and 'rallied' are deliberately NOT consumed here. One barrage
       // pins a platoon in a tick and five slots cannot hold that, so the ticker
@@ -853,6 +866,14 @@ export class EventPings {
     // window onto, and inventing one would be a cheat.
     if (t.side === 'blue' && t.balked && !was) this.push(t.side, t.name, "WON'T ADVANCE", C_WARN, tick, true);
     this.balk.set(t.id, t.balked);
+  }
+
+  // A drama line with the pin cooldown, per subject and kind.
+  private quiet(side: Side, subject: string, kind: string, status: string, color: string, tick: number): void {
+    const key = `${subject}|${kind}`;
+    if (tick - (this.recovery.get(key) ?? -PIN_COOLDOWN) < PIN_COOLDOWN) return;
+    this.recovery.set(key, tick);
+    this.push(side, subject, status, color, tick, true);
   }
 
   // The feed as the player is being told it, oldest first.
