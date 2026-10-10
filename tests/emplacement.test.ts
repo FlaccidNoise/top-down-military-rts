@@ -148,6 +148,29 @@ describe('a routed crew goes back to its gun (#787)', () => {
     expect(off()).toBeLessThanOrEqual(4); // CREW_RADIUS: on the gun again
     expect(gunner.fledGun).toBe(false);
   });
+
+  it('he does not wait to be steady: shaken is enough (#790)', () => {
+    const sim = new Sim(new GameMap(140, 40), 6);
+    const e = sim.addEmplacement('blue', 'mg42_lafette', 70.5, 20.5, 0, 'deployed');
+    const gunner = sim.teams[e.crewTeamId].soldierIds.map((id) => sim.soldiers[id]).find((m) => m.role === 'gunner')!;
+    const off = () => Math.hypot(gunner.x - e.x, gunner.y - e.y);
+    for (let i = 0; i < 30 * 8; i++) {
+      gunner.morale = 0;
+      sim.step();
+    }
+    expect(gunner.mental).toBe('broken');
+    expect(off()).toBeGreaterThan(8);
+    const seen = new Set<string>();
+    for (let i = 0; i < 30 * 90 && gunner.fledGun; i++) {
+      gunner.morale = 0.5; // out of the rout, and never his old self
+      sim.step();
+      seen.add(gunner.mental);
+    }
+    expect(seen.has('steady')).toBe(false);
+    expect(seen.has('shaken')).toBe(true);
+    expect(gunner.fledGun).toBe(false);
+    expect(off()).toBeLessThanOrEqual(4);
+  });
 });
 
 describe('emplacement lifecycle', () => {

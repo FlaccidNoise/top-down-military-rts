@@ -3917,14 +3917,16 @@ export class Sim {
   }
 
   // A crewman who broke and ran from a deployed gun walks back to it once he
-  // is steady again (#787). Nothing else brought him back: the defending
+  // is no longer broken (#787; it waited for 'steady' until #790, and a man
+  // who stays shaken for the rest of a fight never went). Nothing else
+  // brought him back: the defending
   // commander re-posts a squad only when an enemy stands on its post, so a
   // crew that routed 30 m and recovered sat out the battle beside a gun that
   // was still in working order (probed: one MG42 crew alive and off its gun
   // for a whole 30-minute battle, the gun silent). He waits while an enemy
   // holds the gun, and gives up the errand if the gun is no longer set up.
   private considerRemanGun(s: Soldier): void {
-    if (!s.fledGun || s.task || s.path || s.mental !== 'steady' || s.meleeId >= 0) return;
+    if (!s.fledGun || s.task || s.path || s.mental === 'broken' || s.meleeId >= 0) return;
     const e = s.inEmplacement >= 0 ? this.emplacements[s.inEmplacement] : null;
     if (!e || e.state !== 'deployed' || Math.hypot(s.x - e.x, s.y - e.y) <= CREW_RADIUS) {
       s.fledGun = false;
