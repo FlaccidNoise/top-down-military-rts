@@ -49,5 +49,24 @@ export function debriefHtml(d: DebriefSummary, actions: readonly DebriefAction[]
     <p class="fallen">${esc(fallenLine(d.kia))}</p>
     <div id="db-roster"></div>
     </div></div>
-    <div class="db-actions">${actions.map((a) => `<button id="${a.id}"${a.primary ? ' class="primary"' : ''}>${esc(a.label)}</button>`).join('')}</div>`;
+    ${actionRow(actions)}`;
+}
+
+const actionRow = (actions: readonly DebriefAction[]): string =>
+  `<div class="db-actions">${actions.map((a) => `<button id="${a.id}"${a.primary ? ' class="primary"' : ''}>${esc(a.label)}</button>`).join('')}</div>`;
+
+/**
+ * The card that ends the drill. No roster and no numbers: these men belong to
+ * no campaign, and the one thing to take away is the order of a fight.
+ * `forward` is the way on: into the first campaign, or back to the menu on a
+ * profile that already has one. A lost drill leads with the retry.
+ */
+export function drillEndHtml(won: boolean, forward: string): string {
+  const again: DebriefAction = { id: 'db-again', label: won ? 'Play it again' : 'Try again', primary: !won };
+  const on: DebriefAction = { id: 'next', label: forward, primary: won };
+  return `<div class="db-scroll"><div class="db">
+    <h1 class="${won ? 'win' : 'loss'}">${won ? 'FARM TAKEN' : 'THE FARM HELD'}</h1>
+    <p class="sub">Cover, fire, assault. That is every fight.</p>
+    </div></div>
+    ${actionRow(won ? [on, again] : [again, on])}`;
 }

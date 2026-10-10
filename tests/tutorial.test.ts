@@ -6,6 +6,8 @@ import {
   STEPS,
   Tutorial,
   TUTORIAL_STORAGE_KEY,
+  type Scene,
+  type Step,
   type StepId,
   type TutorialEvent,
   type TutorialState,
@@ -26,19 +28,38 @@ function makeStorage(): Storage {
   } as Storage;
 }
 
-const fresh = (): TutorialState => ({ skipped: false, done: [] });
+const fresh = (): TutorialState => ({ skipped: false, done: [], drilled: false });
+const withDone = (...done: StepId[]): TutorialState => ({ ...fresh(), done });
 
-/** Feed a run of events and return the final state plus the shown steps in order. */
-function run(state: TutorialState, events: TutorialEvent[]): { state: TutorialState; shown: StepId[] } {
+/**
+ * Feed a run of events the way the Tutorial class does: the step on screen is
+ * carried from one event to the next. Returns every step shown, in order.
+ */
+function run(state: TutorialState, events: TutorialEvent[], scene: Scene = 'campaign'): { state: TutorialState; shown: StepId[]; on: StepId | null } {
   const shown: StepId[] = [];
   let s = state;
+  let on: StepId | null = null;
   for (const e of events) {
-    const r = advance(s, e);
+    const r = advance(s, e, scene, on);
     s = r.state;
-    if (r.show) shown.push(r.show);
+    if (r.hide) on = null;
+    if (r.show && r.show !== on) {
+      on = r.show;
+      shown.push(r.show);
+    }
   }
-  return { state: s, shown };
+  return { state: s, shown, on };
 }
+
+const CAMPAIGN: TutorialEvent[] = [
+  'campaign-start', 'force-selected', 'move-ordered', 'clock-advanced', 'contact-open', 'contact-closed',
+  'deploy-start', 'deploy-commit', 'squad-selected', 'order-issued', 'debrief-open', 'debrief-closed',
+];
+const DRILL: TutorialEvent[] = [
+  'drill-start', 'squad-selected', 'order-issued', 'enemy-seen', 'fire-armed', 'fire-ordered', 'house-quiet', 'squad-switched', 'assault-ordered', 'battle-won',
+];
+const ofScene = (scene: Scene): Step[] => STEPS.filter((s) => s.scene === scene);
+const words = (text: string): number => text.split(/\s+/).filter(Boolean).length;
 
 // ---- storage ----
 
@@ -50,13 +71,14 @@ describe('loadState', () => {
 
   it('round-trips through storage', () => {
     const s = makeStorage();
-    saveState({ skipped: false, done: ['briefing', 'select-force'] }, s);
-    expect(loadState(s)).toEqual({ skipped: false, done: ['briefing', 'select-force'] });
+    const state: TutorialState = { skipped: false, done: ['goal', 'select-force'], drilled: true };
+    saveState(state, s);
+    expect(loadState(s)).toEqual(state);
   });
 
   it('round-trips the skipped flag', () => {
     const s = makeStorage();
-    saveState({ skipped: true, done: [] }, s);
+    saveState({ ...fresh(), skipped: true }, s);
     expect(loadState(s).skipped).toBe(true);
   });
 
@@ -68,22 +90,22 @@ describe('loadState', () => {
 
   it('returns a fresh state for the wrong shape', () => {
     const s = makeStorage();
-    for (const raw of ['[]', '"briefing"', 'null', '7']) {
+    for (const raw of ['[]', '"goal"', 'null', '7']) {
       s.setItem(TUTORIAL_STORAGE_KEY, raw);
       expect(loadState(s)).toEqual(fresh());
     }
   });
 
-  it('drops unknown and non-string step ids', () => {
+  it('drops unknown and non-string step ids, a retired id among them', () => {
     const s = makeStorage();
-    s.setItem(TUTORIAL_STORAGE_KEY, JSON.stringify({ skipped: false, done: ['march', 'not-a-step', 3, null] }));
+    s.setItem(TUTORIAL_STORAGE_KEY, JSON.stringify({ skipped: false, done: ['march', 'briefing', 'not-a-step', 3, null] }));
     expect(loadState(s).done).toEqual(['march']);
   });
 
-  it('treats a non-boolean skipped as not skipped', () => {
+  it('treats a non-boolean skipped or drilled as false', () => {
     const s = makeStorage();
-    s.setItem(TUTORIAL_STORAGE_KEY, JSON.stringify({ skipped: 'yes', done: [] }));
-    expect(loadState(s).skipped).toBe(false);
+    s.setItem(TUTORIAL_STORAGE_KEY, JSON.stringify({ skipped: 'yes', drilled: 1, done: [] }));
+    expect(loadState(s)).toEqual(fresh());
   });
 });
 
@@ -93,53 +115,25 @@ describe('saveState', () => {
   });
 });
 
-// ---- advance: the taught sequence ----
+// ---- advance: the campaign ----
 
-describe('advance', () => {
-  it('shows the briefing on campaign start, and only the briefing', () => {
-    const r = advance(fresh(), 'campaign-start');
-    expect(r.show).toBe('briefing');
-    expect(r.state.done).toEqual([]);
-  });
-
+describe('advance, the campaign', () => {
   it('walks the whole chain in teaching order', () => {
-    const { state, shown } = run(fresh(), [
-      'campaign-start',
-      'briefing-begun',
-      'force-selected',
-      'move-ordered',
-      'speed-changed',
-      'contact-open',
-      'contact-closed',
-      'deploy-start',
-      'deploy-commit',
-      'squad-selected',
-      'order-issued',
-      'debrief-open',
-      'debrief-closed',
-    ]);
-    expect(shown).toEqual([
-      'briefing',
-      'select-force',
-      'march',
-      'speed',
-      'contact',
-      'deploy',
-      'battle-select',
-      'battle-order',
-      'debrief',
-    ]);
-    expect(new Set(state.done)).toEqual(new Set(STEPS.map((s) => s.id)));
+    const { state, shown } = run(fresh(), CAMPAIGN);
+    expect(shown).toEqual(['select-force', 'march', 'play', 'contact', 'deploy', 'battle-select', 'battle-order', 'debrief']);
+    expect(new Set(state.done)).toEqual(new Set(ofScene('campaign').map((s) => s.id)));
   });
 
   it('never shows a step twice', () => {
-    const events: TutorialEvent[] = [
-      'campaign-start', 'briefing-begun', 'force-selected', 'move-ordered', 'speed-changed',
-      'contact-open', 'contact-closed', 'deploy-start', 'deploy-commit', 'squad-selected', 'order-issued',
-      'debrief-open', 'debrief-closed',
-    ];
-    const first = run(fresh(), events);
-    expect(run(first.state, events).shown).toEqual([]);
+    const first = run(fresh(), CAMPAIGN);
+    expect(run(first.state, CAMPAIGN).shown).toEqual([]);
+  });
+
+  it('the goal line never takes a bubble’s turn, and goes when the first march is ordered', () => {
+    const start = advance(fresh(), 'campaign-start');
+    expect(start.show).toBe('select-force');
+    expect(start.state.done).not.toContain('goal');
+    expect(run(fresh(), ['campaign-start', 'force-selected', 'move-ordered']).state.done).toContain('goal');
   });
 
   it('opens the next step on the same event that retires the current one', () => {
@@ -152,150 +146,285 @@ describe('advance', () => {
 
   it('marks only the step an out-of-order event names', () => {
     // The war moves fast: contact lands before the player has ever marched.
-    const { state, shown } = run(fresh(), ['campaign-start', 'briefing-begun', 'contact-open']);
-    expect(shown).toEqual(['briefing', 'select-force', 'contact']);
-    expect(state.done).toContain('briefing');
+    const { state, shown } = run(fresh(), ['campaign-start', 'contact-open']);
+    expect(shown).toEqual(['select-force', 'contact']);
     expect(state.done).not.toContain('march');
     expect(state.done).not.toContain('select-force');
   });
 
   it('retires a step whose completing event arrives without the bubble', () => {
-    const r = advance({ skipped: false, done: ['briefing', 'select-force'] }, 'move-ordered');
+    const r = advance(withDone('select-force'), 'move-ordered');
     expect(r.state.done).toContain('march');
-    expect(r.show).toBe('speed');
+    expect(r.show).toBe('play');
   });
 
-  it('every step is retired by a real event, never by merely showing', () => {
-    // The old battle step retired the frame it showed and taught nothing.
-    for (const s of STEPS) expect(typeof s.doneOn, s.id).toBe('string');
+  it('the Play step ends on the clock moving, not on a press', () => {
+    expect(STEPS.find((s) => s.id === 'play')!.doneOn).toBe('clock-advanced');
   });
 
   it('teaches the battle by doing: pick a squad, then give it an order', () => {
-    const r = advance({ skipped: false, done: ['deploy'] }, 'deploy-commit');
+    const r = advance(withDone('deploy'), 'deploy-commit');
     expect(r.show).toBe('battle-select');
-    expect(r.state.done).not.toContain('battle-select');
-    const picked = advance(r.state, 'squad-selected');
+    const picked = advance(r.state, 'squad-selected', 'campaign', 'battle-select');
     expect(picked.state.done).toContain('battle-select');
     expect(picked.show).toBe('battle-order');
-    const ordered = advance(picked.state, 'order-issued');
+    const ordered = advance(picked.state, 'order-issued', 'campaign', 'battle-order');
     expect(ordered.state.done).toContain('battle-order');
     expect(ordered.show).toBeNull();
+    expect(ordered.hide).toBe(true);
   });
 
   it('a later squad pick does not bring the order step back once it is done', () => {
-    const done: TutorialState = { skipped: false, done: ['battle-select', 'battle-order'] };
-    expect(advance(done, 'squad-selected').show).toBeNull();
+    expect(advance(withDone('battle-select', 'battle-order'), 'squad-selected').show).toBeNull();
+  });
+
+  it('re-arms the next un-done step on campaign start, across a reload', () => {
+    expect(advance(fresh(), 'campaign-start').show).toBe('select-force');
+    expect(advance(withDone('select-force', 'march'), 'campaign-start').show).toBeNull();
+    expect(advance(withDone('select-force'), 'force-selected').show).toBe('march');
   });
 });
 
-// ---- advance: resumability ----
+// ---- advance: the drill ----
 
-describe('advance across a reload', () => {
-  it('re-arms select-force on campaign start when the briefing is already done', () => {
-    const r = advance({ skipped: false, done: ['briefing'] }, 'campaign-start');
-    expect(r.show).toBe('select-force');
+describe('advance, the drill', () => {
+  it('walks its steps in order and ends with every one retired', () => {
+    const { state, shown, on } = run(fresh(), DRILL, 'drill');
+    expect(shown).toEqual(['drill-select', 'drill-move', 'drill-contact', 'drill-fire', 'drill-quiet', 'drill-assault']);
+    expect(on).toBeNull();
+    for (const s of ofScene('drill')) expect(state.done, s.id).toContain(s.id);
   });
 
-  it('never re-fires the briefing once it is done', () => {
-    const r = advance({ skipped: false, done: ['briefing', 'select-force', 'march'] }, 'campaign-start');
-    expect(r.show).toBeNull();
+  it('shows no campaign step, and the campaign shows no drill step', () => {
+    for (const e of [...CAMPAIGN, ...DRILL]) {
+      const inDrill = advance(fresh(), e, 'drill').show;
+      const inWar = advance(fresh(), e, 'campaign').show;
+      if (inDrill) expect(STEPS.find((s) => s.id === inDrill)!.scene, e).toBe('drill');
+      if (inWar) expect(STEPS.find((s) => s.id === inWar)!.scene, e).toBe('campaign');
+    }
   });
 
-  it('fires the next un-done step when its trigger next occurs', () => {
-    const mid: TutorialState = { skipped: false, done: ['briefing', 'select-force'] };
-    expect(advance(mid, 'campaign-start').show).toBeNull();
-    expect(advance(mid, 'force-selected').show).toBe('march');
+  it('retires a step only while it is the one on screen', () => {
+    // Fire armed before any enemy is seen is a player trying a button.
+    const early = advance(fresh(), 'fire-armed', 'drill', 'drill-move');
+    expect(early.state.done).not.toContain('drill-contact');
+    expect(early.show).toBeNull();
+    expect(early.hide).toBe(false);
+    const seen = advance(early.state, 'enemy-seen', 'drill', null);
+    expect(seen.show).toBe('drill-contact');
+  });
+
+  it('what the drill teaches is not taught again in the first battle', () => {
+    const { state } = run(fresh(), DRILL, 'drill');
+    expect(state.done).toContain('battle-select');
+    expect(state.done).toContain('battle-order');
+    expect(run(state, ['deploy-commit', 'squad-selected']).shown).toEqual([]);
+  });
+
+  it('a refusal brings the recovery step, every time, and the assault step after it', () => {
+    const upTo = run(fresh(), DRILL.slice(0, 9), 'drill'); // through assault-ordered
+    expect(upTo.state.done).toContain('drill-assault');
+    const balk = advance(upTo.state, 'team-balked', 'drill', null);
+    expect(balk.show).toBe('drill-balk');
+    expect(balk.state.done).not.toContain('drill-assault');
+    const fired = advance(balk.state, 'fire-ordered', 'drill', 'drill-balk');
+    expect(fired.hide).toBe(true);
+    expect(fired.state.done).not.toContain('drill-balk');
+    const quiet = advance(fired.state, 'house-quiet', 'drill', null);
+    expect(quiet.show).toBe('drill-assault');
+    const again = advance(advance(quiet.state, 'assault-ordered', 'drill', 'drill-assault').state, 'team-balked', 'drill', null);
+    expect(again.show).toBe('drill-balk');
+  });
+
+  it('ends on the battle being won, whatever step was waiting', () => {
+    const mid = run(fresh(), DRILL.slice(0, 4), 'drill');
+    expect(mid.on).toBe('drill-contact');
+    const won = advance(mid.state, 'battle-won', 'drill', mid.on);
+    expect(won.hide).toBe(true);
+    expect(won.show).toBeNull();
+    expect(advance(won.state, 'team-balked', 'drill', null).show).toBeNull();
   });
 });
 
 // ---- advance: skip is terminal ----
 
 describe('advance when skipped', () => {
-  it('shows nothing and records nothing, for every event', () => {
-    const skipped: TutorialState = { skipped: true, done: [] };
+  it('shows nothing and records nothing, for every event in both scenes', () => {
+    const skipped: TutorialState = { ...fresh(), skipped: true };
     for (const s of STEPS) {
       for (const e of s.showOn) {
-        const r = advance(skipped, e);
+        const r = advance(skipped, e, s.scene);
         expect(r.show).toBeNull();
         expect(r.state).toBe(skipped);
       }
     }
-  });
-
-  it('stays skipped through a full run', () => {
-    const { state, shown } = run({ skipped: true, done: [] }, [
-      'campaign-start', 'briefing-begun', 'force-selected', 'move-ordered', 'contact-open', 'deploy-start', 'deploy-commit',
-    ]);
-    expect(shown).toEqual([]);
-    expect(state).toEqual({ skipped: true, done: [] });
   });
 });
 
 // ---- the step table itself ----
 
 describe('STEPS', () => {
-  it('gives every bubble step one thing to point at and both copy variants', () => {
+  it('gives every bubble something to point at and both copy variants', () => {
     for (const s of STEPS) {
-      if (s.id === 'briefing') continue; // rendered as a card, not a bubble
-      expect((s.anchor ? 1 : 0) + (s.mark ? 1 : 0), s.id).toBe(1);
+      if (s.line) continue;
+      expect(Boolean(s.anchor) || Boolean(s.mark), s.id).toBe(true);
       expect(s.text!.desktop.length, s.id).toBeGreaterThan(0);
       expect(s.text!.touch.length, s.id).toBeGreaterThan(0);
     }
   });
 
-  it('names only prerequisites that exist earlier in the sequence', () => {
-    const seen = new Set<StepId>();
+  it('says every step in one line of at most eight words', () => {
     for (const s of STEPS) {
-      if (s.requires) expect(seen.has(s.requires), s.id).toBe(true);
-      seen.add(s.id);
+      if (!s.text) continue;
+      expect(words(s.text.desktop), `${s.id}: ${s.text.desktop}`).toBeLessThanOrEqual(8);
+      expect(words(s.text.touch), `${s.id}: ${s.text.touch}`).toBeLessThanOrEqual(8);
+    }
+  });
+
+  it('tells a phone to tap and hold, never to click', () => {
+    for (const s of STEPS) if (s.text) expect(s.text.touch, s.id).not.toMatch(/click/i);
+  });
+
+  it('holds the battle on every drill step and on no campaign step', () => {
+    for (const s of STEPS) expect(Boolean(s.holds), s.id).toBe(s.scene === 'drill');
+  });
+
+  it('every step is retired by a real event, never by merely showing', () => {
+    for (const s of STEPS) expect(typeof s.doneOn, s.id).toBe('string');
+  });
+
+  it('names only prerequisites that exist earlier in the same scene', () => {
+    const seen = new Map<StepId, Scene>();
+    for (const s of STEPS) {
+      if (s.requires) expect(seen.get(s.requires), s.id).toBe(s.scene);
+      seen.set(s.id, s.scene);
     }
   });
 
   it('states the top speed from its constant', () => {
-    const speed = STEPS.find((s) => s.id === 'speed')!;
-    expect(speed.text!.desktop).toContain('60×');
+    expect(STEPS.find((s) => s.id === 'play')!.text!.desktop).toContain('60×');
   });
 });
 
-// ---- the menu switch ----
+// ---- the Tutorial class: state, storage and the host callbacks ----
+
+function makeTutorial(storage: Storage = makeStorage()) {
+  const steps: (StepId | null)[] = [];
+  const t = new Tutorial({ hide() {}, show() {}, reflow() {}, rect: null }, false, { storage, onStep: (s) => steps.push(s ? s.id : null) });
+  return { t, steps, storage };
+}
 
 describe('Tutorial.setEnabled (the menu toggle)', () => {
-  // The Tutorial class touches the DOM only when it PRESENTS a step; the
-  // switch is pure state + storage, so it tests in the node env like the rest.
-  const makeTutorial = (storage: Storage) =>
-    new Tutorial({ hide() {}, show() {}, reflow() {}, rect: null }, false, () => {}, storage);
-
   it('turning it OFF is exactly Skip, and survives a reload', () => {
-    const storage = makeStorage();
-    const t = makeTutorial(storage);
+    const { t, storage } = makeTutorial();
     t.setEnabled(false);
     expect(t.isSkipped).toBe(true);
     expect(loadState(storage).skipped).toBe(true);
   });
 
-  it('turning it ON clears the skip AND the progress, so the chain replays from the briefing', () => {
+  it('turning it ON clears the skip AND the progress, so the campaign steps replay', () => {
     const storage = makeStorage();
-    saveState({ skipped: true, done: ['briefing', 'select-force', 'march'] }, storage);
-    const t = makeTutorial(storage);
+    saveState({ skipped: true, done: ['goal', 'select-force', 'march'], drilled: true }, storage);
+    const { t } = makeTutorial(storage);
     expect(t.isSkipped).toBe(true);
     t.setEnabled(true);
     expect(t.isSkipped).toBe(false);
-    // Progress cleared: a finished player showing someone else must see it all
-    // again, and "on but already done" would teach nothing.
     const reloaded = loadState(storage);
-    expect(reloaded).toEqual({ skipped: false, done: [] });
-    // and the state machine really does re-arm from the first step
-    expect(advance(reloaded, 'campaign-start').show).toBe('briefing');
+    // The drill has still been played: the menu does not go back to its first-run shape.
+    expect(reloaded).toEqual({ skipped: false, done: [], drilled: true });
+    expect(advance(reloaded, 'campaign-start').show).toBe('select-force');
   });
 
   it('is idempotent both ways', () => {
-    const storage = makeStorage();
-    const t = makeTutorial(storage);
+    const { t, storage } = makeTutorial();
     t.setEnabled(true);
     t.setEnabled(true);
-    expect(loadState(storage)).toEqual({ skipped: false, done: [] });
+    expect(loadState(storage)).toEqual(fresh());
     t.setEnabled(false);
     t.setEnabled(false);
     expect(loadState(storage).skipped).toBe(true);
+  });
+});
+
+describe('Tutorial, the drill', () => {
+  it('holds the battle from the first step and tells the game each time the step changes', () => {
+    const { t, steps } = makeTutorial();
+    t.startDrill();
+    t.notify('drill-start');
+    expect(t.step?.id).toBe('drill-select');
+    expect(t.step?.holds).toBe(true);
+    t.notify('squad-selected');
+    t.notify('order-issued');
+    expect(steps).toEqual(['drill-select', 'drill-move', null]);
+    expect(t.isShowing).toBe(false);
+  });
+
+  it('answers what it is waiting for and what would move it on', () => {
+    const { t } = makeTutorial();
+    t.startDrill();
+    expect(t.wants('drill-start')).toBe(true);
+    t.notify('drill-start');
+    expect(t.wants('drill-start')).toBe(false); // already on screen
+    expect(t.awaits('squad-selected')).toBe(true);
+    expect(t.awaits('order-issued')).toBe(false);
+    expect(t.wants('enemy-seen')).toBe(true);
+  });
+
+  it('marks the profile as drilled the moment it starts, and saves it', () => {
+    const { t, storage } = makeTutorial();
+    expect(t.drilled).toBe(false);
+    t.startDrill();
+    expect(t.drilled).toBe(true);
+    expect(loadState(storage).drilled).toBe(true);
+  });
+
+  it('replays from the top every time it is started', () => {
+    const { t } = makeTutorial();
+    t.startDrill();
+    for (const e of DRILL) t.notify(e);
+    expect(t.wants('drill-start')).toBe(false);
+    t.endDrill();
+    t.startDrill();
+    expect(t.wants('drill-start')).toBe(true);
+  });
+
+  it('Skip inside the drill silences that run and everything after it', () => {
+    const { t, steps, storage } = makeTutorial();
+    t.startDrill();
+    t.notify('drill-start');
+    t.skip();
+    expect(t.isShowing).toBe(false);
+    expect(steps[steps.length - 1]).toBeNull();
+    t.notify('squad-selected');
+    expect(t.isShowing).toBe(false);
+    expect(t.wants('enemy-seen')).toBe(false);
+    t.endDrill();
+    t.notify('campaign-start');
+    expect(t.isShowing).toBe(false);
+    expect(loadState(storage).skipped).toBe(true);
+  });
+
+  it('teaches when asked for, on a profile that skipped, and leaves the skip in place', () => {
+    const storage = makeStorage();
+    saveState({ ...fresh(), skipped: true }, storage);
+    const { t } = makeTutorial(storage);
+    t.startDrill();
+    t.notify('drill-start');
+    expect(t.step?.id).toBe('drill-select');
+    t.endDrill();
+    expect(t.isSkipped).toBe(true);
+    t.notify('campaign-start');
+    expect(t.isShowing).toBe(false);
+  });
+
+  it('leaving the drill clears the screen and goes back to the campaign', () => {
+    const { t, steps } = makeTutorial();
+    t.startDrill();
+    t.notify('drill-start');
+    t.endDrill();
+    expect(t.isShowing).toBe(false);
+    expect(steps).toEqual(['drill-select', null]);
+    t.notify('campaign-start');
+    expect(t.step?.id).toBe('select-force');
   });
 });

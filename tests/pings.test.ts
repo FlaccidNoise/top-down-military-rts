@@ -241,55 +241,71 @@ describe('EventPings — feed pressure', () => {
 
 describe('dockFeed: the ticker keeps off the tutorial', () => {
   // A 190 px column at the right edge of a 1280x800 screen, room for five rows.
+  type R = { left: number; top: number; right: number; bottom: number };
   const X = 1078;
   const W = 190;
   const H = 115;
   const TOP = 60;
   const BOTTOM = 760;
-  const overlaps = (y: number, r: { left: number; top: number; right: number; bottom: number }): boolean =>
-    r.right > X && r.left < X + W && y < r.bottom && y + H > r.top;
+  const LEFT = 278;
+  const dock = (avoid: R[]): { x: number; y: number } => dockFeed(X, W, H, TOP, BOTTOM, LEFT, avoid);
+  const overlaps = (at: { x: number; y: number }, r: R): boolean => at.x < r.right && at.x + W > r.left && at.y < r.bottom && at.y + H > r.top;
 
-  it('hangs from the top when nothing is in the way', () => {
-    expect(dockFeed(X, W, H, TOP, BOTTOM, [])).toBe(TOP);
+  it('hangs from the top right when nothing is in the way', () => {
+    expect(dock([])).toEqual({ x: X, y: TOP });
   });
 
   it('ignores a bubble that is not in its column', () => {
-    expect(dockFeed(X, W, H, TOP, BOTTOM, [{ left: 300, top: 50, right: 700, bottom: 110 }])).toBe(TOP);
+    expect(dock([{ left: 300, top: 50, right: 700, bottom: 110 }])).toEqual({ x: X, y: TOP });
   });
 
   it('drops under a bubble in its column', () => {
     const bubble = { left: 935, top: 45, right: 1272, bottom: 87 };
-    const y = dockFeed(X, W, H, TOP, BOTTOM, [bubble]);
-    expect(y).toBeGreaterThan(bubble.bottom);
-    expect(overlaps(y, bubble)).toBe(false);
+    const at = dock([bubble]);
+    expect(at.x).toBe(X);
+    expect(at.y).toBeGreaterThan(bubble.bottom);
   });
 
   it('clears the bubble and the ring it points at together', () => {
     const bubble = { left: 900, top: 70, right: 1260, bottom: 120 };
     const ring = { left: 1100, top: 150, right: 1200, bottom: 250 };
-    const y = dockFeed(X, W, H, TOP, BOTTOM, [bubble, ring]);
-    expect(overlaps(y, bubble)).toBe(false);
-    expect(overlaps(y, ring)).toBe(false);
-    expect(y + H).toBeLessThanOrEqual(BOTTOM);
+    const at = dock([bubble, ring]);
+    expect(overlaps(at, bubble)).toBe(false);
+    expect(overlaps(at, ring)).toBe(false);
+    expect(at.y + H).toBeLessThanOrEqual(BOTTOM);
   });
 
   it('takes the gap between two things when the first place under one is taken', () => {
     const a = { left: 1100, top: 50, right: 1250, bottom: 170 };
     const b = { left: 1100, top: 200, right: 1250, bottom: 400 };
-    const y = dockFeed(X, W, H, TOP, BOTTOM, [a, b]);
-    expect(y).toBeGreaterThan(b.bottom);
-    expect(y + H).toBeLessThanOrEqual(BOTTOM);
+    const at = dock([a, b]);
+    expect(at.x).toBe(X);
+    expect(at.y).toBeGreaterThan(b.bottom);
+    expect(at.y + H).toBeLessThanOrEqual(BOTTOM);
   });
 
-  it('stays put when nowhere is free', () => {
-    expect(dockFeed(X, W, H, TOP, BOTTOM, [{ left: 1100, top: 100, right: 1250, bottom: 700 }])).toBe(TOP);
+  it('moves beside what is in its way when the column has no room: a phone on its side', () => {
+    // 844x390: the map is 245 px tall, a ring on the house fills the right
+    // column and the bubble sits above the order bar under it.
+    const ring = { left: 620, top: 50, right: 760, bottom: 190 };
+    const bubble = { left: 380, top: 215, right: 800, bottom: 275 };
+    const at = dockFeed(642, 190, 69, 60, 280, 12, [ring, bubble]);
+    expect(at.x).toBeLessThan(ring.left - 190);
+    expect(at.x).toBeGreaterThanOrEqual(12);
+    for (const r of [ring, bubble]) expect(at.x < r.right && at.x + 190 > r.left && at.y < r.bottom && at.y + 69 > r.top, JSON.stringify(at)).toBe(false);
+  });
+
+  it('stays put when nowhere on the map is free', () => {
+    expect(dock([{ left: LEFT, top: 40, right: 1280, bottom: 700 }])).toEqual({ x: X, y: TOP });
   });
 
   it('never leaves the map', () => {
     for (const top of [40, 200, 400, 600]) {
-      const y = dockFeed(X, W, H, TOP, BOTTOM, [{ left: 1000, top, right: 1280, bottom: top + 80 }]);
-      expect(y).toBeGreaterThanOrEqual(TOP);
-      expect(y + H).toBeLessThanOrEqual(BOTTOM);
+      const at = dock([{ left: 1000, top, right: 1280, bottom: top + 80 }]);
+      expect(at.x).toBeGreaterThanOrEqual(LEFT);
+      expect(at.x).toBeLessThanOrEqual(X);
+      expect(at.y).toBeGreaterThanOrEqual(TOP);
+      expect(at.y + H).toBeLessThanOrEqual(BOTTOM);
     }
   });
 });

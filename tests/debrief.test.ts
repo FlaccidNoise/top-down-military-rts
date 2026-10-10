@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { debriefHtml, FALLEN_SHOWN, fallenLine, type DebriefSummary } from '../src/ui/debrief';
+import { debriefHtml, drillEndHtml, FALLEN_SHOWN, fallenLine, type DebriefSummary } from '../src/ui/debrief';
 
 const names = (n: number): string[] => Array.from({ length: n }, (_, i) => `Man${i + 1}`);
 const summary = (o: Partial<DebriefSummary> = {}): DebriefSummary => ({ won: true, outcome: 'The ground is ours.', kia: [], wounded: 0, enemyLosses: 0, ...o });
@@ -54,5 +54,31 @@ describe('debriefHtml', () => {
 
   it('escapes names from a save file', () => {
     expect(debriefHtml(summary({ kia: ['<img src=x>'] }), ACTIONS)).not.toContain('<img');
+  });
+});
+
+describe('drillEndHtml', () => {
+  it('says the farm is taken and leads with the way on', () => {
+    const html = drillEndHtml(true, 'Start the campaign');
+    expect(html).toContain('FARM TAKEN');
+    expect(html).toContain('<button id="next" class="primary">Start the campaign</button>');
+    expect(html.indexOf('id="next"')).toBeLessThan(html.indexOf('id="db-again"'));
+    expect(html).toContain('<button id="db-again">Play it again</button>');
+  });
+
+  it('leads with the retry when the drill was lost', () => {
+    const html = drillEndHtml(false, 'Start the campaign');
+    expect(html).toContain('THE FARM HELD');
+    expect(html).toContain('<button id="db-again" class="primary">Try again</button>');
+    expect(html.indexOf('id="db-again"')).toBeLessThan(html.indexOf('id="next"'));
+  });
+
+  it('is a few words, with no roster and no numbers', () => {
+    for (const won of [true, false]) {
+      const text = drillEndHtml(won, 'Back to the menu').replace(/<[^>]*>/g, ' ');
+      expect(words(text)).toBeLessThanOrEqual(20);
+      expect(text).not.toMatch(/\d/);
+      expect(drillEndHtml(won, 'Back to the menu')).not.toContain('db-roster');
+    }
   });
 });

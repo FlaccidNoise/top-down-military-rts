@@ -42,18 +42,29 @@ export interface ScreenRect {
 }
 
 /**
- * Where the ticker's column starts, top edge in px. It hangs from `top` unless
- * that puts it on one of `avoid`. Then it drops to the first free place under
- * one of them. Every gap the column fits in starts at `top` or under something,
- * so those are all the places there are. With none free it stays at `top`: a
- * covered line beats a lost one.
+ * Where the ticker's column goes: its top-left corner in px. It hangs from the
+ * top of `x` (the right edge of the map) unless that puts it on one of
+ * `avoid`. Then it drops to the first free place under one of them: every gap
+ * the column fits in starts at `top` or under something, so those are all the
+ * places a column has. A short screen may have none, and then the column moves
+ * left, beside whatever is in its way, and at last to the map's left edge
+ * (`left`). With nowhere free at all it stays where it started: a covered line
+ * beats a lost one.
  */
-export function dockFeed(x: number, w: number, h: number, top: number, bottom: number, avoid: readonly ScreenRect[]): number {
+export function dockFeed(x: number, w: number, h: number, top: number, bottom: number, left: number, avoid: readonly ScreenRect[]): { x: number; y: number } {
   const GAP = 6;
-  const inWay = avoid.filter((r) => r.right > x && r.left < x + w);
-  const free = (y: number): boolean => y >= top && y + h <= bottom && inWay.every((r) => y >= r.bottom + GAP || y + h <= r.top - GAP);
-  if (free(top)) return top;
-  return inWay.map((r) => r.bottom + GAP).sort((a, b) => a - b).find(free) ?? top;
+  const place = (cx: number): number | null => {
+    const inWay = avoid.filter((r) => r.right + GAP > cx && r.left - GAP < cx + w);
+    const free = (y: number): boolean => y + h <= bottom && inWay.every((r) => y >= r.bottom + GAP || y + h <= r.top - GAP);
+    if (free(top)) return top;
+    return inWay.map((r) => r.bottom + GAP).sort((a, b) => a - b).find(free) ?? null;
+  };
+  const columns = [x, ...avoid.map((r) => r.left - GAP - w).sort((a, b) => b - a), left].filter((cx) => cx >= left && cx <= x);
+  for (const cx of columns) {
+    const y = place(cx);
+    if (y !== null) return { x: cx, y };
+  }
+  return { x, y: top };
 }
 
 function teamCentroid(sim: Sim, soldierIds: number[]): { x: number; y: number } | null {
@@ -901,6 +912,9 @@ export class EventPings {
     this.push(side, subject, status, color, tick, true);
   }
 
+  /** Where the feed was last drawn, in CSS px. null = nothing on show. */
+  feed: ScreenRect | null = null;
+
   // The feed as the player is being told it, oldest first.
   labels(): string[] {
     return this.pings.map((p) => `${p.name} — ${p.status}`);
@@ -938,11 +952,13 @@ export class EventPings {
     const rw = Math.min(ROW_W, cw - 24);
     const rows = cw < 500 ? 3 : MAX_VISIBLE;
     const visible = this.pings.slice(-rows).reverse(); // newest at top
-    const x = cw - rw - 12;
     // Clear of the top bar, and of the tutorial while it is talking. The room
     // is taken for every row the feed can hold, so a line arriving does not
     // push the column onto the bubble.
-    let y = dockFeed(x, rw, rows * (ROW_H + ROW_GAP), 60, clear ? clear.bottom : ch, avoid);
+    const at = dockFeed(cw - rw - 12, rw, rows * (ROW_H + ROW_GAP), 60, clear ? clear.bottom : ch, (clear ? clear.left : 0) + 12, avoid);
+    const x = at.x;
+    let y = at.y;
+    this.feed = visible.length > 0 ? { left: x, top: y, right: x + rw, bottom: y + visible.length * (ROW_H + ROW_GAP) - ROW_GAP } : null;
     ctx.font = '11px ui-monospace, Menlo, monospace';
     ctx.textBaseline = 'middle';
     ctx.textAlign = 'left';

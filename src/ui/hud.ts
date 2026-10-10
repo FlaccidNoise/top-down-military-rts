@@ -73,6 +73,8 @@ export interface HudState {
   speed: BattleSpeed;
   /** Deployment: squads are placed, not ordered, so the order bar stands down. */
   deploy: boolean;
+  /** The order chip a tutorial step is pointing at. It pulses until it is armed. */
+  glow?: OrderKind | null;
   floorFocus?: number; // -1/undefined = all floors; 0..maxStories-1 = focus active
   boxMode?: boolean; // touch: drag draws a selection box instead of panning
   addMode?: boolean; // touch: sticky shift (add to selection / force squad order)
@@ -363,7 +365,7 @@ export class Hud {
   update(sim: Sim, st: HudState): void {
     this.lastSim = sim;
     this.lastSt = st;
-    const sig = `${(sim.tick / 5) | 0}|${st.prompt}|${primarySquad(st)}|${st.selectedTeam}|${st.selectedVehicle}|${st.paused}|${st.targetMode}|${st.armedOrder}|${sim.winner}|${st.title}|${st.speed}|${st.selectedSquads.join(',')}|${this.km.version}|${st.floorFocus ?? -1}|${st.aiControl}|${st.boxMode ?? false}|${st.addMode ?? false}|${this.tb ? this.rosterOpen : false}`;
+    const sig = `${(sim.tick / 5) | 0}|${st.prompt}|${primarySquad(st)}|${st.selectedTeam}|${st.selectedVehicle}|${st.paused}|${st.targetMode}|${st.armedOrder}|${st.glow ?? ''}|${sim.winner}|${st.title}|${st.speed}|${st.selectedSquads.join(',')}|${this.km.version}|${st.floorFocus ?? -1}|${st.aiControl}|${st.boxMode ?? false}|${st.addMode ?? false}|${this.tb ? this.rosterOpen : false}`;
     if (sig === this.sig) return;
     this.sig = sig;
     this.renderTop(sim, st);
@@ -654,7 +656,7 @@ function orderChips(kinds: OrderKind[], st: HudState, km: Keymap, target: ArmTar
     const title = formatBinding(km.bindings[bindingKey]);
     const a = ORDER_AFFORDANCE[k];
     const dis = !canArm(k, target) ? ' disabled' : '';
-    const armed = st.armedOrder === k ? ' armed' : '';
+    const armed = st.armedOrder === k ? ' armed' : st.glow === k ? ' glow' : '';
     return `<button class="hbtn ord${armed}${dis}" data-order="${k}" title="${title}"${dis}>${k}<span class="hk">${a.hotkey}</span></button>`;
   }).join('');
 }

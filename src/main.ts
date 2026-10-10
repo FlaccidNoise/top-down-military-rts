@@ -19,7 +19,7 @@ import { saveGame } from './strategic/save';
 import { makeDefaultSector } from './strategic/sector';
 import { emplacementOf, Hud, infantrySquads } from './ui/hud';
 import { drawEnemyPointer, enemyPointer, QUIET_PROMPT_S, quietPrompt } from './ui/battle-goal';
-import { debriefHtml } from './ui/debrief';
+import { debriefHtml, drillEndHtml } from './ui/debrief';
 import { frameSteps, nextSpeed, type BattleSpeed } from './ui/battle-speed';
 import { StratHud } from './ui/strat-hud';
 import { drawOverlays, EventPings, type TeamPulse } from './ui/overlays';
@@ -31,7 +31,8 @@ import { Coach } from './ui/coach';
 import { showFloorMenu } from './ui/floormenu';
 import { MainMenu, type SaveProbe } from './ui/mainmenu';
 import { ManualScreen } from './ui/manual';
-import { drawMarkRing, Tutorial, type Circle, type WorldMark } from './ui/tutorial';
+import { drawMarkRing, Tutorial, type Circle, type Step, type WorldMark } from './ui/tutorial';
+import { enemiesInSight, hasRefused, houseIsQuiet, makeDrill, type Drill } from './drill';
 import { TheaterView } from './render/theater-view';
 import { TheaterHud } from './ui/theater-hud';
 import { contactBrief } from './ui/contact-brief';
@@ -211,8 +212,18 @@ let opEnded = false;
 
 // battle state
 let sim: Sim;
-let commander: RedCommander;
-let blueCommander: RedCommander | undefined;
+// Whoever gives a side its orders each tick. The drill's garrison has nobody:
+// its whole plan is the one order it was staged with.
+type BattleAi = Pick<RedCommander, 'update'>;
+const NO_COMMANDER: BattleAi = { update: () => {} };
+let commander: BattleAi;
+let blueCommander: BattleAi | undefined;
+// The drill (src/drill.ts), while it is the battle on screen. null in every
+// campaign battle. `shooter` is the squad the player gave Fire to, `asked` the
+// refusals already reported, so one refused order is one recovery step.
+let drill: (Drill & { shooter: number; asked: WeakSet<object> }) | null = null;
+// The step on screen holds the battle: Play is not the player's to press yet.
+let heldByStep = false;
 let aiControl = false;
 let renderer: Renderer;
 let battleCompany = -1;
@@ -281,7 +292,9 @@ function selectSquad(id: number): void {
 // Deployment has its own step on screen: a squad picked there is reported
 // when the fight starts, not before.
 function noteSelection(): void {
-  if (selectedSquads.length > 0 && !deployPhase) tutorial?.notify('squad-selected');
+  if (selectedSquads.length === 0 || deployPhase) return;
+  tutorial?.notify('squad-selected');
+  if (drill && drill.shooter >= 0 && getPrimary() !== drill.shooter) tutorial?.notify('squad-switched');
 }
 
 function toggleSquadSelection(id: number): void {
@@ -299,6 +312,7 @@ function toggleSquadSelection(id: number): void {
 /** Arm an order kind (toggle). */
 function doArmOrder(kind: OrderKind): void {
   armedOrder = armedOrder === kind ? null : kind;
+  if (armedOrder === 'fire') tutorial?.notify('fire-armed');
 }
 
 function selectVehicle(id: number): void {
@@ -421,8 +435,8 @@ const stratHud = new StratHud({
   setSpeed: (i) => { speedIdx = i; },
 });
 const theaterHud = new TheaterHud({
-  togglePause: () => { stratPaused = !stratPaused; tutorial?.notify('speed-changed'); },
-  setSpeed: (i) => { speedIdx = i; tutorial?.notify('speed-changed'); },
+  togglePause: () => { stratPaused = !stratPaused; },
+  setSpeed: (i) => { speedIdx = i; },
   openMenu: () => { openPauseMenu(); },
   fitAll: () => { S().v2?.view.fitAll(view.w, view.h); },
   focusNode: (n) => {
@@ -488,19 +502,91 @@ function openPauseMenu(view: 'menu' | 'controls' = 'menu'): void {
 // the pinned art path: ?camp= must render byte-identical frames forever.
 const tutorial = campPinned
   ? null
-  : new Tutorial(new Coach(), MOBILE, (chapterId) => manual.open(chapterId), typeof localStorage !== 'undefined' ? localStorage : undefined, tutorialMark, stageRect);
+  : new Tutorial(new Coach(), MOBILE, {
+      storage: typeof localStorage !== 'undefined' ? localStorage : undefined,
+      world: tutorialMark,
+      stage: stageRect,
+      onStep: onTutorialStep,
+    });
 
 // The map as the player sees it: the screen less the opaque HUD around it.
 function stageRect(): { left: number; top: number; right: number; bottom: number } {
+  if (mode === 'strategic') {
+    const inset = theaterInset();
+    return { left: inset.left, top: inset.top, right: view.w - inset.right, bottom: view.h - inset.bottom };
+  }
   const inset = viewportInset();
   const bar = document.getElementById('topbar')?.getBoundingClientRect();
   return { left: inset.left, top: Math.max(inset.top, bar ? bar.bottom : 0), right: view.w, bottom: view.h - inset.bottom };
+}
+
+// The step on screen changed. A step that holds the battle stops it until the
+// player has done the step, and the battle goes on by itself afterwards: the
+// player was never asked to press Play. A step that rings a place brings the
+// place into view, which on a phone is most of the time.
+function onTutorialStep(step: Step | null): void {
+  if (step?.holds) {
+    paused = true;
+    heldByStep = true;
+  } else if (heldByStep) {
+    paused = false;
+    heldByStep = false;
+  }
+  if (step?.mark && mode === 'battle') revealMark(step.mark, step.anchor !== undefined);
+}
+
+const MARK_MARGIN_PX = 24;
+// A bubble that points at a chip in the order bar sits in this band above it.
+const CHIP_BUBBLE_BAND_PX = 84;
+
+// Pan the least that puts the mark's ring inside the map. The zoom is the
+// player's and stays. `underBubble`: the step's bubble points at the order
+// bar, so the ring is also kept out of the band that bubble takes. The ring is
+// what the player presses next, and nothing may sit on it.
+function revealMark(mark: WorldMark, underBubble: boolean): void {
+  const c = tutorialMark(mark);
+  if (!c) return;
+  const st = stageRect();
+  if (underBubble) st.bottom -= CHIP_BUBBLE_BAND_PX;
+  const pad = Math.min(c.r + MARK_MARGIN_PX, (st.right - st.left) / 2, (st.bottom - st.top) / 2);
+  const dx = c.x < st.left + pad ? c.x - (st.left + pad) : c.x > st.right - pad ? c.x - (st.right - pad) : 0;
+  const dy = c.y < st.top + pad ? c.y - (st.top + pad) : c.y > st.bottom - pad ? c.y - (st.bottom - pad) : 0;
+  cam.x += dx / cam.scale;
+  cam.y += dy / cam.scale;
+}
+
+const worldCircle = (x: number, y: number, radiusM: number): Circle => {
+  const [sx, sy] = cam.worldToScreen(x, y, view.w, view.h);
+  return { x: sx, y: sy, r: Math.max(22, radiusM * cam.scale) };
+};
+
+// The squad the drill's "another squad" step rings: a rifle squad that did not
+// do the shooting, still on its feet.
+function drillOther(d: Drill & { shooter: number }): number {
+  return d.rifles.find((q) => q !== d.shooter && squadCircle(q) !== null) ?? d.lead;
 }
 
 // Where a tutorial step's world mark is on screen.
 function tutorialMark(mark: WorldMark): Circle | null {
   if (mode !== 'battle') return null;
   switch (mark) {
+    case 'lead':
+      return drill && squadCircle(drill.lead);
+    case 'other':
+      return drill && squadCircle(drillOther(drill));
+    case 'hedge':
+      return drill && worldCircle(drill.hedge.x, drill.hedge.y, drill.hedge.r);
+    case 'house':
+      return drill && worldCircle(drill.house.x, drill.house.y, drill.house.r);
+    // A defender the player can see, else the house they are in.
+    case 'enemy': {
+      if (!drill) return null;
+      const [seen] = enemiesInSight(sim);
+      return seen ? worldCircle(seen.x, seen.y, 2.5) : worldCircle(drill.house.x, drill.house.y, drill.house.r);
+    }
+    case 'company':
+    case 'town':
+      return null;
     // The squad the player has picked. Before any pick, the one nearest the
     // middle of the map on screen: the ring must be somewhere they can see.
     case 'squad': {
@@ -724,7 +810,9 @@ function bootCamera(s: Sim, cw: number, ch: number): { x: number; y: number; sca
   });
 }
 
-function bootBattle(staged: { sim: Sim; commander: RedCommander; blueCommander: RedCommander; companyIndex: number }, title: string): void {
+function bootBattle(staged: { sim: Sim; commander: BattleAi; blueCommander: BattleAi; companyIndex: number }, title: string): void {
+  drill = null;
+  heldByStep = false;
   sim = staged.sim;
   sim.fowDisabled = fowOff;
   commander = staged.commander;
@@ -772,6 +860,69 @@ function startEngagementBattle(e: Engagement): void {
   const seed = urlSeed !== null && Number.isFinite(Number(urlSeed)) ? Number(urlSeed) : S().front.clockMin * 7919 + e.cell;
   const battle = makeStrategicBattle(S().campaign, S().front, e, seed);
   bootBattle(battle, `Day ${S().front.day} ${S().front.hhmm} — ${battle.name}`);
+}
+
+// The drill: one small fixed battle, staged from src/drill.ts. It is not part
+// of any campaign, so nothing here reads or writes the session.
+const urlDrill = new URLSearchParams(location.search).get('drill'); // ?drill=N boots straight into the drill on seed N (gates, screenshots)
+
+function startDrill(seed: number): void {
+  const d = makeDrill(seed);
+  bootBattle({ sim: d.sim, commander: NO_COMMANDER, blueCommander: NO_COMMANDER, companyIndex: -1 }, 'Training: take the farmhouse');
+  drill = { ...d, shooter: -1, asked: new WeakSet() };
+  deployPhase = false;
+  mainMenu.close();
+  tutorial?.startDrill();
+  // 'drill-start' waits for the battle HUD to exist: see needsBootFrame.
+}
+
+// The drill's conditions, asked once a frame and only while a step would act
+// on the answer. Each is the sim's own state (src/drill.ts), never a clock.
+function pollDrill(d: NonNullable<typeof drill>): void {
+  if (!tutorial || sim.winner) return;
+  // A step that waits on an order needs somebody to give it to.
+  if (tutorial.step && selectedSquads.length === 0 && !tutorial.awaits('squad-selected') && !tutorial.awaits('squad-switched')) selectSquad(d.shooter >= 0 && tutorial.step.id !== 'drill-assault' ? d.shooter : d.lead);
+  if (tutorial.awaits('fire-armed') && armedOrder === 'fire') tutorial.notify('fire-armed');
+  if (tutorial.wants('enemy-seen') && enemiesInSight(sim).length > 0) tutorial.notify('enemy-seen');
+  if (tutorial.wants('house-quiet') && houseIsQuiet(d, drillOther(d))) tutorial.notify('house-quiet');
+  if (tutorial.wants('team-balked')) {
+    for (const q of d.rifles) {
+      if (!hasRefused(sim, q)) continue;
+      const refused = sim.squads[q].teamIds.map((t) => sim.teams[t].orderState.order).find((o) => o !== null);
+      if (!refused || d.asked.has(refused)) continue;
+      d.asked.add(refused);
+      tutorial.notify('team-balked');
+      break;
+    }
+  }
+}
+
+function showDrillEnd(): void {
+  debriefShown = true;
+  const won = sim.winner === 'blue';
+  const hasCampaign = probeSave().status === 'ok';
+  debriefEl.innerHTML = drillEndHtml(won, hasCampaign ? 'Back to the menu' : 'Start the campaign');
+  debriefEl.style.display = 'flex';
+  const leave = (): void => {
+    debriefEl.style.display = 'none';
+    drill = null;
+    tutorial?.endDrill();
+  };
+  document.getElementById('next')!.onclick = () => {
+    leave();
+    if (hasCampaign) openMainMenu();
+    else startCampaignV2({ kind: 'fresh', seed: campSeed() });
+  };
+  document.getElementById('db-again')!.onclick = () => {
+    leave();
+    startDrill(campSeed());
+  };
+}
+
+function openMainMenu(): void {
+  mode = 'menu';
+  mainMenu.setSaveProbe(probeSave());
+  mainMenu.open();
 }
 
 // V2: a pending theater contact becomes a fought battle.
@@ -1292,10 +1443,14 @@ function commitBox(additive: boolean): void {
 
 // Every order to a squad comes through here once, whichever gesture gave it:
 // the acknowledge sound, the quiet-minute clock and the tutorial all hang on it.
-function noteOrder(): void {
+function noteOrder(kind: OrderKind): void {
   audio.uiOrder();
   lastOrderTick = sim.tick;
   tutorial?.notify('order-issued');
+  if (kind === 'fire') {
+    if (drill) drill.shooter = getPrimary();
+    tutorial?.notify('fire-ordered');
+  } else if (kind === 'assault') tutorial?.notify('assault-ordered');
 }
 
 function tapSelect(sx: number, sy: number, additive: boolean): void {
@@ -1434,7 +1589,7 @@ function issueShortClick(wx: number, wy: number, squadForce: boolean, l?: number
       sim.orderSquad(id, order, used);
     }
   }
-  if (K > 0) noteOrder();
+  if (K > 0) noteOrder(kind);
 }
 
 function commitOrder(sx: number, sy: number, opts: { squadForce: boolean; floors: boolean }): void {
@@ -1511,7 +1666,7 @@ function commitOrder(sx: number, sy: number, opts: { squadForce: boolean; floors
       const order: TeamOrder = { kind, x: ax, y: ay, facing, width: seg };
       sim.orderSquad(id, order, used);
     }
-    noteOrder();
+    noteOrder(kind);
     if (useArmed) armedOrder = null;
   }
 
@@ -1884,7 +2039,7 @@ window.addEventListener('keydown', (e) => {
   
   // Global actions
   if (action === 'pause') {
-    if (mode === 'strategic') { stratPaused = !stratPaused; tutorial?.notify('speed-changed'); }
+    if (mode === 'strategic') stratPaused = !stratPaused;
     else paused = !paused;
     return;
   }
@@ -1898,7 +2053,6 @@ window.addEventListener('keydown', (e) => {
     if (action === 'speed1') speedIdx = 0;
     if (action === 'speed2') speedIdx = 1;
     if (action === 'speed3') speedIdx = 2;
-    if (action.startsWith('speed')) tutorial?.notify('speed-changed');
     return;
   }
   
@@ -2028,6 +2182,10 @@ function cycleFloorFocus(): void {
   showDebrief,
   // The map clear of the HUD, in CSS px: a gate script clicks only what a player could.
   stage: stageRect,
+  // The tutorial as the player sees it, and the drill it is teaching: scripts/drill.mjs
+  // finds its targets here, the way a player finds them from the ring.
+  tutorialView: () => (tutorial ? { step: tutorial.step?.id ?? null, ring: tutorial.ring(), occupied: tutorial.occupied() } : null),
+  getDrill: () => (drill ? { lead: drill.lead, rifles: drill.rifles, shooter: drill.shooter, hedge: drill.hedge, house: drill.house } : null),
   setFow: (on: boolean) => {
     sim.fowDisabled = !on;
   },
@@ -2084,6 +2242,8 @@ function frame(now: number): void {
       while (stratAcc >= 1 && !v2.pending) {
         stratAcc -= 1;
         stepTheaterMinuteV2(v2);
+        // The clock moved: the one thing the Play step was waiting to see.
+        tutorial?.notify('clock-advanced');
         if (v2.pending) showContactModalV2(v2.pending);
       }
       const st = warStatus(v2.front, v2.goals);
@@ -2314,8 +2474,10 @@ function frame(now: number): void {
       avoid: tutorial?.occupied(),
     }, pings);
     // The battle opens on the player's men: the pointer says which way the enemy is.
-    const foe = sim.winner ? null : enemyPointer(sim, stage, (x, y) => cam.worldToScreen(x, y, view.w, view.h));
+    // Quiet while a tutorial step is on screen: its ring is the thing to look at.
+    const foe = sim.winner || tutorial?.isShowing ? null : enemyPointer(sim, stage, (x, y) => cam.worldToScreen(x, y, view.w, view.h));
     if (foe) drawEnemyPointer(ctx, foe);
+    if (drill) pollDrill(drill);
     const ring = tutorial?.ring();
     if (ring) drawMarkRing(ctx, ring, now);
     if (touchHold) drawHoldRing(ctx, touchHold, now);
@@ -2325,7 +2487,7 @@ function frame(now: number): void {
     // A player who has given no order for a minute of battle is told the goal
     // and where the enemy is. Sim time, so a pause neither starts nor ends it.
     const quiet = !deployPhase && !sim.winner && !aiControl && (sim.tick - lastOrderTick) * DT >= QUIET_PROMPT_S;
-    hud.update(sim, { selectedSquad: primary, selectedSquads, selectedTeam, selectedVehicle, paused, aiControl, targetMode, armedOrder, title: battleTitle, keymap: km, prompt: quiet ? quietPrompt(sim) : null, speed: battleSpeed, deploy: deployPhase, floorFocus, boxMode, addMode });
+    hud.update(sim, { selectedSquad: primary, selectedSquads, selectedTeam, selectedVehicle, paused, aiControl, targetMode, armedOrder, title: battleTitle, keymap: km, prompt: quiet && !tutorial?.isShowing ? quietPrompt(sim) : null, glow: tutorial?.step?.chip ?? null, speed: battleSpeed, deploy: deployPhase, floorFocus, boxMode, addMode });
     // A new battle re-indexes sim.soldiers, so an id held across one closes the panel.
     if (inspectedSoldier >= 0 && !sim.soldiers[inspectedSoldier]) inspectedSoldier = -1;
     healthPanel.update(sim, inspectedSoldier);
@@ -2344,10 +2506,17 @@ function frame(now: number): void {
       // Same frame, same reason: the deploy bubble points at the battle HUD's
       // pause control, which the update above has only just built.
       if (deployPhase) tutorial?.notify('deploy-start');
+      if (drill) tutorial?.notify('drill-start');
     }
 
-    if (sim.winner && winnerAt < 0) winnerAt = now;
-    if (winnerAt >= 0 && !debriefShown && now - winnerAt > 4000) showDebrief();
+    if (sim.winner && winnerAt < 0) {
+      winnerAt = now;
+      tutorial?.notify('battle-won');
+    }
+    if (winnerAt >= 0 && !debriefShown && now - winnerAt > 4000) {
+      if (drill) showDrillEnd();
+      else showDebrief();
+    }
   }
   requestAnimationFrame(frame);
 }
@@ -2356,7 +2525,9 @@ function frame(now: number): void {
 // ?menu=1 forces the menu even then. Bare boot lands on the menu — the save,
 // if any, sits behind Continue instead of auto-loading.
 const menuForced = new URLSearchParams(location.search).get('menu') === '1';
-if (campPinned && !menuForced) {
+if (urlDrill !== null && !campPinned) {
+  startDrill(Number.isFinite(Number(urlDrill)) && urlDrill !== '' ? Number(urlDrill) : campSeed());
+} else if (campPinned && !menuForced) {
   startCampaign(null);
 } else {
   mainMenu.setSaveProbe(probeSave());
