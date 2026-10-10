@@ -21,6 +21,14 @@ export function viewSize(
   return { w: cssW, h: cssH, dpr };
 }
 
+// How many device pixels a hard-surface bake (vehicle, emplacement) gets per
+// CSS pixel. The men always bake at view.dpr; a hull canvas is five times a
+// man's, and a phone's memory is the one place that is not worth it, so on a
+// phone hulls stay on CSS pixels.
+export function hullDpr(): number {
+  return MOBILE ? 1 : view.dpr;
+}
+
 // Touch-first device, decided once at boot: a coarse primary pointer that
 // cannot hover. A touchscreen laptop reports fine/hover and stays on the
 // desktop path, which is the point — MOBILE gates layout, not capability.

@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { bandFor, kitVariant, tier, weaponClass } from '../src/render/dudes';
 import { SpriteCache } from '../src/render/spritecache';
+import { vehicleBandFor } from '../src/render/vehicles';
+import { view } from '../src/render/view';
 
 // Guards for the bake scaffolding the unit art hangs off: the detail tier a
 // band buys, the variant byte's tier gating (the thing that stops far bands
@@ -18,6 +20,25 @@ describe('detail tiers', () => {
     expect(bandFor(24)).toBe(24);
     expect(bandFor(25)).toBe(48);
     expect(bandFor(400)).toBe(48);
+  });
+
+  // The canvas backing store is scaled by view.dpr, so a band picked from CSS
+  // px/m was drawn upscaled on every HiDPI display. At dpr 1 — the profile
+  // every art baseline was shot on — the pick must not move.
+  it('picks the band from device pixels, and is unchanged at dpr 1', () => {
+    const was = view.dpr;
+    try {
+      view.dpr = 1;
+      expect([3, 10, 14, 24, 25].map(bandFor)).toEqual([6, 12, 24, 24, 48]);
+      expect([3, 10, 14, 24, 25].map(vehicleBandFor)).toEqual([6, 12, 24, 24, 48]);
+      view.dpr = 2;
+      expect(bandFor(14)).toBe(48); // 28 device px/m: band 24 would be upscaled
+      expect(bandFor(10)).toBe(24);
+      expect(bandFor(3)).toBe(6);
+      expect(vehicleBandFor(14)).toBe(48);
+    } finally {
+      view.dpr = was;
+    }
   });
 });
 
