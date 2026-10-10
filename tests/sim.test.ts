@@ -471,6 +471,11 @@ describe('simulation', () => {
     const counter = stage(false, false);
     counter.sim.orderTeam(counter.team.id, { kind: 'move', x: 22, y: 10.5 });
     expect(closing(counter.sim, 120).map((e) => [e.kind, e.side, e.team])).toEqual([['countering', 'red', counter.team.name]]);
+    // a few metres' shuffle next to the enemy is not a counterattack
+    const shuffle = stage(false, false);
+    for (const m of shuffle.sim.soldiers.filter((s) => s.side === 'red')) m.x -= 30; // 10 m from the blue man
+    shuffle.sim.orderTeam(shuffle.team.id, { kind: 'move', x: 27.5, y: 10.5 });
+    expect(closing(shuffle.sim, 120)).toEqual([]);
 
     // And a defending team seen going back: 15 m toward its own rear, the east.
     const back = stage(false, false);

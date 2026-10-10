@@ -90,7 +90,10 @@ const GUN_HELD_RADIUS = 10;
 // that enemy holds (noteClosing). The commander's own "held" radius.
 const CLOSING_RADIUS = 20;
 // A team seen going back (#796): most of its men in the other side's sight
-// and on the move, to a point at least this far toward its own rear.
+// and on the move, to a point at least this far toward its own rear. A
+// counterattack is called one when it has that far to come, too: a gun crew
+// shifting two metres beside a post the enemy has reached is not one (the
+// first form said so in a browser, of an sMG42 team's 2 m move).
 const WITHDRAW_SEEN_M = 10;
 // A man who steadies within this long of being pinned or broken has rallied
 // (#766). The crossing never happens in one tick: suppression decays at most
@@ -2449,8 +2452,12 @@ export class Sim {
         break;
       }
       const axis = this.threatAxis[side];
-      if (closing) said(Math.cos(axis) < 0 ? 'countering' : 'closing');
-      else if (order.kind !== 'assault' && seenMoving * 2 > men && (order.x - cx / men) * -Math.cos(axis) + (order.y - cy / men) * -Math.sin(axis) >= WITHDRAW_SEEN_M) said('withdrawing');
+      const dx = order.x - cx / men;
+      const dy = order.y - cy / men;
+      if (closing) {
+        if (Math.cos(axis) >= 0) said('closing');
+        else if (Math.hypot(dx, dy) >= WITHDRAW_SEEN_M) said('countering');
+      } else if (order.kind !== 'assault' && seenMoving * 2 > men && dx * -Math.cos(axis) + dy * -Math.sin(axis) >= WITHDRAW_SEEN_M) said('withdrawing');
     }
   }
 
