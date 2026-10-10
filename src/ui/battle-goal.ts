@@ -1,6 +1,7 @@
 // How a battle is won, as the HUD states it: one label, both sides' strength,
 // and the line each side breaks at. Pure, no DOM.
 import type { Side, Sim } from '../sim/sim';
+import type { Rect } from './coach';
 
 // The break-off rule is the sim's own: these are the constants Sim.step()
 // runs on. tests/battle-goal.test.ts still walks a live Sim across the line,
@@ -99,16 +100,111 @@ export function quietPrompt(sim: Sim): string | null {
   if (n === 0) return null;
   cx /= n;
   cy /= n;
-  let bearing = sim.threatAxis.blue;
-  let best = Infinity;
-  const known = [...sim.spotted.blue.values(), ...sim.contacts.blue.values()];
-  for (const k of known) {
-    const d = Math.hypot(k.x - cx, k.y - cy);
-    if (d < best) {
-      best = d;
-      bearing = Math.atan2(k.y - cy, k.x - cx);
-    }
-  }
+  const foe = nearestKnownEnemy(sim, cx, cy);
+  const bearing = foe ? Math.atan2(foe.y - cy, foe.x - cx) : sim.threatAxis.blue;
   const i = ((Math.round(bearing / (Math.PI / 4)) % 8) + 8) % 8;
   return `${goal.label} · enemy to the ${COMPASS[i]} ${ARROWS[i]}`;
+}
+
+/** Every enemy position the player knows of: seen now, or a ghost of where one was. */
+function knownEnemies(sim: Sim): { x: number; y: number }[] {
+  return [...sim.spotted.blue.values(), ...sim.contacts.blue.values()];
+}
+
+/** The known enemy nearest a world point. null before any contact. */
+export function nearestKnownEnemy(sim: Sim, x: number, y: number): { x: number; y: number } | null {
+  let best: { x: number; y: number } | null = null;
+  let bestD = Infinity;
+  for (const k of knownEnemies(sim)) {
+    const d = Math.hypot(k.x - x, k.y - y);
+    if (d < bestD) {
+      bestD = d;
+      best = k;
+    }
+  }
+  return best;
+}
+
+export interface Pointer {
+  x: number;
+  y: number;
+  /** Screen bearing the pointer aims along, radians. */
+  angle: number;
+}
+
+const POINTER_INSET = 30; // px the pointer sits inside the stage edge
+
+/**
+ * Where a pointer to a screen point sits on the edge of `stage`, aimed from
+ * the stage's centre. null = the point is on stage and needs no pointer.
+ */
+export function edgePointer(stage: Rect, tx: number, ty: number): Pointer | null {
+  if (tx >= stage.left && tx <= stage.right && ty >= stage.top && ty <= stage.bottom) return null;
+  const cx = (stage.left + stage.right) / 2;
+  const cy = (stage.top + stage.bottom) / 2;
+  const hw = Math.max(1, (stage.right - stage.left) / 2 - POINTER_INSET);
+  const hh = Math.max(1, (stage.bottom - stage.top) / 2 - POINTER_INSET);
+  const dx = tx - cx;
+  const dy = ty - cy;
+  // Scale the ray to where it leaves the inset box.
+  const k = Math.min(dx === 0 ? Infinity : hw / Math.abs(dx), dy === 0 ? Infinity : hh / Math.abs(dy));
+  return { x: cx + dx * k, y: cy + dy * k, angle: Math.atan2(dy, dx) };
+}
+
+/**
+ * The battle opens on the player's own men, so the screen has to say which way
+ * the enemy is. This is the pointer at the edge of the map on screen: toward
+ * the nearest enemy the player knows of, or, before any contact, toward the
+ * side the enemy is expected from. null while a known enemy is on screen.
+ * `project` is the camera: world to screen.
+ */
+export function enemyPointer(sim: Sim, stage: Rect, project: (x: number, y: number) => [number, number]): Pointer | null {
+  const cx = (stage.left + stage.right) / 2;
+  const cy = (stage.top + stage.bottom) / 2;
+  let near: Pointer | null = null;
+  let nearD = Infinity;
+  for (const k of knownEnemies(sim)) {
+    const [sx, sy] = project(k.x, k.y);
+    const p = edgePointer(stage, sx, sy);
+    if (!p) return null;
+    const d = Math.hypot(sx - cx, sy - cy);
+    if (d < nearD) {
+      nearD = d;
+      near = p;
+    }
+  }
+  if (near) return near;
+  const a = sim.threatAxis.blue;
+  const far = Math.hypot(stage.right - stage.left, stage.bottom - stage.top);
+  return edgePointer(stage, cx + Math.cos(a) * far, cy + Math.sin(a) * far);
+}
+
+const POINTER_RED = '#d05c50'; // the enemy's team colour (hud.ts TEAM.red)
+
+export function drawEnemyPointer(ctx: CanvasRenderingContext2D, p: Pointer): void {
+  ctx.save();
+  ctx.translate(p.x, p.y);
+  ctx.font = '600 11px ui-monospace, Menlo, monospace';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  // The word sits behind the arrowhead, on the map side.
+  const lx = -Math.cos(p.angle) * 30;
+  const ly = -Math.sin(p.angle) * 22;
+  const w = ctx.measureText('ENEMY').width + 10;
+  ctx.fillStyle = 'rgba(18, 22, 15, 0.85)';
+  ctx.fillRect(lx - w / 2, ly - 8, w, 16);
+  ctx.fillStyle = POINTER_RED;
+  ctx.fillText('ENEMY', lx, ly);
+  ctx.rotate(p.angle);
+  ctx.beginPath();
+  ctx.moveTo(14, 0);
+  ctx.lineTo(-4, -9);
+  ctx.lineTo(-4, 9);
+  ctx.closePath();
+  ctx.fillStyle = POINTER_RED;
+  ctx.fill();
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = 'rgba(18, 22, 15, 0.85)';
+  ctx.stroke();
+  ctx.restore();
 }

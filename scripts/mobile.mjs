@@ -84,18 +84,25 @@ function framing(page) {
       else clear.right = Math.min(clear.right, p.r.left);
     }
     const blue = g.sim.soldiers.filter((s) => s.alive && s.side === 'blue');
-    let cx = 0;
-    let cy = 0;
+    const inWindow = (wx, wy) => {
+      // how many men a camera centring (wx, wy) in the clear region would show
+      const hw = (clear.right - clear.left) / 2 / g.cam.scale;
+      const hh = (clear.bottom - clear.top) / 2 / g.cam.scale;
+      return blue.filter((s) => Math.abs(s.x - wx) <= hw && Math.abs(s.y - wy) <= hh).length;
+    };
     let inClear = 0;
     for (const s of blue) {
       const [x, y] = g.cam.worldToScreen(s.x, s.y, cw, ch);
-      cx += x;
-      cy += y;
       if (x >= clear.left && x <= clear.right && y >= clear.top && y <= clear.bottom) inClear++;
     }
+    // The most men ANY frame of this size could hold. A company deploys in a
+    // line some 220 m long: no phone shows half of it at a zoom where a man
+    // reads as a man, so the honest bar is the best frame, not half the force.
+    let best = 0;
+    for (const s of blue) best = Math.max(best, inWindow(s.x, s.y));
     return {
       blue: blue.length,
-      centroid: { x: Math.round(cx / blue.length), y: Math.round(cy / blue.length) },
+      best,
       inClear,
       clear: { left: Math.round(clear.left), top: Math.round(clear.top), right: Math.round(clear.right), bottom: Math.round(clear.bottom) },
       scale: Math.round(g.cam.scale * 100) / 100,
@@ -205,11 +212,10 @@ async function phoneRun(device) {
   await shot('battle-boot');
   const f = await framing(page);
   console.log(`  framing ${JSON.stringify(f)}`);
-  check(
-    f.centroid.x >= f.clear.left && f.centroid.x <= f.clear.right && f.centroid.y >= f.clear.top && f.centroid.y <= f.clear.bottom,
-    `${device} blue centroid inside the clear region`,
-  );
-  check(f.inClear / f.blue >= 0.5, `${device} >=50% of blue in the clear region (${f.inClear}/${f.blue})`);
+  const { READ_PX_M } = await page.evaluate(() => import('/src/render/framing.ts').then((m) => ({ READ_PX_M: m.READ_PX_M })));
+  check(f.scale >= READ_PX_M, `${device} the battle opens at a zoom where a man reads as a man (${f.scale} px/m, floor ${READ_PX_M})`);
+  check(f.inClear >= 12, `${device} at least a squad of the player's men is on the clear map at boot (${f.inClear}/${f.blue})`);
+  check(f.inClear >= f.best * 0.9, `${device} the boot frame is on the densest part of the force (${f.inClear} shown, ${f.best} the most any frame this size could show)`);
   await noOverflow('battle boot');
 
   // (c) the touch bar is the control surface: every chip a real target, and
@@ -323,6 +329,12 @@ async function phoneRun(device) {
     const cw = innerWidth;
     const ch = innerHeight;
     const blue = g.sim.soldiers.filter((s) => s.alive && s.side === 'blue');
+    // View-only staging: the battle opens on one or two squads at a readable
+    // zoom, and a box over several needs several on screen. Pull back first,
+    // as a player would with a pinch.
+    g.cam.scale = 3.5;
+    g.cam.x = blue.reduce((a, s) => a + s.x, 0) / blue.length + cw / 2 / g.cam.scale - 12;
+    g.cam.y = blue.reduce((a, s) => a + s.y, 0) / blue.length;
     let x0 = 1e9;
     let y0 = 1e9;
     let x1 = -1e9;

@@ -1,10 +1,31 @@
 import { describe, expect, it } from 'vitest';
-import { bootCamera, capInset, FRAME_M_MOBILE, WHOLE_MAP_PX_M } from '../src/render/framing';
+import { bootCamera, BOOT_MAX_PX_M, capInset, densestAim, READ_PX_M, type Inset } from '../src/render/framing';
+import { SPRITE_MIN_SCALE } from '../src/render/dudes';
 
 const MAP = { w: 320, h: 240 };
-// West-attack spawn: the case the original clear-viewport framing fix was
-// measured against — blue sits at x≈7, exactly behind the roster panel.
-const BLUE = Array.from({ length: 138 }, (_, i) => ({ x: 5 + (i % 9), y: 100 + ((i / 9) | 0) * 0.4 }));
+
+// A company as the theater stages it: nine rifle squads down the west edge,
+// some 25 m apart, twelve men each. The line is far longer than any screen is
+// tall at a zoom where a man can be read.
+const COMPANY = Array.from({ length: 9 }, (_, q) => Array.from({ length: 12 }, (_, i) => ({ x: 6 + (i % 4) * 1.5, y: 14 + q * 26 + ((i / 4) | 0) * 1.5 }))).flat();
+// The drill's platoon: three squads and a gun within sixty meters.
+const PLATOON = Array.from({ length: 3 }, (_, q) => Array.from({ length: 12 }, (_, i) => ({ x: 8 + (i % 4) * 1.5, y: 40 + q * 18 + ((i / 4) | 0) * 1.5 }))).flat();
+
+// The three form factors, with the chrome each really carries.
+const SCREENS: { name: string; cw: number; ch: number; inset: Inset; capFrac?: number }[] = [
+  { name: 'desktop 1280x800', cw: 1280, ch: 800, inset: { left: 266, top: 36, bottom: 0 } },
+  { name: 'phone 390x844', cw: 390, ch: 844, inset: { left: 0, top: 58, bottom: 60 }, capFrac: 0.35 },
+  { name: 'phone landscape 844x390', cw: 844, ch: 390, inset: { left: 0, top: 34, bottom: 60 }, capFrac: 0.35 },
+];
+
+/** How many of `pts` land inside the clear region for a camera. */
+function inClear(pts: { x: number; y: number }[], cam: { x: number; y: number; scale: number }, s: (typeof SCREENS)[number]): number {
+  return pts.filter((p) => {
+    const sx = (p.x - cam.x) * cam.scale + s.cw / 2;
+    const sy = (p.y - cam.y) * cam.scale + s.ch / 2;
+    return sx >= s.inset.left && sx <= s.cw && sy >= s.inset.top && sy <= s.ch - s.inset.bottom;
+  }).length;
+}
 
 describe('capInset', () => {
   it('leaves a border-sized inset alone', () => {
@@ -21,11 +42,6 @@ describe('capInset', () => {
     expect(capInset(35.0001, 100, 0.35)).toBe(0);
   });
 
-  it('honours a custom fraction', () => {
-    expect(capInset(266, 750, 0.35)).toBe(0);
-    expect(capInset(266, 750, 0.5)).toBe(266);
-  });
-
   // 266/760 is exactly 0.35, so the 266px roster still insets a 760px window —
   // the narrowest desktop layout the cap could plausibly have broken.
   it('does not cap the 266px roster at the narrowest desktop width', () => {
@@ -33,54 +49,89 @@ describe('capInset', () => {
   });
 });
 
-describe('bootCamera', () => {
-  const DESKTOP_INSET = { left: 266, top: 60, bottom: 52 };
+describe('densestAim', () => {
+  // A plain w×h window, no map edge to clamp against.
+  const box = (pts: { x: number; y: number }[], w: number, h: number) => (x: number, y: number) =>
+    pts.filter((p) => Math.abs(p.x - x) <= w / 2 && Math.abs(p.y - y) <= h / 2);
 
-  it('desktop 1280x800 takes the whole-map branch and keeps blue in the clear span', () => {
-    const b = bootCamera(MAP, BLUE, 1280, 800, DESKTOP_INSET);
-    expect(b.scale).toBeGreaterThanOrEqual(WHOLE_MAP_PX_M);
-    const clearLeft = (266 - 1280 / 2) / b.scale + b.x;
-    expect(clearLeft).toBeLessThanOrEqual(BLUE[0].x);
+  it('finds the cluster, not the middle of nowhere between two', () => {
+    const pts = [...Array.from({ length: 5 }, (_, i) => ({ x: 10 + i, y: 10 })), ...Array.from({ length: 9 }, (_, i) => ({ x: 200 + i, y: 100 }))];
+    const w = densestAim(pts, box(pts, 20, 20))!;
+    expect(w.count).toBe(9);
+    expect(Math.abs(w.x - 204)).toBeLessThanOrEqual(4);
+    expect(w.y).toBeCloseTo(100, 0);
   });
 
-  it('without the cap, a full-width sheet collapses the phone view to the 2 px/m floor', () => {
+  it('frames an evenly spread force on its middle', () => {
+    const w = densestAim(COMPANY, box(COMPANY, 60, 60))!;
+    const mid = COMPANY.reduce((a, p) => a + p.y, 0) / COMPANY.length;
+    expect(Math.abs(w.y - mid)).toBeLessThan(15);
+  });
+
+  it('has nothing to frame with nobody fielded', () => {
+    expect(densestAim([], () => [])).toBeNull();
+  });
+});
+
+describe('bootCamera: the battle opens on the player\'s men', () => {
+  for (const s of SCREENS) {
+    it(`${s.name}: a company opens at a zoom where a man reads as a man`, () => {
+      const cam = bootCamera(MAP, COMPANY, s.cw, s.ch, s.inset, { capFrac: s.capFrac });
+      expect(cam.scale).toBeGreaterThanOrEqual(READ_PX_M);
+      expect(cam.scale).toBeGreaterThan(SPRITE_MIN_SCALE);
+    });
+
+    it(`${s.name}: the frame holds as many of the company as any frame that size could`, () => {
+      const cam = bootCamera(MAP, COMPANY, s.cw, s.ch, s.inset, { capFrac: s.capFrac });
+      const got = inClear(COMPANY, cam, s);
+      // The best any camera at this scale can do, by brute force over every man.
+      let best = 0;
+      for (const c of COMPANY) best = Math.max(best, inClear(COMPANY, { x: c.x + (s.cw / 2 - (s.inset.left + s.cw) / 2) / cam.scale, y: c.y + (s.ch / 2 - (s.inset.top + s.ch - s.inset.bottom) / 2) / cam.scale, scale: cam.scale }, s));
+      expect(got).toBeGreaterThanOrEqual(12); // one whole squad, on every screen
+      expect(got).toBeGreaterThanOrEqual(best * 0.9);
+    });
+
+    it(`${s.name}: a platoon small enough to fit is framed whole`, () => {
+      const cam = bootCamera(MAP, PLATOON, s.cw, s.ch, s.inset, { capFrac: s.capFrac });
+      if (cam.scale > READ_PX_M) expect(inClear(PLATOON, cam, s)).toBe(PLATOON.length);
+      expect(cam.scale).toBeLessThanOrEqual(BOOT_MAX_PX_M);
+      expect(inClear(PLATOON, cam, s)).toBeGreaterThanOrEqual(12);
+    });
+
+    it(`${s.name}: the clear region shows no ground off the map`, () => {
+      const cam = bootCamera(MAP, COMPANY, s.cw, s.ch, s.inset, { capFrac: s.capFrac });
+      const left = (s.inset.left - s.cw / 2) / cam.scale + cam.x;
+      const top = (s.inset.top - s.ch / 2) / cam.scale + cam.y;
+      const bottom = (s.ch - s.inset.bottom - s.ch / 2) / cam.scale + cam.y;
+      expect(left).toBeGreaterThanOrEqual(-0.001);
+      expect(top).toBeGreaterThanOrEqual(-0.001);
+      expect(bottom).toBeLessThanOrEqual(MAP.h + 0.001);
+    });
+  }
+
+  it('never frames the men behind the desktop roster', () => {
+    const s = SCREENS[0];
+    const cam = bootCamera(MAP, COMPANY, s.cw, s.ch, s.inset);
+    const xs = COMPANY.map((p) => (p.x - cam.x) * cam.scale + s.cw / 2);
+    expect(Math.min(...xs)).toBeGreaterThanOrEqual(s.inset.left);
+  });
+
+  it('a full-width phone sheet is a drawer, not a border: the cap keeps the frame on the men', () => {
     const sheet = { left: 380, top: 76, bottom: 120 };
-    const b = bootCamera(MAP, BLUE, 390, 844, sheet, { frameM: FRAME_M_MOBILE });
-    expect(b.scale).toBe(2);
+    const cam = bootCamera(MAP, COMPANY, 390, 844, sheet, { capFrac: 0.35 });
+    expect(cam.scale).toBeGreaterThanOrEqual(READ_PX_M);
+    expect(inClear(COMPANY, cam, { name: '', cw: 390, ch: 844, inset: { left: 0, top: 76, bottom: 120 } })).toBeGreaterThanOrEqual(12);
   });
 
-  it('capInset rescues that same phone frame: >3 px/m and the blue centroid on screen', () => {
-    const sheet = { left: 380, top: 76, bottom: 120 };
-    const b = bootCamera(MAP, BLUE, 390, 844, sheet, { frameM: FRAME_M_MOBILE, capFrac: 0.35 });
-    expect(b.scale).toBeGreaterThan(3);
-    const cx = BLUE.reduce((a, s) => a + s.x, 0) / BLUE.length;
-    const cy = BLUE.reduce((a, s) => a + s.y, 0) / BLUE.length;
-    // clear rect = whole canvas once the drawer insets are dropped
-    const sx = (cx - b.x) * b.scale + 390 / 2;
-    const sy = (cy - b.y) * b.scale + 844 / 2;
-    expect(sx).toBeGreaterThanOrEqual(0);
-    expect(sx).toBeLessThanOrEqual(390);
-    expect(sy).toBeGreaterThanOrEqual(0);
-    expect(sy).toBeLessThanOrEqual(844);
-  });
-
-  it('FRAME_M 70 clears the 5 px/m dot-LOD threshold where 120 does not', () => {
-    const sheet = { left: 380, top: 76, bottom: 120 };
-    const desktopDistance = bootCamera(MAP, BLUE, 390, 844, sheet, { capFrac: 0.35 });
-    const mobileDistance = bootCamera(MAP, BLUE, 390, 844, sheet, { frameM: FRAME_M_MOBILE, capFrac: 0.35 });
-    expect(desktopDistance.scale).toBeLessThan(5);
-    expect(mobileDistance.scale).toBeGreaterThan(5);
-  });
-
-  it('capFrac left undefined never changes a desktop frame', () => {
-    const capped = bootCamera(MAP, BLUE, 1280, 800, DESKTOP_INSET, { capFrac: 0.35 });
-    const plain = bootCamera(MAP, BLUE, 1280, 800, DESKTOP_INSET);
-    expect(capped).toEqual(plain); // 266/1280 = 21%, under the threshold either way
+  it('opens on the middle of the map with nobody fielded', () => {
+    const cam = bootCamera(MAP, [], 1280, 800, { left: 0, top: 0, bottom: 0 });
+    expect(cam.scale).toBe(READ_PX_M);
+    expect(cam.x).toBeCloseTo(MAP.w / 2);
+    expect(cam.y).toBeCloseTo(MAP.h / 2);
   });
 
   it('honours a lowered maxScale', () => {
-    const tiny = { w: 40, h: 30 };
-    const b = bootCamera(tiny, BLUE, 390, 844, { left: 0, top: 0, bottom: 0 }, { frameM: FRAME_M_MOBILE, maxScale: 32 });
-    expect(b.scale).toBeLessThanOrEqual(32);
+    const cam = bootCamera(MAP, PLATOON.slice(0, 2), 1280, 800, { left: 0, top: 0, bottom: 0 }, { maxScale: 8 });
+    expect(cam.scale).toBe(8);
   });
 });

@@ -4,7 +4,7 @@ import { Camera } from './render/camera';
 import { Renderer } from './render/renderer';
 import { setSun } from './render/light';
 import { StrategicView, TERRAIN_LABELS } from './render/strategic';
-import { bootCamera as bootCameraFor, capInset, FRAME_M_DESKTOP, FRAME_M_MOBILE, type Inset } from './render/framing';
+import { bootCamera as bootCameraFor } from './render/framing';
 import { MOBILE, view, viewSize } from './render/view';
 import type { RedCommander } from './sim/ai';
 import { WEAPONS } from './sim/data';
@@ -17,7 +17,7 @@ import { operationStatus, REINFORCE_CYCLE_DAYS, REINFORCE_PER_COMPANY, type Chit
 import { saveGame } from './strategic/save';
 import { makeDefaultSector } from './strategic/sector';
 import { emplacementOf, Hud, infantrySquads } from './ui/hud';
-import { QUIET_PROMPT_S, quietPrompt } from './ui/battle-goal';
+import { drawEnemyPointer, enemyPointer, QUIET_PROMPT_S, quietPrompt } from './ui/battle-goal';
 import { frameSteps, nextSpeed, type BattleSpeed } from './ui/battle-speed';
 import { StratHud } from './ui/strat-hud';
 import { drawOverlays, EventPings, type TeamPulse } from './ui/overlays';
@@ -313,7 +313,7 @@ const urlHourMin = ((): number | null => {
   return null;
 })();
 const hud = new Hud({
-  selectSquad,
+  selectSquad: pickSquad,
   selectVehicle,
   panToSoldier: (id) => {
     const s = sim.soldiers[id];
@@ -473,6 +473,18 @@ function tutorialMark(mark: WorldMark): Circle | null {
   }
 }
 
+// A squad picked by name (the roster, a number key) may be off screen: the
+// battle opens on part of the company, not all of it. Bring it into view.
+function pickSquad(id: number): void {
+  selectSquad(id);
+  const c = squadCircle(id);
+  if (!c) return;
+  const st = stageRect();
+  if (c.x >= st.left && c.x <= st.right && c.y >= st.top && c.y <= st.bottom) return;
+  cam.x += (c.x - (st.left + st.right) / 2) / cam.scale;
+  cam.y += (c.y - (st.top + st.bottom) / 2) / cam.scale;
+}
+
 function squadCircle(id: number): Circle | null {
   const squad = sim.squads[id];
   if (!squad) return null;
@@ -626,23 +638,10 @@ function viewportInset(): { left: number; top: number; bottom: number } {
   };
 }
 
-// bootCameraFor scales off the clear region's WIDTH, which is the right axis
-// on a portrait phone and the wrong one the moment it turns: 844x390 landscape
-// solves 70m across 844px at 12 px/m, and 70m of ground 22m tall showed 24 of
-// 138 men. FRAME_M_MOBILE is really "meters across the short axis" — in
-// portrait that is already the width (so this returns it unchanged), in
-// landscape it is the clear height, so convert.
 const MOBILE_CAP_FRAC = 0.35;
-function mobileFrameM(cw: number, ch: number, raw: Inset): number {
-  const vw = Math.max(1, cw - capInset(raw.left, cw, MOBILE_CAP_FRAC));
-  const vh = Math.max(1, ch - capInset(raw.top, ch, MOBILE_CAP_FRAC) - capInset(raw.bottom, ch, MOBILE_CAP_FRAC));
-  return vh < vw ? (FRAME_M_MOBILE * vw) / vh : FRAME_M_MOBILE;
-}
 
 function bootCamera(s: Sim, cw: number, ch: number): { x: number; y: number; scale: number } {
-  const raw = viewportInset();
-  return bootCameraFor(s.map, s.soldiers.filter((sd) => sd.side === 'blue'), cw, ch, raw, {
-    frameM: MOBILE ? mobileFrameM(cw, ch, raw) : FRAME_M_DESKTOP,
+  return bootCameraFor(s.map, s.soldiers.filter((sd) => sd.side === 'blue'), cw, ch, viewportInset(), {
     // Desktop insets are borders and must keep insetting at every window
     // width; only the phone's full-width sheets are drawers worth ignoring.
     capFrac: MOBILE ? MOBILE_CAP_FRAC : undefined,
@@ -1726,7 +1725,7 @@ window.addEventListener('keydown', (e) => {
   if (action.startsWith('squad')) {
     const n = Number(action.slice(5)) - 1;
     const list = infantrySquads(sim);
-    if (n >= 0 && n < list.length) selectSquad(list[n].id);
+    if (n >= 0 && n < list.length) pickSquad(list[n].id);
   }
   
   if (action.startsWith('order')) {
@@ -2048,6 +2047,7 @@ function frame(now: number): void {
         ctx.fillText(deployMsg, bx, by + 19 + lines.length * 18);
       }
     }
+    const stage = stageRect();
     drawOverlays(ctx, cam, sim, {
       shot,
       selectedSquad: primary,
@@ -2062,8 +2062,11 @@ function frame(now: number): void {
       orderFloor: floorMenu ? floorMenu.level : null,
       floorFocus,
       deploy: deployPhase ? { ...deployZone(), bearing: deployBearing() } : null,
-      clear: stageRect(),
+      clear: stage,
     }, pings);
+    // The battle opens on the player's men: the pointer says which way the enemy is.
+    const foe = sim.winner ? null : enemyPointer(sim, stage, (x, y) => cam.worldToScreen(x, y, view.w, view.h));
+    if (foe) drawEnemyPointer(ctx, foe);
     const ring = tutorial?.ring();
     if (ring) drawMarkRing(ctx, ring, now);
     if (touchHold) drawHoldRing(ctx, touchHold, now);

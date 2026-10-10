@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { GameMap } from '../src/sim/map';
 import { Sim } from '../src/sim/sim';
-import { battleGoal, BREAK_FLOOR_MIN, BREAK_FRACTION, breakFloor, effective, ENEMY_READS, goalText, quietPrompt, type SideStrength } from '../src/ui/battle-goal';
+import { battleGoal, BREAK_FLOOR_MIN, BREAK_FRACTION, breakFloor, edgePointer, effective, ENEMY_READS, enemyPointer, goalText, quietPrompt, type SideStrength } from '../src/ui/battle-goal';
 
 // Two forces far apart on bare ground: nobody is in range, so the only thing
 // that changes a count is this test.
@@ -158,6 +158,62 @@ describe('the enemy read under fog', () => {
     sim.fowDisabled = true;
     const g = battleGoal(sim)!;
     expect(goalText(g)).toBe(`Break them · GE ${sim.startStrength.red} → ${enemyExact(sim).breakAt} · US ${sim.startStrength.blue}`);
+  });
+});
+
+// The battle opens on the player's own men, so the screen says which way the
+// enemy is.
+describe('the enemy pointer', () => {
+  const stage = { left: 266, top: 36, right: 1280, bottom: 800 };
+  const identity = (x: number, y: number): [number, number] => [x, y];
+
+  it('sits on the edge of the map on screen and aims at the target', () => {
+    const p = edgePointer(stage, 5000, 418)!;
+    expect(p.angle).toBeCloseTo(0);
+    expect(p.x).toBeGreaterThan(stage.right - 60);
+    expect(p.x).toBeLessThan(stage.right);
+    expect(p.y).toBeCloseTo(418);
+    const up = edgePointer(stage, 773, -900)!;
+    expect(up.angle).toBeCloseTo(-Math.PI / 2);
+    expect(up.y).toBeGreaterThan(stage.top);
+    expect(up.y).toBeLessThan(stage.top + 60);
+  });
+
+  it('stays inside the stage whatever the bearing', () => {
+    for (let a = 0; a < Math.PI * 2; a += 0.3) {
+      const p = edgePointer(stage, 773 + Math.cos(a) * 9000, 418 + Math.sin(a) * 9000)!;
+      expect(p.x).toBeGreaterThanOrEqual(stage.left);
+      expect(p.x).toBeLessThanOrEqual(stage.right);
+      expect(p.y).toBeGreaterThanOrEqual(stage.top);
+      expect(p.y).toBeLessThanOrEqual(stage.bottom);
+    }
+  });
+
+  it('is not drawn for a target that is on screen', () => {
+    expect(edgePointer(stage, 600, 400)).toBeNull();
+  });
+
+  it('points the way the enemy is expected from before any contact', () => {
+    const sim = standoff(1, 1);
+    expect(enemyPointer(sim, stage, identity)!.angle).toBeCloseTo(0);
+    sim.threatAxis.blue = Math.PI;
+    expect(Math.abs(enemyPointer(sim, stage, identity)!.angle)).toBeCloseTo(Math.PI);
+  });
+
+  it('points at the nearest enemy the player knows of, and never at one the fog hides', () => {
+    const sim = standoff(1, 1);
+    // The real Germans are far to the east and unseen: a ghost to the north is all the player has.
+    sim.contacts.blue.set('ghost', { kind: 'infantry', x: 700, y: -500, tick: 0 });
+    const p = enemyPointer(sim, stage, identity)!;
+    expect(p.angle).toBeLessThan(0);
+    expect(p.y).toBeLessThan(100);
+  });
+
+  it('stands down while a known enemy is on screen', () => {
+    const sim = standoff(1, 1);
+    sim.spotted.blue.set(7, { x: 900, y: 400 });
+    sim.contacts.blue.set('ghost', { kind: 'infantry', x: 5000, y: 400, tick: 0 });
+    expect(enemyPointer(sim, stage, identity)).toBeNull();
   });
 });
 
