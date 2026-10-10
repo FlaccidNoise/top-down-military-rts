@@ -269,6 +269,11 @@ export class Tutorial {
     return this.state.skipped;
   }
 
+  /** A step is on screen. The game keeps its own hover card quiet meanwhile. */
+  get isShowing(): boolean {
+    return this.shown !== null;
+  }
+
   /** The game reports what happened. Called from many sites, some every input. */
   notify(event: TutorialEvent): void {
     if (this.state.skipped) return;

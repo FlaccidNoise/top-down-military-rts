@@ -2065,7 +2065,8 @@ function frame(now: number): void {
     const ring = tutorial?.ring();
     if (ring) drawMarkRing(ctx, ring, now);
     if (touchHold) drawHoldRing(ctx, touchHold, now);
-    tooltip.update(sim, pick, shot, mouse.x, mouse.y, pick?.kind === 'terrain' && (primary >= 0 || selectedVehicle >= 0));
+    // One thing talks at a time: a tutorial step on screen outranks the hover card.
+    tooltip.update(sim, tutorial?.isShowing ? null : pick, shot, mouse.x, mouse.y, pick?.kind === 'terrain' && (primary >= 0 || selectedVehicle >= 0));
     const km = loadKeymap(localStorage);
     // A player who has given no order for a minute of battle is told the goal
     // and where the enemy is. Sim time, so a pause neither starts nor ends it.
