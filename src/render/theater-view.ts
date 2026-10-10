@@ -14,7 +14,7 @@ import type { ReconMode } from '../campaign/spec';
 import type { Side } from '../sim/sim';
 import { MOBILE } from './view';
 import { buildFrontLayer, controlKey, washRectM, type FrontLayer } from './theater-front';
-import { counterRect, drawCounter, layoutCounters, type CounterSpec, type PlacedCounter } from './theater-counters';
+import { counterRect, drawCounter, drawLeader, layoutCounters, type CounterSpec, type PlacedCounter } from './theater-counters';
 
 // Terrain separates by VALUE, not hue (the Muted-Normandy rule): a luma ladder
 // from forest floor up to rooftops, every rung a clear step. The old palette
@@ -160,14 +160,14 @@ export class TheaterView {
   // map smaller than the clear rectangle stays inside it, a larger one never
   // shows more than the slack of empty ground. A panel that appears later
   // (the company card) moves the map only if it would cover it.
-  clampPan(w: number, h: number): void {
+  clampPan(w: number, h: number, slack = PAN_SLACK_PX): void {
     this.zoomMul = Math.max(this.minZoom(w, h), Math.min(THEATER_ZOOM_MAX, this.zoomMul));
     const { scale } = this.layout(w, h);
     const c = this.clear(w, h);
     const axis = (pan: number, full: number, c0: number, cLen: number, mapLen: number): number => {
       const neutral = (full - mapLen) / 2; // the offset at pan 0
-      const lo = Math.min(c0, c0 + cLen - mapLen) - PAN_SLACK_PX;
-      const hi = Math.max(c0, c0 + cLen - mapLen) + PAN_SLACK_PX;
+      const lo = Math.min(c0, c0 + cLen - mapLen) - slack;
+      const hi = Math.max(c0, c0 + cLen - mapLen) + slack;
       return Math.max(lo, Math.min(hi, neutral + pan)) - neutral;
     };
     this.panX = axis(this.panX, w, c.x, c.w, this.theater.boundsM.w * scale);
@@ -189,7 +189,9 @@ export class TheaterView {
     const { w: tw, h: th } = this.theater.boundsM;
     this.panX = c.x + c.w / 2 - ((x0 + x1) / 2) * scale - (w - tw * scale) / 2;
     this.panY = c.y + c.h / 2 - ((y0 + y1) / 2) * scale - (h - th * scale) / 2;
-    this.clampPan(w, h);
+    // No slack here: a framed map never starts with ground under a panel
+    // while there is room to show it.
+    this.clampPan(w, h, 0);
   }
 
   // The whole theater, inside the clear rectangle.
@@ -210,7 +212,25 @@ export class TheaterView {
       .filter((n) => front.controlByNode[n] !== 'blue')
       .map((n) => this.theater.nodes[n].pos)
       .sort((a, b) => Math.hypot(a.x - cx, a.y - cy) - Math.hypot(b.x - cx, b.y - cy))[0];
-    this.frame(goal ? [...own, goal] : own, w, h);
+    const pts = goal ? [...own, goal] : own;
+    this.frame(pts, w, h);
+    // An objective cut by a panel or by the screen edge is worse than one
+    // off screen: bring every objective that shows at all fully into the
+    // clear, ring, name and garrison. Each pass can only add, so it ends.
+    const c = this.clear(w, h);
+    const rest = this.theater.objectiveNodes.map((n) => this.theater.nodes[n].pos).filter((p) => !pts.includes(p));
+    for (let pass = 0; pass < rest.length; pass++) {
+      const cutOff = rest.find((p) => {
+        if (pts.includes(p)) return false;
+        const [sx, sy] = this.toScreen(p.x, p.y, w, h);
+        const showing = sx > -20 && sx < w + 20 && sy > -20 && sy < h + 20;
+        const whole = sx - 60 >= c.x && sx + 60 <= c.x + c.w && sy - 36 >= c.y && sy + 50 <= c.y + c.h;
+        return showing && !whole;
+      });
+      if (!cutOff) break;
+      pts.push(cutOff);
+      this.frame(pts, w, h);
+    }
   }
 
   // Centre a theater point in the clear rectangle without changing the zoom.
@@ -426,7 +446,17 @@ export class TheaterView {
     // the win condition has to read off the map itself.
     const labels: { sx: number; sy: number; text: string; rank: number; id: number; px: number; r: number }[] = [];
     const objectives = new Set(this.theater.objectiveNodes);
-    this.counters = layoutCounters(this.counterSpecs(front, selectedForce, objectives, w, h));
+    // Counters claim their ground first: clear of every town and objective
+    // ring, and inside what the HUD leaves visible.
+    const cl = this.clear(w, h);
+    const clearRect = { x0: cl.x + 2, y0: cl.y + 2, x1: cl.x + cl.w - 2, y1: cl.y + cl.h - 2 };
+    const townBoxes = this.theater.nodes.map((n) => {
+      const [sx, sy] = this.toScreen(n.pos.x, n.pos.y, w, h);
+      const half = (n.rank === 0 ? 7 : n.rank === 1 ? 5 : 3.5) + (objectives.has(n.id) ? 12 : 3);
+      return { x0: sx - half, y0: sy - half, x1: sx + half, y1: sy + half };
+    });
+    this.counters = layoutCounters(this.counterSpecs(front, selectedForce, objectives, w, h), townBoxes, clearRect);
+    for (const c of this.counters) drawLeader(ctx, c);
     for (const n of this.theater.nodes) {
       const [sx, sy] = this.toScreen(n.pos.x, n.pos.y, w, h);
       const owner = front.controlByNode[n.id];
@@ -479,12 +509,21 @@ export class TheaterView {
       }
       // Above the place, else beside it. An objective name is never dropped:
       // if every seat is taken it keeps the first.
+      // A name of a place the HUD leaves visible stays visible: it slides
+      // sideways off a screen edge, and a seat under a panel is no seat.
+      const shown = l.sx >= clearRect.x0 && l.sx <= clearRect.x1 && l.sy >= clearRect.y0 && l.sy <= clearRect.y1 + 40;
+      const fitX = (cx: number): number => (shown && tw + 8 < cl.w ? Math.max(clearRect.x0 + tw / 2 + 2, Math.min(clearRect.x1 - tw / 2 - 2, cx)) : cx);
       const seats = [
         { cx: l.sx, y: l.sy },
         { cx: l.sx + l.r + 12 + tw / 2, y: l.sy + l.r + 9 },
         { cx: l.sx - l.r - 12 - tw / 2, y: l.sy + l.r + 9 },
-      ].map((s) => ({ ...s, rect: { x0: s.cx - tw / 2 - 2, y0: s.y - l.px, x1: s.cx + tw / 2 + 2, y1: s.y + 2 } }));
-      const free = seats.find((s) => !placed.some((p) => s.rect.x0 < p.x1 && s.rect.x1 > p.x0 && s.rect.y0 < p.y1 && s.rect.y1 > p.y0));
+        { cx: l.sx, y: l.sy + 2 * l.r + (l.rank < 0 ? 36 : 22) },
+      ].map((s) => ({ cx: fitX(s.cx), y: s.y }))
+        .map((s) => ({ ...s, rect: { x0: s.cx - tw / 2 - 2, y0: s.y - l.px, x1: s.cx + tw / 2 + 2, y1: s.y + 2 } }));
+      const open = (s: (typeof seats)[number]): boolean =>
+        (!shown || (s.rect.y0 >= clearRect.y0 && s.rect.y1 <= clearRect.y1)) &&
+        !placed.some((p) => s.rect.x0 < p.x1 && s.rect.x1 > p.x0 && s.rect.y0 < p.y1 && s.rect.y1 > p.y0);
+      const free = seats.find(open);
       const seat = free ?? (l.rank < 0 ? seats[0] : null);
       if (!seat) continue;
       placed.push(seat.rect);

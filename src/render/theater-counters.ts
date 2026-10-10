@@ -53,10 +53,13 @@ export interface Rect {
 const hits = (a: Rect, b: Rect): boolean => a.x0 < b.x1 && a.x1 > b.x0 && a.y0 < b.y1 && a.y1 > b.y0;
 export const counterRect = (c: { x: number; y: number }): Rect => ({ x0: c.x, y0: c.y, x1: c.x + COUNTER_W, y1: c.y + COUNTER_H });
 
-// Fan each stack in a centred row under its anchor, own side first. A row
-// that would land on an earlier one drops a line. The selected stack is
-// placed first, so selecting a company never moves it.
-export function layoutCounters(specs: readonly CounterSpec[]): PlacedCounter[] {
+// Fan each stack in a row, own side first, and give the row the first seat
+// around its anchor that is free: under it, under it to either side, beside
+// it, above it, then a line lower. Free means clear of every counter already
+// placed, of every OTHER stack's anchor, of `avoid` (the towns and their
+// objective rings) and, when the anchor is on screen, inside `clear`. The
+// selected stack is placed first, so selecting a company never moves it.
+export function layoutCounters(specs: readonly CounterSpec[], avoid: readonly Rect[] = [], clear: Rect | null = null): PlacedCounter[] {
   const stacks: CounterSpec[][] = [];
   for (const s of [...specs].sort((a, b) => a.id - b.id)) {
     const home = stacks.find((g) => Math.hypot(g[0].ax - s.ax, g[0].ay - s.ay) < STACK_PX);
@@ -64,18 +67,33 @@ export function layoutCounters(specs: readonly CounterSpec[]): PlacedCounter[] {
     else stacks.push([s]);
   }
   stacks.sort((a, b) => Number(b.some((s) => s.selected)) - Number(a.some((s) => s.selected)));
+  const anchorBox = (g: CounterSpec[]): Rect => ({ x0: g[0].ax - 6, y0: g[0].ay - 6, x1: g[0].ax + 6, y1: g[0].ay + 6 });
+  const inside = (r: Rect, c: Rect): boolean => r.x0 >= c.x0 && r.x1 <= c.x1 && r.y0 >= c.y0 && r.y1 <= c.y1;
   const out: PlacedCounter[] = [];
   for (const g of stacks) {
     g.sort((a, b) => (a.side === b.side ? a.id - b.id : a.side === 'blue' ? -1 : 1));
+    const { ax, ay } = g[0];
     const rowW = g.length * COUNTER_W + (g.length - 1) * GAP;
-    let y = g[0].ay + Math.max(...g.map((s) => s.drop));
-    const row = (): PlacedCounter[] => g.map((s, i) => ({ ...s, x: g[0].ax - rowW / 2 + i * (COUNTER_W + GAP), y }));
-    let placed = row();
-    for (let tries = 0; tries < 4 && placed.some((p) => out.some((o) => hits(counterRect(p), counterRect(o)))); tries++) {
-      y += COUNTER_H + GAP;
-      placed = row();
-    }
-    out.push(...placed);
+    const d = Math.max(...g.map((s) => s.drop));
+    const line = COUNTER_H + GAP;
+    const seats: [number, number][] = [
+      [ax - rowW / 2, ay + d],
+      [ax + 8, ay + d],
+      [ax - rowW - 8, ay + d],
+      [ax + d + 2, ay - COUNTER_H / 2],
+      [ax - d - 2 - rowW, ay - COUNTER_H / 2],
+      [ax - rowW / 2, ay - d - COUNTER_H],
+      [ax - rowW / 2, ay + d + line],
+      [ax + 8, ay + d + line],
+      [ax - rowW - 8, ay + d + line],
+    ];
+    const blocked = [...out.map(counterRect), ...stacks.filter((o) => o !== g).map(anchorBox), ...avoid.filter((r) => !(ax > r.x0 && ax < r.x1 && ay > r.y0 && ay < r.y1))];
+    const mustFit = clear !== null && ax >= clear.x0 && ax <= clear.x1 && ay >= clear.y0 && ay <= clear.y1 ? clear : null;
+    const rowAt = ([x, y]: [number, number]): PlacedCounter[] => g.map((s, i) => ({ ...s, x: x + i * (COUNTER_W + GAP), y }));
+    const free = (row: PlacedCounter[], fit: Rect | null): boolean =>
+      row.every((p) => !blocked.some((o) => hits(counterRect(p), o)) && (!fit || inside(counterRect(p), fit)));
+    const seat = seats.find((s) => free(rowAt(s), mustFit)) ?? seats.find((s) => free(rowAt(s), null)) ?? seats[0];
+    out.push(...rowAt(seat));
   }
   return out;
 }
@@ -114,18 +132,20 @@ function roleGlyph(ctx: CanvasRenderingContext2D, role: ForceRole, x: number, cy
   }
 }
 
-export function drawCounter(ctx: CanvasRenderingContext2D, c: PlacedCounter): void {
-  const { x, y } = c;
-  const cx = x + COUNTER_W / 2;
+// The leader: the counter belongs to THAT point. Drawn in its own pass,
+// before the names and every counter box, so a leader never crosses a name or
+// another counter.
+export function drawLeader(ctx: CanvasRenderingContext2D, c: PlacedCounter): void {
   ctx.save();
   ctx.globalAlpha = c.ghost ? 0.4 + 0.6 * c.conf : 1;
-
-  // Leader: the counter belongs to THAT point.
+  // To the nearest point of the box, so a side or top seat gets a short stem.
+  const tx = Math.max(c.x + 4, Math.min(c.x + COUNTER_W - 4, c.ax));
+  const ty = Math.max(c.y, Math.min(c.y + COUNTER_H, c.ay));
   ctx.strokeStyle = EDGE;
   ctx.lineWidth = 3;
   ctx.beginPath();
   ctx.moveTo(c.ax, c.ay);
-  ctx.lineTo(cx, y);
+  ctx.lineTo(tx, ty);
   ctx.stroke();
   ctx.strokeStyle = FILL[c.side];
   ctx.lineWidth = 1.5;
@@ -137,6 +157,13 @@ export function drawCounter(ctx: CanvasRenderingContext2D, c: PlacedCounter): vo
   ctx.strokeStyle = EDGE;
   ctx.lineWidth = 1;
   ctx.stroke();
+  ctx.restore();
+}
+
+export function drawCounter(ctx: CanvasRenderingContext2D, c: PlacedCounter): void {
+  const { x, y } = c;
+  ctx.save();
+  ctx.globalAlpha = c.ghost ? 0.4 + 0.6 * c.conf : 1;
 
   if (c.selected) {
     ctx.save();
