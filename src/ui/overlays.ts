@@ -808,6 +808,10 @@ export class EventPings {
         this.quiet(e.side, e.team ?? e.name, e.kind, RECOVERY[e.kind]!, C_STEADY, tick);
       } else if (e.side === 'blue' && COMMAND[e.kind]) {
         this.quiet(e.side, e.name, e.kind, COMMAND[e.kind]![0], COMMAND[e.kind]![1], tick);
+      } else if (e.kind === 'grenade') {
+        // Either side: a German throw only reaches here when blue can see
+        // the man who threw it (main.ts filters events by the man).
+        this.quiet(e.side, e.team ?? e.name, e.kind, 'GRENADE!', e.side === 'blue' ? C_WARN : C_ENEMY, tick);
       } else if (e.side !== 'blue' && e.kind === 'closing') {
         // The one thing the ticker says about enemy intent, and it is not
         // intent: a German team was SEEN moving onto ground blue holds (the

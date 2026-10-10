@@ -123,7 +123,10 @@ export interface SoldierSlot {
   weapon: WeaponKey;
   ammo: Partial<Record<AmmoKey, number>>; // discrete units carried
   carries?: LoadKey[];
-  grenades?: number; // 2 for grenadiers, 0 default
+  // Hand grenades. Two for every rifleman of a rifle team on both sides (two
+  // Mk 2s or two Stielhandgranaten was the ordinary load), none for leaders,
+  // gunners, crews and aidmen. It used to be one US slot in the whole game.
+  grenades?: number;
 }
 
 export interface TeamDef {
@@ -138,18 +141,18 @@ export const TEAMS = {
       { role: 'leader', weapon: 'thompson', ammo: { mag_thompson: 5 } },
       { role: 'gunner', weapon: 'bar', ammo: { mag_bar: 8 } },
       { role: 'assistant', weapon: 'garand', ammo: { clip_3006: 8 } },
-      { role: 'rifleman', weapon: 'garand', ammo: { clip_3006: 8 } },
-      { role: 'rifleman', weapon: 'garand', ammo: { clip_3006: 8 } },
-      { role: 'rifleman', weapon: 'garand', ammo: { clip_3006: 8 } },
+      { role: 'rifleman', weapon: 'garand', ammo: { clip_3006: 8 }, grenades: 2 },
+      { role: 'rifleman', weapon: 'garand', ammo: { clip_3006: 8 }, grenades: 2 },
+      { role: 'rifleman', weapon: 'garand', ammo: { clip_3006: 8 }, grenades: 2 },
     ],
   },
   us_baker: {
     name: 'Baker',
     slots: [
       { role: 'leader', weapon: 'garand', ammo: { clip_3006: 8 } },
-      { role: 'rifleman', weapon: 'garand', ammo: { clip_3006: 8 } },
-      { role: 'rifleman', weapon: 'garand', ammo: { clip_3006: 8 } },
-      { role: 'rifleman', weapon: 'garand', ammo: { clip_3006: 8 } },
+      { role: 'rifleman', weapon: 'garand', ammo: { clip_3006: 8 }, grenades: 2 },
+      { role: 'rifleman', weapon: 'garand', ammo: { clip_3006: 8 }, grenades: 2 },
+      { role: 'rifleman', weapon: 'garand', ammo: { clip_3006: 8 }, grenades: 2 },
       { role: 'aidman', weapon: 'carbine', ammo: { mag_carbine: 6 } }, // spec: carries a carbine/pistol, no combat role
       { role: 'rifleman', weapon: 'garand', ammo: { clip_3006: 8 }, grenades: 2 },
     ],
@@ -199,10 +202,10 @@ export const TEAMS = {
     name: 'Schützen',
     slots: [
       { role: 'leader', weapon: 'mp40', ammo: { mag_mp40: 5 } },
-      { role: 'rifleman', weapon: 'kar98k', ammo: { clip_792: 8, faust: 1 } },
-      { role: 'rifleman', weapon: 'kar98k', ammo: { clip_792: 8, faust: 1 } },
-      { role: 'rifleman', weapon: 'kar98k', ammo: { clip_792: 8 } },
-      { role: 'rifleman', weapon: 'kar98k', ammo: { clip_792: 8 } },
+      { role: 'rifleman', weapon: 'kar98k', ammo: { clip_792: 8, faust: 1 }, grenades: 2 },
+      { role: 'rifleman', weapon: 'kar98k', ammo: { clip_792: 8, faust: 1 }, grenades: 2 },
+      { role: 'rifleman', weapon: 'kar98k', ammo: { clip_792: 8 }, grenades: 2 },
+      { role: 'rifleman', weapon: 'kar98k', ammo: { clip_792: 8 }, grenades: 2 },
       { role: 'aidman', weapon: 'kar98k', ammo: { clip_792: 4 } }, // Sanitäter: carbine-equivalent, no combat role
     ],
   },

@@ -287,7 +287,7 @@ export interface Soldier {
   climbLeft: number; // ticks remaining of a stair climb; >0 = on stairs transitioning
   scrambleLeft: number; // ticks remaining of a rubble-lip crossing; >0 = clambering through a breach
   wallTarget: EdgeRef | null; // player-assigned wall to open with an AT weapon (D5), null = none
-  grenadesLeft: number; // 2 for grenadiers, 0 for everyone else
+  grenadesLeft: number; // what he has left of his slot's `grenades`
   grenadeCooldownUntil: number; // tick when next grenade throw is allowed
   entryHoldUntil: number; // waits outside an opening until his own grenade bursts (#217)
   captured: boolean; // alive, out of the fight, untargetable (surrendered at melee contact)
@@ -412,6 +412,18 @@ export interface ShotEvent {
 // What went off, so the renderer can tell a grenade from a shell. `r` is the
 // fragment radius in metres, the same number the blast wounded with; a brew-up
 // has none. Render-only, like every drain queue here.
+// A grenade leaving the hand: where from, where it will land, and how long it
+// is in the air. Render-only, drained by takeGrenades(). The renderer's own
+// GrenadeThrow (render/fx.ts) is this shape, field for field.
+export interface GrenadeThrow {
+  fromX: number;
+  fromY: number;
+  toX: number;
+  toY: number;
+  flightTicks: number;
+  side: Side;
+}
+
 export type BoomKind = 'grenade' | 'shell' | 'mortar' | 'at' | 'brewup' | 'bomb';
 export interface BoomEvent {
   x: number;
@@ -456,6 +468,7 @@ export interface UnitEvent {
     | 'reserve-committed'
     | 'culminated'
     | 'smoke-objective'
+    | 'grenade' // a man threw one: `id` is the thrower
     // A team seen moving onto ground the other side holds. Raised by the sim
     // off what that other side can see, never by a commander: `id` is a man
     // of the team its enemy has in sight.
@@ -947,6 +960,7 @@ export class Sim {
   // Mortar rounds in flight: 3s from trigger to impact (spec: indirect fire).
   private mortarShells: { tick: number; x: number; y: number; smoke: boolean }[] = [];
   private pendingGrenades: { x: number; y: number; fuse: number; l: number }[] = [];
+  private pendingThrows: GrenadeThrow[] = [];
   // Staggered dismount: one passenger every 0.5s (spec: "1 per 0.5s").
   private dismountQueue: { vehicleId: number; soldierId: number; tick: number }[] = [];
   private pathBudget = PATH_BUDGET_PER_TICK;
@@ -2371,6 +2385,12 @@ export class Sim {
     }
   }
 
+  takeGrenades(): GrenadeThrow[] {
+    const g = this.pendingThrows;
+    this.pendingThrows = [];
+    return g;
+  }
+
   takeUnitEvents(): UnitEvent[] {
     const e = this.pendingUnitEvents;
     this.pendingUnitEvents = [];
@@ -3274,6 +3294,19 @@ export class Sim {
     ) {
       this.assaultRepath(s, order);
       this.maybeGrenadeEntry(s);
+      this.maybeThrowGrenade(s);
+    } else if (
+      // Outside a charge too (#790): a man holding, advancing or left to his
+      // own devices throws at what is in reach. Not under the orders that
+      // hold fire (sneak, ambush), sprint (fast) or aim him elsewhere (fire).
+      // Same stagger as the charge, and the pocket check first: most men
+      // have none.
+      s.grenadesLeft > 0 &&
+      (order === null || order.kind === 'defend' || order.kind === 'move') &&
+      s.mental !== 'broken' &&
+      s.mental !== 'pinned' &&
+      (this.tick + s.id) % ASSAULT_REPATH_TICKS === 0
+    ) {
       this.maybeThrowGrenade(s);
     }
 
@@ -4357,15 +4390,22 @@ export class Sim {
     return false;
   }
 
-  // Grenade throw: fires alongside the assault repath on the same cadence.
-  // Only throws at a clustered target point or into a building — a lone man
-  // in the open is a fire problem, not a grenade problem.
+  // Grenade throw, on the assault repath cadence. The target is the nearest
+  // enemy his SIDE has spotted (the search runs over that list and never over
+  // every soldier: with a grenade in every rifleman's pocket the old all-
+  // soldiers scan would be the quadratic #444 warns about), inside
+  // GRENADE_RANGE and in his own sight. It has to be worth a grenade: two or
+  // more together, in a room, or behind cover. A lone man in the open is a
+  // fire problem. He does not throw at his own feet, nor onto a friend.
   private maybeThrowGrenade(s: Soldier): void {
     if (s.grenadesLeft <= 0 || this.tick < s.grenadeCooldownUntil) return;
+    const spotted = this.spotted[s.side];
+    const live = (e: Soldier): boolean => e.alive && !e.downed && !e.captured && e.inVehicle < 0;
     let best: Soldier | null = null;
     let bestD = Infinity;
-    for (const e of this.soldiers) {
-      if (!e.alive || e.downed || e.captured || e.side === s.side || e.inVehicle >= 0) continue;
+    for (const id of spotted.keys()) {
+      const e = this.soldiers[id];
+      if (!live(e)) continue;
       const d = Math.hypot(e.x - s.x, e.y - s.y);
       if (d > GRENADE_RANGE || d >= bestD) continue;
       if (!sightToSoldier(this, s.x, s.y, e, s.level, eyeOf(this, s)).visible) continue;
@@ -4373,20 +4413,42 @@ export class Sim {
       best = e;
     }
     if (!best) return;
+    // One in the air on that spot is enough: a whole team does not empty its
+    // pockets at the same man in the same half second.
+    for (const g of this.pendingGrenades) {
+      if (Math.hypot(g.x - best.x, g.y - best.y) <= GRENADE_BLAST.fragRadius + GRENADE_SCATTER) return;
+    }
     // Clustered: ≥2 enemies within frag radius of the target point
     let clustered = 0;
-    for (const e of this.soldiers) {
-      if (!e.alive || e.downed || e.captured || e.side === s.side || e.inVehicle >= 0) continue;
-      if (Math.hypot(e.x - best.x, e.y - best.y) <= GRENADE_BLAST.fragRadius) clustered++;
+    for (const id of spotted.keys()) {
+      const e = this.soldiers[id];
+      if (live(e) && Math.hypot(e.x - best.x, e.y - best.y) <= GRENADE_BLAST.fragRadius) clustered++;
     }
-    const enclosed = this.isInside(best.x, best.y);
-    if (clustered < 2 && !enclosed) return;
-    // Throw: scatter exactly like the mortar (angle then dist, one draw each)
+    if (clustered < 2 && !this.isInside(best.x, best.y) && !this.inCover(best.x, best.y)) return;
+    // Nobody of his own inside the burst, himself included. Reached only by
+    // a man with a target worth the grenade, so this scan is rare.
+    for (const f of this.soldiers) {
+      if (f.side !== s.side || !f.alive || f.inVehicle >= 0 || f.level !== best.level) continue;
+      if (Math.hypot(f.x - best.x, f.y - best.y) <= GRENADE_BLAST.fragRadius + GRENADE_SCATTER) return;
+    }
+    this.throwGrenade(s, best.x, best.y, best.level);
+  }
+
+  // The throw itself, for both callers: one grenade spent, the mortar's
+  // scatter (angle then distance, one draw each, as before), the fused
+  // grenade queued for stepGrenades — and the three output records of it:
+  // the arc for the renderer, and the event the ticker and the fog filter
+  // read. The cooldown is per thrower.
+  private throwGrenade(s: Soldier, x: number, y: number, level: number): void {
     s.grenadesLeft--;
     s.grenadeCooldownUntil = this.tick + GRENADE_COOLDOWN_TICKS;
     const angle = this.rng.next() * Math.PI * 2;
     const dist = this.rng.next() * GRENADE_SCATTER;
-    this.pendingGrenades.push({ x: best.x + Math.cos(angle) * dist, y: best.y + Math.sin(angle) * dist, fuse: GRENADE_FUSE_TICKS, l: best.level });
+    const toX = x + Math.cos(angle) * dist;
+    const toY = y + Math.sin(angle) * dist;
+    this.pendingGrenades.push({ x: toX, y: toY, fuse: GRENADE_FUSE_TICKS, l: level });
+    this.pendingThrows.push({ fromX: s.x, fromY: s.y, toX, toY, flightTicks: GRENADE_FUSE_TICKS, side: s.side });
+    this.note('grenade', s);
   }
 
   // Before crossing a door or stair into a room with a currently spotted enemy,
@@ -4434,17 +4496,8 @@ export class Sim {
       if (!friendly.alive || friendly.id === s.id || friendly.side !== s.side || friendly.inVehicle >= 0 || friendly.level !== level) continue;
       if (Math.hypot(friendly.x - target.x, friendly.y - target.y) <= GRENADE_BLAST.fragRadius) return;
     }
-    s.grenadesLeft--;
-    s.grenadeCooldownUntil = this.tick + GRENADE_COOLDOWN_TICKS;
     s.entryHoldUntil = this.tick + GRENADE_FUSE_TICKS;
-    const angle = this.rng.next() * Math.PI * 2;
-    const distance = this.rng.next() * GRENADE_SCATTER;
-    this.pendingGrenades.push({
-      x: target.x + Math.cos(angle) * distance,
-      y: target.y + Math.sin(angle) * distance,
-      fuse: GRENADE_FUSE_TICKS,
-      l: level,
-    });
+    this.throwGrenade(s, target.x, target.y, level);
   }
 
   // Can a man physically get at (bx, by) from (ax, ay) at melee distance?
