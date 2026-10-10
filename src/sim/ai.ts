@@ -250,7 +250,8 @@ export class RedCommander {
   private spottedPositions(sim: Sim): { x: number; y: number }[] {
     const out: { x: number; y: number }[] = [];
     for (const [id, p] of sim.spotted[this.cfg.side]) {
-      if (!sim.soldiers[id].downed) out.push(p); // tracked but downed: out of the fight
+      const s = sim.soldiers[id];
+      if (!s.downed && !s.captured) out.push(p); // tracked but downed, or a prisoner: out of the fight, and no target
     }
     return out;
   }

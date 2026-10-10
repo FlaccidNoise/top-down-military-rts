@@ -99,6 +99,20 @@ const CLOSING_RADIUS = 20;
 export const RALLY_WINDOW_TICKS = 120 * 30;
 // Melee (decision log 2026-07-23): proximity-triggered close combat.
 const MELEE_ENGAGE = 2.0; // m — an enemy this close (and reachable on foot) locks both into melee
+// The rout (#790). A broken man runs for his own rear (away from
+// sim.threatAxis), to the nearest leader of his side who is still in hand
+// and not forward of him, and stops inside GATHER of that leader. With no
+// such leader he runs RUN metres rearward and looks again. He used to run
+// 30 m straight away from the nearest enemy soldier on the map, seen or not,
+// leg after leg.
+const ROUT_RUN = 30;
+const ROUT_GATHER = 6;
+const ROUT_REPATH_TICKS = 90;
+// A broken man on his own gives up: out of ammunition for his weapon, or
+// with no leader left standing in his team, and ENEMIES or more of them
+// inside RADIUS with eyes on him. No bayonet has to reach him first.
+const SURRENDER_RADIUS = 15;
+const SURRENDER_ENEMIES = 3;
 const MELEE_CONTACT = 0.9; // m — combatants close to here, then hold
 export const MELEE_STRIKE_RANGE = 1.3; // m — strikes only land inside this (renderer keys the pose off it)
 const MELEE_BREAK = 2.5; // m — an opponent past this has gotten away
@@ -3246,13 +3260,16 @@ export class Sim {
       }
     }
 
-    // broken men flee away from the nearest enemy — breaking is the one way
-    // out of a melee lock: he drops his guard and runs (and can be run down)
+    // broken men rout — breaking is the one way out of a melee lock: he
+    // drops his guard and runs (and can be run down). The run is solved the
+    // tick he breaks and on his own stagger after that. It used to be solved
+    // again every tick he stood without a path, which was every tick for a
+    // man with nowhere to go.
     if (s.mental === 'broken' && !s.captured) {
       s.targetId = -1;
       s.meleeId = -1;
       if (s.task) this.dropTask(s);
-      if (!s.fleeing || (this.tick + s.id) % 90 === 0) this.flee(s);
+      if (wasMental !== 'broken' || (this.tick + s.id) % ROUT_REPATH_TICKS === 0) this.flee(s);
     } else if (s.fleeing) {
       s.fleeing = false;
       s.path = null;
@@ -4300,23 +4317,42 @@ export class Sim {
     s.pathI = 0;
   }
 
+  // See ROUT_RUN. Draws no rng.
   private flee(s: Soldier): void {
-    let nearest: Soldier | null = null;
+    if (this.givesUp(s)) return;
+    const axis = this.threatAxis[s.side];
+    let rx = -Math.cos(axis);
+    let ry = -Math.sin(axis);
+    // The rear is where the enemy is not. With the nearest enemy his side
+    // knows of standing on that side of him, he runs from that man instead.
+    let near: { x: number; y: number } | null = null;
     let nd = Infinity;
-    for (const e of this.soldiers) {
-      if (!e.alive || e.side === s.side) continue;
-      const d = Math.hypot(e.x - s.x, e.y - s.y);
+    for (const p of this.spotted[s.side].values()) {
+      const d = Math.hypot(p.x - s.x, p.y - s.y);
       if (d < nd) {
         nd = d;
-        nearest = e;
+        near = p;
       }
     }
-    if (!nearest) return;
-    const dx = s.x - nearest.x;
-    const dy = s.y - nearest.y;
-    const len = Math.hypot(dx, dy) || 1;
-    const gx = Math.floor(s.x + (dx / len) * 30);
-    const gy = Math.floor(s.y + (dy / len) * 30);
+    if (near && nd > 0 && (near.x - s.x) * rx + (near.y - s.y) * ry > 0) {
+      rx = (s.x - near.x) / nd;
+      ry = (s.y - near.y) / nd;
+    }
+    let leader: Soldier | null = null;
+    let ld = Infinity;
+    for (const m of this.soldiers) {
+      if (m.side !== s.side || m.role !== 'leader' || m.id === s.id) continue;
+      if (!m.alive || m.downed || m.captured || m.mental === 'broken' || m.inVehicle >= 0) continue;
+      if ((m.x - s.x) * rx + (m.y - s.y) * ry < 0) continue; // forward of him: he does not run at the enemy
+      const d = Math.hypot(m.x - s.x, m.y - s.y);
+      if (d < ld) {
+        ld = d;
+        leader = m;
+      }
+    }
+    if (leader && ld <= ROUT_GATHER) return; // he is where he was running to
+    const gx = Math.floor(leader ? leader.x : s.x + rx * ROUT_RUN);
+    const gy = Math.floor(leader ? leader.y : s.y + ry * ROUT_RUN);
     const spot = this.findSpot(
       Math.max(1, Math.min(this.map.w - 2, gx)),
       Math.max(1, Math.min(this.map.h - 2, gy)),
@@ -4329,6 +4365,32 @@ export class Sim {
       s.pathI = 0;
       s.fleeing = true;
     }
+  }
+
+  // See SURRENDER_RADIUS. Run on the rout's stagger, never per tick.
+  private givesUp(s: Soldier): boolean {
+    const armed = s.magLeft > 0 || (s.ammo[WEAPONS[s.weapon].ammo.type] ?? 0) > 0;
+    const led = this.teams[s.teamId].soldierIds.some((id) => {
+      const m = this.soldiers[id];
+      return m.role === 'leader' && m.alive && !m.downed && !m.captured;
+    });
+    if (armed && led) return false;
+    let captor: Soldier | null = null;
+    let cd = Infinity;
+    let n = 0;
+    for (const e of this.soldiers) {
+      if (!e.alive || e.downed || e.captured || e.side === s.side || e.inVehicle >= 0 || e.mental === 'broken') continue;
+      const d = Math.hypot(e.x - s.x, e.y - s.y);
+      if (d > SURRENDER_RADIUS || !sightToSoldier(this, e.x, e.y, s, e.level, eyeOf(this, e)).visible) continue;
+      n++;
+      if (d < cd) {
+        cd = d;
+        captor = e;
+      }
+    }
+    if (!captor || n < SURRENDER_ENEMIES) return false;
+    this.capture(s, captor);
+    return true;
   }
 
   // The objective's defenders as this soldier sees them: alive, on foot,

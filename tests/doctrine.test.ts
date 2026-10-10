@@ -882,6 +882,17 @@ describe('intel layer math', () => {
     }
   });
 
+  it('a prisoner is no part of the picture: not a threat on the objective, not a target', () => {
+    const sim = new Sim(new GameMap(40, 40), 1);
+    const red = sim.addSquad('red', 'R', [{ name: 'R1', weapon: 'kar98k', x: 5.5, y: 5.5 }]);
+    const blue = sim.addSquad('blue', 'B', [{ name: 'B1', weapon: 'garand', x: 20.5, y: 5.5 }]);
+    const commander = new RedCommander({ side: 'red', stance: 'defend', posts: { [red.id]: { x: 5, y: 5 } } });
+    sim.spotted.red.set(blue.soldierIds[0], { x: 20.5, y: 5.5 });
+    expect(commander['spottedPositions'](sim)).toHaveLength(1);
+    sim.soldiers[blue.soldierIds[0]].captured = true;
+    expect(commander['spottedPositions'](sim)).toHaveLength(0);
+  });
+
   it('maybeBarrage: shells a spotted 5-man cluster beyond every red weapon range, at its centroid', () => {
     const sim = new Sim(new GameMap(200, 60), 2);
     const red = sim.addSquad('red', 'R', [{ name: 'R1', weapon: 'kar98k', x: 10.5, y: 30.5 }]);
