@@ -82,7 +82,9 @@ export function bindTouch(canvas: HTMLCanvasElement, active: () => TouchHandlers
   };
 
   // The reliable cross-engine way to kill the compatibility mouse events.
-  canvas.addEventListener('touchstart', (e) => e.preventDefault(), { passive: false });
+  // A touch that lands while a list is still coasting from a flick cannot be
+  // cancelled, and asking anyway only earns a browser warning.
+  canvas.addEventListener('touchstart', (e) => { if (e.cancelable) e.preventDefault(); }, { passive: false });
 
   canvas.addEventListener(
     'pointerdown',

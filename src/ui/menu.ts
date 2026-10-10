@@ -15,6 +15,8 @@ export class PauseMenu {
     onTutorialToggle?(on: boolean): void;
     muted(): boolean;
     onMuteToggle(): void;
+    inTraining(): boolean;
+    onLeaveTraining(): void;
   };
   private km: Keymap = { bindings: { ...DEFAULTS }, version: 0 };
   private captureActive = false;
@@ -30,6 +32,9 @@ export class PauseMenu {
     /** Sound. A phone has no M key, so the menu is its only switch. */
     muted(): boolean;
     onMuteToggle(): void;
+    /** The drill is the battle on screen: the menu then offers the way out of it. */
+    inTraining(): boolean;
+    onLeaveTraining(): void;
   }) {
     this.cb = cb;
     this.el = document.createElement('div');
@@ -81,6 +86,10 @@ export class PauseMenu {
       this.cb.onMuteToggle();
       this.render();
     });
+    this.el.querySelector('#pm-leave')?.addEventListener('click', () => {
+      this.close();
+      this.cb.onLeaveTraining();
+    });
   }
 
   private mainView(): string {
@@ -93,8 +102,9 @@ export class PauseMenu {
         <button id="pm-manual">Field Manual</button>
         <button id="pm-sound" aria-pressed="${!this.cb.muted()}">Sound: ${this.cb.muted() ? 'OFF' : 'ON'}</button>
         ${this.cb.tutorialEnabled ? `<button id="pm-tutorial" aria-pressed="${this.cb.tutorialEnabled()}">Tutorial: ${this.cb.tutorialEnabled() ? 'ON' : 'OFF'}</button>` : ''}
+        ${this.cb.inTraining() ? '<button id="pm-leave">Leave training</button>' : ''}
       </div>
-      ${this.cb.tutorialEnabled && !this.cb.tutorialEnabled() ? '<p class="pm-note">Turn the tutorial on from the main menu to replay it from the briefing.</p>' : ''}
+      ${this.cb.tutorialEnabled && !this.cb.tutorialEnabled() ? '<p class="pm-note">Training is on the main menu.</p>' : ''}
     </div></div>`;
   }
 

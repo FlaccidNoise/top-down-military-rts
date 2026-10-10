@@ -518,6 +518,10 @@ button.hbtn.active { background: var(--chip-active-bg); border-color: var(--ambe
 }
 #mainmenu button:hover:not(:disabled) { background: rgba(255, 255, 255, 0.04); color: var(--paper); border-color: var(--muted); }
 #mainmenu button:disabled { opacity: 0.4; cursor: default; }
+/* First run: one button to press, and the rest is quiet. */
+#mainmenu.first-run .db-actions { flex-wrap: wrap; align-items: center; }
+#mainmenu .mm-big { flex: 1 0 100%; padding: var(--sp-4) 22px; font-size: 20px; letter-spacing: 4px; }
+#mainmenu .mm-quiet { border-color: transparent; padding: var(--sp-2) var(--sp-2); min-height: 44px; }
 #mainmenu button.primary { background: var(--chip-bg); color: var(--amber-bright); border-color: var(--amber); font-weight: var(--fw-label); }
 #mainmenu button.primary:hover:not(:disabled) { background: var(--chip-active-bg); }
 
@@ -566,6 +570,9 @@ button.hbtn:focus-visible,
   box-shadow: inset 0 0 0 1px var(--amber);
   color: var(--amber-bright);
 }
+/* A control this battle does not have (hud.ts sets `hidden`). The rules that
+   lay the bars out set `display`, which would bring it back. */
+#hud .hbtn[hidden], html.mobile #touchbar .hbtn[hidden] { display: none; }
 /* The chip a tutorial step names. It pulses until the player arms it. */
 .ord.glow {
   color: var(--amber-bright);
@@ -1359,9 +1366,9 @@ html.mobile #squads .srow { min-height: 44px; }
 html.mobile #floormenu .fm-row { min-height: 44px; box-sizing: border-box; display: flex; align-items: center; }
 
 /* ---- portrait guidance ----
-   Shown by CSS alone, so there is no resize plumbing to get wrong. The copy
-   names the reason rather than scolding, and the escape hatch is real: the
-   phone layout does work in portrait, it just shows a third of the frontage.
+   Shown by CSS alone, so there is no resize plumbing to get wrong. One line
+   that names the reason, and an escape hatch that is real: the phone layout
+   does work in portrait, it just shows a third of the frontage.
    It is about the BATTLEFIELD, so it shows at battle entry (html.in-battle):
    it used to greet the player before the main menu, about a map he had not
    seen, and the theater works in portrait. */
@@ -1386,8 +1393,7 @@ html.mobile #floormenu .fm-row { min-height: 44px; box-sizing: border-box; displ
   }
 }
 #rotate .rot-glyph { font-size: 44px; color: var(--amber); line-height: 1; }
-#rotate h2 { margin: 0; font-size: var(--fs-lg); letter-spacing: 2px; color: var(--amber-bright); font-weight: var(--fw-head); }
-#rotate p { margin: 0; max-width: 30ch; color: var(--muted); }
+#rotate h2 { margin: 0; max-width: 20ch; font-size: var(--fs-lg); letter-spacing: 1px; color: var(--amber-bright); font-weight: var(--fw-head); }
 #rotate button {
   font: inherit;
   min-height: 44px;
@@ -1530,6 +1536,9 @@ html.mobile #theater-hud .hbtn { min-height: 44px; }
 #theater-hud .th-force, #theater-hud .th-log { flex: none; }
 /* What to do next: the one line a new player needs. */
 #theater-hud .th-next { color: var(--amber-bright); font-weight: var(--fw-label); min-height: 1.3em; margin-bottom: 6px; }
+/* A tutorial step is on screen and says what to do next: this line is quiet
+   until it is done (main.ts sets .coached). It keeps its row, so nothing moves. */
+#theater-hud.coached .th-next { visibility: hidden; }
 #theater-hud .th-objs { display: flex; flex-direction: column; gap: 2px; }
 #theater-hud .th-objrow {
   display: flex;
@@ -1940,65 +1949,20 @@ html.mobile #theater-hud .th-ev[data-ev] { padding: 6px 0; }
   #manual .mn-keys { grid-template-columns: 1fr; gap: var(--sp-1); }
 }
 
-/* ---- tutorial briefing card ---- */
-/* Same chrome as the debrief, one z-index above it so the Field Manual (12)
-   still opens over the card and the card is still there behind it. */
-#briefing {
+/* ---- the campaign goal, one line over the theater map ----
+   Placed by tutorial.ts each frame: `left` is the middle of the map clear of
+   the HUD. Under the bubble (z 20) and above the map's own chrome. */
+#goal-line {
   position: fixed;
-  inset: 0;
-  display: flex;
-  flex-direction: column;
-  z-index: 11;
-  background: #0d0f0b;
-  font-size: var(--fs-lg);
-  line-height: 1.6;
-  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
-  color: var(--paper);
-}
-#briefing .bf-scroll { overflow-y: auto; min-height: 0; touch-action: pan-y; flex: 1; }
-#briefing .bf { max-width: 640px; margin: 48px auto 0; padding: 0 var(--sp-5); }
-#briefing h1 {
-  letter-spacing: 6px;
-  font-size: 26px;
-  margin: 0 0 var(--sp-4);
+  z-index: 8;
+  transform: translateX(-50%);
+  box-sizing: border-box;
+  padding: 6px 12px;
+  font-family: var(--font-hud);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-label);
+  letter-spacing: 0.5px;
   color: var(--amber-bright);
-}
-#briefing .bf-entry { margin: 0 0 var(--sp-4); }
-#briefing .bf-entry h3 {
-  color: var(--amber);
-  font-size: var(--fs-lg);
-  letter-spacing: 1px;
-  margin: 0 0 2px;
-}
-#briefing .bf-entry p { margin: 0; max-width: 68ch; }
-#briefing .bf-actions {
-  flex-shrink: 0;
-  display: flex;
-  gap: var(--sp-2);
-  justify-content: center;
-  flex-wrap: wrap;
-  padding: 20px var(--sp-5) var(--sp-5);
-  border-top: 1px solid var(--border-soft);
-}
-#briefing button {
-  padding: 10px 20px;
-  min-height: 44px;
-  background: none;
-  border: 1px solid var(--border);
-  border-radius: 3px;
-  color: var(--muted);
-  font: inherit;
-  font-size: var(--fs-lg);
-  letter-spacing: 1px;
-  cursor: pointer;
-}
-#briefing button:hover { background: rgba(255, 255, 255, 0.04); color: var(--paper); border-color: var(--muted); }
-#briefing button.primary { background: var(--chip-bg); color: var(--amber-bright); border-color: var(--amber); font-weight: var(--fw-label); }
-#briefing button.primary:hover { background: var(--chip-active-bg); }
-#briefing button:focus-visible { outline: 2px solid var(--amber); outline-offset: 1px; }
-@media (max-width: 720px) {
-  #briefing .bf { margin: var(--sp-4) auto 0; padding: 0 var(--sp-3); }
-  #briefing h1 { font-size: 18px; letter-spacing: 3px; }
-  #briefing .bf-actions { padding: var(--sp-3); }
-  #briefing button { flex: 1 1 auto; padding: 10px var(--sp-2); }
+  text-align: center;
+  pointer-events: none;
 }

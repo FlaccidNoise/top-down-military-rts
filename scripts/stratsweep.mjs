@@ -240,7 +240,7 @@ async function newCampaign(page) {
   await page.evaluate(() => { try { localStorage.removeItem('ccg-save-v4'); } catch { /* private mode */ } });
   await page.reload({ waitUntil: 'domcontentloaded' });
   await page.waitForFunction(() => '__game' in window);
-  await page.click('#mm-new');
+  await page.click('#mm-custom');
   await page.waitForFunction(() => { const b = document.getElementById('cz-go'); return !!b && !b.disabled; });
   await page.fill('#cz-seed', SEED);
   await page.dispatchEvent('#cz-seed', 'input');

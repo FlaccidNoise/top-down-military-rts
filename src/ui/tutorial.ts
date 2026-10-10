@@ -549,9 +549,14 @@ export class Tutorial {
             const anchor = visibleRect(target);
             if (!anchor) continue;
             // A bubble pointing into the touch bar clears the whole bar: the
-            // order row sits right above the chip it names.
-            const bar = target.closest('#touchbar');
-            return { anchor, clear: (bar && visibleRect(bar)) ?? anchor };
+            // order row sits right above the chip it names. One pointing into
+            // the contact card clears the card: the odds are on it.
+            const panel = target.closest('#touchbar, #contact');
+            // The theater's panels stack on a phone: a bubble under the clock
+            // row would lie on the objectives under it.
+            const hud = target.closest('#theater-hud');
+            const avoid = hud ? Array.from(hud.querySelectorAll('.panel')).flatMap((e) => visibleRect(e) ?? []) : [];
+            return { anchor, clear: (panel && visibleRect(panel)) ?? anchor, avoid };
           }
           return null;
         }

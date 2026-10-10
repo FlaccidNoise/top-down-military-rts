@@ -75,6 +75,8 @@ export interface HudState {
   deploy: boolean;
   /** The order chip a tutorial step is pointing at. It pulses until it is armed. */
   glow?: OrderKind | null;
+  /** This battle has nothing to call in (the drill): the two support buttons are not shown. */
+  noSupport?: boolean;
   floorFocus?: number; // -1/undefined = all floors; 0..maxStories-1 = focus active
   boxMode?: boolean; // touch: drag draws a selection box instead of panning
   addMode?: boolean; // touch: sticky shift (add to selection / force squad order)
@@ -365,7 +367,7 @@ export class Hud {
   update(sim: Sim, st: HudState): void {
     this.lastSim = sim;
     this.lastSt = st;
-    const sig = `${(sim.tick / 5) | 0}|${st.prompt}|${primarySquad(st)}|${st.selectedTeam}|${st.selectedVehicle}|${st.paused}|${st.targetMode}|${st.armedOrder}|${st.glow ?? ''}|${sim.winner}|${st.title}|${st.speed}|${st.selectedSquads.join(',')}|${this.km.version}|${st.floorFocus ?? -1}|${st.aiControl}|${st.boxMode ?? false}|${st.addMode ?? false}|${this.tb ? this.rosterOpen : false}`;
+    const sig = `${(sim.tick / 5) | 0}|${st.prompt}|${primarySquad(st)}|${st.selectedTeam}|${st.selectedVehicle}|${st.paused}|${st.targetMode}|${st.armedOrder}|${st.glow ?? ''}|${st.noSupport ?? false}|${sim.winner}|${st.title}|${st.speed}|${st.selectedSquads.join(',')}|${this.km.version}|${st.floorFocus ?? -1}|${st.aiControl}|${st.boxMode ?? false}|${st.addMode ?? false}|${this.tb ? this.rosterOpen : false}`;
     if (sig === this.sig) return;
     this.sig = sig;
     this.renderTop(sim, st);
@@ -454,10 +456,11 @@ export class Hud {
     const bar = this.tb!;
     const tb = (name: string) => bar.querySelector<HTMLButtonElement>(`[data-tb="${name}"]`)!;
     const barrage = tb('barrage');
+    const air = tb('air');
     barrage.innerHTML = `☄ ×${sim.barragesLeft.blue}`;
+    barrage.hidden = air.hidden = !!st.noSupport;
     barrage.disabled = sim.barragesLeft.blue <= 0;
     barrage.classList.toggle('active', st.targetMode === 'barrage');
-    const air = tb('air');
     air.innerHTML = `✈ ×${sim.airstrikesLeft.blue}`;
     air.disabled = sim.airstrikesLeft.blue <= 0;
     air.classList.toggle('active', st.targetMode === 'air');
@@ -523,6 +526,7 @@ export class Hud {
     barrage.disabled = sim.barragesLeft.blue <= 0;
     barrage.classList.toggle('active', st.targetMode === 'barrage');
     const air = btn('air');
+    barrage.hidden = air.hidden = !!st.noSupport;
     air.innerHTML = `✈ Airstrike ×${sim.airstrikesLeft.blue} <span class="hk-top">${f(this.km.bindings.airstrike)}</span>`;
     air.disabled = sim.airstrikesLeft.blue <= 0;
     air.classList.toggle('active', st.targetMode === 'air');

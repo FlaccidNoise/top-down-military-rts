@@ -110,6 +110,28 @@ export const PRESETS: readonly Preset[] = [
 
 export const DEFAULT_PRESET = PRESETS[0];
 
+function presetNamed(name: string): Preset {
+  const p = PRESETS.find((x) => x.name === name);
+  if (!p) throw new Error(`presets: no preset named "${name}"`);
+  return p;
+}
+
+// The campaign a new player is put into with no setup screen: the main menu's
+// New campaign, and "Start the campaign" after the drill. Chosen by
+// measurement, not taste: scripts/firstcontact.mjs marches the strongest
+// company at an objective on each preset and fights what it meets with both
+// battle commanders. On the sim of 2026-10-10 (main at 227cce7), 12 seeds each:
+//   Skirmish         odds 2.4 to 4.8 : 1, blue won 10, lost 1, 1 undecided,
+//                    median 30 killed of 143. At the weakest garrison instead
+//                    of the nearest (what the tutorial's ring points at):
+//                    won 12 of 12, median 35 killed.
+//   Normandy Bocage  odds 1.5 to 3.5 : 1, blue won 8, lost 2, 2 undecided,
+//                    median 68 killed of 143.
+// River Line and Open Country open at 1.3 : 1 median odds and were not fought.
+// Re-run the sweep after a balance pass. DEFAULT_PRESET stays the setup
+// screen's starting point.
+export const FIRST_PRESET = presetNamed('Skirmish');
+
 // Copies both configs: the customize screen edits the returned spec in place.
 export function presetSpec(p: Preset, seed: number, seedText = String(seed >>> 0)): CampaignSpec {
   return {

@@ -38,7 +38,8 @@ import { TheaterHud } from './ui/theater-hud';
 import { contactBrief } from './ui/contact-brief';
 import { fmtEta, type MarchPreview, type ViewInset } from './render/theater-view';
 import { CustomizeScreen } from './ui/customize';
-import { DEFAULT_PRESET, presetSpec } from './campaign/presets';
+import { DEFAULT_PRESET, FIRST_PRESET, presetSpec } from './campaign/presets';
+import { goalLine } from './ui/goal-line';
 import { SPEC_TAG, specStream, type CampaignConfig, type TheaterConfig } from './campaign/spec';
 import { makeTheater, TheaterGenError } from './strategic/theatergen';
 import { DispositionError, makeDisposition } from './strategic/theatergen/disposition';
@@ -110,9 +111,8 @@ const rotateEl = document.createElement('div');
 rotateEl.id = 'rotate';
 rotateEl.innerHTML =
   '<div class="rot-glyph">⟳</div>' +
-  '<h2>TURN THE PHONE</h2>' +
-  '<p>The battlefield is 320 m wide. In portrait you see about a third of the frontage a company needs to manoeuvre across.</p>' +
-  '<button id="rotate-anyway">Play in portrait anyway</button>';
+  '<h2>Turn your phone for a wider view.</h2>' +
+  '<button id="rotate-anyway">Stay in portrait</button>';
 document.body.appendChild(rotateEl);
 try {
   if (localStorage.getItem(ROTATE_KEY) === '1') rotateEl.classList.add('dismissed');
@@ -481,6 +481,14 @@ const menu = new PauseMenu({
   // pinned art path there is no tutorial, so the control does not render.
   tutorialEnabled: campPinned ? undefined : () => (tutorial ? !tutorial.isSkipped : false),
   onTutorialToggle: campPinned ? undefined : (on) => tutorial?.setEnabled(on),
+  // The drill belongs to no campaign, so there is nothing to lose by leaving it.
+  inTraining: () => drill !== null,
+  onLeaveTraining: () => {
+    pauseBeforeMenu = null;
+    drill = null;
+    tutorial?.endDrill();
+    openMainMenu();
+  },
 });
 menu.setKeymap(loadKeymap(localStorage));
 
@@ -506,6 +514,11 @@ const tutorial = campPinned
       storage: typeof localStorage !== 'undefined' ? localStorage : undefined,
       world: tutorialMark,
       stage: stageRect,
+      goal: () => {
+        const v2 = mode === 'strategic' && !opEnded ? S().v2 : null;
+        const text = v2 && goalLine(v2.goals);
+        return text ? { text, over: stageRect() } : null;
+      },
       onStep: onTutorialStep,
     });
 
@@ -533,6 +546,11 @@ function onTutorialStep(step: Step | null): void {
     heldByStep = false;
   }
   if (step?.mark && mode === 'battle') revealMark(step.mark, step.anchor !== undefined);
+  // On the theater a mark off the map is brought in by showing all of it.
+  if (step?.mark && mode === 'strategic') {
+    const c = theaterMark(step.mark);
+    if (c && !onStage(c, stageRect())) S().v2?.view.fitAll(view.w, view.h);
+  }
 }
 
 const MARK_MARGIN_PX = 24;
@@ -568,6 +586,7 @@ function drillOther(d: Drill & { shooter: number }): number {
 
 // Where a tutorial step's world mark is on screen.
 function tutorialMark(mark: WorldMark): Circle | null {
+  if (mode === 'strategic') return theaterMark(mark);
   if (mode !== 'battle') return null;
   switch (mark) {
     case 'lead':
@@ -586,7 +605,7 @@ function tutorialMark(mark: WorldMark): Circle | null {
     }
     case 'company':
     case 'town':
-      return null;
+      return null; // theater marks: theaterMark
     // The squad the player has picked. Before any pick, the one nearest the
     // middle of the map on screen: the ring must be somewhere they can see.
     case 'squad': {
@@ -602,6 +621,81 @@ function tutorialMark(mark: WorldMark): Circle | null {
       return best;
     }
   }
+}
+
+const onStage = (c: Circle, st: { left: number; top: number; right: number; bottom: number }): boolean =>
+  c.x - c.r >= st.left && c.x + c.r <= st.right && c.y - c.r >= st.top && c.y + c.r <= st.bottom;
+
+// Where the march step's ring goes: the objectives the selected company can be
+// ordered onto, the weakest garrison first and the nearest first among equals.
+// The first battle a new player fights is the one this ring walks them into:
+// on the first preset the nearest objective lost 1 first battle in 12 and left
+// 1 undecided, the weakest lost none (scripts/firstcontact.mjs --pick). Garrison
+// strength is what the player is shown, the objective strip's own numbers:
+// last-seen reports under fog. Asked of previewMove, so the ring is never on a
+// town the order would refuse. Cached per company and theater minute.
+let marchTargetsKey = '';
+let marchTargetsCached: number[] = [];
+function marchTargets(v2: SessionV2): number[] {
+  const key = `${v2.selectedForce}:${v2.front.clockMin}`;
+  if (key === marchTargetsKey) return marchTargetsCached;
+  marchTargetsKey = key;
+  const fog = v2.campaignCfg.recon === 'contacts';
+  const garrison = (n: number): number =>
+    fog
+      ? (v2.front.intel?.blue ?? []).filter((c) => c.pos.kind === 'node' && c.pos.nodeId === n).reduce((a, c) => a + c.strength, 0)
+      : v2.front.forces.filter((f) => f.side === 'red' && f.strength > 0 && f.pos.kind === 'node' && f.pos.nodeId === n).reduce((a, f) => a + f.strength, 0);
+  marchTargetsCached = v2.front.theater.objectiveNodes
+    .filter((n) => v2.front.controlByNode[n] !== 'blue')
+    .flatMap((n) => {
+      const p = previewMove(v2.front, v2.selectedForce, n, { nightTempo: v2.campaignCfg.nightTempo });
+      return p.ok ? [{ n, red: garrison(n), eta: p.etaMin }] : [];
+    })
+    .sort((a, b) => a.red - b.red || a.eta - b.eta)
+    .map((t) => t.n);
+  return marchTargetsCached;
+}
+
+// The theater's two marks. 'company' is one of the player's counters as it is
+// drawn: the strongest that is whole on the map. 'town' is where the selected
+// company should march (marchTargets). Each prefers a place the player can
+// see now.
+function theaterMark(mark: WorldMark): Circle | null {
+  const v2 = S().v2;
+  if (!v2) return null;
+  const st = stageRect();
+  const pick = (cs: Circle[]): Circle | null => cs.find((c) => onStage(c, st)) ?? cs[0] ?? null;
+  if (mark === 'company') {
+    return pick(
+      v2.front.forces
+        .filter((f) => f.side === 'blue' && f.strength > 0 && f.engagedIn === null)
+        .sort((a, b) => b.strength - a.strength)
+        .flatMap((f) => {
+          const r = v2.view.counterOf(f.id);
+          return r ? [{ x: (r.x0 + r.x1) / 2, y: (r.y0 + r.y1) / 2, r: Math.hypot(r.x1 - r.x0, r.y1 - r.y0) / 2 + 4 }] : [];
+        }),
+    );
+  }
+  if (mark === 'town') {
+    if (v2.selectedForce < 0) return null;
+    // The best town, wherever it is: a ring off the map is brought in by
+    // showing the whole theater (onTutorialStep), not by ringing a worse town.
+    const [n] = marchTargets(v2);
+    if (n === undefined) return null;
+    const at = v2.front.theater.nodes[n].pos;
+    const [x, y] = v2.view.toScreen(at.x, at.y, view.w, view.h);
+    // The ring takes in the counters standing on the town: who holds it and how
+    // strong is the other half of what the player is being pointed at, and the
+    // bubble keeps off whatever the ring holds.
+    let r = 22;
+    for (const f of v2.front.forces) {
+      if (f.strength <= 0 || f.pos.kind !== 'node' || f.pos.nodeId !== n) continue;
+      const c = v2.view.counterOf(f.id);
+      if (c) r = Math.max(r, ...[c.x0, c.x1].flatMap((cx) => [c.y0, c.y1].map((cy) => Math.hypot(cx - x, cy - y) + 3)));
+    }
+    return { x, y, r: Math.min(r, 64) };
+  }
+  return null;
 }
 
 // A squad picked by name (the roster, a number key) may be off screen: the
@@ -655,7 +749,11 @@ const mainMenu = new MainMenu({
   // Read live, never cached: the pause menu can flip the same switch.
   tutorialEnabled: tutorial ? () => !tutorial.isSkipped : undefined,
   onTutorialToggle: tutorial ? (on) => tutorial.setEnabled(on) : undefined,
-  onNewOperation: () => {
+  firstRun: () => tutorial !== null && !tutorial.isSkipped && !tutorial.drilled && probeSave().status === 'none',
+  onPlay: () => startDrill(campSeed()),
+  onTraining: () => startDrill(campSeed()),
+  onNewCampaign: () => startFirstCampaign(),
+  onCustom: () => {
     mainMenu.close();
     customize.open();
   },
@@ -897,6 +995,14 @@ function pollDrill(d: NonNullable<typeof drill>): void {
   }
 }
 
+// A campaign with nothing to set up: the preset a first battle is reliably
+// winnable on (FIRST_PRESET, measured by scripts/firstcontact.mjs).
+const urlWar = new URLSearchParams(location.search).get('war'); // ?war=N pins that campaign's seed, so a gate run can be replayed
+function startFirstCampaign(): void {
+  const seed = urlWar !== null && Number.isFinite(Number(urlWar)) && urlWar !== '' ? Number(urlWar) : campSeed();
+  startCampaignV2({ kind: 'fresh', seed, theaterCfg: FIRST_PRESET.theater, campaignCfg: FIRST_PRESET.campaign });
+}
+
 function showDrillEnd(): void {
   debriefShown = true;
   const won = sim.winner === 'blue';
@@ -911,7 +1017,7 @@ function showDrillEnd(): void {
   document.getElementById('next')!.onclick = () => {
     leave();
     if (hasCampaign) openMainMenu();
-    else startCampaignV2({ kind: 'fresh', seed: campSeed() });
+    else startFirstCampaign();
   };
   document.getElementById('db-again')!.onclick = () => {
     leave();
@@ -1370,18 +1476,16 @@ function showOperationEnd(status: 'won' | 'lost'): void {
     <h1 class="${status === 'won' ? 'win' : 'loss'}">OPERATION ${status === 'won' ? 'ACCOMPLISHED' : 'FAILED'}</h1>
     <p class="sub">${S().campaign.log.length} battles fought over ${day} days · ${kia} men killed.</p>
     </div></div>
-    <div class="db-actions"><button id="next" class="primary">New operation</button><button id="same">Same theater again</button></div>`;
+    <div class="db-actions"><button id="next" class="primary">Main menu</button><button id="same">Same theater again</button></div>`;
   debriefEl.style.display = 'flex';
   document.getElementById('next')!.onclick = () => {
     debriefEl.style.display = 'none';
-    mode = 'menu';
-    mainMenu.setSaveProbe(probeSave());
-    mainMenu.open();
+    openMainMenu();
   };
   document.getElementById('same')!.onclick = () => {
     debriefEl.style.display = 'none';
     const v2 = S().v2;
-    if (v2) startCampaignV2({ kind: 'fresh', seed: v2.seed });
+    if (v2) startCampaignV2({ kind: 'fresh', seed: v2.seed, theaterCfg: v2.theaterCfg, campaignCfg: v2.campaignCfg });
     else startCampaign(null, S().campaign.seed);
   };
 }
@@ -2226,7 +2330,9 @@ function frame(now: number): void {
   if (!(mode === 'battle' ? paused : stratPaused) && !held) fxNow += dtReal;
   if (mode === 'battle') easeCamera(dtReal);
   hud.root.style.display = mode === 'battle' ? '' : 'none';
-  document.documentElement.classList.toggle('in-battle', mode === 'battle'); // gates the portrait guidance (ui.css)
+  // Gates the portrait guidance (ui.css). Not the drill: its map is a third as
+  // wide as a campaign battle's and plays whole in portrait.
+  document.documentElement.classList.toggle('in-battle', mode === 'battle' && drill === null);
   stratHud.root.style.display = mode === 'strategic' && !S().v2 ? '' : 'none';
   theaterHud.root.style.display = mode === 'strategic' && S().v2 ? '' : 'none';
   // Off the battle map there are no engines and no guns to rumble: wind only.
@@ -2251,6 +2357,9 @@ function frame(now: number): void {
       if (st.state === 'decided') showOperationEnd(st.winner === 'blue' ? 'won' : 'lost');
     }
     theaterHud.update(v2.front, v2.goals, v2.selectedForce, stratPaused, speedIdx, v2.campaignCfg.supply, v2.campaignCfg.recon === 'contacts', v2.campaignCfg.nightTempo);
+    // One thing talks at a time: while a tutorial step is on screen the
+    // theater's own "what next" line is quiet (ui.css, .coached).
+    theaterHud.root.classList.toggle('coached', tutorial?.isShowing ?? false);
     v2.view.inset = theaterInset();
     if (v2.needsFrame) {
       v2.needsFrame = false;
@@ -2263,6 +2372,8 @@ function frame(now: number): void {
     v2.view.clampPan(view.w, view.h);
     v2.view.preview = theaterPreview(v2);
     v2.view.draw(ctx, v2.front, v2.selectedForce, stratPaused, SPEEDS[speedIdx], view.w, view.h);
+    const ring = tutorial?.ring();
+    if (ring) drawMarkRing(ctx, ring, now);
     if (touchHold) drawHoldRing(ctx, touchHold, now);
   } else if (mode === 'strategic') {
     hud.updateIdle(selectedChit >= 0 || stratPaused);
@@ -2488,7 +2599,7 @@ function frame(now: number): void {
     // A player who has given no order for a minute of battle is told the goal
     // and where the enemy is. Sim time, so a pause neither starts nor ends it.
     const quiet = !deployPhase && !sim.winner && !aiControl && (sim.tick - lastOrderTick) * DT >= QUIET_PROMPT_S;
-    hud.update(sim, { selectedSquad: primary, selectedSquads, selectedTeam, selectedVehicle, paused, aiControl, targetMode, armedOrder, title: battleTitle, keymap: km, prompt: quiet && !tutorial?.isShowing ? quietPrompt(sim) : null, glow: tutorial?.step?.chip ?? null, speed: battleSpeed, deploy: deployPhase, floorFocus, boxMode, addMode });
+    hud.update(sim, { selectedSquad: primary, selectedSquads, selectedTeam, selectedVehicle, paused, aiControl, targetMode, armedOrder, title: battleTitle, keymap: km, prompt: quiet && !tutorial?.isShowing ? quietPrompt(sim) : null, glow: tutorial?.step?.chip ?? null, noSupport: drill !== null, speed: battleSpeed, deploy: deployPhase, floorFocus, boxMode, addMode });
     // A new battle re-indexes sim.soldiers, so an id held across one closes the panel.
     if (inspectedSoldier >= 0 && !sim.soldiers[inspectedSoldier]) inspectedSoldier = -1;
     healthPanel.update(sim, inspectedSoldier);

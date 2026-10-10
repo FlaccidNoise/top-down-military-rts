@@ -14,16 +14,28 @@ export interface SaveProbe {
 }
 
 export interface MainMenuCallbacks {
-  onNewOperation(): void;
+  /** The first run's one button: into the drill. */
+  onPlay(): void;
+  /** A new campaign on the first preset, with no setup screen. */
+  onNewCampaign(): void;
+  /** The drill again. */
+  onTraining(): void;
+  /** The setup screen: presets, knobs and a seed. */
+  onCustom(): void;
+  /**
+   * Nothing has been played on this profile: no save, the drill never started,
+   * the tutorial not turned off. The menu is then one button.
+   */
+  firstRun(): boolean;
   onContinue(): void;
   onContinueLegacy(): void;
   onDiscardSave(): void;
   onFieldManual(): void;
   // The tutorial switch lives HERE and not only in the pause menu because
-  // turning it back on has to happen BEFORE the operation starts: the briefing
-  // card fires on campaign-start, so a player who re-enables mid-campaign
-  // would miss the one step that explains the goal. Absent (?camp= art path)
-  // = no tutorial exists, and the control does not render.
+  // turning it back on has to happen BEFORE the campaign starts: the goal line
+  // and the first step fire on campaign-start, so a player who re-enables
+  // mid-campaign would miss them. Absent (?camp= art path) = no tutorial
+  // exists, and the control does not render.
   tutorialEnabled?(): boolean;
   onTutorialToggle?(on: boolean): void;
 }
@@ -37,9 +49,44 @@ export function esc(s: string): string {
 const CONTINUE_ID = 'mm-continue';
 const CONTINUE_LEGACY_ID = 'mm-continue-legacy';
 const DISCARD_ID = 'mm-discard';
-const NEW_OP_ID = 'mm-new';
+const PLAY_ID = 'mm-play';
+const NEW_ID = 'mm-new';
+const TRAINING_ID = 'mm-training';
+const CUSTOM_ID = 'mm-custom';
 const MANUAL_ID = 'mm-manual';
 const TUTORIAL_ID = 'mm-tutorial';
+
+export interface MenuView {
+  firstRun: boolean;
+  /** The tutorial switch's state. null = no tutorial exists, so no switch. */
+  tutorial: boolean | null;
+  /** New campaign was pressed over a saved one and is waiting for the second press. */
+  confirmNew: boolean;
+}
+
+// Pure — the button row, so both shapes of the menu test without a browser.
+//
+// First run: one primary button. A player who has never played is one press
+// from playing, and reads two words to get there. Everything else is quiet.
+// Later: Continue leads when there is a campaign to continue (it is in the
+// panel above, renderContinueBlock), then a new campaign, the drill, and the
+// setup screen behind "Custom operation".
+export function renderActions(probe: SaveProbe, v: MenuView): string {
+  if (v.firstRun) {
+    return `<button id="${PLAY_ID}" class="primary mm-big">Play</button>
+      <button id="${CUSTOM_ID}" class="mm-quiet">Custom operation</button>
+      <button id="${MANUAL_ID}" class="mm-quiet">Field Manual</button>`;
+  }
+  // A new campaign writes over the saved one. One press must not do that.
+  const fresh = v.confirmNew
+    ? `<button id="${NEW_ID}" class="primary" data-confirm="1">Replace the saved campaign</button>`
+    : `<button id="${NEW_ID}"${probe.status === 'ok' ? '' : ' class="primary"'}>New campaign</button>`;
+  return `${fresh}
+      <button id="${TRAINING_ID}">Training</button>
+      <button id="${CUSTOM_ID}">Custom operation</button>
+      <button id="${MANUAL_ID}">Field Manual</button>
+      ${v.tutorial === null ? '' : `<button id="${TUTORIAL_ID}" aria-pressed="${v.tutorial}">Tutorial: ${v.tutorial ? 'ON' : 'OFF'}</button>`}`;
+}
 
 // Pure — no DOM globals, so the five states are testable without a browser.
 export function renderContinueBlock(probe: SaveProbe): string {
@@ -93,6 +140,7 @@ export class MainMenu {
   private probe: SaveProbe = { status: 'none' };
   private storageWritable = true;
   private _open = false;
+  private confirmNew = false;
 
   constructor(cb: MainMenuCallbacks) {
     this.cb = cb;
@@ -116,6 +164,7 @@ export class MainMenu {
 
   open(): void {
     this._open = true;
+    this.confirmNew = false;
     this.render();
     this.el.style.display = 'flex';
   }
@@ -126,17 +175,28 @@ export class MainMenu {
   }
 
   private render(): void {
+    const firstRun = this.cb.firstRun();
+    this.el.classList.toggle('first-run', firstRun);
+    // On a first run there is no campaign to continue and no reason to say so.
     this.el.innerHTML = `${renderStorageBanner(this.storageWritable)}<div class="db-scroll"><div class="db"><div class="mm-panel">
       <h1>NORMANDY</h1>
-      ${renderContinueBlock(this.probe)}
+      ${firstRun ? '' : renderContinueBlock(this.probe)}
     </div></div></div>
     <div class="db-actions">
-      <button id="${NEW_OP_ID}" class="primary">New Operation</button>
-      <button id="${MANUAL_ID}">Field Manual</button>
-      ${this.cb.tutorialEnabled ? `<button id="${TUTORIAL_ID}" aria-pressed="${this.cb.tutorialEnabled()}">Tutorial: ${this.cb.tutorialEnabled() ? 'ON' : 'OFF'}</button>` : ''}
+      ${renderActions(this.probe, { firstRun, tutorial: this.cb.tutorialEnabled ? this.cb.tutorialEnabled() : null, confirmNew: this.confirmNew })}
     </div>`;
 
-    this.el.querySelector(`#${NEW_OP_ID}`)?.addEventListener('click', () => this.cb.onNewOperation());
+    this.el.querySelector(`#${PLAY_ID}`)?.addEventListener('click', () => this.cb.onPlay());
+    this.el.querySelector(`#${NEW_ID}`)?.addEventListener('click', () => {
+      if (this.probe.status === 'ok' && !this.confirmNew) {
+        this.confirmNew = true;
+        this.render();
+        return;
+      }
+      this.cb.onNewCampaign();
+    });
+    this.el.querySelector(`#${TRAINING_ID}`)?.addEventListener('click', () => this.cb.onTraining());
+    this.el.querySelector(`#${CUSTOM_ID}`)?.addEventListener('click', () => this.cb.onCustom());
     this.el.querySelector(`#${MANUAL_ID}`)?.addEventListener('click', () => this.cb.onFieldManual());
     this.el.querySelector(`#${TUTORIAL_ID}`)?.addEventListener('click', () => {
       this.cb.onTutorialToggle?.(!this.cb.tutorialEnabled!());

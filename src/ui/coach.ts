@@ -68,6 +68,29 @@ export function placeBubble(anchor: Rect, clear: Rect, w: number, h: number, bou
     : { left: across, top: clamp(above, minTop, maxTop), side: 'above', arrow: arrowX(across) };
 }
 
+const overlaps = (a: Rect, b: Rect): boolean => a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+const within = (a: Rect, b: Rect): boolean => a.left >= b.left && a.right <= b.right && a.top >= b.top && a.bottom <= b.bottom;
+
+/**
+ * placeBubble, and then off anything in `avoid` it landed on: panels beside
+ * the control that the player still reads while the step waits. A panel the
+ * bubble covers joins what it must clear and the bubble is placed again, so it
+ * ends past the panel with its pointer still aimed at the control. Each pass
+ * adds one panel, so it ends. Pure.
+ */
+export function placeAvoiding(anchor: Rect, clear: Rect, w: number, h: number, bounds: Rect, avoid: readonly Rect[]): Placement {
+  let keep = clear;
+  let p = placeBubble(anchor, keep, w, h, bounds);
+  for (let i = 0; i < avoid.length; i++) {
+    const box: Rect = { left: p.left, top: p.top, right: p.left + w, bottom: p.top + h };
+    const hit = avoid.find((r) => overlaps(box, r) && !within(r, keep));
+    if (!hit) break;
+    keep = { left: Math.min(keep.left, hit.left), top: Math.min(keep.top, hit.top), right: Math.max(keep.right, hit.right), bottom: Math.max(keep.bottom, hit.bottom) };
+    p = placeBubble(anchor, keep, w, h, bounds);
+  }
+  return p;
+}
+
 /**
  * An element's rect as far as the player can see it: clipped by every
  * scrolling ancestor. A chip scrolled out of its row resolves to the row, so a
@@ -80,7 +103,8 @@ export function visibleRect(el: Element): Rect | null {
   let r: Rect = { left: b.left, top: b.top, right: b.right, bottom: b.bottom };
   for (let p = el.parentElement; p && p !== document.body; p = p.parentElement) {
     const cs = getComputedStyle(p);
-    if (cs.overflowX === 'visible' && cs.overflowY === 'visible') continue;
+    // An ancestor with no box of its own (display: contents) clips nothing.
+    if (cs.display === 'contents' || (cs.overflowX === 'visible' && cs.overflowY === 'visible')) continue;
     const c = p.getBoundingClientRect();
     const cut: Rect = { left: Math.max(r.left, c.left), top: Math.max(r.top, c.top), right: Math.min(r.right, c.right), bottom: Math.min(r.bottom, c.bottom) };
     r = cut.right > cut.left && cut.bottom > cut.top ? cut : { left: c.left, top: c.top, right: c.right, bottom: c.bottom };
@@ -95,7 +119,7 @@ export interface BubbleSpec {
    * HUD re-renders, or is not laid out yet; null hides the bubble for that
    * frame instead of leaving it pointing at nothing.
    */
-  locate(): { anchor: Rect; clear: Rect; bounds?: Rect } | null;
+  locate(): { anchor: Rect; clear: Rect; bounds?: Rect; avoid?: readonly Rect[] } | null;
   onDismiss(): void;
   onSkip(): void;
 }
@@ -168,7 +192,7 @@ export class Coach {
     const bounds: Rect = b
       ? { left: Math.max(vp.left, b.left), top: Math.max(vp.top, b.top), right: Math.min(vp.right, b.right), bottom: Math.min(vp.bottom, b.bottom) }
       : vp;
-    const p = placeBubble(at.anchor, at.clear, el.offsetWidth, el.offsetHeight, bounds);
+    const p = placeAvoiding(at.anchor, at.clear, el.offsetWidth, el.offsetHeight, bounds, at.avoid ?? []);
     this.box = { left: p.left, top: p.top, right: p.left + el.offsetWidth, bottom: p.top + el.offsetHeight };
     const key = `${Math.round(p.left)},${Math.round(p.top)},${p.side},${Math.round(p.arrow)}`;
     if (key === this.placed) return;

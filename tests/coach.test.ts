@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { placeBubble, type Rect } from '../src/ui/coach';
+import { placeAvoiding, placeBubble, type Rect } from '../src/ui/coach';
 
 const rect = (left: number, top: number, w: number, h: number): Rect => ({ left, top, right: left + w, bottom: top + h });
 const overlaps = (a: Rect, b: Rect): boolean => a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
@@ -87,5 +87,39 @@ describe('placeBubble', () => {
     const p = placeBubble(rect(0, 100, 10, 10), rect(0, 100, 10, 10), BUBBLE.w, BUBBLE.h, DESK);
     expect(p.arrow).toBeGreaterThan(0);
     expect(p.arrow).toBeLessThan(BUBBLE.w);
+  });
+});
+
+describe('placeAvoiding', () => {
+  const PHONE: Rect = { left: 0, top: 0, right: 390, bottom: 844 };
+  const play: Rect = { left: 35, top: 36, right: 105, bottom: 80 };
+  const head: Rect = { left: 4, top: 8, right: 386, bottom: 86 };
+  const strip: Rect = { left: 4, top: 92, right: 386, bottom: 170 };
+  const hit = (p: { left: number; top: number }, w: number, h: number, r: Rect): boolean => p.left < r.right && p.left + w > r.left && p.top < r.bottom && p.top + h > r.top;
+
+  it('is placeBubble when nothing is in the way', () => {
+    expect(placeAvoiding(play, play, 374, 58, PHONE, [])).toEqual(placeBubble(play, play, 374, 58, PHONE));
+    const far: Rect = { left: 4, top: 700, right: 386, bottom: 800 };
+    expect(placeAvoiding(play, play, 374, 58, PHONE, [far])).toEqual(placeBubble(play, play, 374, 58, PHONE));
+  });
+
+  it('goes past a panel stacked under the control, and still points at the control', () => {
+    const plain = placeBubble(play, play, 374, 58, PHONE);
+    expect(hit(plain, 374, 58, strip)).toBe(true); // the defect this fixes
+    const p = placeAvoiding(play, play, 374, 58, PHONE, [head, strip]);
+    expect(hit(p, 374, 58, strip)).toBe(false);
+    expect(hit(p, 374, 58, head)).toBe(false);
+    expect(p.side).toBe('below');
+    expect(p.top).toBeGreaterThanOrEqual(strip.bottom);
+    expect(p.left + p.arrow).toBeCloseTo((play.left + play.right) / 2, 0);
+  });
+
+  it('stays on screen when the panels leave no room at all', () => {
+    const wall: Rect = { left: 0, top: 0, right: 390, bottom: 844 };
+    const p = placeAvoiding(play, play, 374, 58, PHONE, [wall]);
+    expect(p.left).toBeGreaterThanOrEqual(0);
+    expect(p.left + 374).toBeLessThanOrEqual(390);
+    expect(p.top).toBeGreaterThanOrEqual(0);
+    expect(p.top + 58).toBeLessThanOrEqual(844);
   });
 });
