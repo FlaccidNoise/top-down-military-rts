@@ -13,6 +13,7 @@ import type { ReconMode } from '../campaign/spec';
 
 import type { Side } from '../sim/sim';
 import { MOBILE } from './view';
+import { buildFrontLayer, controlKey, washRectM, type FrontLayer } from './theater-front';
 import { counterRect, drawCounter, layoutCounters, type CounterSpec, type PlacedCounter } from './theater-counters';
 
 // Terrain separates by VALUE, not hue (the Muted-Normandy rule): a luma ladder
@@ -36,6 +37,11 @@ const REGION_TEXTURE: Partial<Record<TerrainClass, 'hedge' | 'reed'>> = { bocage
 // Without a boundary, two same-class neighbours are one shape.
 const REGION_EDGE = 'rgba(26, 22, 16, 0.32)';
 const MAP_BG = '#211d16';
+// Under the regions, to the theater bounds. The region polygons stop short of
+// the bounds and leave wedges between each other; over the bare background
+// those read as holes in the map.
+const GROUND = '#525b49';
+const FRAME = '#b9ae94';
 const WATER = '#3f5d73';
 const ROAD: Record<0 | 1 | 2, { color: string; width: number }> = {
   0: { color: '#cbbb94', width: 3 }, // highway
@@ -55,7 +61,11 @@ const SIDE_COLOR: Record<Side, string> = { blue: '#3a5a9a', red: '#9a3a3a' };
 const OBJ_TAKE = '#d8b25c';
 const OBJ_HELD = '#7da0d8';
 const OBJ_TICKS: readonly (readonly [number, number])[] = [[0, -1], [1, 0], [0, 1], [-1, 0]];
-const OWNER_TINT: Record<Side, string> = { blue: 'rgba(70, 110, 180, 0.55)', red: 'rgba(180, 70, 70, 0.55)' };
+// The wash says whose ground it is; a node only needs a rim in its holder's
+// colour so a town that changes hands reads at the town as well.
+const OWNER_RIM: Record<Side, string> = { blue: '#7fa6ee', red: '#e2796c' };
+const WASH_ALPHA = 0.26;
+const FRONT_LINE = '#f4ead0';
 
 // The HUD is opaque DOM over the canvas, so the canvas is not what the player
 // can see. main.ts measures the panels and hands the borders in; every
@@ -108,6 +118,8 @@ export class TheaterView {
   // The counters as last drawn. forceAtScreen reads them: a click lands on
   // what the player sees.
   private counters: PlacedCounter[] = [];
+  private frontKey = '';
+  private frontCache: FrontLayer | null = null;
 
   constructor(private readonly theater: Theater) {}
 
@@ -289,6 +301,17 @@ export class TheaterView {
       });
     };
 
+    const mapW = this.theater.boundsM.w * scale;
+    const mapH = this.theater.boundsM.h * scale;
+    ctx.fillStyle = GROUND;
+    ctx.fillRect(ox, oy, mapW, mapH);
+    // Everything that is ground is drawn inside the bounds: smoothed region
+    // corners and wide rivers would otherwise poke out past the frame.
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(ox, oy, mapW, mapH);
+    ctx.clip();
+
     // Regions — the ground truth, painted as organic polygons: fill, then any
     // terrain texture, then a boundary so neighbours never merge.
     for (const r of this.theater.regions) {
@@ -307,6 +330,18 @@ export class TheaterView {
       ctx.strokeStyle = REGION_EDGE;
       ctx.lineWidth = Math.min(2, 1 + this.zoomMul * 0.25);
       ctx.stroke();
+    }
+
+    // Whose ground: a soft wash, drawn stretched from one pixel per grid cell
+    // so its edge is a gradient, not a border.
+    const fl = this.frontLayer(front.controlByNode);
+    if (fl.wash) {
+      const r = washRectM(this.theater);
+      ctx.save();
+      ctx.globalAlpha = WASH_ALPHA;
+      ctx.imageSmoothingEnabled = true;
+      ctx.drawImage(fl.wash, ox + r.x * scale, oy + r.y * scale, r.w * scale, r.h * scale);
+      ctx.restore();
     }
 
     // Rivers over ground, under roads.
@@ -363,7 +398,28 @@ export class TheaterView {
       }
     }
 
-    // Nodes: control tint ring, kind glyph; labels collected for a
+    // The front: where the two washes meet. Over the roads, under the towns.
+    for (const [style, lw] of [['rgba(12, 10, 6, 0.75)', 5.5], [FRONT_LINE, 2.5]] as const) {
+      ctx.strokeStyle = style;
+      ctx.lineWidth = lw;
+      ctx.setLineDash(style === FRONT_LINE ? [9, 5] : []);
+      for (const line of fl.lines) {
+        trace(line);
+        ctx.stroke();
+      }
+    }
+    ctx.setLineDash([]);
+
+    ctx.restore(); // end of the bounds clip
+    // A neatline: the map is a sheet with an edge, not a shape in a void.
+    ctx.strokeStyle = 'rgba(12, 10, 6, 0.9)';
+    ctx.lineWidth = 4;
+    ctx.strokeRect(ox, oy, mapW, mapH);
+    ctx.strokeStyle = FRAME;
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(ox, oy, mapW, mapH);
+
+    // Nodes: holder's rim, kind glyph; labels collected for a
     // declutter pass — towns first, then villages/crossings, greedy cull on
     // screen-space overlap so a dense cluster reads as its principal name.
     // Objectives always carry a ticked designation ring and a starred name —
@@ -375,17 +431,14 @@ export class TheaterView {
       const [sx, sy] = this.toScreen(n.pos.x, n.pos.y, w, h);
       const owner = front.controlByNode[n.id];
       const r = n.rank === 0 ? 7 : n.rank === 1 ? 5 : 3.5;
-      if (owner) {
-        ctx.fillStyle = OWNER_TINT[owner];
-        ctx.beginPath();
-        ctx.arc(sx, sy, r + 5, 0, Math.PI * 2);
-        ctx.fill();
-      }
       ctx.fillStyle = n.crossing ? '#d6c9a4' : n.rank === 0 ? '#e2d6ba' : '#b9ae94';
       this.glyph(ctx, n, sx, sy, r);
       ctx.fill();
       ctx.strokeStyle = INK;
-      ctx.lineWidth = 1;
+      ctx.lineWidth = 3.5;
+      ctx.stroke();
+      ctx.strokeStyle = owner ? OWNER_RIM[owner] : INK;
+      ctx.lineWidth = 1.5;
       ctx.stroke();
       const objective = objectives.has(n.id);
       if (objective) {
@@ -495,6 +548,16 @@ export class TheaterView {
       ctx.font = '13px ui-monospace, monospace';
       ctx.fillText(this.flashText, w / 2, bar && bar.height > 0 ? bar.bottom + 20 : 24);
     }
+  }
+
+  // The wash and the front, rebuilt only when a node changes hands.
+  frontLayer(control: readonly (Side | null)[]): FrontLayer {
+    const key = controlKey(control);
+    if (!this.frontCache || key !== this.frontKey) {
+      this.frontKey = key;
+      this.frontCache = buildFrontLayer(this.theater, control);
+    }
+    return this.frontCache;
   }
 
   // The ground a march covers: the rest of the force's own road, then each

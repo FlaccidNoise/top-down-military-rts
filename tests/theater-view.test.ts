@@ -52,6 +52,35 @@ describe('counters', () => {
   });
 });
 
+describe('territory and the front line', () => {
+  const v = new TheaterView(theater);
+  const control = world.front.controlByNode;
+  const nearest = (side: 'blue' | 'red', ctl: readonly ('blue' | 'red' | null)[], p: { x: number; y: number }): number =>
+    Math.min(...theater.nodes.filter((n) => ctl[n.id] === side).map((n) => Math.hypot(n.pos.x - p.x, n.pos.y - p.y)));
+
+  it('the front runs where a blue-held and a red-held node are equally near', () => {
+    const { lines } = v.frontLayer(control);
+    expect(lines.length).toBeGreaterThan(0);
+    for (const line of lines) {
+      for (const p of line) expect(Math.abs(nearest('blue', control, p) - nearest('red', control, p))).toBeLessThan(300); // two grid cells
+    }
+  });
+
+  it('is rebuilt only when a node changes hands', () => {
+    const a = v.frontLayer(control);
+    expect(v.frontLayer([...control])).toBe(a);
+    const taken = [...control];
+    taken[theater.objectiveNodes[0]] = 'blue';
+    const b = v.frontLayer(taken);
+    expect(b).not.toBe(a);
+    expect(JSON.stringify(b.lines)).not.toBe(JSON.stringify(a.lines));
+  });
+
+  it('one side holding everything leaves no front', () => {
+    expect(v.frontLayer(control.map(() => 'blue')).lines).toEqual([]);
+  });
+});
+
 describe('one ETA format', () => {
   it('reads the same on the card, the preview chip and the order flash', () => {
     expect([5, 59, 60, 120, 285].map(fmtEta)).toEqual(['5m', '59m', '1h00m', '2h00m', '4h45m']);
