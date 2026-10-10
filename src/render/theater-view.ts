@@ -103,6 +103,7 @@ export type MarchPreview =
 
 const ARROW_OWN = '#a9c4f5';
 const ARROW_SEL = '#d4e3ff';
+const ARROW_ENEMY = '#f0a79c';
 const ARROW_PREVIEW = '#ffe9a0';
 const ARROW_CASE = 'rgba(12, 10, 6, 0.85)';
 const FIGHT = '#f0963c'; // contact and battle: one colour, one mark
@@ -367,6 +368,16 @@ export class TheaterView {
   // Centre a theater point in the clear rectangle without changing the zoom.
   centerOn(p: Vec, w: number, h: number): void {
     this.frame([p], w, h, this.zoomMul, 0);
+  }
+
+  // Pan the least that puts a theater point inside the clear rectangle, `pad`
+  // px in from its edges. The zoom is left alone.
+  keepInView(p: Vec, w: number, h: number, pad = 56): void {
+    const [sx, sy] = this.toScreen(p.x, p.y, w, h);
+    const c = this.clear(w, h);
+    const into = (v: number, lo: number, hi: number): number => (v < lo ? lo - v : v > hi ? hi - v : 0);
+    this.panX += into(sx, c.x + pad, c.x + c.w - pad);
+    this.panY += into(sy, c.y + pad, c.y + c.h - pad);
   }
 
   // Zoom by `factor`, keeping the map point under (sx, sy) where it is.
@@ -746,6 +757,20 @@ export class TheaterView {
       }
     }
 
+    // Enemy marches, as far as intel has them: the road a red force was seen
+    // marching on, to the node ahead of it. Its orders are not known, so the
+    // arrow stops there. Under fog it is the last report, fading with it.
+    const seenMarching: { pos: Force['pos']; conf: number }[] =
+      this.recon === 'contacts'
+        ? (front.intel?.blue ?? []).filter((c) => c.moving).map((c) => ({ pos: c.pos, conf: contactConf(c, front.clockMin) }))
+        : front.forces.filter((f) => f.side === 'red' && f.strength > 0 && f.path.length > 0 && f.engagedIn === null).map((f) => ({ pos: f.pos, conf: 1 }));
+    for (const m of seenMarching) {
+      if (m.pos.kind !== 'edge') continue;
+      ctx.globalAlpha = m.conf;
+      this.arrow(ctx, this.routePts(m.pos, [m.pos.edgeId]), w, h, ARROW_ENEMY, 1.8);
+    }
+    ctx.globalAlpha = 1;
+
     // Marches. Every moving company keeps a thin arrow to where it is going,
     // along the roads it will use. The selected one is brighter.
     for (const f of front.forces) {
@@ -929,6 +954,7 @@ export class TheaterView {
         strength: f.strength, frac: f.strength / Math.max(1, f.establishment),
         supply: this.supplyOn ? supplyTierOf(f.untracedMin) : null,
         fatigue: f.side === 'blue' ? f.fatigue : 0,
+        posture: f.posture,
         // An enemy the trace does not reach. The lever the supply rules
         // offer: cut a garrison off, then fight it on short ammunition.
         tag: this.supplyOn && f.side === 'red' && f.untracedMin > 0 ? 'ISOLATED' : null,
@@ -945,7 +971,7 @@ export class TheaterView {
           // A report this fresh saw the force itself: its supply state is known.
           supply: this.supplyOn && conf > FRESH_CONF ? supplyTierOf(f.untracedMin) : null,
           tag: this.supplyOn && conf > FRESH_CONF && f.untracedMin > 0 ? 'ISOLATED' : null,
-          fatigue: 0, selected: false, engaged: false, conf, ghost: true, ...at(c.pos),
+          fatigue: 0, posture: 'march', selected: false, engaged: false, conf, ghost: true, ...at(c.pos),
         });
       }
     }

@@ -522,6 +522,9 @@ async function stagedModalRun(which) {
       if (!red) return { ok: false, why: 'no live red force' };
       red.pos = { ...blue.pos };
       red.path = [];
+      // Moved off its post: not dug in here, or its earthworks would deny the walkover.
+      red.posture = 'march';
+      red.dugMin = 0;
       red.strength = Math.max(1, Math.floor(blue.strength / (TRIVIAL_RATIO + 1)));
       const here = blue.pos.nodeId;
       const nextDoor = v2.front.theater.edges.find((e) => e.a === here || e.b === here);
@@ -539,9 +542,9 @@ async function stagedModalRun(which) {
       check(modal.forced === 'They chose this fight. A defender cannot stand down.', `modal: a defender is told "A defender cannot stand down." (got ${JSON.stringify(modal.forced)})`);
       check(modal.fight === 'Defend' && !modal.standdown, `modal: a defender is offered Defend and no Stand down (button "${modal.fight}", standdown ${modal.standdown})`);
     } else {
-      const want = `Auto-resolve is available at ${staged.ratio}:1.`;
-      check(modal.auto, 'modal: a trivial mismatch offers Auto-resolve');
-      check(modal.odds.includes(want), `modal: the odds line carries "${want}" with the ratio out of TRIVIAL_RATIO (got "${modal.odds}")`);
+      const want = 'A walkover: auto-resolve offered.';
+      check(modal.auto, 'modal: a walkover offers Auto-resolve');
+      check(modal.odds.includes(want), `modal: the odds line carries "${want}" (got "${modal.odds}")`);
       check(modal.forced === null, 'modal: no defender line on a fight the player chose');
     }
   } finally {

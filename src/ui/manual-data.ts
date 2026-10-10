@@ -220,7 +220,7 @@ export function buildManual(bindings: Record<ActionId, Binding> = DEFAULTS): Man
         },
         {
           heading: 'The contact choice',
-          body: `Attack fights it. Stand down withdraws, and only an attacker may. Auto-resolve is offered at ${TRIVIAL_RATIO}:1 odds.`,
+          body: `Attack fights it. Stand down withdraws, and only an attacker may. Auto-resolve is offered on a walkover: ${TRIVIAL_RATIO}:1 in fighting strength.`,
         },
         {
           heading: 'How long a battle takes',

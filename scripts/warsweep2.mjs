@@ -43,6 +43,8 @@ const runWar = (seed) => {
   let redAttacks = 0;
   let battles = 0;
   const stallMin = {};
+  const redOrders = {}; // why -> forces given that order (a re-issue to the same node counts once)
+  const lastOrder = new Map();
   const commitSamples = [];
   let knownBattles = new Set();
 
@@ -62,6 +64,11 @@ const runWar = (seed) => {
         wasBlue.delete(n);
         redRetakes++;
       }
+    }
+    for (const o of world.lastRedReport?.orders ?? []) {
+      if (lastOrder.get(o.forceId) === `${o.why}:${o.dest}`) continue;
+      lastOrder.set(o.forceId, `${o.why}:${o.dest}`);
+      redOrders[o.why] = (redOrders[o.why] ?? 0) + 1;
     }
     if (world.lastRedReport?.stall) {
       stallMin[world.lastRedReport.stall] = (stallMin[world.lastRedReport.stall] ?? 0) + RED_V2.evalMinutes;
@@ -91,6 +98,8 @@ const runWar = (seed) => {
     redRetakes,
     committedFrac,
     stallMin,
+    redOrders,
+    blueDestroyed: status === 'lost' && days <= CAMP.warDays,
     minutes: run.minutes,
   };
 };
@@ -119,6 +128,11 @@ const daysSorted = rows.map((r) => r.day).sort((a, b) => a - b);
 const tuples = new Set(rows.map((r) => `${r.status}:${r.day}:${r.logLen}`));
 const meanAtk = rows.reduce((a, r) => a + r.attacksPerDay, 0) / rows.length;
 const meanCommit = rows.reduce((a, r) => a + r.committedFrac, 0) / rows.length;
+const destroyed = rows.filter((r) => r.blueDestroyed).map((r) => r.seed);
+const orderTotals = {};
+for (const r of rows) for (const [k, v] of Object.entries(r.redOrders)) orderTotals[k] = (orderTotals[k] ?? 0) + v;
+console.log(`red orders: ${Object.entries(orderTotals).sort().map(([k, v]) => `${k} ${v}`).join(' · ')}`);
+console.log(`AI blue destroyed before the deadline on ${destroyed.length}/${rows.length} seeds${destroyed.length ? ` (${destroyed.join(', ')})` : ''}`);
 console.log(
   `summary: blue wins ${won}/${rows.length} (${((won / rows.length) * 100).toFixed(0)}%) · hung ${hung} · ` +
   `days min/med/max ${daysSorted[0]}/${daysSorted[daysSorted.length >> 1]}/${daysSorted[daysSorted.length - 1]} · ` +

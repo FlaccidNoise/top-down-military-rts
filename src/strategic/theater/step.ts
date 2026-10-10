@@ -22,6 +22,7 @@ import {
   type FrontV2,
   type MoveOrder,
   type MoveReject,
+  type Posture,
   type TheaterEvent,
 } from './force';
 import { graphGap } from './contact';
@@ -36,6 +37,13 @@ export const BILLET_RECOVER_MULT = 2; // roofed, friendly, fed: twice the rest
 export const NIGHT_LIGHT_FLOOR = 0.25; // the lightAt threshold every night rule keys on
 export const FATIGUE_STAMINA_SLOPE = 0.5; // staging: stamina cap 1 - 0.5 x fatigue
 
+// -- Postures (jtbug #786). Every number the force card quotes is read from here.
+export const FORCED_PACE_MULT = 1.4; // forced march: faster
+export const FORCED_FATIGUE_MULT = 2.5; // and it wears the men that much harder
+export const REST_RECOVER_MULT = 2; // rest: recovery doubles (on top of a billet)
+export const DIG_IN_MIN = 240; // dig in: this long standing still, with no recovery meanwhile
+export const SCREEN_PACE_MULT = 0.6; // screen: a cautious advance
+
 export interface MoveKernelOpts {
   nightTempo?: boolean; // S52: CampaignConfig.nightTempo gates the pace ramp
 }
@@ -48,9 +56,10 @@ export function nightRamp(clockMin: number): number {
 
 // The per-minute pace multiplier — ONE function read by the live step and
 // the ETA shadow, so they cannot disagree.
-export function paceMult(fatigue: number, clockMin: number, opts: MoveKernelOpts): number {
-  const fat = 1 - FATIGUE_SPEED_SLOPE * fatigue;
-  return opts.nightTempo ? fat * nightRamp(clockMin) : fat;
+export function paceMult(f: Pick<Force, 'fatigue' | 'posture'>, clockMin: number, opts: MoveKernelOpts): number {
+  const fat = 1 - FATIGUE_SPEED_SLOPE * f.fatigue;
+  const base = opts.nightTempo ? fat * nightRamp(clockMin) : fat;
+  return f.posture === 'forced' ? base * FORCED_PACE_MULT : f.posture === 'screen' ? base * SCREEN_PACE_MULT : base;
 }
 
 // A friendly, in-supply settlement node is a billet: recovery runs double.
@@ -66,17 +75,23 @@ function billeted(front: FrontV2, f: Force): boolean {
 
 // One minute of fatigue for one force (S51). Marching accrues (x1.5 in the
 // dark — the accrual is physiology, not doctrine, so it ignores the
-// nightTempo toggle); resting recovers (x2 billeted); an engaged force
-// holds — combat fatigue lands as a lump at resolution.
+// nightTempo toggle; x2.5 on a forced march); standing recovers (x2
+// billeted, x2 again at rest); an engaged force holds — combat fatigue lands
+// as a lump at resolution. A force digging in neither tires nor recovers:
+// the minute goes into the position.
 export function fatigueMinute(front: FrontV2, f: Force, clockMin = front.clockMin): void {
   if (f.engagedIn !== null) return;
   if (f.path.length > 0) {
     const mult = lightAt(clockMin) < NIGHT_LIGHT_FLOOR ? NIGHT_MARCH_FATIGUE_MULT : 1;
-    f.fatigue = Math.min(1, f.fatigue + mult / MARCH_FATIGUE_MIN);
+    f.fatigue = Math.min(1, f.fatigue + (mult * (f.posture === 'forced' ? FORCED_FATIGUE_MULT : 1)) / MARCH_FATIGUE_MIN);
+  } else if (f.posture === 'dig' && f.dugMin < DIG_IN_MIN) {
+    f.dugMin++;
   } else {
-    f.fatigue = Math.max(0, f.fatigue - (billeted(front, f) ? BILLET_RECOVER_MULT : 1) / REST_RECOVER_MIN);
+    f.fatigue = Math.max(0, f.fatigue - ((billeted(front, f) ? BILLET_RECOVER_MULT : 1) * (f.posture === 'rest' ? REST_RECOVER_MULT : 1)) / REST_RECOVER_MIN);
   }
 }
+
+export const dugIn = (f: Pick<Force, 'posture' | 'dugMin'>): boolean => f.posture === 'dig' && f.dugMin >= DIG_IN_MIN;
 
 // Is any live enemy force standing at this node?
 function enemyAt(front: FrontV2, nodeId: number, side: Side): boolean {
@@ -208,7 +223,7 @@ export function stepMovement(front: FrontV2, opts: MoveKernelOpts = {}): Theater
   for (const f of byId) {
     if (f.strength <= 0) continue;
     fatigueMinute(front, f);
-    advanceForce(front, f, 1, out, paceMult(f.fatigue, front.clockMin, opts));
+    advanceForce(front, f, 1, out, paceMult(f, front.clockMin, opts));
   }
   return out;
 }
@@ -224,7 +239,7 @@ export function forceEtaMinutes(front: FrontV2, f: Force, destNodeId: number, op
   for (let min = 1; min <= cap; min++) {
     const clock = front.clockMin + min;
     fatigueMinute(front, clone, clock);
-    advanceForce(front, clone, 1, [], paceMult(clone.fatigue, clock, opts), true);
+    advanceForce(front, clone, 1, [], paceMult(clone, clock, opts), true);
     if (clone.path.length === 0) {
       if (clone.pos.kind === 'node' && clone.pos.nodeId === destNodeId) return min;
       // Path exhausted short of the destination: a routing bug, and the old
@@ -259,7 +274,8 @@ export function previewMove(front: FrontV2, forceId: number, destNodeId: number,
   if (f.pos.kind === 'node' && f.pos.nodeId === destNodeId) return { ok: false, reason: 'already-there' };
   const plan = planMove(front, f, destNodeId);
   if (!plan) return { ok: false, reason: 'no-route' };
-  return { ok: true, pos: plan.pos, path: plan.path, etaMin: forceEtaMinutes(front, { ...f, pos: plan.pos, path: plan.path }, destNodeId, opts) };
+  const posture: Posture = f.posture === 'rest' || f.posture === 'dig' ? 'march' : f.posture;
+  return { ok: true, pos: plan.pos, path: plan.path, etaMin: forceEtaMinutes(front, { ...f, posture, pos: plan.pos, path: plan.path }, destNodeId, opts) };
 }
 
 export function orderMove(front: FrontV2, forceId: number, destNodeId: number, opts: MoveKernelOpts = {}): MoveOrder {
@@ -268,7 +284,23 @@ export function orderMove(front: FrontV2, forceId: number, destNodeId: number, o
   const f = front.forces.find((x) => x.id === forceId)!;
   f.pos = p.pos;
   f.path = p.path;
+  // A move order ends a rest and abandons a position.
+  if (f.posture === 'rest' || f.posture === 'dig') f.posture = 'march';
+  f.dugMin = 0;
   return { ok: true, etaMin: p.etaMin };
+}
+
+// Change posture. Rest and dig in are done standing, so they halt a march.
+// Any change starts the digging over.
+export function setPosture(front: FrontV2, forceId: number, posture: Posture): HaltOrder {
+  const f = front.forces.find((x) => x.id === forceId);
+  if (!f) return { ok: false, reason: 'unknown-force' };
+  if (f.engagedIn !== null) return { ok: false, reason: 'engaged' };
+  if (posture === f.posture) return { ok: true };
+  if (posture === 'rest' || posture === 'dig') standForce(front, f);
+  f.posture = posture;
+  f.dugMin = 0;
+  return { ok: true };
 }
 
 // The march a force would make to a node: the path, and the position it
@@ -316,7 +348,7 @@ export function firstContactOnMarch(
   for (let min = 1; min <= 43200 && clone.path.length > 0; min++) {
     const clock = front.clockMin + min;
     fatigueMinute(front, clone, clock);
-    advanceForce(front, clone, 1, [], paceMult(clone.fatigue, clock, opts), true);
+    advanceForce(front, clone, 1, [], paceMult(clone, clock, opts), true);
     if (enemies.some((e) => graphGap(front.theater, clone.pos, e) <= CONTACT_M)) return { etaMin: min, stop: clone.pos };
   }
   return null;

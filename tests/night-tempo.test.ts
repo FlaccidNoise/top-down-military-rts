@@ -102,7 +102,7 @@ describe('dawn doctrine (the AI attacks at first light)', () => {
     updateIntelMinute(fr); // may or may not be on cadence; force the map
     fr.intel = {
       blue: [],
-      red: [{ forceId: fr.forces[0].id, pos: { kind: 'node', nodeId: 2 }, strength: 100, seenMin: fr.clockMin }],
+      red: [{ forceId: fr.forces[0].id, pos: { kind: 'node', nodeId: 2 }, strength: 100, seenMin: fr.clockMin, moving: false, dug: false }],
     };
     const goals = makeWarGoals(fr.theater, DEFAULT_PRESET.campaign);
     const cmd = new Commander2('red', RED_V2, goals, 14, {});
