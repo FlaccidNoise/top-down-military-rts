@@ -162,15 +162,17 @@ const MAX_MORALE_FX = MOBILE ? 6 : 10;
 // — a building fire is purely cosmetic, render-derived from blasts the player
 // could see land, and it always burns itself out.
 //
-// Two clocks, deliberately: LIFETIME runs on sim.tick (like barrageMarks), so
-// pausing the game cannot burn a house down; FLICKER runs on wall-clock `now`,
-// because 30 Hz sampling makes a flame visibly step.
+// Two clocks, deliberately: LIFETIME and SPREAD run on sim.tick (like
+// barrageMarks), so pausing the game cannot burn a house down; FLICKER and the
+// cook-off pops run on the fx clock, because 30 Hz sampling makes a flame
+// visibly step.
 interface Fire {
   key: number; // buildingId, or -1000 - vehicle id — also the per-fire hash stream
   x: number;
   y: number;
   vid: number; // >= 0 → vehicle brew-up; -1 → building
   born: number; // sim tick of first ignition
+  at: number; // the same moment on the fx clock, ms — what the cook-off pops count from
   tick: number; // sim tick of the most recent stoke
   hits: number; // blasts feeding it — sets the ceiling on intensity
   seen: boolean; // fog-of-war result, re-tested on a throttle (LOS is not free)
@@ -181,7 +183,15 @@ const FIRE_LIFE_S = 90; // sim seconds a building burns after its last stoke
 const FIRE_FADE_S = 25; // ...of which the last N are a dying smolder
 const FIRE_CAP = 12; // a barraged village must not light every house at once
 const FIRE_SEEN_TICKS = 15; // 0.5 s between fog re-tests per fire
-const FIRE_POOL_ALPHA = 0.09; // warm ground pool — zero this to revoke the second light source
+const FIRE_POOL_ALPHA = 0.14; // warm ground pool — zero this to revoke the second light source
+const FIRE_SPREAD_S = 30; // sim seconds for a well-fed fire to cross its building
+const LICK_CAP = 12; // flames per fire, before the zoom and mobile tiers cut it
+const PLUME_RUN = 9; // m a fire's own smoke is carried downwind before it is gone
+const HULL_FIRE_L = 2.3; // half-extents of the part of a hull that burns, m
+const HULL_FIRE_W = 1;
+const COOKOFF_S = 30; // a brewed-up hull pops for this long, less and less often
+const POP_SLOT_MS = 900; // one chance of a pop per slot
+const POP_MS = 520; // a pop's life
 const BREWUP_FULL_S = 14; // a brewed-up tank rages this long...
 const BREWUP_SETTLE_S = 45; // ...then settles to a smoking hulk by here
 const BREWUP_FLOOR = 0.3;
@@ -373,16 +383,17 @@ export class Renderer {
       const { spec, k } = blastOf(b);
       this.booms.push({ x: b.x, y: b.y, at: now, spec, k, landed: 0 });
       if (this.booms.length > MAX_BOOMS) this.booms.shift();
-      // What the blast leaves in the air once its own smoke has gone. Ungated,
-      // like the blast itself.
-      this.pall.feed(b.x, b.y, Math.min(1, ((0.25 + 0.5 * spec.dust + 0.3 * spec.smoke) * spec.fire * k) / 2.2), now, this.sim.tick);
+      // The dust the blast leaves in the air once its own smoke has gone.
+      // Dust only: pall is pale, and a brew-up's smoke is black and the sim's.
+      // Ungated, like the blast itself.
+      this.pall.feed(b.x, b.y, Math.min(1, spec.dust * spec.fire * k * 0.5), now, this.sim.tick);
       this.decals.scorch(b.x, b.y, spec.crater * k);
       this.roofs.noteImpact(b.x, b.y); // roof damage is render-derived from the same detonation, never from sim HP
       // Ignition is render-derived: a blast inside a building footprint is the
       // only cause of a building fire, because that is the only cause the
       // player watched happen.
       const bid = this.sim.map.buildingIdAt(Math.floor(b.x), Math.floor(b.y));
-      if (bid >= 0) this.stoke(bid, b.x, b.y, -1);
+      if (bid >= 0 && this.sim.buildings[bid]) this.stoke(bid, b.x, b.y, -1, now);
       this.flush(b.x, b.y, now);
     }
   }
@@ -573,7 +584,7 @@ export class Renderer {
 
   // Light or feed a fire. The ignition point never moves once set: a second
   // shell in the same house makes the fire angrier, not relocated.
-  private stoke(key: number, x: number, y: number, vid: number): void {
+  private stoke(key: number, x: number, y: number, vid: number, now: number): void {
     const f = this.fires.get(key);
     if (f) {
       f.tick = this.sim.tick;
@@ -584,7 +595,7 @@ export class Renderer {
       }
       return;
     }
-    this.fires.set(key, { key, x, y, vid, born: this.sim.tick, tick: this.sim.tick, hits: 1, seen: false, seenTick: -1e9 });
+    this.fires.set(key, { key, x, y, vid, born: this.sim.tick, at: now, tick: this.sim.tick, hits: 1, seen: false, seenTick: -1e9 });
     if (this.fires.size <= FIRE_CAP) return;
     let oldest = -1;
     let oldestTick = Infinity;
@@ -968,7 +979,13 @@ export class Renderer {
         // Dividing by n as well was tried and turned a 60 m smoke screen into a
         // pale smudge the sim was blinding two squads through.
         const a = envelope * (0.33 + hash(p.x, p.y, 60 + i) * 0.08) * (1 - u * 0.36);
-        blit(ctx, soot && u < 0.34 ? 'soot' : 'smoke', sx, sy, r * cam.scale, a);
+        // A wreck's column stays black nearly to the top and only then thins
+        // to grey: it is the sootiest thing on the field, and the one mark of
+        // a kill that reads with the whole map on screen. Colour only — what
+        // blocks sight is still the sim's plume, puff for puff.
+        const sootF = soot ? Math.min(1, (1 - u) / 0.2) : 0;
+        blit(ctx, 'soot', sx, sy, r * cam.scale, a * sootF * 1.6);
+        blit(ctx, 'smoke', sx, sy, r * cam.scale, a * (1 - sootF));
       }
     }
   }
@@ -1052,12 +1069,30 @@ export class Renderer {
     return f.seen;
   }
 
+  // Where fire `f` can burn and how far it has got: the centre of the burning
+  // patch, its half-extents along and across `rot`, and the reach from that
+  // centre. A hull is alight end to end at once. A house catches where the
+  // shell landed and the fire walks out from there across the footprint, the
+  // faster the more blasts have fed it.
+  private fireBox(f: Fire): [cx: number, cy: number, hw: number, hh: number, rot: number, reach: number] {
+    if (f.vid >= 0) return [f.x, f.y, HULL_FIRE_L, HULL_FIRE_W, this.sim.vehicles[f.vid].facing, HULL_FIRE_L];
+    const b = this.sim.buildings[f.key];
+    const hw = Math.max(0.5, b.w / 2 - 0.5);
+    const hh = Math.max(0.5, b.h / 2 - 0.5);
+    const took = Math.min(1, (this.sim.tick - f.born) / 30 / FIRE_SPREAD_S) * Math.min(1, 0.5 + 0.25 * f.hits);
+    return [b.x + b.w / 2, b.y + b.h / 2, hw, hh, 0, 1.2 + took * Math.hypot(hw, hh) * 2];
+  }
+
   // Burning buildings and vehicle brew-ups. Drawn after the roof tops so a
   // flame sits over the roof it is consuming, and before the smoke screens.
   //
-  // The value pair is the whole trick: every bright lick carries a soot blit
-  // directly above it. Bright-alone on pale Normandy ground reads as a glowing
-  // dot; bright-under-dark reads as fire.
+  // The value pair is the whole trick: every bright lick sheds a soot blit
+  // downwind of itself. Bright-alone on pale Normandy ground reads as a
+  // glowing dot; bright-against-dark reads as fire.
+  //
+  // Strict plan view: no flame or smoke here climbs the screen. A flame's
+  // height is its lean down the wind, a plume's is its drift along the same
+  // axis and the shadow it drops down-sun.
   private drawFires(ctx: CanvasRenderingContext2D, cam: Camera, now: number, cw: number, ch: number): void {
     for (const v of this.sim.vehicles) {
       if (!v.burning) continue;
@@ -1067,7 +1102,7 @@ export class Renderer {
         f.tick = this.sim.tick; // sim still says it burns — never let it time out
         f.x = v.x;
         f.y = v.y;
-      } else this.stoke(key, v.x, v.y, v.id);
+      } else this.stoke(key, v.x, v.y, v.id, now);
     }
     // Cleared before the early-outs, not after: drawHot() reads lit/licks
     // once this pass has returned, and a stale lick from the frame its fire
@@ -1076,64 +1111,130 @@ export class Renderer {
     this.licks.length = 0;
     if (this.fires.size === 0) return;
 
-    const S = cam.scale;
-    const tier = fxDetail(S);
-    const pad = 9 * S;
+    // The blast floor, so a burning house is still a mark with the whole map
+    // on screen (fx.ts blastScale).
+    const S = blastScale(cam.scale);
+    const tier = fxDetail(cam.scale);
+    const lite = (MOBILE ? 0.5 : 1) * (tier === 0 ? 0.5 : 1);
     for (const [key, f] of this.fires) {
       if (f.vid < 0 && (this.sim.tick - f.tick) / 30 >= FIRE_LIFE_S) {
         this.fires.delete(key);
         continue;
       }
+      const [cx, cy, hw, hh, rot, reach] = this.fireBox(f);
+      const pad = (Math.hypot(hw, hh) + PLUME_RUN + 4) * S;
       const [x, y] = cam.worldToScreen(f.x, f.y, cw, ch);
       if (x < -pad || y < -pad || x > cw + pad || y > ch + pad) continue;
       if (!this.fireSeen(f)) continue;
       this.lit.push(f);
 
       const it = this.intensity(f);
-      const b = f.vid < 0 ? this.sim.buildings[key] : undefined;
+      const brew = f.vid >= 0;
+      const span = Math.min(reach, Math.hypot(hw, hh)); // radius of what is alight, m
 
-      // Plume first: it rises behind its own flames. A vehicle's column starts
-      // near-black — a brewed-up tank is the sootiest thing on a WW2 field, and
-      // that column is free readability below the sprite LOD threshold.
-      for (let i = 0; i < 6; i++) {
-        const ph = (((now * 0.0003125 + i / 6 + hash(key + 3000, i, 230)) % 1) + 1) % 1;
-        const lean = WIND.speed * ph * 3.4 * S;
-        const px = x + WIND.dx * lean;
-        const py = y - ph * 6.5 * S + WIND.dy * lean;
-        const pr = (1.1 + ph * 2.3) * S;
-        const pa = 0.68 * (1 - ph * 0.7) * it;
-        // Burning fuel and rubber never greys out the way burning timber does:
-        // a tank's column stays sooty to the top, it just thins.
-        const sootF = f.vid >= 0 ? Math.max(0.4, 1 - ph / 0.8) : Math.max(0, 1 - ph / 0.45);
+      // Plume first: it leaves behind its own flames. A vehicle's is black to
+      // the end — burning fuel and rubber never grey the way burning timber
+      // does — and it is only the root of the column: the sim owns the rest
+      // (drawSmoke), because that one blocks sight.
+      const run = (brew ? 0.6 : 1) * PLUME_RUN * (0.5 + 0.5 * it);
+      const puffs = Math.max(3, Math.round(6 * lite));
+      blit(ctx, 'soot', x + (WIND.dx * run * 0.5 + SUN.dx * 1.6) * S, y + (WIND.dy * run * 0.5 + SUN.dy * 1.6) * S, (span * 0.6 + 1.6) * S, 0.14 * it * sun().alphaMul); // its shadow, down-sun
+      for (let i = 0; i < puffs; i++) {
+        const ph = mod(now * 0.0003125 + i / puffs + hash(key + 3000, i, 230), 1);
+        const px = x + WIND.dx * run * ph * S;
+        const py = y + WIND.dy * run * ph * S;
+        const pr = (span * 0.45 + 0.8 + ph * 2.4) * S;
+        const pa = (brew ? 0.85 : 0.7) * (1 - ph * 0.75) * it;
+        const sootF = brew ? 1 : Math.max(0.15, 1 - ph / 0.6);
         blit(ctx, 'soot', px, py, pr, pa * sootF);
         blit(ctx, 'smoke', px, py, pr, pa * (1 - sootF));
       }
-      // Charred base: the fire's own shadow, so the licks sit in something
-      // burnt instead of floating on clean floor.
-      blit(ctx, 'soot', x, y, (1.4 + 0.9 * it) * S, 0.26 * it);
+      // Charred base and the bed of the fire: what the flames stand in, so
+      // the gaps between them are burning too and not clean floor.
+      blit(ctx, 'soot', x, y, (span * 0.9 + 1) * S, 0.34 * it);
+      for (let i = 0; i < 3; i++) {
+        const a = hash(key + 500, i, 214) * Math.PI * 2;
+        const d = span * 0.4 * hash(key + 500, i, 215) * S;
+        blit(ctx, 'fire', x + Math.cos(a) * d, y + Math.sin(a) * d, (span * 0.6 + 0.7) * S, 0.42 * it);
+      }
 
-      // Licks spread as the fire takes hold: one shell smoulders in a corner, a
-      // fully involved house burns end to end (still clamped to its footprint).
-      const spread = 0.9 + 1.5 * it;
-      const n = 2 + Math.round(2 * it * tier);
+      // Licks, over everything the fire has reached. One shell smoulders in a
+      // corner; a fully involved house, or a hull, burns end to end.
+      const cs = Math.cos(rot);
+      const sn = Math.sin(rot);
+      const windAng = Math.atan2(WIND.dy, WIND.dx);
+      const n = Math.max(3, Math.round(Math.min(LICK_CAP, 4 + span * span * 0.6) * it * lite));
       for (let i = 0; i < n; i++) {
         const hs = hash(key + 1000, i, 212);
-        const size = 0.7 + hash(key + 1000, i, 213) * 0.6; // no two licks the same height
-        let lx = f.x + (hash(key + 1000, i, 210) - 0.5) * spread * 2;
-        let ly = f.y + (hash(key + 1000, i, 211) - 0.5) * spread * 2;
-        if (b) {
-          lx = Math.max(b.x + 0.6, Math.min(b.x + b.w - 0.6, lx));
-          ly = Math.max(b.y + 0.6, Math.min(b.y + b.h - 0.6, ly));
+        let lx: number;
+        let ly: number;
+        if (brew) {
+          const u = (hash(key + 1000, i, 210) - 0.5) * 2 * hw;
+          const w = (hash(key + 1000, i, 211) - 0.5) * 2 * hh;
+          lx = cx + u * cs - w * sn;
+          ly = cy + u * sn + w * cs;
+        } else {
+          // Uniform over the reached disc, held inside the footprint, and
+          // dropped if that still lands in a yard: a multi-part building's
+          // bounding box is not all roof.
+          const a = hash(key + 1000, i, 210) * Math.PI * 2;
+          const d = Math.sqrt(hash(key + 1000, i, 211)) * reach;
+          lx = Math.max(cx - hw, Math.min(cx + hw, f.x + Math.cos(a) * d));
+          ly = Math.max(cy - hh, Math.min(cy + hh, f.y + Math.sin(a) * d));
+          if (this.sim.map.buildingIdAt(Math.floor(lx), Math.floor(ly)) !== key) continue;
         }
-        const [sx, sy0] = cam.worldToScreen(lx, ly, cw, ch);
+        const [sx, sy] = cam.worldToScreen(lx, ly, cw, ch);
         const flick = 0.5 + 0.5 * Math.sin(now * 0.0075 * (7 + hs * 4) + hs * 6.28);
-        const r = (0.5 + 0.34 * flick) * size * it * S;
-        const sy = sy0 - (0.35 + 0.5 * flick) * S;
-        blit(ctx, 'fire', sx, sy, r * 2.2, 0.2); // warm halo — merges neighbouring licks into one body of flame
-        blit(ctx, 'fire', sx, sy, r, 0.9);
-        blit(ctx, 'soot', sx, sy - r * 1.2, r * 1.7, 0.34);
-        this.licks.push(sx, sy, r * 0.45, 0.5 + 0.3 * flick); // hot cores, drawn in the frame's hot batch (drawHot)
+        const size = (brew ? 1 : 0.8) + hash(key + 1000, i, 213) * 0.8; // no two flames the same
+        const r = (0.5 + 0.3 * flick) * size * (0.6 + 0.4 * it) * S;
+        // A flame seen from above is a tongue laid down the wind: that lean is
+        // the only height it has here. A round blit per flame was a row of
+        // glowing dots. Each tongue combs a little off the wind so they do
+        // not line up, and stretches as it flickers.
+        const ang = windAng + (hs - 0.5) * 0.9;
+        const len = r * (1.5 + 1.1 * flick);
+        const ax = Math.cos(ang);
+        const ay = Math.sin(ang);
+        ctx.save();
+        ctx.translate(sx, sy);
+        ctx.rotate(ang);
+        ctx.scale(len / r, 0.85);
+        blit(ctx, 'fire', r * 0.55, 0, r * 1.3, 0.24); // warm halo — merges neighbouring tongues into one body of flame
+        blit(ctx, 'fire', r * 0.5, 0, r, 0.94);
+        ctx.restore();
+        if (i & 1) blit(ctx, 'soot', sx + ax * len * 1.8, sy + ay * len * 1.8, r * 1.3, 0.34); // the smoke it sheds
+        // hot cores, drawn in the frame's hot batch (drawHot): one at the
+        // root, a smaller one up the tongue
+        this.licks.push(sx + ax * len * 0.25, sy + ay * len * 0.25, r * 0.42, 0.5 + 0.3 * flick);
+        this.licks.push(sx + ax * len * 0.8, sy + ay * len * 0.8, r * 0.28, 0.3 + 0.3 * flick);
       }
+
+      // Cook-off: ammunition going up in the hull, one round or a rack at a
+      // time, for the first half minute. The smoke of each pop; its flash and
+      // sparks are in the hot batch.
+      if (brew) {
+        this.eachPop(f, now, (t, k) => {
+          const a = hash(k, 0, 241) * Math.PI * 2;
+          const d = (0.6 + t * 2.6) * S;
+          blit(ctx, 'soot', x + Math.cos(a) * d, y + Math.sin(a) * d, (0.7 + t * 1.5) * S, 0.6 * (1 - t));
+        });
+      }
+    }
+  }
+
+  // The cook-off pops of a burning hull that are live at `now`, as (progress
+  // 0..1, hash key). Stateless: time is cut into slots on the fx clock since
+  // ignition and each slot rolls once for a pop, with odds that run down over
+  // COOKOFF_S. Pausing freezes them mid-air like everything else on that clock.
+  private eachPop(f: Fire, now: number, draw: (t: number, k: number) => void): void {
+    const age = now - f.at;
+    if (!(age >= 0) || age > COOKOFF_S * 1000 + POP_MS) return;
+    const slot = Math.floor(age / POP_SLOT_MS);
+    for (let j = Math.max(0, slot - 1); j <= slot; j++) {
+      const k = f.key * 131 + j;
+      if (hash(k, 0, 240) >= 0.8 * (1 - (j * POP_SLOT_MS) / (COOKOFF_S * 1000))) continue;
+      const t = (age - j * POP_SLOT_MS - hash(k, 0, 242) * (POP_SLOT_MS - POP_MS)) / POP_MS;
+      if (t >= 0 && t < 1) draw(t, k);
     }
   }
 
@@ -1141,25 +1242,56 @@ export class Renderer {
   // never call it with a source-over ctx.
   private drawFiresHot(ctx: CanvasRenderingContext2D, cam: Camera, now: number, cw: number, ch: number, tier: 0 | 1 | 2): void {
     if (this.lit.length === 0) return;
-    const S = cam.scale;
+    const S = blastScale(cam.scale);
+    const F = fxScale(cam.scale);
     for (let i = 0; i < this.licks.length; i += 4) blit(ctx, 'flash', this.licks[i], this.licks[i + 1], this.licks[i + 2], this.licks[i + 3]);
     for (const f of this.lit) {
       const it = this.intensity(f);
       const [x, y] = cam.worldToScreen(f.x, f.y, cw, ch);
+      const [, , hw, hh, , reach] = this.fireBox(f);
+      const span = Math.min(reach, Math.hypot(hw, hh));
       // Warm ground pool: a light POOL, not a light DIRECTION — no cast
       // shadow anywhere changes, so the one-sun rule still holds.
-      blit(ctx, 'fire', x, y, 3.2 * it * S, FIRE_POOL_ALPHA);
+      blit(ctx, 'fire', x, y, (span + 2.5) * it * S, FIRE_POOL_ALPHA);
+      if (f.vid >= 0) {
+        this.eachPop(f, now, (t, k) => {
+          // A round or a rack going: a hard white flash, a jet of flame out of
+          // whichever hatch gave way, and sparks thrown clear of the hull.
+          const jet = hash(k, 0, 246) * Math.PI * 2;
+          if (t < 0.3) {
+            const fa = 1 - t / 0.3;
+            blit(ctx, 'flash', x, y, (2 + t * 8) * S, fa);
+            blit(ctx, 'flash', x, y, 1.1 * S, fa ** 0.4);
+          }
+          if (t < 0.6) {
+            ctx.save();
+            ctx.translate(x, y);
+            ctx.rotate(jet);
+            ctx.scale(1, 0.3);
+            blit(ctx, 'fire', (1.5 + t * 3) * S, 0, (2 + t * 3.5) * S, (1 - t / 0.6) * 0.9);
+            ctx.restore();
+          }
+          if (tier < 1) return;
+          const secs = (t * POP_MS) / 1000;
+          for (let i = 0; i < (MOBILE ? 5 : 10); i++) {
+            const [dist, z] = ballistic(secs, 7 + hash(k, i, 243) * 12, 3 + hash(k, i, 244) * 4);
+            if (z <= 0 && secs > 0.05) continue;
+            const a = jet + (hash(k, i, 245) - 0.5) * 3.2; // most of them follow the jet
+            blit(ctx, 'spark', x + Math.cos(a) * dist * S, y + Math.sin(a) * dist * S, 0.14 * F, (1 - t) ** 0.6);
+          }
+        });
+      }
       if (tier < 1) continue;
-      // Embers: a fixed pool per fire on staggered wrapping phases, riding
-      // the one wind up and downwind. They die — nothing here accumulates.
-      const ne = Math.max(2, Math.round(8 * it));
+      // Embers: a fixed pool per fire on staggered wrapping phases, carried
+      // off down the one wind. They die — nothing here accumulates.
+      const ne = Math.max(2, Math.round(8 * it * (MOBILE ? 0.5 : 1)));
       for (let i = 0; i < ne; i++) {
         const hs = hash(f.key + 2000, i, 220);
         const life = 1.6 + hs * 1.2;
         const t = ((now * 0.001 + i * 0.37) % life) / life;
-        const ex = x + (WIND.dx * WIND.speed * 1.9 * t + (hash(f.key + 2000, i, 221) - 0.5) * 1.6) * S;
-        const ey = y + (WIND.dy * WIND.speed * 1.9 * t + (hash(f.key + 2000, i, 222) - 0.5) * 1.2) * S - t * 2.6 * S;
-        blit(ctx, 'spark', ex, ey, Math.max(0.6, (0.05 - 0.03 * t) * S), Math.pow(1 - t, 1.6) * 0.8 * it);
+        const ex = x + (WIND.dx * WIND.speed * 2.6 * t + (hash(f.key + 2000, i, 221) - 0.5) * span * 1.4) * S;
+        const ey = y + (WIND.dy * WIND.speed * 2.6 * t + (hash(f.key + 2000, i, 222) - 0.5) * span * 1.4) * S;
+        blit(ctx, 'spark', ex, ey, Math.max(0.8, (0.06 - 0.03 * t) * F), Math.pow(1 - t, 1.6) * 0.8 * it);
       }
     }
   }
@@ -2379,10 +2511,12 @@ export class Renderer {
       const ang = hash(sx, sy, 430 + i) * Math.PI * 2;
       const cs = Math.cos(ang);
       const sn = Math.sin(ang);
+      // Flat on the ground plane: a spark's height shows only as how far it
+      // gets before it is gone.
       const hx = x + cs * dist * S;
-      const hy = y + sn * dist * S - z * S * 0.9;
-      const [d0, z0] = ballistic(Math.max(0, secs - 0.045), v, vz);
-      ctx.moveTo(x + cs * d0 * S, y + sn * d0 * S - z0 * S * 0.9);
+      const hy = y + sn * dist * S;
+      const [d0] = ballistic(Math.max(0, secs - 0.045), v, vz);
+      ctx.moveTo(x + cs * d0 * S, y + sn * d0 * S);
       ctx.lineTo(hx, hy);
       blit(ctx, 'spark', hx, hy, 0.13 * F, (1 - secs / life) ** 0.6);
     }
