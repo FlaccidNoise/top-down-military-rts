@@ -10,7 +10,7 @@
 // elements are built once and afterwards only their text, classes and
 // attributes are written, and only where they differ.
 
-const KEYS = ['data-squad', 'data-vehicle', 'data-soldier', 'data-order', 'data-ctx', 'data-tb'];
+const KEYS = ['data-squad', 'data-vehicle', 'data-soldier', 'data-order', 'data-ctx', 'data-ob'];
 
 function keyOf(n: Node): string {
   if (n.nodeType !== 1) return '';

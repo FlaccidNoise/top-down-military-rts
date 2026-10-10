@@ -18,6 +18,9 @@ export function floorName(level: number): string {
 }
 export const TEAM = { blue: '#5b9bd5', red: '#d05c50' } as const;
 const ORDER_KINDS: OrderKind[] = ['move', 'fast', 'sneak', 'fire', 'smoke', 'defend', 'ambush', 'assault'];
+// The order bar shows the four a first battle is won with. The rest sit behind More.
+const PRIMARY_ORDERS: OrderKind[] = ['move', 'fire', 'smoke', 'assault'];
+const MORE_ORDERS: OrderKind[] = ORDER_KINDS.filter((k) => !PRIMARY_ORDERS.includes(k));
 
 export interface HudCallbacks {
   selectSquad(id: number): void;
@@ -65,6 +68,8 @@ export interface HudState {
   /** The quiet-minute line (goal and enemy bearing), or null while the player is giving orders. */
   prompt: string | null;
   speed: BattleSpeed;
+  /** Deployment: squads are placed, not ordered, so the order bar stands down. */
+  deploy: boolean;
   floorFocus?: number; // -1/undefined = all floors; 0..maxStories-1 = focus active
   boxMode?: boolean; // touch: drag draws a selection box instead of panning
   addMode?: boolean; // touch: sticky shift (add to selection / force squad order)
@@ -115,6 +120,9 @@ export class Hud {
   private idleTicks = 0;
   private idleShown = false;
   private tb: HTMLDivElement | null = null; // #touchbar — mobile only
+  private orderBar!: HTMLDivElement; // #orderbar — both platforms
+  private moreOpen = false; // the order bar's second row
+  private overOpen = false; // the touch bar's overflow row
   private lpFired = false; // a long-press opened the affordance card; swallow its click
 
   constructor(cb: HudCallbacks) {
@@ -167,8 +175,6 @@ export class Hud {
         cb.panToSoldier(Number(row.dataset.soldier));
         return cb.inspectSoldier(Number(row.dataset.soldier));
       }
-      const ord = t.closest<HTMLElement>('[data-order]');
-      if (ord) return cb.armOrder(ord.dataset.order as OrderKind);
       const ctx = t.closest<HTMLButtonElement>('[data-ctx]');
       if (ctx && !ctx.disabled) return (cb[CTX_ACTIONS[ctx.dataset.ctx!]] as () => void)();
       const veh = t.closest<HTMLElement>('[data-vehicle]');
@@ -181,76 +187,49 @@ export class Hud {
       e.preventDefault();
       (e.target as HTMLElement).click();
     });
-    this.q('#squads').addEventListener('mouseover', (e) => {
-      const btn = (e.target as HTMLElement).closest<HTMLElement>('[data-order]');
-      if (btn && !(btn as HTMLButtonElement).disabled) this.showAffordance(btn);
-    });
-    this.q('#squads').addEventListener('mouseout', (e) => {
-      const btn = (e.target as HTMLElement).closest<HTMLElement>('[data-order]');
-      if (btn) this.hideAffordance();
-    });
-    this.q('#squads').addEventListener('mouseleave', () => this.hideAffordance());
     if (MOBILE) this.buildTouchbar(cb);
+    this.buildOrderBar(cb);
   }
 
-  // The phone's whole control surface: row 1 arms an order kind (the same
-  // ORDER_KINDS / canArm / data-order contract the desktop `.orderbar` uses,
-  // so arming still flows through cb.armOrder), row 2 carries the modifiers
-  // and globals that only exist as keys on desktop. Row 1 is only rendered
-  // when a squad is selected — a phone cannot spare 44px of height to show
-  // eight chips that would do nothing if tapped.
-  private buildTouchbar(cb: HudCallbacks): void {
+  // The one order bar, on both platforms and outside the roster: the four
+  // orders a new player needs, the other four behind More. Arming still goes
+  // through cb.armOrder, so the armed-order state machine and its keys are
+  // untouched. It shows only with a squad selected: chips that would do
+  // nothing if pressed are noise.
+  private buildOrderBar(cb: HudCallbacks): void {
     const bar = document.createElement('div');
-    bar.id = 'touchbar';
-    bar.innerHTML =
-      '<div class="tb-orders tb-scroll"></div>' +
-      '<div class="tb-acts">' +
-      '<div class="tb-scroll">' +
-      '<button class="hbtn" data-tb="roster">☰ Roster</button>' +
-      '<button class="hbtn" data-tb="select">▭ Select</button>' +
-      '<button class="hbtn" data-tb="add">＋ Add</button>' +
-      '<button class="hbtn" data-tb="all">All</button>' +
-      '<button class="hbtn" data-tb="floor">⬒ Floors</button>' +
-      '<button class="hbtn" data-tb="cancel">✕ Cancel</button>' +
-      '<button class="hbtn" data-tb="barrage"></button>' +
-      '<button class="hbtn" data-tb="air"></button>' +
-      '</div>' +
-      // Outside the scroll row: the two controls a player must always be able
-      // to reach are never a swipe away (jtbug #783).
-      '<div class="tb-pin">' +
-      '<button class="hbtn" data-tb="speed" aria-label="Battle speed"></button>' +
-      '<button class="hbtn" data-tb="pause"></button>' +
-      '<button class="hbtn" data-tb="menu" aria-label="Menu">⚙</button>' +
-      '</div>' +
-      '</div>';
-    this.root.appendChild(bar);
-    this.tb = bar;
+    bar.id = 'orderbar';
+    bar.style.display = 'none';
+    bar.innerHTML = '<div class="ob-row ob-more"></div><div class="ob-row ob-main"></div>';
+    if (this.tb) this.tb.prepend(bar);
+    else this.root.appendChild(bar);
+    this.orderBar = bar;
 
     bar.addEventListener('click', (e) => {
       if (this.lpFired) { this.lpFired = false; return; }
       const t = e.target as HTMLElement;
-      const ord = t.closest<HTMLButtonElement>('[data-order]');
-      if (ord) { if (!ord.disabled) cb.armOrder(ord.dataset.order as OrderKind); return; }
-      const btn = t.closest<HTMLButtonElement>('[data-tb]');
-      if (!btn || btn.disabled) return;
-      switch (btn.dataset.tb) {
-        case 'roster': this.toggleRoster(); break;
-        case 'select': cb.toggleBoxMode(); break;
-        case 'add': cb.toggleAddMode(); break;
-        case 'all': cb.selectAll(); break;
-        case 'floor': cb.cycleFloor(); break;
-        case 'cancel': cb.cancel(); break;
-        case 'barrage': cb.callBarrage(); break;
-        case 'air': cb.callAirstrike(); break;
-        case 'speed': cb.cycleSpeed(); break;
-        case 'pause': cb.togglePause(); break;
-        case 'menu': cb.openMenu(); break;
+      if (t.closest('[data-ob="more"]')) {
+        this.moreOpen = !this.moreOpen;
+        this.sig = '';
+        return;
       }
+      const ord = t.closest<HTMLButtonElement>('[data-order]');
+      if (ord && !ord.disabled) cb.armOrder(ord.dataset.order as OrderKind);
     });
-
+    if (!MOBILE) {
+      bar.addEventListener('mouseover', (e) => {
+        const btn = (e.target as HTMLElement).closest<HTMLButtonElement>('[data-order]');
+        if (btn && !btn.disabled) this.showAffordance(btn);
+      });
+      bar.addEventListener('mouseout', (e) => {
+        if ((e.target as HTMLElement).closest('[data-order]')) this.hideAffordance();
+      });
+      bar.addEventListener('mouseleave', () => this.hideAffordance());
+      return;
+    }
     // Long-press an order chip for the affordance card — the mobile stand-in
-    // for the hover the desktop path uses. A finger that wanders is scrolling
-    // the chip row, not asking a question, so any move cancels it.
+    // for the hover the desktop path uses. A finger that wanders off the chip
+    // is not asking a question, so any move cancels it.
     let lpTimer = 0;
     let lpAt = { x: 0, y: 0 };
     const cancelLp = (): void => { if (lpTimer) clearTimeout(lpTimer); lpTimer = 0; };
@@ -271,6 +250,58 @@ export class Hud {
     });
     bar.addEventListener('pointerup', cancelLp);
     bar.addEventListener('pointercancel', cancelLp);
+  }
+
+  // The phone's control row. Nothing scrolls: Roster and All are always there,
+  // Play/Pause, speed and the menu are pinned at the right, and the modifiers
+  // and support calls a desktop reads off the keyboard sit one tap away behind
+  // ⋯ (jtbug #783: a control in a scrolling row is a control off screen).
+  private buildTouchbar(cb: HudCallbacks): void {
+    const bar = document.createElement('div');
+    bar.id = 'touchbar';
+    bar.innerHTML =
+      '<div class="tb-over">' +
+      '<button class="hbtn" data-tb="select">▭ Select</button>' +
+      '<button class="hbtn" data-tb="add">＋ Add</button>' +
+      '<button class="hbtn" data-tb="floor">⬒ Floors</button>' +
+      '<button class="hbtn" data-tb="cancel">✕ Cancel</button>' +
+      '<button class="hbtn" data-tb="barrage"></button>' +
+      '<button class="hbtn" data-tb="air"></button>' +
+      '</div>' +
+      '<div class="tb-acts">' +
+      '<button class="hbtn" data-tb="roster">☰ Roster</button>' +
+      '<button class="hbtn" data-tb="all">All</button>' +
+      '<button class="hbtn" data-tb="more" aria-label="More controls">⋯</button>' +
+      '<div class="tb-pin">' +
+      '<button class="hbtn" data-tb="speed" aria-label="Battle speed"></button>' +
+      '<button class="hbtn" data-tb="pause"></button>' +
+      '<button class="hbtn" data-tb="menu" aria-label="Menu">⚙</button>' +
+      '</div>' +
+      '</div>';
+    this.root.appendChild(bar);
+    this.tb = bar;
+
+    bar.addEventListener('click', (e) => {
+      const btn = (e.target as HTMLElement).closest<HTMLButtonElement>('[data-tb]');
+      if (!btn || btn.disabled) return;
+      switch (btn.dataset.tb) {
+        case 'roster': this.toggleRoster(); break;
+        case 'select': cb.toggleBoxMode(); break;
+        case 'add': cb.toggleAddMode(); break;
+        case 'all': cb.selectAll(); break;
+        case 'floor': cb.cycleFloor(); break;
+        case 'cancel': cb.cancel(); break;
+        case 'barrage': cb.callBarrage(); break;
+        case 'air': cb.callAirstrike(); break;
+        case 'speed': cb.cycleSpeed(); break;
+        case 'pause': cb.togglePause(); break;
+        case 'menu': cb.openMenu(); break;
+        case 'more': this.overOpen = !this.overOpen; break;
+      }
+      // One pick and the overflow folds away: it sits over the map.
+      if (btn.closest('.tb-over')) this.overOpen = false;
+      this.sig = '';
+    });
   }
 
   /** Bottom-sheet roster: the ☰ chip is the only way in or out on a phone. */
@@ -301,7 +332,7 @@ export class Hud {
     // Beside the chips' own panel, never on it: the card used to print over
     // the chips it described. Same placement rule as the tutorial bubble.
     const anchor = visibleRect(btn);
-    const panel = btn.closest('#squads, #touchbar');
+    const panel = btn.closest('#touchbar') ?? btn.closest('#orderbar');
     if (!anchor) return this.hideAffordanceNow();
     const root = document.documentElement;
     const p = placeBubble(anchor, (panel && visibleRect(panel)) ?? anchor, this.tipEl.offsetWidth, this.tipEl.offsetHeight, { left: 0, top: 0, right: root.clientWidth, bottom: root.clientHeight });
@@ -337,6 +368,7 @@ export class Hud {
     this.renderTop(sim, st);
     this.renderGoal(sim);
     this.renderSquads(sim, st);
+    this.renderOrderBar(sim, st);
     this.renderHint();
     if (this.tb) this.renderTouchbar(sim, st);
 
@@ -403,14 +435,29 @@ export class Hud {
       `<span class="hg">${fb(b.squad1)}-${fb(b.squad9)} squad · ${fb(b.order1)}-${fb(b.order8)} order kind, right-click issues · ${fb(b.barrage)} barrage · ${fb(b.airstrike)} airstrike · ${fb(b.pause)} pause · ${fb(b.cancel)} widen/cancel · ${fb(b.menu)} menu</span>`;
   }
 
+  private renderOrderBar(sim: Sim, st: HudState): void {
+    const bar = this.orderBar;
+    const primary = primarySquad(st);
+    const show = primary >= 0 && st.selectedVehicle < 0 && !st.deploy;
+    bar.style.display = show ? '' : 'none';
+    if (!show) {
+      this.moreOpen = false;
+      return;
+    }
+    const target: ArmTarget = emplacementOf(sim, primary) ? 'crew' : 'squad';
+    // An armed order is always on screen: one of the four behind More, armed
+    // by its key, opens the row.
+    const open = this.moreOpen || (st.armedOrder !== null && MORE_ORDERS.includes(st.armedOrder));
+    patchChildren(
+      bar.querySelector('.ob-main')!,
+      orderChips(PRIMARY_ORDERS, st, this.km, target) +
+        `<button class="hbtn ob-toggle${open ? ' active' : ''}" data-ob="more" aria-expanded="${open}">More</button>`,
+    );
+    patchChildren(bar.querySelector('.ob-more')!, open ? orderChips(MORE_ORDERS, st, this.km, target) : '');
+  }
+
   private renderTouchbar(sim: Sim, st: HudState): void {
     const bar = this.tb!;
-    const primary = primarySquad(st);
-    const hasSquad = primary >= 0 && st.selectedVehicle < 0;
-    const orders = bar.querySelector<HTMLElement>('.tb-orders')!;
-    orders.style.display = hasSquad ? '' : 'none';
-    patchChildren(orders, hasSquad ? orderChips(st, this.km, emplacementOf(sim, primary) ? 'crew' : 'squad') : '');
-
     const tb = (name: string) => bar.querySelector<HTMLButtonElement>(`[data-tb="${name}"]`)!;
     const barrage = tb('barrage');
     barrage.innerHTML = `☄ ×${sim.barragesLeft.blue}`;
@@ -427,6 +474,7 @@ export class Hud {
     tb('select').classList.toggle('active', !!st.boxMode);
     tb('add').classList.toggle('active', !!st.addMode);
     tb('roster').classList.toggle('active', this.rosterOpen);
+    bar.querySelector('.tb-over')!.classList.toggle('open', this.overOpen);
     // The floor chip is F's only home on a phone. A map with nothing taller
     // than a shed has no floors to cycle, so it does not appear at all.
     const floor = tb('floor');
@@ -434,6 +482,8 @@ export class Hud {
     floor.style.display = sim.map.maxStories >= 2 ? '' : 'none';
     floor.textContent = focus < 0 ? '⬒ Floors' : `⬒ ${floorName(focus)}`;
     floor.classList.toggle('active', focus >= 0);
+    // Folded away, the overflow still says when something inside it is live.
+    tb('more').classList.toggle('active', this.overOpen || !!st.boxMode || !!st.addMode || focus >= 0 || st.targetMode === 'barrage' || st.targetMode === 'air');
   }
 
   // The goal strip: what wins the battle, and how far off it is. Fed from the
@@ -554,7 +604,6 @@ function squadCard(sim: Sim, sq: Squad, st: HudState, km: Keymap): string {
   }
   const showLegend = isPrimary && men.some((m) => m.alive && !m.downed);
   const emp = isPrimary ? emplacementOf(sim, sq.id) : null;
-  const target: ArmTarget = isPrimary ? (emp ? 'crew' : 'squad') : 'squad';
   // balk chip
   let balkChip = '';
   if (isPrimary) {
@@ -571,7 +620,7 @@ function squadCard(sim: Sim, sq: Squad, st: HudState, km: Keymap): string {
   const widen = MOBILE ? '' : ` <i>(${formatBinding(km.bindings.cancel)} widens)</i>`;
   const focus = isPrimary && st.selectedTeam >= 0 ? `<div class="focus">Team: ${sim.teams[st.selectedTeam]?.name ?? ''}${widen}</div>` : '';
   const rows = isPrimary
-    ? focus + balkChip + orderBar(st, km, target) + empStateRow + (emp ? emplacementContext(sim, emp) : squadContext(men)) + (showLegend ? BARS_LEGEND : '') + men.map((m) => soldierRow(m)).join('')
+    ? focus + balkChip + empStateRow + (emp ? emplacementContext(sim, emp) : squadContext(men)) + (showLegend ? BARS_LEGEND : '') + men.map((m) => soldierRow(m)).join('')
     : '';
   return (
     `<div class="card panel${sel ? ' sel' : ''}" data-squad="${sq.id}" tabindex="0" role="button">` +
@@ -608,19 +657,15 @@ function soldierRow(m: Soldier): string {
   );
 }
 
-function orderChips(st: HudState, km: Keymap, target: ArmTarget): string {
-  return ORDER_KINDS.map((k, i) => {
-    const bindingKey = `order${i + 1}` as keyof typeof km.bindings;
+function orderChips(kinds: OrderKind[], st: HudState, km: Keymap, target: ArmTarget): string {
+  return kinds.map((k) => {
+    const bindingKey = `order${ORDER_KINDS.indexOf(k) + 1}` as keyof typeof km.bindings;
     const title = formatBinding(km.bindings[bindingKey]);
     const a = ORDER_AFFORDANCE[k];
     const dis = !canArm(k, target) ? ' disabled' : '';
     const armed = st.armedOrder === k ? ' armed' : '';
     return `<button class="hbtn ord${armed}${dis}" data-order="${k}" title="${title}"${dis}>${k}<span class="hk">${a.hotkey}</span></button>`;
   }).join('');
-}
-
-function orderBar(st: HudState, km: Keymap, target: ArmTarget): string {
-  return `<div class="orderbar">${orderChips(st, km, target)}</div>`;
 }
 
 function emplacementStateRow(sim: Sim, e: Emplacement): string {

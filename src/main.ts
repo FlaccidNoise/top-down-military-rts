@@ -616,7 +616,7 @@ function viewportInset(): { left: number; top: number; bottom: number } {
   // Both bottom-edge layers, whichever exists: #hint on desktop, #touchbar on
   // a phone. They are mutually exclusive today, but taking the max means the
   // camera never frames blue behind whichever one is actually on screen.
-  const bottoms = ['hint', 'touchbar'].map((id) => box(id)).filter((r) => r !== null);
+  const bottoms = ['hint', 'orderbar', 'touchbar'].map((id) => box(id)).filter((r) => r !== null);
   return {
     left: squads ? squads.right : 0,
     top: strip ? strip.bottom : 0,
@@ -2071,7 +2071,7 @@ function frame(now: number): void {
     // A player who has given no order for a minute of battle is told the goal
     // and where the enemy is. Sim time, so a pause neither starts nor ends it.
     const quiet = !deployPhase && !sim.winner && !aiControl && (sim.tick - lastOrderTick) * DT >= QUIET_PROMPT_S;
-    hud.update(sim, { selectedSquad: primary, selectedSquads, selectedTeam, selectedVehicle, paused, aiControl, targetMode, armedOrder, title: battleTitle, keymap: km, prompt: quiet ? quietPrompt(sim) : null, speed: battleSpeed, floorFocus, boxMode, addMode });
+    hud.update(sim, { selectedSquad: primary, selectedSquads, selectedTeam, selectedVehicle, paused, aiControl, targetMode, armedOrder, title: battleTitle, keymap: km, prompt: quiet ? quietPrompt(sim) : null, speed: battleSpeed, deploy: deployPhase, floorFocus, boxMode, addMode });
     // A new battle re-indexes sim.soldiers, so an id held across one closes the panel.
     if (inspectedSoldier >= 0 && !sim.soldiers[inspectedSoldier]) inspectedSoldier = -1;
     healthPanel.update(sim, inspectedSoldier);

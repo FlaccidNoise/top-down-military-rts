@@ -63,7 +63,7 @@ for (const device of ['desktop', 'phone-landscape']) {
     check(await running(), `${device}: the sim is stepping while the presses land`);
 
     // The order chip: the control the defect was measured on.
-    const chip = `${touch ? '#touchbar' : '#squads'} [data-order="fire"]`;
+    const chip = '#orderbar [data-order="fire"]';
     for (const hold of HOLDS) {
       let ok = 0;
       for (let i = 0; i < N; i++) {

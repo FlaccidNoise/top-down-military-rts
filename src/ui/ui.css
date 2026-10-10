@@ -202,9 +202,29 @@ button.hbtn.active { background: var(--chip-active-bg); border-color: var(--ambe
 .bars-key .sw.sup { background: #e0a83c; }
 .bars-key .sw.mor { background: var(--state-steady); margin-left: var(--sp-2); }
 
-/* ---- order kind hotbar + emplacement/vehicle context actions ---- */
-.orderbar, .ctxrow { display: flex; flex-wrap: wrap; gap: var(--sp-1); margin: var(--sp-1) 0; }
-.orderbar .ord { text-transform: uppercase; font-size: var(--fs-sm); padding: 3px 7px; }
+/* ---- the order bar: one on both platforms, outside the roster ----
+   Desktop: bottom centre of the screen. Phone: the touch bar's top rows. */
+#orderbar {
+  position: absolute;
+  left: 50%;
+  bottom: 56px;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: var(--sp-1);
+  background: rgba(var(--ink-rgb), 0.85);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  pointer-events: auto;
+}
+#orderbar .ob-row { display: flex; gap: var(--sp-1); }
+#orderbar .ob-row:empty { display: none; }
+#orderbar .hbtn { text-transform: uppercase; letter-spacing: 0.5px; padding: 5px 12px; white-space: nowrap; }
+
+/* ---- emplacement/vehicle context actions ---- */
+.ctxrow { display: flex; flex-wrap: wrap; gap: var(--sp-1); margin: var(--sp-1) 0; }
 .ctxrow .hbtn { font-size: 11px; padding: 3px var(--sp-2); }
 .focus { color: var(--amber); font-size: var(--fs-sm); margin: 2px 0 var(--sp-1); }
 .focus i { color: var(--muted); font-style: normal; }
@@ -1162,26 +1182,34 @@ html.mobile #touchbar {
   -webkit-backdrop-filter: var(--glass-blur);
   pointer-events: auto;
 }
-/* Eight 44px chips do not fit 390px and shrinking them re-creates the
-   untappable target this whole task exists to remove — so the rows scroll.
-   The right-edge fade is the only cue that they do; without it the row reads
-   as a bar that happens to be clipped. */
+/* Nothing in the bar scrolls: a control in a scrolling row is a control off
+   screen (jtbug #783). Roster and All sit left, the pinned three sit right, and
+   the rest opens as a row above the bar from the ⋯ chip. */
 html.mobile #touchbar .tb-acts,
 html.mobile #touchbar .tb-pin { display: flex; gap: var(--sp-1); }
-html.mobile #touchbar .tb-pin { flex: none; }
-html.mobile #touchbar .tb-scroll {
-  display: flex;
-  flex: 1 1 auto;
-  min-width: 0;
+html.mobile #touchbar .tb-pin { flex: none; margin-left: auto; }
+html.mobile #touchbar .tb-over {
+  display: none;
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 100%;
+  flex-wrap: wrap;
   gap: var(--sp-1);
-  overflow-x: auto;
-  overflow-y: hidden;
-  scrollbar-width: none;
-  touch-action: pan-x;
-  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
-  mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
+  padding: 6px;
+  background: rgba(var(--ink-rgb), 0.92);
+  border-top: 1px solid var(--border);
 }
-html.mobile #touchbar .tb-scroll::-webkit-scrollbar { display: none; }
+html.mobile #touchbar .tb-over.open { display: flex; }
+/* The order rows are part of the bar: five chips share its width. */
+html.mobile #orderbar {
+  position: static;
+  transform: none;
+  align-items: stretch;
+  padding: 0;
+  background: none;
+  border: none;
+}
 html.mobile #touchbar .hbtn {
   flex: 0 0 auto;
   min-height: 44px;
@@ -1193,8 +1221,8 @@ html.mobile #touchbar .hbtn {
   padding: var(--sp-1) 10px;
   white-space: nowrap;
 }
-html.mobile #touchbar .ord { text-transform: uppercase; }
-html.mobile #touchbar .ord .hk { display: none; }
+html.mobile #orderbar .hbtn { flex: 1 1 0; padding: var(--sp-1) 2px; }
+html.mobile #orderbar .ord .hk { display: none; }
 
 /* ---- roster as a bottom sheet ----
    Closed it does not exist: the old 258px left panel covered 68% of a 390px
@@ -1229,9 +1257,6 @@ html.mobile #squads.open { display: flex; }
   }
   html.mobile #squads .wpn-divider { grid-column: 1 / -1; }
 }
-/* The touchbar owns arming; the 28x18px in-card order buttons never were a
-   touch target and would only compete with it. */
-html.mobile #squads .orderbar { display: none; }
 html.mobile .ctxrow .hbtn { min-height: 44px; padding: 6px 12px; font-size: var(--fs-md); }
 
 /* ---- desktop-shaped chrome that a phone cannot carry ---- */
