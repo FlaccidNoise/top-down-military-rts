@@ -4,6 +4,9 @@ import { makeTheater } from '../src/strategic/theatergen';
 import { orderMove, stepMovement } from '../src/strategic/theater/step';
 import { addForce, type Force, type FrontV2 } from '../src/strategic/theater/force';
 import { battleDuration, joinBattle, openBattle, resolveBattleV2, retreatForce, stepWar } from '../src/strategic/theater/war';
+import type { WarGoals } from '../src/strategic/goals';
+import { OmniscientIntel } from '../src/strategic/intel';
+import { BLUE_V2, Commander2 } from '../src/strategic/planner';
 import { battleSiteOf, MOVE_MPM, type Theater, type TheaterEdge, type Vec } from '../src/strategic/theater';
 
 // Corridor fixture with a bridge site for crossing-assault mechanics.
@@ -174,6 +177,55 @@ describe('bridge defile under contact (jtbug #760)', () => {
     fr.clockMin = battle.endMin;
     resolveBattleV2(fr, newCampaign(7), battle);
     expect(orderMove(fr, b.id, 0).ok).toBe(true);
+  });
+});
+
+describe('planner: march safety and reorganisation (jtbug #762)', () => {
+  //   0 --e0-- 1(bridge) --e1-- 2 --e2-- 3(objective)
+  //                             2 --e3-- 4
+  const PLAN: Theater = {
+    ...FIX,
+    nodes: [...FIX.nodes, N(4, 6000, 'village')],
+    edges: [...FIX.edges, E(3, 2, 4, 3000, { x: 6000, y: 1000 }, { x: 6000, y: 1900 })],
+  };
+  const GOALS: WarGoals = {
+    blue: [{ kind: 'control', nodeIds: [3], need: 1 }],
+    red: [{ kind: 'deadline', day: 14 }, { kind: 'annihilate', enemyBelowStrength: 1 }],
+  };
+  // A fresh commander each call: no cadence, no carried plan.
+  const blueOrders = (fr: FrontV2) => new Commander2('blue', BLUE_V2, GOALS, 14).evaluate(fr, new OmniscientIntel(fr, 'blue'))!;
+
+  it('a force is not marched past an enemy it would have to withdraw from', () => {
+    const fr = front(PLAN);
+    const weak = mk(fr, 'blue', 0, 'Able', 20, 0);
+    const stack = mk(fr, 'red', 2, 'Kampfgruppe', 200); // on the road to the open objective
+    expect(blueOrders(fr).orders).toEqual([]); // 200 > withdrawRatio 3 x 20
+    expect(weak.path).toEqual([]);
+    stack.strength = 60; // exactly 3:1 is not overwhelming
+    expect(blueOrders(fr).orders).toEqual([{ forceId: weak.id, dest: 3, why: 'advance' }]);
+  });
+
+  it('the same test sees an enemy standing mid-road, out of sight of both ends', () => {
+    const fr = front(PLAN);
+    const weak = mk(fr, 'blue', 0, 'Able', 20, 0);
+    const stack = mk(fr, 'red', 1, 'Kampfgruppe', 200);
+    stack.pos = { kind: 'edge', edgeId: 2, s: 1600, dir: 1 }; // 1,600 m from node 2 and from node 3
+    fr.theater = { ...PLAN, edges: PLAN.edges.map((e) => (e.id === 2 ? { ...e, lengthM: 3200 } : e)) };
+    expect(blueOrders(fr).orders).toEqual([]);
+    expect(weak.path).toEqual([]);
+  });
+
+  it('a withdrawal goes to the nearest friendly node it can reach clear of the enemy', () => {
+    const fr = front(PLAN);
+    const weak = mk(fr, 'blue', 1, 'Able', 20, 0);
+    weak.pos = { kind: 'edge', edgeId: 1, s: 1400, dir: -1 }; // 1,400 m short of the bridge, closing on it
+    mk(fr, 'red', 1, 'Kampfgruppe', 200); // holds the bridge
+    fr.controlByNode[0] = 'blue'; // lowest id, and behind the enemy
+    fr.controlByNode[4] = 'blue';
+    // Before the fix the rear node was picked by id: node 0, through the bridge.
+    expect(blueOrders(fr).orders).toEqual([{ forceId: weak.id, dest: 4, why: 'withdraw' }]);
+    expect(weak.pos).toMatchObject({ edgeId: 1, dir: 1 }); // turned away from the bridge
+    expect(weak.path).toEqual([1, 3]);
   });
 });
 

@@ -225,10 +225,17 @@ export type MoveOrder = { ok: true; etaMin: number } | { ok: false; reason: Move
 // (S51/S52): the ETA is a SHADOW run of the same per-minute arithmetic the
 // live step executes — a closed form here would lie across dusk and fatigue.
 
+// The nodes a march from `pos` along `path` reaches, in order. Empty when it
+// stands.
+export function pathNodes(t: Theater, pos: NetPos, path: number[]): number[] {
+  if (path.length === 0) return [];
+  let at = anchorNode(t, pos);
+  const out = pos.kind === 'edge' ? [at] : [];
+  for (const eid of pos.kind === 'edge' ? path.slice(1) : path) out.push((at = otherEnd(edgeById(t, eid), at)));
+  return out;
+}
+
 // Where a force's current path ends, or null when it stands.
 export function pathDestination(t: Theater, f: Force): number | null {
-  if (f.path.length === 0) return null;
-  let at = anchorNode(t, f.pos);
-  for (const eid of f.pos.kind === 'edge' ? f.path.slice(1) : f.path) at = otherEnd(edgeById(t, eid), at);
-  return at;
+  return pathNodes(t, f.pos, f.path).at(-1) ?? null;
 }

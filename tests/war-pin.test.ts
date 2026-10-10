@@ -10,13 +10,12 @@
 // and paste its `PIN seed N {status, day, logLen}` lines into PINNED below,
 // recording the commit here. Never hand-edit a tuple.
 //
-// Recorded 2026-10-09 at the jtbug #762 commit (mid-road turn-round and halt,
-// on top of the #760 defile fix and 8a90968), warsweep-v2 seeds 1..16, recon
-// omniscient, DEFAULT_PRESET, no doctrine override. Gates green: 0 hung, 4/16
-// blue wins, red retook objectives on 16/16 seeds. Every seed but 7 moved:
-// the planner calls orderMove, and a force thrown back from a crossing now
-// walks straight back instead of finishing its road first. AI blue re-attacks
-// sooner and is destroyed on seeds 4, 5, 6, 13 and 14 (was seed 15 only).
+// Recorded 2026-10-09 at the jtbug #762 march-safety commit (the planner
+// does not march a force into what it would withdraw from), on top of
+// 31cc59b, warsweep-v2 seeds 1..16, recon omniscient, DEFAULT_PRESET, no
+// doctrine override. Gates green: 0 hung, 4/16 blue wins, red retook
+// objectives on 16/16 seeds. AI blue is destroyed before the deadline on 1
+// seed (was 5 at 31cc59b, 1 on main at 8a90968).
 import { beforeAll, describe, expect, it } from 'vitest';
 import { DEFAULT_PRESET } from '../src/campaign/presets';
 import { makeHeadlessWorld, runHeadlessWar } from '../src/strategic/headless';
@@ -42,22 +41,22 @@ const runWar = (seed: number): Tuple => {
 };
 
 const PINNED: Tuple[] = [
-  { status: 'lost', day: 15, logLen: 25 },
-  { status: 'won', day: 12, logLen: 24 },
-  { status: 'lost', day: 15, logLen: 27 },
-  { status: 'lost', day: 11, logLen: 12 },
-  { status: 'lost', day: 7, logLen: 36 },
-  { status: 'lost', day: 6, logLen: 13 },
-  { status: 'lost', day: 15, logLen: 16 },
-  { status: 'lost', day: 15, logLen: 34 },
-  { status: 'lost', day: 15, logLen: 15 },
-  { status: 'won', day: 13, logLen: 26 },
-  { status: 'lost', day: 15, logLen: 67 },
-  { status: 'lost', day: 15, logLen: 58 },
-  { status: 'lost', day: 2, logLen: 20 },
-  { status: 'lost', day: 2, logLen: 27 },
-  { status: 'won', day: 12, logLen: 27 },
-  { status: 'won', day: 12, logLen: 28 },
+  { status: 'lost', day: 15, logLen: 7 },
+  { status: 'won', day: 9, logLen: 16 },
+  { status: 'lost', day: 15, logLen: 42 },
+  { status: 'lost', day: 12, logLen: 13 },
+  { status: 'lost', day: 15, logLen: 20 },
+  { status: 'lost', day: 15, logLen: 17 },
+  { status: 'lost', day: 15, logLen: 20 },
+  { status: 'lost', day: 15, logLen: 26 },
+  { status: 'lost', day: 15, logLen: 33 },
+  { status: 'lost', day: 15, logLen: 12 },
+  { status: 'lost', day: 15, logLen: 21 },
+  { status: 'won', day: 8, logLen: 28 },
+  { status: 'lost', day: 15, logLen: 38 },
+  { status: 'lost', day: 15, logLen: 22 },
+  { status: 'won', day: 9, logLen: 9 },
+  { status: 'won', day: 13, logLen: 24 },
 ];
 
 describe('war pin (S59)', () => {

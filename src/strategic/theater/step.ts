@@ -266,12 +266,12 @@ export function orderMove(front: FrontV2, forceId: number, destNodeId: number, o
 // it again (jtbug #762). The first path entry mid-edge is the force's own
 // edge, consumed as it reaches that end. One function for orderMove and the
 // planner's dawn check, so the decision and the march cannot disagree.
-export function planMove(front: FrontV2, f: Force, destNodeId: number): Pick<Force, 'pos' | 'path'> | null {
+export function planMove(front: FrontV2, f: Force, destNodeId: number): (Pick<Force, 'pos' | 'path'> & { nominalMin: number }) | null {
   const t = front.theater;
   const pos = f.pos;
   if (pos.kind === 'node') {
     const r = route(t, pos.nodeId, destNodeId);
-    return r && { pos, path: r.edges };
+    return r && { pos, path: r.edges, nominalMin: r.minutes };
   }
   const e = edgeById(t, pos.edgeId);
   const leg = (dir: 1 | -1): { dir: 1 | -1; edges: number[]; min: number } | null => {
@@ -284,7 +284,7 @@ export function planMove(front: FrontV2, f: Force, destNodeId: number): Pick<For
   const ahead = leg(pos.dir);
   const back = leg(pos.dir === 1 ? -1 : 1);
   const best = back && (!ahead || back.min < ahead.min) ? back : ahead;
-  return best && { pos: { ...pos, dir: best.dir }, path: [pos.edgeId, ...best.edges] };
+  return best && { pos: { ...pos, dir: best.dir }, path: [pos.edgeId, ...best.edges], nominalMin: best.min };
 }
 
 export type HaltOrder = { ok: true } | { ok: false; reason: MoveReject };

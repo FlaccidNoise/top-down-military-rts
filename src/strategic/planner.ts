@@ -9,9 +9,10 @@
 import { lightAt } from '../sim/solar';
 import type { Side } from '../sim/sim';
 import { coarseOdds, TRIVIAL_RATIO } from './bridge';
-import { battleSiteOf, COARSE_DEF_MULT, CROSSING_ASSAULT_MULT, type Theater } from './theater';
-import { CONTACT_M, route, type Force, type FrontV2 } from './theater/force';
+import { battleSiteOf, COARSE_DEF_MULT, CROSSING_ASSAULT_MULT, type NetPos, type Theater } from './theater';
+import { CONTACT_M, pathNodes, route, type Force, type FrontV2 } from './theater/force';
 import { forceEtaMinutes, orderMove, planMove } from './theater/step';
+import { THREAT_M } from './theater/war';
 import { graphGap } from './theater/contact';
 import { combatMult, effStrength } from './theater/combat';
 import type { IntelView } from './intel';
@@ -214,19 +215,50 @@ export class Commander2 {
     let viableSeen = false;
     let attackConsidered = false;
 
+    const threatAt = (pos: NetPos): number =>
+      intel
+        .contacts()
+        .filter((c) => graphGap(t, pos, c.pos) <= THREAT_M)
+        .reduce((a, c) => a + c.strength, 0);
+    // The withdraw test, asked of a march BEFORE it is ordered: nominal
+    // minutes to `dest`, or null when there is no route or the force would be
+    // overwhelmed somewhere along it. Without this the arms disagreed: one
+    // marched a force at an enemy the withdraw arm then turned it away from,
+    // every eval, and a withdrawal picked its rear node by id and could route
+    // THROUGH the enemy it was fleeing (jtbug #762: blue destroyed on 5 of 16
+    // pin seeds, up to 86 mid-march reversals in one war).
+    const safeMarchMin = (f: Force, dest: number): number | null => {
+      const march = planMove(front, f, dest);
+      if (!march) return null;
+      const limit = this.doctrine.withdrawRatio * effStrength(f);
+      if (pathNodes(t, march.pos, march.path).some((n) => threatAt({ kind: 'node', nodeId: n }) > limit)) return null;
+      // An enemy standing mid-road, further than THREAT_M from both ends, is
+      // invisible from the nodes: count what stands on each road of the march
+      // (on the force's own road, only what lies ahead of it).
+      const from = march.pos;
+      const blocked = march.path.some((eid, i) => {
+        let on = 0;
+        for (const c of intel.contacts()) {
+          if (c.pos.kind !== 'edge' || c.pos.edgeId !== eid) continue;
+          if (i === 0 && from.kind === 'edge' && (c.pos.s - from.s) * from.dir < 0) continue;
+          on += c.strength;
+        }
+        return on > limit;
+      });
+      return blocked ? null : march.nominalMin;
+    };
+
     for (const f of own) {
       if (f.role === 'garrison' || f.engagedIn !== null || f.queuedAt !== null) continue;
 
-      // Withdraw arm: local enemies overwhelm.
-      const localEnemy = intel
-        .contacts()
-        .filter((c) => graphGap(t, f.pos, c.pos) <= 1500)
-        .reduce((a, c) => a + c.strength, 0);
-      if (localEnemy > this.doctrine.withdrawRatio * effStrength(f)) {
+      // Withdraw arm: local enemies overwhelm. Fall back on the NEAREST
+      // friendly node that is clear of the enemy and can be reached clear.
+      if (threatAt(f.pos) > this.doctrine.withdrawRatio * effStrength(f)) {
         const rear = t.nodes
-          .filter((n) => intel.control(n.id) === this.side)
-          .filter((n) => intel.contacts().every((c) => graphGap(t, { kind: 'node', nodeId: n.id }, c.pos) > 1500))
-          .sort((a, b) => a.id - b.id);
+          .filter((n) => intel.control(n.id) === this.side && threatAt({ kind: 'node', nodeId: n.id }) === 0)
+          .map((n) => ({ id: n.id, min: safeMarchMin(f, n.id) }))
+          .filter((x): x is { id: number; min: number } => x.min !== null)
+          .sort((a, b) => a.min - b.min || a.id - b.id);
         for (const n of rear) {
           const r = orderMove(front, f.id, n.id);
           if (r.ok) {
@@ -251,6 +283,7 @@ export class Commander2 {
             .filter((c) => ids.includes(c.forceId))
             .reduce((a, c) => a + c.strength, 0);
           if (mine.length > 0 && mineEff < theirsEff && b.site.kind === 'node') {
+            if (safeMarchMin(f, b.site.nodeId) === null) break;
             const r = orderMove(front, f.id, b.site.nodeId);
             if (r.ok) orders.push({ forceId: f.id, dest: b.site.nodeId, why: 'commit-reserve' });
             break;
@@ -300,6 +333,7 @@ export class Commander2 {
         }
         viableSeen = true;
       }
+      if (safeMarchMin(f, target) === null) continue;
       const r = orderMove(front, f.id, target);
       if (r.ok) orders.push({ forceId: f.id, dest: target, why: defEff > 0 ? 'attack' : 'advance' });
       else if (r.reason === 'already-there' || r.reason === 'engaged') continue;

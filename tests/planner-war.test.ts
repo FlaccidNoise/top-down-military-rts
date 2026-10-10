@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { advanceDays, fillReplacements, newCampaign } from '../src/campaign/campaign';
 import { presetSpec, DEFAULT_PRESET } from '../src/campaign/presets';
 import { SPEC_TAG, specStream } from '../src/campaign/spec';
+import { makeHeadlessWorld, runHeadlessWar } from '../src/strategic/headless';
 import { makeTheater } from '../src/strategic/theatergen';
 import { makeDisposition } from '../src/strategic/theatergen/disposition';
 import { makeWarGoals, warStatus, type WarState } from '../src/strategic/goals';
@@ -120,6 +121,33 @@ describe('goal-driven AI, headless wars over generated theaters', () => {
     console.log(lines.join('\n'));
     expect(lines.length).toBe(SEEDS.length);
   });
+});
+
+describe('the planner neither dithers nor grinds (jtbug #762)', () => {
+  // The two regressions the mid-road turn-round exposed, held as properties
+  // of the 16 pin wars. Measured at 31cc59b: up to 86 mid-march reversals in
+  // one war, AI blue destroyed before the deadline on 5 of 16 seeds.
+  it('single-digit mid-march reversals in every war; blue destroyed on at most one seed', () => {
+    const reversals: number[] = [];
+    let destroyed = 0;
+    for (let seed = 1; seed <= 16; seed++) {
+      const w = makeHeadlessWorld(seed, CFG, CAMP);
+      const last = new Map<number, { edgeId: number; dir: number; free: boolean } | null>();
+      let n = 0;
+      const run = runHeadlessWar(w, 60 * 24 * 45, () => {
+        for (const f of w.front.forces) {
+          const p = last.get(f.id);
+          const marching = f.pos.kind === 'edge' && f.path.length > 0;
+          if (p && p.free && marching && f.pos.kind === 'edge' && p.edgeId === f.pos.edgeId && p.dir !== f.pos.dir) n++;
+          last.set(f.id, marching && f.pos.kind === 'edge' ? { edgeId: f.pos.edgeId, dir: f.pos.dir, free: f.engagedIn === null } : null);
+        }
+      });
+      reversals.push(n);
+      if (run.status.state === 'decided' && run.status.winner === 'red' && run.day <= CAMP.warDays) destroyed++;
+    }
+    expect(Math.max(...reversals), `reversals per seed: ${reversals}`).toBeLessThan(10);
+    expect(destroyed).toBeLessThanOrEqual(1);
+  }, 30_000);
 });
 
 describe('planner internals', () => {
