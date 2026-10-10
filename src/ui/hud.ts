@@ -1,12 +1,13 @@
 import { EMPLACEMENTS, VEHICLES, WEAPONS, type EmplacementDef, type VehicleDef, type WeaponDef } from '../sim/data';
 import { crewNear, friendlyHasLos, loadsReady, type Emplacement } from '../sim/emplacement';
-import { BALK_HINT, canArm, ORDER_AFFORDANCE, type ArmTarget, type OrderAffordance } from './order-data';
+import { balkHint, canArm, ORDER_AFFORDANCE, type ArmTarget, type OrderAffordance } from './order-data';
 import type { OrderKind } from '../sim/orders';
 import { canBreachByHand, type Sim, type Soldier, type Squad, type Vehicle } from '../sim/sim';
 import { battleGoal, type SideStrength } from './battle-goal';
 import { formatBinding, loadKeymap, type Keymap } from './keymap';
 import { MOBILE } from '../render/view';
 import { patchChildren } from './patch';
+import { placeBubble, visibleRect } from './coach';
 import type { BattleSpeed } from './battle-speed';
 
 export const STATE_COLOR = { steady: '#7fbf6a', shaken: '#e0c060', pinned: '#e08a3c', broken: '#d05c50' } as const;
@@ -297,11 +298,15 @@ export class Hud {
     const issue = MOBILE ? 'press and hold the ground to issue' : 'right-click to issue';
     this.tipEl.innerHTML = `<div class="at-name">${a.name}</div><div class="at-when">${a.when}</div><div class="at-compliance">${a.complianceNote}</div><div class="at-hotkey">${MOBILE ? '' : `${a.hotkey} · `}${issue}</div>`;
     this.tipEl.style.display = 'block';
-    const r = btn.getBoundingClientRect();
-    // The card is a fixed 190px wide and anchors to the chip's left edge; on a
-    // 390px screen a chip scrolled to the right would hang off the viewport.
-    this.tipEl.style.left = `${Math.max(6, Math.min(r.left, innerWidth - 198))}px`;
-    this.tipEl.style.top = `${r.top - this.tipEl.offsetHeight - 6}px`;
+    // Beside the chips' own panel, never on it: the card used to print over
+    // the chips it described. Same placement rule as the tutorial bubble.
+    const anchor = visibleRect(btn);
+    const panel = btn.closest('#squads, #touchbar');
+    if (!anchor) return this.hideAffordanceNow();
+    const root = document.documentElement;
+    const p = placeBubble(anchor, (panel && visibleRect(panel)) ?? anchor, this.tipEl.offsetWidth, this.tipEl.offsetHeight, { left: 0, top: 0, right: root.clientWidth, bottom: root.clientHeight });
+    this.tipEl.style.left = `${Math.round(p.left)}px`;
+    this.tipEl.style.top = `${Math.round(p.top)}px`;
     if (MOBILE) {
       if (this.tipTimer) clearTimeout(this.tipTimer);
       this.tipTimer = setTimeout(() => { this.tipEl.style.display = 'none'; }, 2600);
@@ -358,6 +363,10 @@ export class Hud {
     const banner = this.q('#banner');
     banner.style.display = sim.winner ? 'block' : 'none';
     if (sim.winner) {
+      // Centred on the map the player can see, not on the canvas: the roster
+      // owns the left of a desktop screen.
+      const roster = this.q('#squads').getBoundingClientRect();
+      banner.style.left = `${!this.tb && roster.width > 0 ? Math.round(roster.right) : 0}px`;
       banner.style.color = TEAM[sim.winner];
       banner.innerHTML = `${sim.winner === 'blue' ? 'US VICTORY' : 'GERMAN VICTORY'}<small>debrief incoming…</small>`;
     }
@@ -467,7 +476,7 @@ export class Hud {
     air.innerHTML = `✈ Airstrike ×${sim.airstrikesLeft.blue} <span class="hk-top">${f(this.km.bindings.airstrike)}</span>`;
     air.disabled = sim.airstrikesLeft.blue <= 0;
     air.classList.toggle('active', st.targetMode === 'air');
-    btn('pause').innerHTML = `${st.paused ? '▶ Resume' : '⏸ Pause'} <span class="hk-top">${f(this.km.bindings.pause)}</span>`;
+    btn('pause').innerHTML = `${st.paused ? '▶ Play' : '⏸ Pause'} <span class="hk-top">${f(this.km.bindings.pause)}</span>`;
     btn('speed').title = f(this.km.bindings.battleSpeed);
     btn('speed').innerHTML = `${st.speed}× <span class="hk-top">${f(this.km.bindings.battleSpeed)}</span>`;
     btn('speed').classList.toggle('active', st.speed > 1);
@@ -546,13 +555,15 @@ function squadCard(sim: Sim, sq: Squad, st: HudState, km: Keymap): string {
     for (const tid of sq.teamIds) {
       const os = sim.teams[tid].orderState;
       if (os.phase === 'balked' && os.order) {
-        balkChip = `<div class="balk-chip">${BALK_HINT[os.order.kind]}</div>`;
+        balkChip = `<div class="balk-chip">${balkHint(os.order.kind, os.reason)}</div>`;
         break;
       }
     }
   }
   const empStateRow = emp ? emplacementStateRow(sim, emp) : '';
-  const focus = isPrimary && st.selectedTeam >= 0 ? `<div class="focus">Team: ${sim.teams[st.selectedTeam]?.name ?? ''} <i>(esc widens)</i></div>` : '';
+  // A phone has no Esc: the two-finger tap and the Cancel chip widen there.
+  const widen = MOBILE ? '' : ` <i>(${formatBinding(km.bindings.cancel)} widens)</i>`;
+  const focus = isPrimary && st.selectedTeam >= 0 ? `<div class="focus">Team: ${sim.teams[st.selectedTeam]?.name ?? ''}${widen}</div>` : '';
   const rows = isPrimary
     ? focus + balkChip + orderBar(st, km, target) + empStateRow + (emp ? emplacementContext(sim, emp) : squadContext(men)) + (showLegend ? BARS_LEGEND : '') + men.map((m) => soldierRow(m)).join('')
     : '';

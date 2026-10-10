@@ -113,7 +113,11 @@ button.hbtn {
   cursor: pointer;
   pointer-events: auto;
 }
-button.hbtn:hover:not(:disabled) { border-color: var(--amber); color: var(--amber-bright); }
+/* Hover only where there is a pointer to hover with: on a touch screen :hover
+   sticks to the last chip tapped and reads as a second active state. */
+@media (hover: hover) {
+  button.hbtn:hover:not(:disabled) { border-color: var(--amber); color: var(--amber-bright); }
+}
 button.hbtn:disabled { opacity: 0.4; cursor: default; }
 button.hbtn.active { background: var(--chip-active-bg); border-color: var(--amber); color: var(--amber-bright); }
 
@@ -543,14 +547,21 @@ button.hbtn:focus-visible,
 }
 
 /* ---- affordance hover tooltip ---- */
+/* Mounted on <body>, so it carries the HUD face and panel itself. hud.ts
+   places it beside the chips' panel with the tutorial bubble's rule. */
 .affordance-tip {
   position: fixed;
-  width: 190px;
+  box-sizing: border-box;
+  width: 210px;
   padding: 6px 9px;
   z-index: 7;
   pointer-events: none;
-  font-size: var(--fs-sm);
-  line-height: 1.4;
+  background: var(--ink);
+  color: var(--paper);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  font: var(--fs-sm) / 1.4 var(--font-hud);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
 }
 .affordance-tip .at-name {
   color: var(--amber-bright);
@@ -1214,8 +1225,6 @@ html.mobile #squads.open { display: flex; }
   }
   html.mobile #squads .wpn-divider { grid-column: 1 / -1; }
 }
-html.mobile #squads .card { padding: 6px var(--sp-2); }
-html.mobile #squads .srow { padding: 5px 0; }
 /* The touchbar owns arming; the 28x18px in-card order buttons never were a
    touch target and would only compete with it. */
 html.mobile #squads .orderbar { display: none; }
@@ -1280,6 +1289,28 @@ html.mobile #healthpanel {
   overflow-y: auto;
 }
 html.mobile .hp-x { min-width: 44px; min-height: 44px; }
+
+/* ---- every target a finger has to hit is 44px ----
+   html.mobile, not a width query: a phone in landscape is 844px wide. */
+html.mobile #mainmenu button,
+html.mobile #pausemenu button,
+html.mobile #debrief button { min-height: 44px; }
+/* A row of four menu buttons ran off the right edge of a 390px screen. */
+#mainmenu .db-actions,
+#pausemenu .db-actions { flex-wrap: wrap; }
+@media (max-width: 620px) {
+  html.mobile #mainmenu .db-actions,
+  html.mobile #pausemenu .db-actions { flex-direction: column; }
+}
+html.mobile #manual #mn-close { width: 44px; height: 44px; }
+html.mobile #manual #mn-search,
+html.mobile #manual .mn-navi { min-height: 44px; box-sizing: border-box; }
+html.mobile #customize .hbtn { min-height: 44px; min-width: 44px; }
+html.mobile #customize #cz-seed { min-height: 44px; box-sizing: border-box; }
+html.mobile #squads .card { padding: 0 var(--sp-2); }
+html.mobile #squads .card-head,
+html.mobile #squads .srow { min-height: 44px; }
+html.mobile #floormenu .fm-row { min-height: 44px; box-sizing: border-box; display: flex; align-items: center; }
 
 /* ---- portrait guidance ----
    Shown by CSS alone, so there is no resize plumbing to get wrong. The copy
@@ -1348,7 +1379,7 @@ html.mobile .hp-x { min-width: 44px; min-height: 44px; }
   opacity: 0.5;
 }
 html.mobile #floormenu { min-width: 160px; }
-html.mobile #floormenu .fm-row { padding: 12px 16px; }
+html.mobile #floormenu .fm-row { padding: 0 16px; }
 
 /* ---- boot error (generation reject card) ---- */
 #boot-error {

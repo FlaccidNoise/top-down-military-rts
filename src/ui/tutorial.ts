@@ -137,7 +137,7 @@ export const STEPS: readonly Step[] = [
     doneOn: 'deploy-commit',
     anchor: { desktop: '[data-act="pause"]', touch: '[data-tb="pause"]' },
     text: {
-      desktop: 'Press Resume to start.',
+      desktop: 'Press Play to start.',
       touch: 'Tap Play to start.',
     },
   },

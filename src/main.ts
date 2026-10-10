@@ -413,6 +413,8 @@ const menu = new PauseMenu({
   },
   onKeymapChanged: (km: Keymap) => { hud.setKeymap(km); },
   onFieldManual: () => { manual.open(); },
+  muted: () => audio.muted,
+  onMuteToggle: () => { audio.toggleMute(); },
   // Gated on campPinned (declared above) rather than on `tutorial` itself,
   // which is constructed below: the arrows only READ it and run long after
   // module init, but the presence test has to be answerable right here. On the
@@ -440,10 +442,10 @@ function openPauseMenu(): void {
 // the pinned art path: ?camp= must render byte-identical frames forever.
 const tutorial = campPinned
   ? null
-  : new Tutorial(new Coach(), MOBILE, (chapterId) => manual.open(chapterId), typeof localStorage !== 'undefined' ? localStorage : undefined, tutorialMark, tutorialStage);
+  : new Tutorial(new Coach(), MOBILE, (chapterId) => manual.open(chapterId), typeof localStorage !== 'undefined' ? localStorage : undefined, tutorialMark, stageRect);
 
 // The map as the player sees it: the screen less the opaque HUD around it.
-function tutorialStage(): { left: number; top: number; right: number; bottom: number } {
+function stageRect(): { left: number; top: number; right: number; bottom: number } {
   const inset = viewportInset();
   const bar = document.getElementById('topbar')?.getBoundingClientRect();
   return { left: inset.left, top: Math.max(inset.top, bar ? bar.bottom : 0), right: view.w, bottom: view.h - inset.bottom };
@@ -457,7 +459,7 @@ function tutorialMark(mark: WorldMark): Circle | null {
     // middle of the map on screen: the ring must be somewhere they can see.
     case 'squad': {
       if (getPrimary() >= 0) return squadCircle(getPrimary());
-      const st = tutorialStage();
+      const st = stageRect();
       const cx = (st.left + st.right) / 2;
       const cy = (st.top + st.bottom) / 2;
       let best: Circle | null = null;
@@ -759,11 +761,11 @@ function deployBearing(): number {
 function deployPlace(wx: number, wy: number): void {
   const zone = deployZone();
   if (wx < zone.x0 || wx > zone.x1) {
-    deployFlash(`Outside your deployment zone (x ${zone.x0}–${Math.round(zone.x1)})`);
+    deployFlash('Stay inside the green zone');
     return;
   }
   if (selectedSquads.length === 0) {
-    deployFlash('Select a squad first — tap it, then right-click the ground');
+    deployFlash(MOBILE ? 'Tap a squad first' : 'Click a squad first');
     return;
   }
   const squadIds: number[] = [];
@@ -771,7 +773,7 @@ function deployPlace(wx: number, wy: number): void {
     const squad = sim.squads[id];
     if (!squad) continue;
     if (emplacementOf(sim, id)) {
-      deployFlash(`${squad.name}: guns deploy where they stand`);
+      deployFlash(`${squad.name}: guns stay where they are`);
       continue;
     }
     squadIds.push(id);
@@ -2015,8 +2017,8 @@ function frame(now: number): void {
       const bubble = document.querySelector('.coach')?.getBoundingClientRect();
       const right = bubble && bubble.height > 0 && bubble.top < by + 46 ? bubble.left - 8 : view.w;
       const text = MOBILE
-        ? 'DEPLOYMENT — tap a squad, press and hold to reposition inside your zone · Resume to begin'
-        : 'DEPLOYMENT — select squads, right-click to reposition inside your zone · Resume to begin';
+        ? 'DEPLOYMENT · hold to place · Play to begin'
+        : 'DEPLOYMENT · right-click to place squads · Play to begin';
       ctx.font = '12px ui-monospace, monospace';
       ctx.textAlign = 'center';
       // A phone cannot hold the sentence on one line — wrap at word breaks
@@ -2058,6 +2060,7 @@ function frame(now: number): void {
       orderFloor: floorMenu ? floorMenu.level : null,
       floorFocus,
       deploy: deployPhase ? { ...deployZone(), bearing: deployBearing() } : null,
+      clear: stageRect(),
     }, pings);
     const ring = tutorial?.ring();
     if (ring) drawMarkRing(ctx, ring, now);

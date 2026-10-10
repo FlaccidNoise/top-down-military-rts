@@ -320,7 +320,7 @@ export const MANUAL: ManualChapter[] = [
         heading: 'The battle opens paused',
         body:
           'Every battle starts in deployment, paused. Your men stand where the staging placed them. ' +
-          'Nothing moves and nobody shoots until you resume. Use the time — this is the only free look you get.',
+          'Nothing moves and nobody shoots until you press Play. Use the time — this is the only free look you get.',
       },
       {
         heading: 'Your zone when attacking',
@@ -354,11 +354,11 @@ export const MANUAL: ManualChapter[] = [
           'Expect the strongest position on the objective itself. Look for the approach it cannot see.',
       },
       {
-        heading: 'Resume commits',
+        heading: 'Play commits',
         body:
-          'Resume starts the battle. Deployment does not come back. ' +
+          'Play starts the battle. Deployment does not come back. ' +
           'Check every squad before you press it.',
-        keys: { desktop: `${key('pause')} to resume`, touch: 'Tap the pause button' },
+        keys: { desktop: `${key('pause')}, or the Play button`, touch: 'Tap Play' },
       },
     ],
   },

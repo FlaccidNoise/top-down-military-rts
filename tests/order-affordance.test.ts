@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { BALK_HINT, canArm, ORDER_AFFORDANCE } from '../src/ui/order-data';
+import { BALK_HINT, balkHint, canArm, ORDER_AFFORDANCE } from '../src/ui/order-data';
 import type { OrderKind } from '../src/sim/orders';
 
 const ALL_KINDS: OrderKind[] = ['move', 'fast', 'sneak', 'fire', 'smoke', 'defend', 'ambush', 'assault'];
@@ -18,12 +18,21 @@ describe('ORDER_AFFORDANCE', () => {
   });
 });
 
-describe('BALK_HINT', () => {
-  it('has entries for all 8 OrderKind values', () => {
-    for (const k of ALL_KINDS) {
-      expect(BALK_HINT[k], `missing BALK_HINT[${k}]`).toBeTruthy();
+describe('balkHint', () => {
+  it('names an order the player can give for every order that can be refused', () => {
+    const names = Object.values(ORDER_AFFORDANCE).map((a) => a.name);
+    for (const hint of Object.values(BALK_HINT)) {
+      expect(names.some((n) => hint.includes(n)), hint).toBe(true);
     }
-    expect(Object.keys(BALK_HINT)).toHaveLength(8);
+  });
+
+  it('never tells the player to rally: there is no such order', () => {
+    for (const k of ALL_KINDS) expect(balkHint(k, 'too far to throw smoke'), k).not.toMatch(/rally/i);
+  });
+
+  it('gives a smoke order that cannot be thrown the reason the sim gave', () => {
+    expect(balkHint('smoke', 'too far to throw smoke — get within 30 m')).toBe('Too far to throw smoke — get within 30 m');
+    expect(balkHint('smoke', 'no smoke grenades left')).toBe('No smoke grenades left');
   });
 });
 

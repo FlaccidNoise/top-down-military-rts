@@ -18,16 +18,24 @@ export const ORDER_AFFORDANCE: Record<OrderKind, OrderAffordance> = {
   assault: { name: 'Assault', when: 'Charge a suppressed position; pairs with smoke', hotkey: '⇧8', complianceNote: '×1.3 danger — balks on open ground' },
 };
 
-export const BALK_HINT: Record<OrderKind, string> = {
-  move:    'Open ground under fire — suppress or smoke first, or pick a covered approach',
-  fast:    'Open ground under fire — suppress or smoke first, or pick a covered approach',
-  sneak:   'Open ground under fire — suppress or smoke first, or pick a covered approach',
-  fire:    'Team refusing — rally or suppress the threat first',
-  smoke:   'Team refusing — rally or suppress the threat first',
-  defend:  'Team refusing to reposition — rally first',
-  ambush:  'Team refusing — rally first',
-  assault: 'Suppress or smoke the objective, then re-issue the assault',
+// What the roster tells a player whose team refused an order. Every line names
+// an order they can give next. 'fire' has no line: an order that moves nobody
+// is never refused (orders.ts movesTeam). A smoke order that cannot be thrown
+// carries the sim's own reason (too far, none left), which is already the fix.
+const WONT_GO = "Won't go. Fire on the enemy or throw Smoke first.";
+export const BALK_HINT: Record<Exclude<OrderKind, 'fire' | 'smoke'>, string> = {
+  move: WONT_GO,
+  fast: WONT_GO,
+  sneak: WONT_GO,
+  defend: WONT_GO,
+  ambush: WONT_GO,
+  assault: "Won't charge. Fire on the position or throw Smoke first.",
 };
+
+export function balkHint(kind: OrderKind, reason: string): string {
+  if (kind === 'fire' || kind === 'smoke') return reason.charAt(0).toUpperCase() + reason.slice(1);
+  return BALK_HINT[kind];
+}
 
 export type ArmTarget = 'squad' | 'vehicle' | 'crew';
 

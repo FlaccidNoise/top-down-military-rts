@@ -26,6 +26,9 @@ export interface OverlayState {
   // ghost dots promise the tiles the warp will use. bearing = the enemy
   // direction the deployment faces. null/undefined = battle.
   deploy?: { x0: number; x1: number; bearing: number } | null
+  // The map clear of the HUD, in CSS px. Chips that follow a unit are kept
+  // inside it, so one is never cut off by the screen edge or under the roster.
+  clear?: { left: number; top: number; right: number; bottom: number }
 }
 
 function teamCentroid(sim: Sim, soldierIds: number[]): { x: number; y: number } | null {
@@ -551,7 +554,9 @@ export function drawOverlays(ctx: CanvasRenderingContext2D, cam: Camera, sim: Si
 
   // Selected team(s) show their OrderState above their soldiers: kind +
   // refusal reason. A balked team's chip pulses so a refusal is never missed.
-  for (const tid of focusTeams(sim, st)) {
+  // Not in deployment: nothing has been ordered yet, and the dug-in stance a
+  // placement writes would label every squad DEFEND over the banner.
+  for (const tid of st.deploy ? [] : focusTeams(sim, st)) {
     const team = sim.teams[tid];
     if (!team) continue;
     const os = team.orderState;
@@ -563,7 +568,7 @@ export function drawOverlays(ctx: CanvasRenderingContext2D, cam: Camera, sim: Si
     const text = os.reason ? `${label} — ${os.reason}` : label;
     const balked = os.phase === 'balked';
     if (balked) ctx.globalAlpha = 0.4 + 0.6 * Math.abs(Math.sin(sim.tick / 12));
-    chip(ctx, sx, sy - cam.scale * 1.1 - 10, text, balked ? '#ff8a5c' : '#ffe9a0');
+    chip(ctx, sx, sy - cam.scale * 1.1 - 10, text, balked ? '#ff8a5c' : '#ffe9a0', st.clear);
     if (balked) ctx.globalAlpha = 1;
   }
 
@@ -585,7 +590,7 @@ export function drawOverlays(ctx: CanvasRenderingContext2D, cam: Camera, sim: Si
     // blocked shots tell the player why, not just that — from the structured reason, never prose
     const blockedLabel =
       st.shot.reason === 'out-of-range' ? 'OUT OF RANGE' : st.shot.reason === 'no-los' ? 'NO LOS' : st.shot.reason === 'concealed' ? 'CONCEALED' : st.shot.reason === 'floor-blocked' ? 'FLOOR' : 'NO SHOT';
-    chip(ctx, (x0 + x1) / 2, (y0 + y1) / 2, st.shot.ok ? `${Math.round(st.shot.acc * 100)}%` : blockedLabel, st.shot.ok ? '#ffe9a0' : '#a0a090');
+    chip(ctx, (x0 + x1) / 2, (y0 + y1) / 2, st.shot.ok ? `${Math.round(st.shot.acc * 100)}%` : blockedLabel, st.shot.ok ? '#ffe9a0' : '#a0a090', st.clear);
   }
 
   pings.draw(ctx, sim, cam, cw, ch);
@@ -679,9 +684,13 @@ function contextChip(
   ctx.textBaseline = 'alphabetic';
 }
 
-function chip(ctx: CanvasRenderingContext2D, x: number, y: number, text: string, color: string): void {
+function chip(ctx: CanvasRenderingContext2D, x: number, y: number, text: string, color: string, clear?: OverlayState['clear']): void {
   ctx.font = '11px ui-monospace, Menlo, monospace';
   const w = ctx.measureText(text).width + 10;
+  if (clear) {
+    x = Math.max(clear.left + w / 2 + 4, Math.min(clear.right - w / 2 - 4, x));
+    y = Math.max(clear.top + 12, Math.min(clear.bottom - 12, y));
+  }
   ctx.fillStyle = 'rgba(18,22,15,0.85)';
   ctx.fillRect(x - w / 2, y - 8, w, 16);
   ctx.strokeStyle = 'rgba(74,82,64,0.9)';

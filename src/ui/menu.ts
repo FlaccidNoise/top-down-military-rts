@@ -1,5 +1,6 @@
 import type { Keymap } from './keymap';
 import { CONTEXT, DEFAULTS, formatBinding, LABEL, rebind, saveKeymap } from './keymap';
+import { MOBILE } from '../render/view';
 
 export class PauseMenu {
   private el: HTMLDivElement;
@@ -10,6 +11,8 @@ export class PauseMenu {
     onFieldManual(): void;
     tutorialEnabled?(): boolean;
     onTutorialToggle?(on: boolean): void;
+    muted(): boolean;
+    onMuteToggle(): void;
   };
   private km: Keymap = { bindings: { ...DEFAULTS }, version: 0 };
   private captureActive = false;
@@ -22,6 +25,9 @@ export class PauseMenu {
     onFieldManual(): void;
     tutorialEnabled?(): boolean;
     onTutorialToggle?(on: boolean): void;
+    /** Sound. A phone has no M key, so the menu is its only switch. */
+    muted(): boolean;
+    onMuteToggle(): void;
   }) {
     this.cb = cb;
     this.el = document.createElement('div');
@@ -66,6 +72,10 @@ export class PauseMenu {
       this.cb.onTutorialToggle?.(!this.cb.tutorialEnabled!());
       this.render(); // the label IS the state
     });
+    this.el.querySelector('#pm-sound')?.addEventListener('click', () => {
+      this.cb.onMuteToggle();
+      this.render();
+    });
   }
 
   private mainView(): string {
@@ -73,8 +83,9 @@ export class PauseMenu {
       <h1>PAUSED</h1>
       <div class="db-actions">
         <button id="pm-resume" class="primary">Resume</button>
-        <button id="pm-keybindings">Keybindings</button>
+        ${MOBILE ? '' : '<button id="pm-keybindings">Keybindings</button>'}
         <button id="pm-manual">Field Manual</button>
+        <button id="pm-sound" aria-pressed="${!this.cb.muted()}">Sound: ${this.cb.muted() ? 'OFF' : 'ON'}</button>
         ${this.cb.tutorialEnabled ? `<button id="pm-tutorial" aria-pressed="${this.cb.tutorialEnabled()}">Tutorial: ${this.cb.tutorialEnabled() ? 'ON' : 'OFF'}</button>` : ''}
       </div>
       ${this.cb.tutorialEnabled && !this.cb.tutorialEnabled() ? '<p class="pm-note">Turn the tutorial on from the main menu to replay it from the briefing.</p>' : ''}
