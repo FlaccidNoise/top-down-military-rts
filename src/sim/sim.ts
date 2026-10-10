@@ -754,6 +754,10 @@ export function sightToSoldier(sim: Sim, x0: number, y0: number, t: Soldier, l0 
 export const SPOT_INTERVAL = 15; // ticks: 0.5 s between spotting sweeps
 export const SPOT_RANGE = 200; // m — beyond every small-arms range
 export const CONTACT_TTL = 45 * 30; // ticks a last-known ghost lingers
+// A side breaks off the battle when its effectives fall below this share of
+// its starting strength, and never while it still has BREAK_FLOOR_MIN men.
+export const BREAK_FRACTION = 0.25;
+export const BREAK_FLOOR_MIN = 2;
 
 export interface Contact {
   kind: 'infantry' | 'vehicle';
@@ -2206,13 +2210,17 @@ export class Sim {
       else red++;
     }
     if (this.winner === null) {
-      // a side breaks off the battle below a quarter of starting strength
-      const floorOf = (side: Side) => Math.max(2, this.startStrength[side] * 0.25);
-      if (blue < floorOf('blue') && red >= floorOf('red')) this.winner = 'red';
-      else if (red < floorOf('red') && blue >= floorOf('blue')) this.winner = 'blue';
+      if (blue < this.breakFloor('blue') && red >= this.breakFloor('red')) this.winner = 'red';
+      else if (red < this.breakFloor('red') && blue >= this.breakFloor('blue')) this.winner = 'blue';
       else if (blue === 0 && red > 0) this.winner = 'red';
       else if (red === 0 && blue > 0) this.winner = 'blue';
     }
+  }
+
+  // Effectives below which `side` breaks off the battle. Public: the HUD
+  // quotes it.
+  breakFloor(side: Side): number {
+    return Math.max(BREAK_FLOOR_MIN, this.startStrength[side] * BREAK_FRACTION);
   }
 
   // When every eligible member of a squad has arrived, dispatch its next waypoint.
