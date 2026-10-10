@@ -1,6 +1,6 @@
 import { advanceDays, fillReplacements, newCampaign, squadMembers, type BattleRecord, type Campaign } from './campaign/campaign';
 import { AudioEngine } from './render/audio';
-import { Barks } from './render/barks';
+import { Barks, barksOn, setBarksOn } from './render/barks';
 import { Camera } from './render/camera';
 import type { GrenadeThrow } from './render/fx';
 import { Renderer } from './render/renderer';
@@ -483,6 +483,8 @@ const menu = new PauseMenu({
   // pinned art path there is no tutorial, so the control does not render.
   tutorialEnabled: campPinned ? undefined : () => (tutorial ? !tutorial.isSkipped : false),
   onTutorialToggle: campPinned ? undefined : (on) => tutorial?.setEnabled(on),
+  barksOn: () => barksOn(),
+  onBarksToggle: (on) => setBarksOn(on),
   // The drill belongs to no campaign, so there is nothing to lose by leaving it.
   inTraining: () => drill !== null,
   onLeaveTraining: () => {
@@ -751,6 +753,8 @@ const mainMenu = new MainMenu({
   // Read live, never cached: the pause menu can flip the same switch.
   tutorialEnabled: tutorial ? () => !tutorial.isSkipped : undefined,
   onTutorialToggle: tutorial ? (on) => tutorial.setEnabled(on) : undefined,
+  barksOn: () => barksOn(),
+  onBarksToggle: (on) => setBarksOn(on),
   firstRun: () => tutorial !== null && !tutorial.isSkipped && !tutorial.drilled && probeSave().status === 'none',
   onPlay: () => startDrill(campSeed()),
   onTraining: () => startDrill(campSeed()),

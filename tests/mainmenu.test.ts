@@ -57,12 +57,12 @@ describe('renderContinueBlock — five states from literal SaveProbes', () => {
 describe('renderActions: what the menu offers', () => {
   const NONE: SaveProbe = { status: 'none' };
   const SAVED: SaveProbe = { status: 'ok', day: 4, clock: '0615', theaterName: 'Argentan Sector', menFit: 132 };
-  const later: MenuView = { firstRun: false, tutorial: true, confirmNew: false };
+  const later: MenuView = { firstRun: false, tutorial: true, confirmNew: false, barks: true };
   const ids = (html: string): string[] => [...html.matchAll(/<button id="([^"]+)"/g)].map((m) => m[1]);
   const words = (html: string): number => html.replace(/<[^>]*>/g, ' ').split(/\s+/).filter((w) => /[\p{L}\p{N}]/u.test(w)).length;
 
   it('first run: one primary button, Play, and two quiet ones', () => {
-    const html = renderActions(NONE, { firstRun: true, tutorial: true, confirmNew: false });
+    const html = renderActions(NONE, { firstRun: true, tutorial: true, confirmNew: false, barks: true });
     expect(ids(html)).toEqual(['mm-play', 'mm-custom', 'mm-manual']);
     expect(html.match(/class="primary/g)).toHaveLength(1);
     expect(html).toContain('<button id="mm-play" class="primary mm-big">Play</button>');
@@ -71,7 +71,9 @@ describe('renderActions: what the menu offers', () => {
 
   it('later runs: a new campaign, Training, the setup screen, the manual and the tutorial switch', () => {
     const html = renderActions(NONE, later);
-    expect(ids(html)).toEqual(['mm-new', 'mm-training', 'mm-custom', 'mm-manual', 'mm-tutorial']);
+    expect(ids(html)).toEqual(['mm-new', 'mm-training', 'mm-custom', 'mm-manual', 'mm-tutorial', 'mm-barks']);
+    expect(html).toContain('Barks: ON');
+    expect(renderActions(NONE, { ...later, barks: false })).toContain('<button id="mm-barks" aria-pressed="false">Barks: OFF</button>');
     expect(html).toContain('>Custom operation<');
     expect(html).toContain('Tutorial: ON');
     expect(renderActions(NONE, { ...later, tutorial: false })).toContain('Tutorial: OFF');

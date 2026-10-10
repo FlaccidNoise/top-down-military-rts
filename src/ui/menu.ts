@@ -15,6 +15,8 @@ export class PauseMenu {
     onTutorialToggle?(on: boolean): void;
     muted(): boolean;
     onMuteToggle(): void;
+    barksOn(): boolean;
+    onBarksToggle(on: boolean): void;
     inTraining(): boolean;
     onLeaveTraining(): void;
   };
@@ -32,6 +34,9 @@ export class PauseMenu {
     /** Sound. A phone has no M key, so the menu is its only switch. */
     muted(): boolean;
     onMuteToggle(): void;
+    /** Barks: the words over a man at key moments (src/render/barks.ts owns the setting). */
+    barksOn(): boolean;
+    onBarksToggle(on: boolean): void;
     /** The drill is the battle on screen: the menu then offers the way out of it. */
     inTraining(): boolean;
     onLeaveTraining(): void;
@@ -86,6 +91,10 @@ export class PauseMenu {
       this.cb.onMuteToggle();
       this.render();
     });
+    this.el.querySelector('#pm-barks')?.addEventListener('click', () => {
+      this.cb.onBarksToggle(!this.cb.barksOn());
+      this.render();
+    });
     this.el.querySelector('#pm-leave')?.addEventListener('click', () => {
       this.close();
       this.cb.onLeaveTraining();
@@ -102,6 +111,7 @@ export class PauseMenu {
         <button id="pm-manual">Field Manual</button>
         <button id="pm-sound" aria-pressed="${!this.cb.muted()}">Sound: ${this.cb.muted() ? 'OFF' : 'ON'}</button>
         ${this.cb.tutorialEnabled ? `<button id="pm-tutorial" aria-pressed="${this.cb.tutorialEnabled()}">Tutorial: ${this.cb.tutorialEnabled() ? 'ON' : 'OFF'}</button>` : ''}
+        <button id="pm-barks" aria-pressed="${this.cb.barksOn()}">Barks: ${this.cb.barksOn() ? 'ON' : 'OFF'}</button>
         ${this.cb.inTraining() ? '<button id="pm-leave">Leave training</button>' : ''}
       </div>
       ${this.cb.tutorialEnabled && !this.cb.tutorialEnabled() ? '<p class="pm-note">Training is on the main menu.</p>' : ''}

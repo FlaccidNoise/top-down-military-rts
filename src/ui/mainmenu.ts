@@ -38,6 +38,9 @@ export interface MainMenuCallbacks {
   // exists, and the control does not render.
   tutorialEnabled?(): boolean;
   onTutorialToggle?(on: boolean): void;
+  /** Barks: the words over a man at key moments (src/render/barks.ts owns the setting). */
+  barksOn(): boolean;
+  onBarksToggle(on: boolean): void;
 }
 
 // Save-file strings (detail, clock, theaterName) reach innerHTML; a corrupt
@@ -55,6 +58,7 @@ const TRAINING_ID = 'mm-training';
 const CUSTOM_ID = 'mm-custom';
 const MANUAL_ID = 'mm-manual';
 const TUTORIAL_ID = 'mm-tutorial';
+const BARKS_ID = 'mm-barks';
 
 export interface MenuView {
   firstRun: boolean;
@@ -62,6 +66,7 @@ export interface MenuView {
   tutorial: boolean | null;
   /** New campaign was pressed over a saved one and is waiting for the second press. */
   confirmNew: boolean;
+  barks: boolean;
 }
 
 // Pure — the button row, so both shapes of the menu test without a browser.
@@ -85,7 +90,8 @@ export function renderActions(probe: SaveProbe, v: MenuView): string {
       <button id="${TRAINING_ID}">Training</button>
       <button id="${CUSTOM_ID}">Custom operation</button>
       <button id="${MANUAL_ID}">Field Manual</button>
-      ${v.tutorial === null ? '' : `<button id="${TUTORIAL_ID}" aria-pressed="${v.tutorial}">Tutorial: ${v.tutorial ? 'ON' : 'OFF'}</button>`}`;
+      ${v.tutorial === null ? '' : `<button id="${TUTORIAL_ID}" aria-pressed="${v.tutorial}">Tutorial: ${v.tutorial ? 'ON' : 'OFF'}</button>`}
+      <button id="${BARKS_ID}" aria-pressed="${v.barks}">Barks: ${v.barks ? 'ON' : 'OFF'}</button>`;
 }
 
 // Pure — no DOM globals, so the five states are testable without a browser.
@@ -183,7 +189,7 @@ export class MainMenu {
       ${firstRun ? '' : renderContinueBlock(this.probe)}
     </div></div></div>
     <div class="db-actions">
-      ${renderActions(this.probe, { firstRun, tutorial: this.cb.tutorialEnabled ? this.cb.tutorialEnabled() : null, confirmNew: this.confirmNew })}
+      ${renderActions(this.probe, { firstRun, tutorial: this.cb.tutorialEnabled ? this.cb.tutorialEnabled() : null, confirmNew: this.confirmNew, barks: this.cb.barksOn() })}
     </div>`;
 
     this.el.querySelector(`#${PLAY_ID}`)?.addEventListener('click', () => this.cb.onPlay());
@@ -194,6 +200,10 @@ export class MainMenu {
         return;
       }
       this.cb.onNewCampaign();
+    });
+    this.el.querySelector(`#${BARKS_ID}`)?.addEventListener('click', () => {
+      this.cb.onBarksToggle(!this.cb.barksOn());
+      this.render(); // the label IS the state
     });
     this.el.querySelector(`#${TRAINING_ID}`)?.addEventListener('click', () => this.cb.onTraining());
     this.el.querySelector(`#${CUSTOM_ID}`)?.addEventListener('click', () => this.cb.onCustom());
