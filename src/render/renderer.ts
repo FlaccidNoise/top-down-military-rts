@@ -14,6 +14,7 @@ import { craterSpots } from './props';
 import { chase, fallSlide, gunRecoil, hitJerk, hullRock, kickBack, wrapAngle } from './react';
 import { RoofLayer } from './roofs';
 import { SURROUND_FAR, TerrainLayer } from './terrain';
+import { Ambient } from './ambient';
 import { MOBILE, view } from './view';
 import { getVehicleShadow, getVehicleSprite, occBucket, trackGauge, turretBlob, turretCenter, vehicleBandFor, VEHICLE_SPAN } from './vehicles';
 
@@ -380,6 +381,7 @@ function floorBadgeLabel(level: number): string {
 
 export class Renderer {
   private terrain: TerrainLayer;
+  private ambient: Ambient;
   private roofs = new RoofLayer();
   private tracers: Tracer[] = [];
   private meleeFx: (MeleeEvent & { at: number })[] = [];
@@ -430,6 +432,7 @@ export class Renderer {
     // shop from a house needs `role`, which lives on the plan and nowhere in
     // the grid. Legacy kinds emit no roles, so those maps behave as before.
     this.terrain = new TerrainLayer(sim.map, sim.buildings);
+    this.ambient = new Ambient(sim.map, this.terrain.hedges, this.terrain.index);
     this.decals = new DecalLayer(sim.map.w, sim.map.h);
     // Five world-anchored haze bands, generated once from the map dimensions
     // so the same map always breathes the same way.
@@ -934,6 +937,8 @@ export class Renderer {
     this.prewarm(cam.scale);
     this.terrain.drawSurround(ctx, cam, cw, ch);
     this.terrain.draw(ctx, cam, cw, ch);
+    // straight onto the ground it belongs to, under everything laid on that
+    this.ambient.draw(ctx, cam, cw, ch, this.fxClock / 1000);
     // The limit of the battle, still drawn: the ground past it is scenery,
     // and the player has to be able to see where orders stop. Thinner than it
     // was, now that it is a line on a landscape and not the rim of a hole.

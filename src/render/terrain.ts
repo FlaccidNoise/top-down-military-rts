@@ -975,7 +975,7 @@ function drawPaving(g: Ctx, map: GameMap, patches: PatchIndex, tx0: number, ty0:
 // is measured from the parcel centroid, so a row is one continuous line from
 // one end of the field to the other, across every tile and chunk boundary.
 type Crop = 0 | 1 | 2; // plowed / cereal / roots
-const cropOf = (seed: number): Crop => {
+export const cropOf = (seed: number): Crop => {
   const t = hash(seed, 0, 244);
   return t < 0.4 ? 0 : t < 0.75 ? 1 : 2;
 };
@@ -1782,7 +1782,8 @@ function drawTileBase(
     if (!fieldAt(x - 1, y)) g.fillRect(x, y, 0.08, 1);
     if (!fieldAt(x + 1, y)) g.fillRect(x + 0.92, y, 0.08, 1);
   } else if (t === 'water') {
-    g.fillStyle = shade(WATER, 0.9 + coarse(x, y) * 0.12 + hash(x, y, 91) * 0.05);
+    // drift only: a random step a tile is a checkerboard, on water more than anywhere
+    g.fillStyle = shade(WATER, 0.925 + coarse(x, y) * 0.12);
     g.fillRect(x, y, 1, 1);
     // faint N→S drift streaks with the current
     g.fillStyle = 'rgba(255,255,255,0.05)';
@@ -2005,17 +2006,26 @@ function bakeSurround(w: number, h: number): HTMLCanvasElement {
   return c;
 }
 
-function drawTree(g: Ctx, map: GameMap, x: number, y: number, band: number, d: Detail): void {
+// The tree on a woods tile: where its crown is centred and its radius, or null
+// where the stand has a gap. One rule for the bake and for anything laid over
+// the baked crown afterwards (ambient.ts).
+export function treeAt(map: GameMap, x: number, y: number): [number, number, number] | null {
   const wooded = (tx: number, ty: number) => map.inBounds(tx, ty) && map.terrainKeyAt(tx, ty) === 'woods';
   // Canopy-gap culling is only safe deep inside a stand, where the bare (darker)
   // woods floor sits under surrounding canopy. On an edge tile — any non-woods
   // orthogonal neighbor — a culled tree exposes the dark floor square against
   // the lighter grass, which reads as a hard dark rectangle. Keep edge trees.
   const interior = wooded(x - 1, y) && wooded(x + 1, y) && wooded(x, y - 1) && wooded(x, y + 1);
-  if (interior && hash(x, y, 40) >= 0.55) return;
-  const cx = x + 0.3 + hash(x, y, 41) * 0.4;
-  const cy = y + 0.3 + hash(x, y, 42) * 0.4;
-  const r = 0.55 + hash(x, y, 43) * 0.4; // may overhang up to ~1 tile — chunks overscan by `pad`, so this is safe
+  if (interior && hash(x, y, 40) >= 0.55) return null;
+  // the crown may overhang up to ~1 tile — chunks overscan by `pad`, so this is safe
+  return [x + 0.3 + hash(x, y, 41) * 0.4, y + 0.3 + hash(x, y, 42) * 0.4, 0.55 + hash(x, y, 43) * 0.4];
+}
+
+function drawTree(g: Ctx, map: GameMap, x: number, y: number, band: number, d: Detail): void {
+  const tree = treeAt(map, x, y);
+  if (!tree) return;
+  const [cx, cy, r] = tree;
+  const wooded = (tx: number, ty: number) => map.inBounds(tx, ty) && map.terrainKeyAt(tx, ty) === 'woods';
   // mapgen plants orchards on a staggered 2-tile spacing, so a woods tile with
   // no orthogonal woods neighbour but woods two tiles out is a fruit tree, not
   // a forest tree
@@ -2209,7 +2219,7 @@ export class TerrainLayer {
   private hasStairs: boolean;
   private bakeBudget = 0;
   private patches: PatchIndex;
-  private hedges: Hedgerows;
+  readonly hedges: Hedgerows;
   private paveMask: HTMLCanvasElement | null = null; // bakePaveMask, built on the first chunk of a map that has a square
   private yards: Yard[];
   // props bucketed by chunk key on their DRAWN extent (a telegraph wire spans
