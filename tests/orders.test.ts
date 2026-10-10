@@ -269,6 +269,31 @@ describe('orders in progress (#763)', () => {
     expect(routine.c.stabilized).toBe(true);
   });
 
+  it('a team that refuses a new order stops: it does not walk the old one out (#787)', () => {
+    const sim = new Sim(new GameMap(80, 20), 3);
+    sim.addSquad('blue', 'a', [
+      { name: 'A', weapon: 'thompson', x: 10.5, y: 10.5 },
+      { name: 'B', weapon: 'garand', x: 10.5, y: 11.5 },
+    ]);
+    for (const s of sim.soldiers) s.morale = 0.5;
+    sim.orderTeam(0, { kind: 'move', x: 30, y: 10 }); // nothing in sight: they step off
+    for (let i = 0; i < 30; i++) sim.step();
+    expect(sim.teams[0].orderState.phase).toBe('executing');
+    expect(sim.soldiers.slice(0, 2).every((s) => s.path !== null)).toBe(true);
+    // The gun shows itself, and the next order is one they will not take.
+    sim.addSquad('red', 'mg', [
+      { name: 'M1', weapon: 'mg42', x: 60.5, y: 10.5 },
+      { name: 'M2', weapon: 'kar98k', x: 60.5, y: 11.5 },
+      { name: 'M3', weapon: 'kar98k', x: 60.5, y: 12.5 },
+      { name: 'M4', weapon: 'kar98k', x: 60.5, y: 9.5 },
+      { name: 'M5', weapon: 'kar98k', x: 60.5, y: 8.5 },
+    ]);
+    sim.squadLastCasualty[0] = sim.tick;
+    sim.orderTeam(0, { kind: 'move', x: 50, y: 14 });
+    expect(sim.teams[0].orderState.phase).toBe('balked');
+    expect(sim.soldiers.slice(0, 2).map((s) => s.path)).toEqual([null, null]); // was: still walking to x=30
+  });
+
   it('a bounding team leaves its rescuer on the casualty, and finishes without him', () => {
     const sim = new Sim(new GameMap(80, 20), 6);
     sim.addSquad('blue', 'a', [

@@ -1926,6 +1926,11 @@ export class Sim {
     if (verdict === 'balk') {
       team.orderState = { order, phase: 'balked', reason: order.kind === 'assault' ? CHARGE_BALK_REASON : BALK_REASON };
       if (order.kind === 'sneak') this.sneakBaseline[team.id] = this.woundCount(team); // a refused sneak still holds fire until someone is hit
+      // A team that will not go stops (#787). The order it was on is gone —
+      // orderState now holds the refused one — and its men used to walk that
+      // old order out under a chip reading WON'T ADVANCE. A man on a rescue
+      // keeps his errand: the refusal changed nothing for him.
+      this.halt(this.offTask(eligibleIds));
       return;
     }
     const cautious = verdict === 'cautious';
