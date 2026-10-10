@@ -550,8 +550,9 @@ export class Tutorial {
             if (!anchor) continue;
             // A bubble pointing into the touch bar clears the whole bar: the
             // order row sits right above the chip it names. One pointing into
-            // the contact card clears the card: the odds are on it.
-            const panel = target.closest('#touchbar, #contact');
+            // the contact card clears the card: the odds are on it. One pointing
+            // at a card's button clears the row of buttons: on a phone they stack.
+            const panel = target.closest('#touchbar, #contact, .db-actions');
             // The theater's panels stack on a phone: a bubble under the clock
             // row would lie on the objectives under it.
             const hud = target.closest('#theater-hud');

@@ -413,6 +413,7 @@ button.hbtn.active { background: var(--chip-active-bg); border-color: var(--ambe
 #debrief h1.loss { color: var(--red); }
 #debrief .sub { color: var(--muted); margin: 0 0 6px; }
 #debrief .fallen { color: var(--red); margin: 0 0 6px; }
+#debrief .fallen.none { color: var(--muted); } /* nobody died: not a line to print in red */
 /* The result as a few large numbers: the first thing read, before any table. */
 #debrief .db-stats { display: flex; gap: var(--sp-6); margin: var(--sp-5) 0 var(--sp-4); }
 #debrief .db-stat b { display: block; font-size: 44px; line-height: 1; font-weight: var(--fw-head); color: var(--paper); }

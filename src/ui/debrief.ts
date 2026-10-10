@@ -46,7 +46,7 @@ export function debriefHtml(d: DebriefSummary, actions: readonly DebriefAction[]
       ${stat(String(d.wounded), 'wounded')}
       ${stat(d.enemyLosses > 0 ? `~${d.enemyLosses}` : '0', 'enemy losses')}
     </div>
-    <p class="fallen">${esc(fallenLine(d.kia))}</p>
+    <p class="fallen${d.kia.length === 0 ? ' none' : ''}">${esc(fallenLine(d.kia))}</p>
     <div id="db-roster"></div>
     </div></div>
     ${actionRow(actions)}`;

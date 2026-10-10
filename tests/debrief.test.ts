@@ -42,7 +42,7 @@ describe('debriefHtml', () => {
     const quiet = debriefHtml(summary(), ACTIONS);
     const stats = [...quiet.matchAll(/<div class="db-stat[^"]*"><b>([^<]*)<\/b>/g)].map((m) => m[1]);
     expect(stats).toEqual(['0', '0', '0']);
-    expect(quiet).toContain('No one died today.');
+    expect(quiet).toContain('<p class="fallen none">No one died today.</p>');
     expect(quiet).not.toContain('db-stat bad');
   });
 

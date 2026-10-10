@@ -88,6 +88,17 @@ export const stepView = (page) =>
         : [],
       stage: g.stage(),
       glow: [...document.querySelectorAll('#orderbar .ord.glow')].map((e) => e.dataset.order),
+      // Controls the bubble lies on: a button under it cannot be pressed (jtbug #783).
+      covers: br
+        ? [...document.querySelectorAll('button, [role="button"]')].filter((e) => {
+            if (e.closest('.coach') || e.disabled) return false;
+            const r = e.getBoundingClientRect();
+            if (r.width <= 0 || r.height <= 0 || !(r.left < br.right - 2 && r.right > br.left + 2 && r.top < br.bottom - 2 && r.bottom > br.top + 2)) return false;
+            // Only what the player could otherwise press: on top at its own centre, bubble aside.
+            const at = document.elementsFromPoint(r.left + r.width / 2, r.top + r.height / 2).filter((x) => !x.closest('.coach'))[0];
+            return !!at && (at === e || e.contains(at));
+          }).map((e) => (e.textContent || e.id || e.className).replace(/\s+/g, ' ').trim().slice(0, 24))
+        : [],
       armed: sel.armedOrder,
       sel: sel.squads,
       mode: sel.mode,
@@ -138,6 +149,7 @@ export async function checkStep(h, id, { check, shot }) {
   check(v.text === v.want && !!v.want, `${tag}: says its own line for this platform ("${v.text}")`);
   const [W, H] = v.vp.inner;
   check(!!v.bubble && v.bubble.left >= 0 && v.bubble.top >= 0 && v.bubble.right <= W && v.bubble.bottom <= H, `${tag}: bubble on screen (${v.bubble ? `${Math.round(v.bubble.left)},${Math.round(v.bubble.top)} to ${Math.round(v.bubble.right)},${Math.round(v.bubble.bottom)}` : 'no bubble'} in ${W}x${H})`);
+  check(v.covers.length === 0, `${tag}: the bubble covers no control${v.covers.length ? ` (it is on: ${v.covers.join(' | ')})` : ''}`);
   if (v.ring) {
     const st = v.stage;
     check(v.ring.x >= st.left && v.ring.x <= st.right && v.ring.y >= st.top && v.ring.y <= st.bottom, `${tag}: the ring is on the map the player can see (${Math.round(v.ring.x)},${Math.round(v.ring.y)} in ${Math.round(st.left)},${Math.round(st.top)} to ${Math.round(st.right)},${Math.round(st.bottom)})`);
