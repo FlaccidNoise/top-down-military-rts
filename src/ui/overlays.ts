@@ -862,6 +862,12 @@ export class EventPings {
         // sim raises it off blue's own sightings). Blue's own advances raise
         // the same event for the other side and say nothing here.
         this.quiet(e.side, e.team ?? e.name, e.kind, 'CLOSING IN', C_ENEMY, tick);
+      } else if (e.side !== 'blue' && e.kind === 'countering') {
+        // The same sighting as CLOSING IN when the Germans hold the field: a
+        // team of the defence seen coming for ground blue has taken.
+        this.quiet(e.side, e.team ?? e.name, e.kind, 'COUNTERATTACK', C_ENEMY, tick);
+      } else if (e.side !== 'blue' && e.kind === 'withdrawing') {
+        this.quiet(e.side, e.team ?? e.name, e.kind, 'FALLING BACK', C_ENEMY, tick);
       }
       // 'pinned' and 'rallied' are deliberately NOT consumed here. One barrage
       // pins a platoon in a tick and five slots cannot hold that, so the ticker

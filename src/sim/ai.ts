@@ -1013,8 +1013,14 @@ export class RedCommander {
   private retake(sim: Sim, squad: Squad, post: { x: number; y: number }, dist: number): void {
     const lead = sim.teams[squad.teamIds[0]];
     if (lead.orderState.order?.kind === 'assault' && lead.orderState.phase === 'executing') return;
-    const charge = dist <= ASSAULT_RANGE && orderVerdict(sim, lead, { kind: 'assault', x: post.x, y: post.y }).verdict !== 'balk';
-    if (!charge && orderVerdict(sim, lead, { kind: 'move', x: post.x, y: post.y }).verdict === 'balk' && this.screen(sim, squad, post, SMOKE_THROW_M - 1)) return;
+    const close = dist <= ASSAULT_RANGE;
+    const charge = close && orderVerdict(sim, lead, { kind: 'assault', x: post.x, y: post.y }).verdict !== 'balk';
+    // Inside charge range with the charge refused, it does not walk in by
+    // bounds instead (#796: six counterattacks watched, none retook its post,
+    // the ones that moved went in half a squad at a time and were shot 11 m
+    // short). It smokes the post and charges through the smoke. Farther out
+    // it smokes only a move its men refuse.
+    if (!charge && (close || orderVerdict(sim, lead, { kind: 'move', x: post.x, y: post.y }).verdict === 'balk') && this.screen(sim, squad, post, SMOKE_THROW_M - 1)) return;
     sim.orderSquad(squad.id, { kind: charge ? 'assault' : 'move', x: post.x, y: post.y }, undefined, true);
   }
 

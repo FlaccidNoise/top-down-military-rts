@@ -89,6 +89,9 @@ const GUN_HELD_RADIUS = 10;
 // A movement order ending this close to a standing enemy is headed for ground
 // that enemy holds (noteClosing). The commander's own "held" radius.
 const CLOSING_RADIUS = 20;
+// A team seen going back (#796): most of its men in the other side's sight
+// and on the move, to a point at least this far toward its own rear.
+const WITHDRAW_SEEN_M = 10;
 // A man who steadies within this long of being pinned or broken has rallied
 // (#766). The crossing never happens in one tick: suppression decays at most
 // 0.0023 a tick and morale climbs 0.00013, so he always passes through
@@ -494,6 +497,11 @@ export interface UnitEvent {
     | 'fell-back' // a defending squad gave up its post for the next one back
     | 'counterattack' // a local reserve went in to retake a lost post
     | 'grenade' // a man threw one: `id` is the thrower
+    // The same sighting as 'closing' below, when the team coming is the
+    // DEFENDER's (a counterattack), and a team seen going back toward its own
+    // rear. Raised by the sim off what the other side can see (noteClosing).
+    | 'countering'
+    | 'withdrawing'
     // A team seen moving onto ground the other side holds. Raised by the sim
     // off what that other side can see, never by a commander: `id` is a man
     // of the team its enemy has in sight.
@@ -2397,6 +2405,14 @@ export class Sim {
   // destination within CLOSING_RADIUS of one of that side's standing men.
   // Run on the spotting cadence, straight after the sweep it reads. Draws no
   // rng and writes nothing the sim reads.
+  //
+  // Two more things a side can see an enemy team do (#796), on the same
+  // rule and from the same sightings. The team coming at held ground belongs
+  // to the side that is DEFENDING the field (it expects its enemy from the
+  // west, threatAxis): that is a counterattack, and it is called one,
+  // 'countering', in place of 'closing' and never beside it. And a team most
+  // of whose men are seen on the move, to a point WITHDRAW_SEEN_M or more
+  // toward its own rear, is 'withdrawing'. One event per order at most.
   private noteClosing(): void {
     for (const team of this.teams) {
       const st = team.orderState;
@@ -2406,21 +2422,35 @@ export class Sim {
       const side = this.squads[team.squadId].side;
       const other: Side = side === 'blue' ? 'red' : 'blue';
       let seen: Soldier | null = null;
+      let men = 0;
+      let seenMoving = 0;
+      let cx = 0;
+      let cy = 0;
       for (const id of team.soldierIds) {
         const m = this.soldiers[id];
-        if (this.eligible(m) && this.soldierVisibleTo(other, m)) {
-          seen = m;
-          break;
-        }
+        if (!this.eligible(m)) continue;
+        men++;
+        cx += m.x;
+        cy += m.y;
+        if (!this.soldierVisibleTo(other, m)) continue;
+        seen ??= m;
+        if (m.path) seenMoving++;
       }
       if (!seen) continue;
+      const said = (kind: 'closing' | 'countering' | 'withdrawing'): void => {
+        this.closingSaid.add(order);
+        this.pendingUnitEvents.push({ kind, x: seen.x, y: seen.y, side, name: seen.name, id: seen.id, team: team.name });
+      };
+      let closing = false;
       for (const o of this.soldiers) {
         if (o.side !== other || !o.alive || o.downed || o.captured || o.inVehicle >= 0) continue;
         if (Math.hypot(o.x - order.x, o.y - order.y) > CLOSING_RADIUS) continue;
-        this.closingSaid.add(order);
-        this.pendingUnitEvents.push({ kind: 'closing', x: seen.x, y: seen.y, side, name: seen.name, id: seen.id, team: team.name });
+        closing = true;
         break;
       }
+      const axis = this.threatAxis[side];
+      if (closing) said(Math.cos(axis) < 0 ? 'countering' : 'closing');
+      else if (order.kind !== 'assault' && seenMoving * 2 > men && (order.x - cx / men) * -Math.cos(axis) + (order.y - cy / men) * -Math.sin(axis) >= WITHDRAW_SEEN_M) said('withdrawing');
     }
   }
 
