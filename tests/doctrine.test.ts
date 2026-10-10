@@ -371,7 +371,7 @@ describe('AI commander doctrine', () => {
     expect(sim.teams[rocket.teamIds[0]].orderState.order).toBeNull(); // the launcher was not sent to "suppress"
   });
 
-  it('armour follows the maneuver element onto its next objective instead of parking on the first (#763)', () => {
+  it('armour follows the maneuver element onto its next objective, and stays behind it (#763, #787)', () => {
     const sim = new Sim(new GameMap(220, 60), 107);
     const first = { x: 70, y: 30 };
     const second = { x: 170, y: 30 };
@@ -393,15 +393,32 @@ describe('AI commander doctrine', () => {
       posts: Object.fromEntries(rifles.map((q) => [q.id, first])),
       objectives: [first, second],
     });
-    let onFirst = false;
-    for (let i = 0; i < 6000 && !hulls.every((v) => v.x > first.x + 40); i++) {
+    // #787: and they follow BEHIND it. Sent straight to the objective, the
+    // hulls got there first and alone. While the objective the riflemen are
+    // working is untaken, a hull holds the standoff until the lead team is on
+    // it, and is never sent in ahead of that team.
+    let held = false;
+    let ranAhead = 0;
+    let onward = false;
+    const was = hulls.map(() => Infinity);
+    for (let i = 0; i < 6000 && !onward; i++) {
       commander.update(sim);
       sim.step();
-      if (hulls.every((v) => Math.hypot(v.x - first.x, v.y - first.y) <= 25)) onFirst = true;
+      const post = commander['maneuverPost'](sim);
+      const lead = post && commander['leadDistance'](sim, post);
+      if (!post || lead === undefined || commander['isTaken'](post)) continue;
+      hulls.forEach((v, h) => {
+        const d = Math.hypot(v.x - post.x, v.y - post.y);
+        if (lead > 35 && lead < 55 && d >= 50) held = true; // riflemen inside the standoff, hull still out at it
+        if (lead > 35 && d < 50 && d < was[h]) ranAhead++; // closing inside the standoff with nobody on the objective
+        was[h] = d;
+      });
+      onward = hulls.every((v) => v.x > first.x + 20);
     }
-    expect(onFirst).toBe(true); // they went to the first objective
-    expect(commander['takenPosts'].length).toBeGreaterThan(0); // which the riflemen then took
-    for (const v of hulls) expect(v.x).toBeGreaterThan(first.x + 40); // and they were sent on
+    expect(commander['takenPosts'].length).toBeGreaterThan(0); // the riflemen took the first objective
+    expect(onward).toBe(true); // and the hulls were sent on past it, toward the second
+    expect(held).toBe(true);
+    expect(ranAhead).toBe(0);
     expect(Math.hypot(hulls[0].x - hulls[1].x, hulls[0].y - hulls[1].y)).toBeGreaterThan(3); // not parked on one tile
   });
 

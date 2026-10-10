@@ -80,10 +80,18 @@ const BOF_LEG = 20;
 // kind the commander wants, toward a point this close to the one it wants,
 // is left to get on with it.
 const SAME_ORDER_RADIUS = 5;
-// Armour: a hull this close to the objective it was sent to has arrived, and
-// two hulls sent to one objective stand this far apart instead of on one tile.
-const HULL_ARRIVED_RADIUS = 25;
+// Armour: two hulls sent to one objective stand this far apart instead of on
+// one tile.
 const HULL_SPACING = 10;
+// A hull supports from behind its infantry (#787). It closes no nearer the
+// objective than the lead rifle team working it, and holds HULL_STANDOFF out
+// until that team is on the objective: 60 m is outside a panzerfaust's 35 m
+// and inside the hull's own 100 m MG and 120 m gun. Sent straight to the
+// objective it arrived first and alone, and 7 of 12 hulls were lost on the
+// probe set (3 of 12 when they did not move at all). It is sent on again once
+// it stands HULL_REORDER short of where it may be.
+const HULL_STANDOFF = 60;
+const HULL_REORDER = 10;
 // Objective progression: a post with a live man of the commander's own side
 // within this radius is held, and a maneuver team this close to its own post
 // is standing on the objective.
@@ -166,7 +174,7 @@ export class RedCommander {
   private breachSeen = 0; // how much of sim.breachLog this commander has already reacted to
   private asked = new Map<number, OrderKind>(); // teamId -> the kind last sent it, which a cautious team may be executing as a plain 'move'
   private flankLeg = new Map<number, { post: { x: number; y: number }; x: number; y: number }>(); // maneuver teamId -> the flank bound it is on
-  private hullPost = new Map<number, { x: number; y: number }>(); // vehicleId -> the objective it was last sent to
+  private hullSent = new Map<number, { x: number; y: number }>(); // vehicleId -> the hold point it was last sent to
 
   constructor(private cfg: CommanderConfig) {}
 
@@ -829,21 +837,55 @@ export class RedCommander {
   // first post in the briefing, once: they reached it in about 20 s, ahead of
   // every rifleman, and stood there for the rest of the battle while the
   // attack worked objectives 100 m further on. Defend stance issues nothing —
-  // a hull holds where it was staged. No cooperation doctrine here: the hull
-  // still drives straight to the objective.
+  // a hull holds where it was staged.
+  //
+  // Each hull closes along its own line to the objective, to the distance
+  // the lead rifle team stands at or HULL_STANDOFF, whichever is farther
+  // (#787): it comes up as the riflemen do and stops short while they close.
+  // Once they are inside ASSAULT_RANGE it goes in with them, still no nearer
+  // than they are — held at the standoff for good, the hulls survived and the
+  // attack stopped winning (probed: 4 of 8, from 6). It is only ever sent
+  // forward: a hold point laid on the lead team's axis instead swung with
+  // every flank bound, and the hulls drove 750 m a battle chasing it. An
+  // objective the attack has taken is driven onto, which arises only when
+  // there is no next one to roll to.
   private updateVehicles(sim: Sim): void {
     if (this.cfg.stance !== 'attack' || this.culminated) return;
     const post = this.maneuverPost(sim);
     if (!post) return;
+    const lead = this.leadDistance(sim, post);
+    if (lead === undefined) return;
+    const hold = this.isTaken(post) ? 0 : lead <= ASSAULT_RANGE ? lead : Math.max(HULL_STANDOFF, lead);
     const hulls = sim.vehicles.filter((v) => v.side === this.cfg.side);
     hulls.forEach((v, slot) => {
       if (!v.alive) return;
-      const sent = this.hullPost.get(v.id);
-      const same = sent !== undefined && Math.hypot(sent.x - post.x, sent.y - post.y) < 1;
-      if (same && (v.path || Math.hypot(v.x - post.x, v.y - post.y) <= HULL_ARRIVED_RADIUS)) return;
-      this.hullPost.set(v.id, post);
-      sim.orderVehicleMove(v.id, post.x, post.y + (slot - (hulls.length - 1) / 2) * HULL_SPACING);
+      const d = Math.hypot(v.x - post.x, v.y - post.y);
+      if (d <= hold + HULL_REORDER) return; // as far forward as it may go
+      const ux = (v.x - post.x) / d;
+      const uy = (v.y - post.y) / d;
+      const off = (slot - (hulls.length - 1) / 2) * HULL_SPACING;
+      const tx = post.x + ux * hold - uy * off;
+      const ty = post.y + uy * hold + ux * off;
+      const sent = this.hullSent.get(v.id);
+      if (v.path && sent && Math.hypot(sent.x - tx, sent.y - ty) <= HULL_REORDER) return; // already on its way there
+      this.hullSent.set(v.id, { x: tx, y: ty });
+      sim.orderVehicleMove(v.id, tx, ty);
     });
+  }
+
+  // How far from `post` the nearest living maneuver team working it stands.
+  private leadDistance(sim: Sim, post: { x: number; y: number }): number | undefined {
+    let lead: number | undefined;
+    for (const id of this.maneuverTeamIds) {
+      const p = this.teamPost.get(id);
+      const team = sim.teams[id];
+      if (!p || Math.hypot(p.x - post.x, p.y - post.y) >= 1) continue;
+      if (!team.soldierIds.some((sid) => sim.soldiers[sid].alive && !sim.soldiers[sid].downed)) continue;
+      const c = this.centroid(sim, team.soldierIds);
+      const d = Math.hypot(c.x - post.x, c.y - post.y);
+      if (lead === undefined || d < lead) lead = d;
+    }
+    return lead;
   }
 
   // The objective most of the living maneuver element is working this eval
