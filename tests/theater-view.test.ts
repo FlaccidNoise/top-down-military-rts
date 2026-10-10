@@ -2,7 +2,8 @@
 // framing operation is checked against the CLEAR rectangle, not the canvas.
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_PRESET } from '../src/campaign/presets';
-import { makeHeadlessWorld, runHeadlessWar } from '../src/strategic/headless';
+import { makeHeadlessWorld, runHeadlessWar, stepWorldMinute } from '../src/strategic/headless';
+import { minutesToReinforcementV2 } from '../src/strategic/front';
 import { pushEvent } from '../src/strategic/theater/force';
 import { fmtEta, THEATER_ZOOM_MAX, TheaterView } from '../src/render/theater-view';
 import { COUNTER_W, counterRect, layoutCounters, type CounterSpec, type PlacedCounter } from '../src/render/theater-counters';
@@ -149,6 +150,22 @@ describe('the frame, and what just happened', () => {
     pushEvent(fresh.front, { min: fresh.front.clockMin, kind: 'arrival', text: 'Able arrives', forceIds: [] });
     frame();
     expect(inner.flashText).toBe('');
+  });
+});
+
+describe('the replacements clock', () => {
+  it('counts down to the minute the replacements land', () => {
+    const w = makeHeadlessWorld(5, DEFAULT_PRESET.theater, DEFAULT_PRESET.campaign);
+    // Leave gaps in the ranks so that an arrival shows as new men on the roll.
+    for (const cs of Object.values(w.campaign.soldiers).slice(0, 6)) cs.status = 'kia';
+    let saidBefore = -1;
+    for (let i = 0; i < 1440 * 3 && saidBefore < 0; i++) {
+      const eta = minutesToReinforcementV2(w.front);
+      const roll = Object.keys(w.campaign.soldiers).length;
+      stepWorldMinute(w);
+      if (Object.keys(w.campaign.soldiers).length > roll) saidBefore = eta;
+    }
+    expect(saidBefore).toBe(1); // the minute before they landed, the clock said one minute
   });
 });
 

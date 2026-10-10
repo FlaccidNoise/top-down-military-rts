@@ -1418,7 +1418,15 @@ html.mobile #floormenu .fm-row { padding: 12px 16px; }
 }
 
 /* ---- theater HUD (V2 strategic chrome) ---- */
+/* Three layouts, one DOM.
+   Desktop: a side column on the left (what next, the company card, the log),
+   the clock bar over the map. Nothing but the bar sits on the map.
+   Phone, portrait (max-width 720): the bar and the strip stack on top, the
+   card and the log at the bottom.
+   Short screen (max-height 520, a phone on its side): the bar moves INTO the
+   column, so the map keeps the full height. */
 #theater-hud {
+  --side-w: 264px;
   position: fixed;
   inset: 0;
   z-index: 5;
@@ -1435,7 +1443,7 @@ html.mobile #floormenu .fm-row { padding: 12px 16px; }
 #theater-hud .th-head {
   position: absolute;
   top: 8px;
-  left: 50%;
+  left: calc(var(--side-w) + (100% - var(--side-w)) / 2);
   transform: translateX(-50%);
   display: flex;
   flex-direction: column;
@@ -1452,8 +1460,8 @@ html.mobile #floormenu .fm-row { padding: 12px 16px; }
 #theater-hud .th-controls { display: flex; gap: 6px; }
 #theater-hud .hbtn { min-width: 44px; min-height: 32px; }
 html.mobile #theater-hud .hbtn { min-height: 44px; }
-/* One width for "Pause" and "Resume": the row must not shift under the cursor. */
-#theater-hud .st-pause { min-width: calc(8ch + 24px); }
+/* One width for "Play" and "Pause": the row must not shift under the cursor. */
+#theater-hud .st-pause { min-width: calc(7ch + 24px); }
 /* Paused is its own state, not a second lit chip beside the selected speed:
    the pause button inverts and the speed row dims. */
 #theater-hud .is-paused .st-pause {
@@ -1463,10 +1471,6 @@ html.mobile #theater-hud .hbtn { min-height: 44px; }
   font-weight: var(--fw-label);
 }
 #theater-hud .is-paused .st-speed { opacity: 0.45; }
-#theater-hud .th-force { position: absolute; left: 10px; bottom: 10px; padding: 8px 12px; }
-#theater-hud .th-eng { color: #c9803c; margin-left: 8px; }
-#theater-hud .th-mov { color: #9ab27d; margin-left: 8px; }
-#theater-hud .th-hold { color: var(--muted); margin-left: 8px; }
 #theater-hud .th-nocontact {
   padding: 6px 14px;
   color: #c9b891;
@@ -1475,6 +1479,73 @@ html.mobile #theater-hud .hbtn { min-height: 44px; }
   white-space: nowrap;
   pointer-events: none;
 }
+
+/* The side column. */
+#theater-hud .th-side {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: var(--side-w);
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px;
+  overflow: hidden;
+  background: rgba(14, 17, 11, 0.94);
+  border-right: 1px solid var(--border);
+  pointer-events: auto;
+}
+/* The strip gives way first: it scrolls inside itself, so the company card
+   (and its Halt button) and the log always keep their place at the foot. */
+#theater-hud .th-strip { flex: 0 1 auto; min-height: 96px; overflow-y: auto; padding: 8px 10px; }
+#theater-hud .th-force, #theater-hud .th-log { flex: none; }
+/* What to do next: the one line a new player needs. */
+#theater-hud .th-next { color: var(--amber-bright); font-weight: var(--fw-label); min-height: 1.3em; margin-bottom: 6px; }
+#theater-hud .th-objs { display: flex; flex-direction: column; gap: 2px; }
+#theater-hud .th-objrow {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 4px 6px;
+  font: inherit;
+  color: var(--paper);
+  text-align: left;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  cursor: pointer;
+}
+#theater-hud .th-objrow:hover { border-color: var(--amber); }
+#theater-hud .th-objname { color: #f3e2ae; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#theater-hud .th-objwho { flex: none; padding: 1px 6px; border-radius: 2px; font-weight: var(--fw-label); color: #f6f0de; }
+#theater-hud .th-obj-blue .th-objwho { background: #3f6cc4; }
+#theater-hud .th-obj-red .th-objwho { background: #bd4038; }
+#theater-hud .th-obj-open .th-objwho { background: var(--chip-bg); color: var(--muted); }
+#theater-hud .th-foot { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 6px; }
+#theater-hud .th-reinf { color: var(--muted); font-size: 11px; }
+#theater-hud .th-keybtn { min-height: 26px; padding: 2px 10px; }
+#theater-hud .th-key { margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--border-soft); }
+#theater-hud .th-krow { display: flex; align-items: center; gap: 8px; min-height: 22px; color: var(--muted); font-size: 11px; }
+#theater-hud .k-sw { flex: none; width: 44px; height: 32px; box-sizing: border-box; }
+/* index.html pins every canvas to the viewport for the game's own: undo it here. */
+#theater-hud canvas.k-sw { position: static; display: block; }
+#theater-hud i.k-sw { height: 18px; }
+#theater-hud .k-obj { width: 18px; height: 18px; margin: 0 13px; border: 2.5px solid #d8b25c; border-radius: 50%; }
+#theater-hud .k-held { border-color: #7da0d8; }
+#theater-hud .k-front { height: 0; margin: 9px 0; border-top: 2.5px dashed #f4ead0; }
+#theater-hud .k-march, #theater-hud .k-preview { height: 0; margin: 8px 0; border-top: 2.5px solid #a9c4f5; }
+#theater-hud .k-preview { border-top: 3.5px solid #ffe9a0; }
+#theater-hud .k-fight { width: 16px; height: 16px; margin: 0 14px; background: #f0963c; clip-path: polygon(50% 0, 62% 30%, 92% 10%, 72% 40%, 100% 50%, 72% 60%, 92% 90%, 62% 70%, 50% 100%, 38% 70%, 8% 90%, 28% 60%, 0 50%, 28% 40%, 8% 10%, 38% 30%); }
+#theater-hud .k-road { height: 0; margin: 7px 0; border-top: 3px solid #cbbb94; box-shadow: 0 5px 0 -1px #ab9d82, 0 9px 0 -1.2px #8b8269; }
+#theater-hud .k-rail { height: 0; margin: 9px 0; border-top: 2.4px dashed #7b7364; }
+#theater-hud .k-cross { width: 11px; height: 11px; margin: 0 16px; background: #d6c9a4; border: 1px solid rgba(20, 17, 11, 0.85); transform: rotate(45deg); }
+
+#theater-hud .th-force { margin-top: auto; padding: 8px 12px; }
+#theater-hud .th-eng { color: #c9803c; margin-left: 8px; }
+#theater-hud .th-mov { color: #9ab27d; display: block; }
+#theater-hud .th-hold { color: var(--muted); margin-left: 8px; }
 #theater-hud .th-fat { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
 #theater-hud .th-fat-label { color: var(--muted); font-size: 10px; letter-spacing: 0.05em; }
 #theater-hud .th-fat-track { flex: 1; height: 5px; background: rgba(20, 18, 12, 0.7); border: 1px solid rgba(230, 220, 200, 0.2); }
@@ -1490,15 +1561,13 @@ html.mobile #theater-hud .hbtn { min-height: 44px; }
    ETA text above it changes every game minute. */
 #theater-hud .th-halt { display: block; margin-top: 6px; }
 #theater-hud .th-log {
-  position: absolute;
-  right: 10px;
-  bottom: 10px;
-  width: min(320px, 42vw);
   max-height: 30vh;
   overflow-y: auto;
   padding: 6px 10px;
   font-size: 11px;
 }
+/* With no company card above it, the log is what sits at the foot. */
+#theater-hud .th-force[hidden] + .th-log { margin-top: auto; }
 #theater-hud .th-ev { color: var(--muted); padding: 1px 0; }
 #theater-hud .th-ev-contact, #theater-hud .th-ev-battle-resolved { color: #c9a06c; }
 #theater-hud .th-ev-capture { color: #9ab27d; }
@@ -1509,13 +1578,14 @@ html.mobile #theater-hud .hbtn { min-height: 44px; }
 #theater-hud .th-ev[data-ev]:hover { text-decoration: underline; }
 html.mobile #theater-hud .th-ev[data-ev] { padding: 6px 0; }
 /* The contact card: the decision, with the map still up behind it. Bottom
-   centre on a desktop, a bottom sheet on a phone. */
+   centre of the map on a desktop, a bottom sheet on a phone. */
 #theater-hud .th-contact {
   position: absolute;
-  left: 50%;
+  left: calc(var(--side-w) + (100% - var(--side-w)) / 2);
   bottom: 10px;
   transform: translateX(-50%);
-  width: min(560px, calc(100vw - 20px));
+  width: min(560px, calc(100vw - var(--side-w) - 20px));
+  box-sizing: border-box;
   padding: 12px 16px 14px;
   border-color: #c9803c;
 }
@@ -1539,15 +1609,24 @@ html.mobile #theater-hud .th-ev[data-ev] { padding: 6px 0; }
 /* Parts the HUD shows and hides in place. Keep this after the rules above:
    several of them set display, and at equal specificity the later one wins. */
 #theater-hud [hidden] { display: none; }
+
 @media (max-width: 720px) {
-  /* A centred nowrap bar clips off both screen edges on a phone. Span the
-     viewport and wrap the controls to a second row instead. */
+  /* No room for a column. The layer becomes one: bar and strip on top, card
+     and log at the foot, the map between. */
+  #theater-hud {
+    --side-w: 0px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
   #theater-hud .th-head {
-    left: 4px;
-    right: 4px;
+    position: static;
     transform: none;
     align-items: stretch;
+    margin: 8px 4px 0;
   }
+  /* A nowrap bar clips off both screen edges on a phone: wrap the controls
+     to a second row. */
   #theater-hud .th-top {
     flex-wrap: wrap;
     justify-content: center;
@@ -1556,18 +1635,9 @@ html.mobile #theater-hud .th-ev[data-ev] { padding: 6px 0; }
     font-size: 11px;
   }
   #theater-hud .th-nocontact { white-space: normal; text-align: center; }
-  /* The company card and the event log take a bottom corner each on a desktop,
-     and at 390px the two corners are the same place. Stack them: the layer
-     becomes a bottom-aligned column and both panels rejoin the flow. Chosen
-     over main's absolute log-above-card (bottom: 84px) because the card's
-     height now varies with the fatigue bar and supply line — a magic offset
-     re-overlaps the moment the card grows a row. */
-  #theater-hud {
-    display: flex;
-    flex-direction: column;
-    justify-content: flex-end;
-    gap: 6px;
-  }
+  /* The column dissolves: its blocks join the layer's own column. */
+  #theater-hud .th-side { display: contents; }
+  #theater-hud .th-strip,
   #theater-hud .th-force,
   #theater-hud .th-log,
   #theater-hud .th-contact {
@@ -1576,9 +1646,66 @@ html.mobile #theater-hud .th-ev[data-ev] { padding: 6px 0; }
     width: auto;
     margin: 0 4px;
   }
-  #theater-hud .th-contact { margin-bottom: 4px; }
+  /* The strip in one line and a row of chips: the objectives scroll sideways. */
+  #theater-hud .th-strip { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 4px 8px; padding: 6px 8px; }
+  #theater-hud .th-next { grid-area: 1 / 1 / 2 / 3; margin: 0; }
+  #theater-hud .th-foot { display: contents; }
+  #theater-hud .th-keybtn { grid-area: 2 / 2; align-self: stretch; }
+  #theater-hud .th-objs { grid-area: 2 / 1; flex-direction: row; gap: 6px; overflow-x: auto; }
+  #theater-hud .th-objrow { flex: none; width: auto; min-height: 44px; border-color: var(--border-soft); }
+  #theater-hud .th-reinf { grid-area: 3 / 1 / 4 / 3; }
+  #theater-hud .th-key { grid-area: 4 / 1 / 5 / 3; max-height: 38vh; overflow-y: auto; margin-top: 2px; }
+  #theater-hud .th-mov { display: inline; margin-left: 8px; }
+  /* Card and log at the foot, whichever of them is there. */
+  #theater-hud .th-force { margin-top: auto; }
+  #theater-hud .th-force[hidden] + .th-log { margin-top: auto; }
+  #theater-hud .th-strip { flex: none; min-height: 0; overflow: visible; }
+  #theater-hud .th-contact { margin-top: auto; margin-bottom: 4px; }
   #theater-hud .th-contact .fc-actions .hbtn { flex: 1; }
   #theater-hud .th-log { max-height: 22vh; margin-bottom: 4px; }
+  #theater-hud .th-log:last-child, #theater-hud .th-force:last-child { margin-bottom: 4px; }
+}
+
+@media (min-width: 721px) and (max-height: 520px) {
+  /* A phone on its side: 390 px of height is all there is. The bar goes into
+     the column and the contact card takes the column over, so the map keeps
+     every pixel of height. */
+  #theater-hud { display: grid; grid-template-columns: var(--side-w) 1fr; grid-template-rows: auto 1fr; }
+  #theater-hud .th-head {
+    grid-column: 1;
+    grid-row: 1;
+    position: static;
+    transform: none;
+    align-items: stretch;
+    padding: 4px 4px 0;
+    background: rgba(14, 17, 11, 0.94);
+    border-right: 1px solid var(--border);
+    pointer-events: auto;
+  }
+  #theater-hud .th-top { flex-wrap: wrap; justify-content: center; gap: 6px; padding: 4px 6px; white-space: normal; }
+  #theater-hud .th-controls { flex-wrap: wrap; justify-content: center; }
+  #theater-hud .th-nocontact { white-space: normal; text-align: center; }
+  #theater-hud .th-side { grid-column: 1; grid-row: 2; position: static; width: auto; min-height: 0; padding: 4px; gap: 4px; }
+  #theater-hud .th-objrow { padding: 2px 6px; min-height: 32px; }
+  /* A selected company comes first: its Halt button must not be a scroll away. */
+  #theater-hud .th-force { order: -1; margin-top: 0; }
+  #theater-hud .th-force[hidden] + .th-log { margin-top: 0; }
+  #theater-hud .th-log { max-height: 60px; }
+  #theater-hud .th-contact {
+    grid-column: 1;
+    grid-row: 1 / 3;
+    position: static;
+    transform: none;
+    width: auto;
+    overflow-y: auto;
+    padding: 8px 10px;
+    border-radius: 0;
+    background: #11150e; /* solid: it stands in front of the column, not on the map */
+  }
+  #theater-hud .th-contact .fc { flex-direction: column; align-items: stretch; gap: 2px; }
+  #theater-hud .th-contact .fc-vs { display: none; }
+  #theater-hud .th-contact .fc-actions { flex-wrap: wrap; }
+  #theater-hud .th-contact .fc-actions .hbtn { flex: 1; }
 }
 
 /* ---- customize campaign ---- */

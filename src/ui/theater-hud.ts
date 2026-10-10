@@ -1,22 +1,20 @@
 // TheaterHud (S30): the V2 strategic chrome — TAPPABLE pause/speed (the
 // keyboard is a shortcut, never the only path), day/clock, objective count,
-// the selected force card, and the §3.9 event scrollback. DOM overlay per
-// the hybrid doctrine. The DOM is built ONCE and update() patches text and
-// classes: a rebuilt button is a new element between mousedown and mouseup,
-// and at 60x that swallowed every click on the clock row (jtbug #761).
+// the "what next" strip (next action, objectives, replacements, the key), the
+// selected force card, the §3.9 event scrollback and the contact card. DOM
+// overlay per the hybrid doctrine. The DOM is built ONCE and update() patches
+// text and classes: a rebuilt button is a new element between mousedown and
+// mouseup, and at 60x that swallowed every click on the clock row (jtbug #761).
+import { COUNTER_H, COUNTER_W, drawCounter, type PlacedCounter } from '../render/theater-counters';
 import { fmtEta } from '../render/theater-view';
 import { MOBILE } from '../render/view';
 
+import { minutesToReinforcementV2, REINFORCE_CYCLE_DAYS, REINFORCE_PER_COMPANY } from '../strategic/front';
 import type { WarGoals } from '../strategic/goals';
-import { pathDestination, type Force, type FrontV2, type TheaterEvent } from '../strategic/theater/force';
+import { pathDestination, type Force, type ForceRole, type FrontV2, type TheaterEvent } from '../strategic/theater/force';
 import { forceEtaMinutes } from '../strategic/theater/step';
 import { supplyTierOf } from '../strategic/theater/supply';
 import { SPEED_LABELS } from './strat-hud';
-
-// The first line a new player reads, and it must name the input they have.
-const EMPTY_LOG = MOBILE
-  ? 'No contact yet — tap a company, then press and hold a town to advance.'
-  : 'No contact yet — select a company and right-click a town to advance.';
 
 export interface TheaterHudCallbacks {
   togglePause(): void;
@@ -29,12 +27,46 @@ export interface TheaterHudCallbacks {
   halt(): void;
   /** Centre the map on where a logged event happened. */
   focus(e: TheaterEvent): void;
+  /** Centre the map on a place. */
+  focusNode(nodeId: number): void;
 }
+
+// The next thing to do, in the words of the input the player has. This line
+// replaces the grey sentence that sat in the empty event log.
+const NEXT = {
+  contact: 'Answer the contact.',
+  select: MOBILE ? 'Tap a company.' : 'Click a company.',
+  order: MOBILE ? 'Hold a town to march there.' : 'Right-click a town to march there.',
+  play: 'Press Play.',
+  marching: 'On the march.',
+} as const;
+
+// The key. Each row is a swatch and a few words; the counters are drawn by
+// the map's own drawCounter, so the key cannot drift from the map.
+type Swatch = { counter: Partial<PlacedCounter> } | { css: string };
+const KEY: [Swatch, string][] = [
+  [{ counter: { side: 'blue', letter: 'A', strength: 138 } }, 'Your company, men'],
+  [{ counter: { side: 'red', role: 'garrison', strength: 78 } }, 'Garrison: holds, never moves'],
+  [{ counter: { side: 'red', role: 'line', strength: 95 } }, 'Mobile group: attacks'],
+  [{ counter: { side: 'red', role: 'reserve', strength: 108 } }, 'Reserve'],
+  [{ counter: { side: 'red', role: 'line', strength: 60, ghost: true, conf: 0.6 } }, 'Last seen, fading'],
+  [{ counter: { side: 'blue', letter: 'B', strength: 60, frac: 0.45, supply: 'low', fatigue: 0.7 } }, 'Bar: strength. Dots: supply, fatigue'],
+  [{ css: 'k-obj' }, 'Objective to take'],
+  [{ css: 'k-obj k-held' }, 'Objective held'],
+  [{ css: 'k-front' }, 'Front line'],
+  [{ css: 'k-march' }, 'March'],
+  [{ css: 'k-preview' }, 'Order preview'],
+  [{ css: 'k-fight' }, 'Battle or contact'],
+  [{ css: 'k-road' }, 'Highway, road, track'],
+  [{ css: 'k-rail' }, 'Railway: no traffic'],
+  [{ css: 'k-cross' }, 'Bridge or ford'],
+];
 
 export class TheaterHud {
   readonly root: HTMLDivElement;
   private lastSig = '';
   private lastLogSig = '';
+  private objSig = '';
   private logged: TheaterEvent[] = [];
   private readonly top: HTMLElement;
   private readonly obj: HTMLElement;
@@ -42,6 +74,12 @@ export class TheaterHud {
   private readonly pause: HTMLElement;
   private readonly speeds: HTMLElement[];
   private readonly noContact: HTMLElement;
+  private readonly next: HTMLElement;
+  private readonly objs: HTMLElement;
+  private objRows: { nodeId: number; who: HTMLElement; row: HTMLElement }[] = [];
+  private readonly reinf: HTMLElement;
+  private readonly keyBtn: HTMLElement;
+  private readonly key: HTMLElement;
   private readonly force: HTMLElement;
   private readonly forceName: HTMLElement;
   private readonly forceStat: HTMLElement;
@@ -71,13 +109,26 @@ export class TheaterHud {
         </div>
         <div class="panel th-nocontact" hidden>NO CONTACT REPORTED — advance a company to find the enemy</div>
       </div>
-      <div class="panel th-force" hidden>
-        <b class="th-name"></b><span class="th-stat"></span><span class="th-state"></span>
-        <span class="th-fat"><span class="th-fat-label">fatigue</span><span class="th-fat-track"><span class="th-fat-fill"></span></span></span>
-        <span class="th-sup" hidden></span>
-        <button class="hbtn th-halt" data-th="halt" hidden>■ Halt</button>
+      <div class="th-side">
+        <div class="panel th-strip">
+          <div class="th-next"></div>
+          <div class="th-objs"></div>
+          <div class="th-foot">
+            <span class="th-reinf"></span>
+            <button class="hbtn th-keybtn" data-th="key" aria-expanded="false">Key</button>
+          </div>
+          <div class="th-key" hidden>
+            ${KEY.map(([s, words], i) => `<div class="th-krow">${'css' in s ? `<i class="k-sw ${s.css}"></i>` : `<canvas class="k-sw" data-key="${i}"></canvas>`}<span>${words}</span></div>`).join('')}
+          </div>
+        </div>
+        <div class="panel th-force" hidden>
+          <b class="th-name"></b><span class="th-stat"></span><span class="th-state"></span>
+          <span class="th-fat"><span class="th-fat-label">fatigue</span><span class="th-fat-track"><span class="th-fat-fill"></span></span></span>
+          <span class="th-sup" hidden></span>
+          <button class="hbtn th-halt" data-th="halt" hidden>■ Halt</button>
+        </div>
+        <div class="panel th-log" hidden></div>
       </div>
-      <div class="panel th-log"></div>
       <div class="panel th-contact" id="contact" hidden></div>`;
     const q = (sel: string): HTMLElement => this.root.querySelector<HTMLElement>(sel)!;
     this.top = q('.th-top');
@@ -86,6 +137,11 @@ export class TheaterHud {
     this.pause = q('.st-pause');
     this.speeds = Array.from(this.root.querySelectorAll<HTMLElement>('.st-speed'));
     this.noContact = q('.th-nocontact');
+    this.next = q('.th-next');
+    this.objs = q('.th-objs');
+    this.reinf = q('.th-reinf');
+    this.keyBtn = q('.th-keybtn');
+    this.key = q('.th-key');
     this.force = q('.th-force');
     this.forceName = q('.th-name');
     this.forceStat = q('.th-stat');
@@ -95,18 +151,55 @@ export class TheaterHud {
     this.halt = q('.th-halt');
     this.log = q('.th-log');
     this.contact = q('.th-contact');
+    this.drawKey();
+    // Open on a desktop, where the side column has the room. Closed on a
+    // phone, where it would cover the map it explains.
+    this.setKey(!MOBILE);
     document.body.appendChild(this.root);
     this.root.addEventListener('click', (e) => {
-      if ((e.target as HTMLElement).closest('[data-th="menu"]')) { this.cb.openMenu(); return; }
-      if ((e.target as HTMLElement).closest('[data-th="halt"]')) { this.cb.halt(); return; }
-      if ((e.target as HTMLElement).closest('[data-th="fit"]')) { this.cb.fitAll(); return; }
-      const line = (e.target as HTMLElement).closest('[data-ev]');
-      if (line) { this.cb.focus(this.logged[Number(line.getAttribute('data-ev'))]); return; }
-      const btn = (e.target as HTMLElement).closest('[data-clock]');
+      const hit = (sel: string): HTMLElement | null => (e.target as HTMLElement).closest<HTMLElement>(sel);
+      if (hit('[data-th="menu"]')) return this.cb.openMenu();
+      if (hit('[data-th="halt"]')) return this.cb.halt();
+      if (hit('[data-th="fit"]')) return this.cb.fitAll();
+      if (hit('[data-th="key"]')) return this.setKey(this.key.hidden);
+      const place = hit('[data-obj]');
+      if (place) return this.cb.focusNode(Number(place.getAttribute('data-obj')));
+      const line = hit('[data-ev]');
+      if (line) return this.cb.focus(this.logged[Number(line.getAttribute('data-ev'))]);
+      const btn = hit('[data-clock]');
       if (!btn) return;
       const v = btn.getAttribute('data-clock')!;
       if (v === 'pause') this.cb.togglePause();
       else this.cb.setSpeed(Number(v));
+    });
+  }
+
+  private setKey(open: boolean): void {
+    this.key.hidden = !open;
+    this.keyBtn.setAttribute('aria-expanded', String(open));
+    this.keyBtn.classList.toggle('active', open);
+  }
+
+  // The counter rows of the key, drawn with the map's own counter.
+  private drawKey(): void {
+    const dpr = Math.min(3, window.devicePixelRatio || 1);
+    this.root.querySelectorAll<HTMLCanvasElement>('canvas[data-key]').forEach((c) => {
+      const s = KEY[Number(c.dataset.key)][0];
+      if (!('counter' in s)) return;
+      const w = COUNTER_W + 10;
+      const h = COUNTER_H + 10;
+      c.width = w * dpr;
+      c.height = h * dpr;
+      c.style.width = `${w}px`;
+      c.style.height = `${h}px`;
+      const g = c.getContext('2d');
+      if (!g) return;
+      g.scale(dpr, dpr);
+      const role: ForceRole = 'line';
+      drawCounter(g, {
+        id: 0, side: 'blue', letter: null, role, strength: 0, frac: 1, supply: null, fatigue: 0, selected: false, engaged: false,
+        conf: 1, ghost: false, ax: 0, ay: 0, drop: 0, x: 5, y: 6, ...s.counter,
+      });
     });
   }
 
@@ -124,10 +217,23 @@ export class TheaterHud {
     const mm = (front.clockMin % 60).toString().padStart(2, '0');
     const lastEvent = front.events.length > 0 ? front.events[front.events.length - 1] : null;
     const contacts = front.intel?.blue.length ?? 0;
+    const inContact = this.root.classList.contains('in-contact');
+    const marching = front.forces.some((f) => f.side === 'blue' && f.strength > 0 && f.path.length > 0 && f.engagedIn === null);
+    // What stands at each objective, as far as the player may know: his own
+    // companies, and the enemy from the forces (or, under fog, the reports).
+    const garrisons = objectives.map((n) => {
+      const at = (p: Force['pos']): boolean => p.kind === 'node' && p.nodeId === n;
+      const own = front.forces.filter((f) => f.side === 'blue' && f.strength > 0 && at(f.pos)).map((f) => f.name.charAt(0));
+      const foe = reconOn
+        ? (front.intel?.blue ?? []).filter((c) => at(c.pos)).map((c) => c.strength)
+        : front.forces.filter((f) => f.side === 'red' && f.strength > 0 && at(f.pos)).map((f) => f.strength);
+      return { n, holder: front.controlByNode[n], own, foe };
+    });
     const sig = [
       front.day, hh, mm, held, need, objectives.length, lastDay, paused, speedIdx, selectedForce,
       sel ? `${sel.strength}:${sel.path.length}:${sel.engagedIn}:${sel.untracedMin}:${Math.round(sel.fatigue * 100)}` : '',
-      front.events.length, lastEvent?.text ?? '', supplyOn, reconOn, contacts,
+      front.events.length, lastEvent?.text ?? '', supplyOn, reconOn, contacts, inContact, marching,
+      garrisons.map((g) => `${g.holder}:${g.own}:${g.foe}`).join('/'),
     ].join('|');
     if (sig === this.lastSig) return;
     this.lastSig = sig;
@@ -141,9 +247,41 @@ export class TheaterHud {
     // Paused is a state of the whole row, not one more lit chip: the pause
     // button inverts and the speeds dim, so "paused at 10x" reads as paused.
     this.top.classList.toggle('is-paused', paused);
-    this.pause.textContent = paused ? '▶ Resume' : '⏸ Pause';
+    this.pause.textContent = paused ? '▶ Play' : '⏸ Pause';
     this.speeds.forEach((b, i) => b.classList.toggle('active', i === speedIdx));
     this.noContact.hidden = !(reconOn && contacts === 0);
+
+    // What next: one line, the objectives, the replacements clock.
+    this.next.textContent = inContact
+      ? NEXT.contact
+      : sel && sel.path.length === 0 && sel.engagedIn === null
+        ? NEXT.order
+        : marching
+          ? paused ? NEXT.play : NEXT.marching
+          : sel ? '' : NEXT.select;
+    const ids = objectives.join(',');
+    if (ids !== this.objSig) {
+      // Built once per war: the rows are buttons, and a button must outlive
+      // the press that lands on it.
+      this.objSig = ids;
+      this.objs.innerHTML = objectives
+        .map((n) => `<button class="th-objrow" data-obj="${n}"><span class="th-objname">★ ${front.theater.nodes[n].name}</span><span class="th-objwho"></span></button>`)
+        .join('');
+      this.objRows = Array.from(this.objs.querySelectorAll<HTMLElement>('.th-objrow')).map((row, i) => ({ nodeId: objectives[i], row, who: row.querySelector<HTMLElement>('.th-objwho')! }));
+    }
+    this.objRows.forEach(({ row, who }, i) => {
+      const g = garrisons[i];
+      row.className = `th-objrow th-obj-${g.holder ?? 'open'}`;
+      const foe = g.foe.reduce((a, s) => a + s, 0);
+      who.textContent =
+        g.holder === 'blue'
+          ? `HELD${g.own.length ? ` ${g.own.join('')}` : ''}`
+          : g.foe.length > 0 ? `${reconOn ? '~' : ''}${foe}` : reconOn ? '?' : 'open';
+    });
+    const mins = minutesToReinforcementV2(front);
+    const h = Math.ceil(mins / 60);
+    this.reinf.textContent = `Replacements in ${h >= 48 ? `${Math.floor(h / 24)}d ${h % 24}h` : `${h}h`}`;
+    this.reinf.title = `Up to ${REINFORCE_PER_COMPANY} men per company every ${REINFORCE_CYCLE_DAYS} days.`;
 
     this.force.hidden = !sel;
     if (sel) {
@@ -168,18 +306,20 @@ export class TheaterHud {
     }
 
     // The log is the one part still rebuilt, and only when an event lands: a
-    // rebuild every game minute threw the reader's scroll position away.
+    // rebuild every game minute threw the reader's scroll position away. With
+    // nothing logged there is no log: the strip says what to do next.
     const logSig = `${front.events.length}|${lastEvent?.min ?? ''}|${lastEvent?.text ?? ''}`;
     if (logSig !== this.lastLogSig) {
       this.lastLogSig = logSig;
       this.logged = front.events.slice(-8).reverse();
+      this.log.hidden = this.logged.length === 0;
       this.log.innerHTML = this.logged
         .map((e, i) => {
           const eh = Math.floor((e.min % 1440) / 60).toString().padStart(2, '0');
           const em = (e.min % 60).toString().padStart(2, '0');
           return `<div class="th-ev th-ev-${e.kind}" data-ev="${i}">${eh}${em} ${e.text}</div>`;
         })
-        .join('') || `<div class="th-ev">${EMPTY_LOG}</div>`;
+        .join('');
     }
   }
 

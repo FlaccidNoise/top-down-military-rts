@@ -414,6 +414,10 @@ const theaterHud = new TheaterHud({
   setSpeed: (i) => { speedIdx = i; tutorial?.notify('speed-changed'); },
   openMenu: () => { openPauseMenu(); },
   fitAll: () => { S().v2?.view.fitAll(view.w, view.h); },
+  focusNode: (n) => {
+    const v2 = S().v2;
+    if (v2) v2.view.centerOn(v2.front.theater.nodes[n].pos, view.w, view.h);
+  },
   focus: (e) => {
     const v2 = S().v2;
     if (!v2) return;
@@ -618,19 +622,27 @@ function viewportInset(): { left: number; top: number; bottom: number } {
 }
 
 // The theater's counterpart: which borders of the canvas the theater HUD
-// covers. Classified by shape and place, not by name, so a new panel insets
-// the camera without an edit here: a wide panel in the top or bottom quarter
-// is a top or bottom border, a tall one in a side quarter is a side border.
+// covers, measured from its blocks. On a desktop the side column takes the
+// left edge and the bar the top. On a phone in portrait there is no column:
+// the bar and the strip stack on top, the card and the log at the bottom. On
+// a short screen the bar sits IN the column and takes nothing from the top.
 function theaterInset(): ViewInset {
   const out: ViewInset = { left: 0, top: 0, right: 0, bottom: 0 };
-  for (const el of Array.from(theaterHud.root.querySelectorAll('.panel'))) {
-    const r = el.getBoundingClientRect();
-    if (r.width <= 0 || r.height <= 0) continue;
-    if (r.width >= r.height) {
-      if (r.bottom < view.h * 0.45) out.top = Math.max(out.top, r.bottom);
-      else if (r.top > view.h * 0.55) out.bottom = Math.max(out.bottom, view.h - r.top);
-    } else if (r.right < view.w * 0.45) out.left = Math.max(out.left, r.right);
-    else if (r.left > view.w * 0.55) out.right = Math.max(out.right, view.w - r.left);
+  const box = (sel: string): DOMRect | null => {
+    const r = theaterHud.root.querySelector(sel)?.getBoundingClientRect();
+    return r && r.width > 0 && r.height > 0 ? r : null;
+  };
+  const side = box('.th-side');
+  const column = side && side.height >= view.h * 0.5 && side.width < view.w * 0.5 ? side : null;
+  if (column) out.left = column.right;
+  const inColumn = (r: DOMRect): boolean => column !== null && r.right <= column.right + 1;
+  const head = box('.th-head');
+  if (head && !inColumn(head)) out.top = head.bottom;
+  for (const sel of ['.th-strip', '.th-force', '.th-log', '.th-contact']) {
+    const r = box(sel);
+    if (!r || inColumn(r)) continue;
+    if (r.top + r.height / 2 < view.h / 2) out.top = Math.max(out.top, r.bottom);
+    else out.bottom = Math.max(out.bottom, view.h - r.top);
   }
   return out;
 }
