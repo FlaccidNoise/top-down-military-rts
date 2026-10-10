@@ -10,7 +10,8 @@ import type { Sim } from '../sim/sim';
 import type { BreachEvent } from '../sim/sim';
 import type { RedCommander } from '../sim/ai';
 import { applyBattleResults } from '../campaign/campaign';
-import { makeStrategicBattle } from './bridge';
+import { ARMOR_KINDS, makeStrategicBattle } from './bridge';
+import { barrageRunning, REQ_ARMOR, REQ_BARRAGES } from './requisition';
 import type { Chit, Front } from './front';
 import { battleSiteOf, BATTLE_CLASS_TO_MAPKIND, type BattleClass } from './theater';
 import { pushEvent, type CoarseBattle, type FrontV2 } from './theater/force';
@@ -74,7 +75,11 @@ export function makeTheaterBattle(c: Campaign, front: FrontV2, battle: CoarseBat
     },
   } as unknown as Front;
 
-  const staged = makeStrategicBattle(c, adapter, { attackerId: 0, defenderId: 1, cell: 1 }, seed);
+  // Requisition: an armour section attached to the attacking company fights
+  // on ground a hull can fight over, and that is one of its attacks spent.
+  const armour = atk.armorAttacks > 0 && ARMOR_KINDS.has(battleClass === 'ford-assault' ? 'river' : kind);
+  if (armour) atk.armorAttacks--;
+  const staged = makeStrategicBattle(c, adapter, { attackerId: 0, defenderId: 1, cell: 1 }, seed, armour ? { extraArmor: REQ_ARMOR } : {});
   // S50 supply: staging ammo scales 100/50/25 by each side's OWN tier, ammo
   // AND ammoStart together — ammoStart is areaFire's discipline denominator,
   // and scaling only the pool would silently kill MG suppression (hazard R1).
@@ -110,6 +115,8 @@ export function makeTheaterBattle(c: Campaign, front: FrontV2, battle: CoarseBat
   // The same list the contact card names. A counter set after staging: no
   // rng, and a fight with nobody in range stages byte for byte as before.
   for (const f of supportersOf(front, battle.site, [atk.id, def.id])) staged.sim.barragesLeft[f.side] += SUPPORT_BARRAGES;
+  // Requisition: artillery allotted to the operation for this cycle.
+  if (barrageRunning(front)) staged.sim.barragesLeft.blue += REQ_BARRAGES;
   const siteName =
     battle.site.kind === 'node'
       ? front.theater.nodes[battle.site.nodeId].name

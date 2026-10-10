@@ -202,7 +202,9 @@ export function advanceDays(c: Campaign, days: number): void {
   }
 }
 
-export function fillReplacements(c: Campaign, seed: number, capPerCompany = Infinity): number {
+// `only` aims the fill at one company (a requisition card). Left out, every
+// company fills, as before.
+export function fillReplacements(c: Campaign, seed: number, capPerCompany = Infinity, only?: number): number {
   const rng = mulberry32(seed);
   // kia pids drop first: survivors shift toward slot 0 (array order IS slot
   // order), so filtering alone reproduces crew succession.
@@ -213,7 +215,8 @@ export function fillReplacements(c: Campaign, seed: number, capPerCompany = Infi
     c.squads[si].teams.reduce((n, t) => n + Math.max(0, TEAMS[t.def].slots.length - t.members.length), 0);
 
   let total = 0;
-  for (const company of c.companies) {
+  for (const [ci, company] of c.companies.entries()) {
+    if (only !== undefined && ci !== only) continue;
     const order = [...company.squads].sort((a, b) => deficit(b) - deficit(a));
     let added = 0;
     for (const si of order) {
@@ -229,6 +232,17 @@ export function fillReplacements(c: Campaign, seed: number, capPerCompany = Infi
     total += added;
   }
   return total;
+}
+
+// Open slots a fill could take in one company: its establishment less the
+// men still on the roster. Reads only: fillReplacements drops the dead itself.
+export function replacementRoom(c: Campaign, companyIndex: number): number {
+  const company = c.companies[companyIndex];
+  if (!company) return 0;
+  return company.squads.reduce(
+    (n, si) => n + c.squads[si].teams.reduce((m, t) => m + Math.max(0, TEAMS[t.def].slots.length - t.members.filter((pid) => c.soldiers[pid].status !== 'kia').length), 0),
+    0,
+  );
 }
 
 export interface RosterEntry {

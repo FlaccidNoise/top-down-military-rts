@@ -3,9 +3,10 @@
 // day roll — with zero DOM. One implementation, two consumers: the
 // reload-determinism pin (S56) and scripts/warsweep-v2 (S58). Drift between
 // this loop and main's tick is the bug class the pin exists to catch.
-import { advanceDays, fillReplacements, newCampaign, type Campaign } from '../campaign/campaign';
+import { advanceDays, newCampaign, type Campaign } from '../campaign/campaign';
 import { GEN_VERSION, SPEC_TAG, specStream, type CampaignConfig, type CampaignSpec, type TheaterConfig } from '../campaign/spec';
-import { REINFORCE_CYCLE_DAYS, REINFORCE_PER_COMPANY } from './front';
+import { REINFORCE_CYCLE_DAYS } from './front';
+import { cycleRefit } from './refit';
 import { makeWarGoals, warStatus, type WarGoals, type WarState } from './goals';
 import { ContactIntel, OmniscientIntel, type IntelView } from './intel';
 import { BLUE_V2, Commander2, RED_V2, type DoctrineV2, type OperationalPlan, type PlannerReport } from './planner';
@@ -121,9 +122,7 @@ export function stepWorldMinute(w: HeadlessWorld): StepResult {
   });
   if (w.front.day > w.prevDay) {
     advanceDays(w.campaign, w.front.day - w.prevDay);
-    if (w.front.day % REINFORCE_CYCLE_DAYS === 0) {
-      fillReplacements(w.campaign, w.front.day * 31 + 7, REINFORCE_PER_COMPANY);
-    }
+    if (w.front.day % REINFORCE_CYCLE_DAYS === 0) cycleRefit(w.campaign, w.front, w.front.day * 31 + 7);
     syncStrengthsV2(w.campaign, w.front);
     w.prevDay = w.front.day;
   }

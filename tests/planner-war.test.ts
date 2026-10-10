@@ -79,7 +79,7 @@ function runWar(seed: number, maxDays = CAMP.warDays + 1): WarResult {
 }
 
 describe('goal-driven AI, headless wars over generated theaters', () => {
-  const SEEDS = [1, 2, 3, 4, 5, 6, 7, 8];
+  const SEEDS = Array.from({ length: 16 }, (_, i) => i + 1); // the pin set: eight seeds can all fall one way
   const results = SEEDS.map((s) => runWar(s));
 
   it('100% termination: every war decides by the deadline', () => {
@@ -174,6 +174,54 @@ describe('the planner neither dithers nor grinds (jtbug #762)', () => {
     expect(r.unexplained, `turn-rounds per seed: ${r.per}`).toBe(0);
     expect(r.destroyed).toBeLessThanOrEqual(2);
   }, 30_000);
+});
+
+describe('battle variety (jtbug #793)', () => {
+  // Measured before the objectives and garrisons were spread: 51% of the
+  // battles in the 16 pin wars were bridge assaults.
+  it('no battle class is over 40% of the 16 pin wars, and at least four are over 8%', () => {
+    const mix = new Map<string, number>();
+    let total = 0;
+    for (let seed = 1; seed <= 16; seed++) {
+      const w = makeHeadlessWorld(seed, CFG, CAMP);
+      runHeadlessWar(w, 60 * 24 * 45, (r) => {
+        for (const x of r.resolved) {
+          mix.set(x.battleClass, (mix.get(x.battleClass) ?? 0) + 1);
+          total++;
+        }
+      });
+    }
+    const shares = [...mix.values()].map((n) => n / total);
+    expect(Math.max(...shares), JSON.stringify([...mix])).toBeLessThanOrEqual(0.4);
+    expect(shares.filter((s) => s > 0.08).length, JSON.stringify([...mix])).toBeGreaterThanOrEqual(4);
+  }, 30_000);
+
+  it('the river line is thin: only a town off the river is held from the whole band', () => {
+    // The redStrength 2 band is 36 to 109 men.
+    const at = (frac: number): number => Math.round(36 + (109 - 36) * frac);
+    for (let seed = 1; seed <= 32; seed++) {
+      const w = makeHeadlessWorld(seed, CFG, CAMP);
+      const t = w.front.theater;
+      for (const f of w.front.forces.filter((x) => x.role === 'garrison')) {
+        const n = t.nodes[f.homeNode!];
+        const cap = n.crossing === null && n.kind === 'town' ? at(1) : at(0.25);
+        expect(f.strength, `seed ${seed} ${n.name}`).toBeLessThanOrEqual(cap);
+        expect(f.strength).toBeGreaterThanOrEqual(36);
+      }
+    }
+  });
+
+  it('objectives and garrisons are not all crossings: every theater has an objective off the river line', () => {
+    for (let seed = 1; seed <= 16; seed++) {
+      const w = makeHeadlessWorld(seed, CFG, CAMP);
+      const t = w.front.theater;
+      const dry = t.objectiveNodes.filter((n) => t.nodes[n].crossing === null);
+      expect(dry.length, `seed ${seed}: objectives ${t.objectiveNodes}`).toBeGreaterThan(0);
+      expect(t.objectiveNodes.filter((n) => t.nodes[n].crossing !== null).length, `seed ${seed}`).toBeLessThanOrEqual(1);
+      const garrisons = w.front.forces.filter((f) => f.role === 'garrison');
+      for (const o of t.objectiveNodes) expect(garrisons.some((g) => g.homeNode === o), `seed ${seed}: objective ${o} has no garrison`).toBe(true);
+    }
+  });
 });
 
 describe('planner internals', () => {
