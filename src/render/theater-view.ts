@@ -370,6 +370,16 @@ export class TheaterView {
     this.frame([p], w, h, this.zoomMul, 0);
   }
 
+  // Pan the least that puts a theater point inside the clear rectangle, `pad`
+  // px in from its edges. The zoom is left alone.
+  keepInView(p: Vec, w: number, h: number, pad = 56): void {
+    const [sx, sy] = this.toScreen(p.x, p.y, w, h);
+    const c = this.clear(w, h);
+    const into = (v: number, lo: number, hi: number): number => (v < lo ? lo - v : v > hi ? hi - v : 0);
+    this.panX += into(sx, c.x + pad, c.x + c.w - pad);
+    this.panY += into(sy, c.y + pad, c.y + c.h - pad);
+  }
+
   // Zoom by `factor`, keeping the map point under (sx, sy) where it is.
   zoomAt(factor: number, sx: number, sy: number, w: number, h: number): void {
     const [wx, wy] = this.toWorld(sx, sy, w, h);

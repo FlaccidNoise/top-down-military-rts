@@ -117,6 +117,7 @@ export class TheaterHud {
   private readonly forceName: HTMLElement;
   private readonly forceStat: HTMLElement;
   private readonly forceState: HTMLElement;
+  private readonly fat: HTMLElement;
   private readonly fatFill: HTMLElement;
   private readonly sup: HTMLElement;
   private readonly halt: HTMLElement;
@@ -160,9 +161,8 @@ export class TheaterHud {
           <b class="th-name"></b><span class="th-stat"></span><span class="th-state"></span>
           <span class="th-fat"><span class="th-fat-label">fatigue</span><span class="th-fat-track"><span class="th-fat-fill"></span></span></span>
           <span class="th-sup" hidden></span>
-          <span class="th-post" hidden>${POSTURES.map(([k, word]) => `<button class="hbtn th-pb" data-post="${k}"><i>${POSTURE_GLYPH[k]}</i>${word}</button>`).join('')}</span>
+          <span class="th-post" hidden>${POSTURES.map(([k, word]) => `<button class="hbtn th-pb" data-post="${k}"><i>${POSTURE_GLYPH[k]}</i>${word}</button>`).join('')}<button class="hbtn th-pb th-halt" data-th="halt" hidden><i>■</i>Halt</button></span>
           <span class="th-postfx" hidden></span>
-          <button class="hbtn th-halt" data-th="halt" hidden>■ Halt</button>
         </div>
         <div class="panel th-log" hidden></div>
       </div>
@@ -183,6 +183,7 @@ export class TheaterHud {
     this.forceName = q('.th-name');
     this.forceStat = q('.th-stat');
     this.forceState = q('.th-state');
+    this.fat = q('.th-fat');
     this.fatFill = q('.th-fat-fill');
     this.sup = q('.th-sup');
     this.halt = q('.th-halt');
@@ -353,8 +354,10 @@ export class TheaterHud {
       this.fatFill.className = `th-fat-fill th-fat-${sel.fatigue >= 0.66 ? 'high' : sel.fatigue >= 0.33 ? 'mid' : 'low'}`;
       this.fatFill.style.width = `${Math.round(sel.fatigue * 100)}%`;
       const tier = supplyTierOf(sel.untracedMin);
+      // A small screen shows these two lines only when they have news.
+      this.fat.classList.toggle('nominal', sel.fatigue < 0.33);
       this.sup.hidden = !supplyOn;
-      this.sup.className = `th-sup th-sup-${tier}`;
+      this.sup.className = `th-sup th-sup-${tier}${tier === 'full' ? ' nominal' : ''}`;
       this.sup.textContent = tier === 'full' ? 'supplied' : `${tier === 'low' ? 'SUPPLY LOW' : 'OUT OF SUPPLY'} · cut ${Math.floor(sel.untracedMin / 60)}h`;
     }
 

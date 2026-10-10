@@ -145,6 +145,7 @@ interface SessionV2 {
   // Centre the map here on the next frame, once the HUD has laid out the
   // panel that made the request (the contact card changes the clear rectangle).
   centerNext: { x: number; y: number } | null;
+  shownForce: number; // the selection the camera last made room for
 }
 interface Session {
   campaign: Campaign;
@@ -1132,6 +1133,7 @@ function startCampaignV2(
         selectedForce: -1,
         needsFrame: true,
         centerNext: null,
+        shownForce: -1,
       },
     };
     // §4.8: a reloaded red keeps its axes — restore the persisted plan.
@@ -2040,6 +2042,13 @@ function frame(now: number): void {
     if (v2.centerNext) {
       v2.view.centerOn(v2.centerNext, view.w, view.h);
       v2.centerNext = null;
+    }
+    // A new selection opens the force card. Keep the company it describes
+    // clear of it. Once, so the player's own pan is not fought afterwards.
+    if (v2.selectedForce !== v2.shownForce) {
+      v2.shownForce = v2.selectedForce;
+      const sel = v2.front.forces.find((f) => f.id === v2.selectedForce);
+      if (sel) v2.view.keepInView(v2.view.forceXY(sel), view.w, view.h);
     }
     v2.view.clampPan(view.w, view.h);
     v2.view.preview = theaterPreview(v2);
