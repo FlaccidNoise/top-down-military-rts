@@ -34,8 +34,11 @@ const DYN = [
   { name: 'muzzle+tracer hit', trigger: { type: 'shot', hit: true, kill: false }, dur: 340, buckets: 6 },
   { name: 'tracer kill', trigger: { type: 'shot', hit: true, kill: true }, dur: 340, buckets: 6 },
   { name: 'tracer miss', trigger: { type: 'shot', hit: false, kill: false }, dur: 340, buckets: 6 },
-  { name: 'muzzle mg42', trigger: { type: 'shot', hit: true, kill: false, weapon: 'mg42' }, dur: 140, buckets: 4 },
-  { name: 'muzzle thompson', trigger: { type: 'shot', hit: true, kill: false, weapon: 'thompson' }, dur: 140, buckets: 4, minPeak: 15 },
+  // Automatic weapons strobe one flash per audio tap (audio.ts GUN): 5 taps at
+  // 50 ms for the MG42, 4 at 86 ms for the Thompson. One bucket per 50 ms, so
+  // the row shows the burst as a row of flashes and not one.
+  { name: 'burst mg42', trigger: { type: 'shot', hit: true, kill: false, weapon: 'mg42' }, dur: 400, buckets: 8 },
+  { name: 'burst thompson', trigger: { type: 'shot', hit: true, kill: false, weapon: 'thompson' }, dur: 400, buckets: 8, minPeak: 15 },
   { name: 'muzzle bazooka', trigger: { type: 'shot', hit: true, kill: false, weapon: 'bazooka' }, dur: 420, buckets: 4 },
   { name: 'cannon blast', trigger: { type: 'shot', hit: true, kill: false, weapon: 'pak40_gun' }, dur: 720, buckets: 4 },
   { name: 'wall strike', anchor: 'wall', trigger: { type: 'shot', hit: false, kill: false }, dur: 400, buckets: 4, roiFrac: 0.3, minPeak: 15 },

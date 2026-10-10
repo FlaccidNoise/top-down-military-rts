@@ -41,7 +41,7 @@ const PRESETS = ['village', 'woods', 'hamlet', 'farm', 'bocage', 'units', 'enemy
 // after N ms, which is how a sim-tick-lived effect (a building fire) is shot.
 const EFFECTS = {
   muzzle: { trigger: { type: 'shot', hit: true, kill: false }, dur: 120, buckets: 3 },
-  mg: { trigger: { type: 'shot', hit: true, kill: false, weapon: 'mg42' }, dur: 140, buckets: 4 },
+  mg: { trigger: { type: 'shot', hit: true, kill: false, weapon: 'mg42' }, dur: 400, buckets: 8 },
   bazooka: { trigger: { type: 'shot', hit: true, kill: false, weapon: 'bazooka' }, dur: 400, buckets: 4 },
   cannon: { trigger: { type: 'shot', hit: true, kill: false, weapon: 'pak40_gun' }, dur: 700, buckets: 4 },
   tracer: { trigger: { type: 'shot', hit: true, kill: false }, dur: 340, buckets: 6 },

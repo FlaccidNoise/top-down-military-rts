@@ -185,16 +185,17 @@ export interface FlashSpec {
   life: number; // ms
   tracerW: number; // px, the always-drawn faint thread
   tracerCol: string;
-  extra?: 'double' | 'backblast' | 'wash';
+  extra?: 'backblast' | 'wash';
   tracerOdds: number; // fraction of rounds that carry a visible tracer
+  cone: number; // rad — how far a burst's later rounds stray off the first
 }
 
 export const FLASH: Record<FlashClass, FlashSpec> = {
-  rifle: { r: 0.36, spikes: 2, len: 1.35, spread: 0.42, life: 60, tracerW: 1, tracerCol: '255,240,210', tracerOdds: 0.2 },
-  smg: { r: 0.28, spikes: 3, len: 1, spread: 0.8, life: 45, tracerW: 1, tracerCol: '255,236,200', tracerOdds: 0.2 },
-  mg: { r: 0.5, spikes: 3, len: 1.8, spread: 0.3, life: 75, tracerW: 2, tracerCol: '255,214,140', extra: 'double', tracerOdds: 0.34 },
-  rocket: { r: 0.7, spikes: 0, len: 0, spread: 0, life: 90, tracerW: 2, tracerCol: '255,222,170', extra: 'backblast', tracerOdds: 1 },
-  cannon: { r: 1.2, spikes: 2, len: 1.5, spread: 0.5, life: 120, tracerW: 2, tracerCol: '255,226,180', extra: 'wash', tracerOdds: 1 },
+  rifle: { r: 0.42, spikes: 2, len: 1.35, spread: 0.42, life: 60, tracerW: 1, tracerCol: '255,240,210', tracerOdds: 0.2, cone: 0.02 },
+  smg: { r: 0.32, spikes: 3, len: 1, spread: 0.8, life: 45, tracerW: 1, tracerCol: '255,236,200', tracerOdds: 0.2, cone: 0.045 },
+  mg: { r: 0.6, spikes: 3, len: 1.8, spread: 0.3, life: 75, tracerW: 2, tracerCol: '255,214,140', tracerOdds: 0.34, cone: 0.028 },
+  rocket: { r: 0.7, spikes: 0, len: 0, spread: 0, life: 90, tracerW: 2, tracerCol: '255,222,170', extra: 'backblast', tracerOdds: 1, cone: 0 },
+  cannon: { r: 1.2, spikes: 2, len: 1.5, spread: 0.5, life: 120, tracerW: 2, tracerCol: '255,226,180', extra: 'wash', tracerOdds: 1, cone: 0 },
 };
 
 // Undefined weapon is a vehicle cannon / AP round (sim.ts pairs those with a

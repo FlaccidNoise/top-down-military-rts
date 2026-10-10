@@ -79,6 +79,17 @@ export const BOOM: Record<BlastKind, BoomVoice> = {
 const MAX_TAPS = MOBILE ? 3 : 6;
 const TAP_FALL = 0.85; // gain drop across a burst — the first round is the loudest
 
+// The burst one ShotEvent stands for. The ear and the eye both read it from
+// here: gunshot() voices this many taps `spacing` apart, and the renderer
+// strobes one muzzle flash per tap off the same two numbers, so the picture
+// cannot drift from the sound.
+export function gunOf(weapon: WeaponKey | undefined): Gun {
+  return weapon ? GUN[weapon] : CANNON; // vehicle main guns carry no weapon key
+}
+export function tapsOf(gun: Gun): number {
+  return Math.min(gun.taps ?? 1, MAX_TAPS);
+}
+
 // Hard concurrent cap — a firefight is hundreds of events/frame. Each voice is
 // a BufferSource plus two BiquadFilters; mobile WebAudio clips and drops out
 // well below 28, so a phone gets less than half. (Unlock itself already works
@@ -270,7 +281,7 @@ export class AudioEngine {
       src.start(at);
       src.stop(at + decay + 0.02);
     };
-    const taps = Math.min(w.taps ?? 1, MAX_TAPS);
+    const taps = tapsOf(w);
     for (let i = 0; i < taps; i++) tap(now + i * (w.spacing ?? 0), w.freq, w.q, w.decay, w.gain * TAP_FALL ** i);
     if (w.tail) tap(now + 0.02, 2600, 5, w.decay * 1.6, w.tail); // whip-crack over the report
     if (w.bolt && near) {
@@ -307,7 +318,7 @@ export class AudioEngine {
     for (const s of shots) {
       const placed = this.place(s.fx, s.fy, cam, cw, ch);
       if (!placed) continue;
-      const gun = s.weapon ? GUN[s.weapon] : CANNON; // vehicle main guns carry no weapon key
+      const gun = gunOf(s.weapon);
       // near-miss crack gates on the impact point (where the round snaps past),
       // not the muzzle; 9 = far off-screen (place culled it), so no crack
       const impact = this.place(s.tx, s.ty, cam, cw, ch);
