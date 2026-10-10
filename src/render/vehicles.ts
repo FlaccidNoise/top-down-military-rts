@@ -323,6 +323,7 @@ function mudSkirt(g: Ctx, kindIx: number, long: number, wide: number, d: Detail)
 // Paint that has been in a hedgerow: chipping down to the hull tone, and a
 // dust wash over the insignia's bounding box.
 function weatherMark(g: Ctx, x: number, y: number, r: number, c: Palette, d: Detail): void {
+  if (bakePart === 'turret') return; // hull paint
   if (!d.d2) return;
   g.save();
   g.globalAlpha = 0.35;
@@ -344,6 +345,7 @@ function weatherMark(g: Ctx, x: number, y: number, r: number, c: Palette, d: Det
 // rather than as a 0.34 px font: sub-pixel font sizes are a rasterizer coin
 // flip, a scaled-down big glyph is not.
 function turretNumber(g: Ctx, x: number, y: number, text: string, d: Detail): void {
+  if (bakePart === 'turret') return; // hull paint
   if (!d.d2) return;
   g.save();
   g.translate(x, y);
@@ -380,6 +382,30 @@ function hullAO(g: Ctx, long: number, wide: number, band: number): void {
 let bakePhase = 0;
 let bakeOcc = 0;
 let bakeSide: Side = 'blue';
+
+// Which part of a turreted tank this bake is of. 'all' is the one sprite a
+// vehicle has always been: hull with the gun baked pointing forward. The
+// renderer asks for 'hull' and 'turret' as two sprites only while the turret
+// is off the centreline or the gun is recoiling, and turns the second about
+// turretCenter(). A tank at rest still draws 'all', so nothing that does not
+// move changes by a pixel.
+export type VehiclePart = 'all' | 'hull' | 'turret';
+let bakePart: VehiclePart = 'all';
+
+// Discard everything drawn until the matching unmute(): an empty clip. The
+// hull and turret passes share one drawing function per kind, and its
+// statements interleave the two. Muting a span leaves the function's order
+// untouched, and in an 'all' bake neither call does anything at all.
+function mute(g: Ctx, off: boolean): void {
+  if (!off) return;
+  g.save();
+  g.beginPath();
+  g.rect(0, 0, 0, 0);
+  g.clip();
+}
+function unmute(g: Ctx, off: boolean): void {
+  if (off) g.restore();
+}
 
 // Bucketed occupancy for the sprite key. Deliberately not the raw head count:
 // four buckets is what the cache can afford (an open top's canvas is ~590 KB
@@ -439,6 +465,7 @@ function bogieDots(g: Ctx, x0: number, x1: number, y: number, n: number, color: 
 }
 
 function star(g: Ctx, x: number, y: number, r: number, color: string): void {
+  if (bakePart === 'turret') return; // hull paint
   g.fillStyle = color;
   g.beginPath();
   for (let i = 0; i < 10; i++) {
@@ -454,6 +481,7 @@ function star(g: Ctx, x: number, y: number, r: number, color: string): void {
 }
 
 function balkenkreuz(g: Ctx, x: number, y: number, r: number): void {
+  if (bakePart === 'turret') return; // hull paint
   const armW = r * 0.62;
   g.save();
   g.translate(x, y);
@@ -554,6 +582,9 @@ function drawSherman(g: Ctx, band: number, c: Palette, wreck: boolean, long: num
   const gap: [number, number] | undefined = wreck ? [-0.6, 0.6] : undefined;
   const botOffset = wreck ? 0.14 : 0;
   const deckY = -wide / 2 + trackH; // -0.85
+  const noHull = bakePart === 'turret';
+  const noTurret = bakePart === 'hull';
+  mute(g, noHull);
   g.fillStyle = c.hullSide;
   roundRectPath(g, -half, -wide / 2, long, wide, 0.5);
   g.fill();
@@ -586,6 +617,8 @@ function drawSherman(g: Ctx, band: number, c: Palette, wreck: boolean, long: num
   }
   bolts(g, band, -half + 0.6, deckY + 0.02, half - 1.3, deckY + 0.02, 8, d);
   bolts(g, band, -half + 0.6, -deckY - 0.02, half - 1.3, -deckY - 0.02, 8, d);
+  unmute(g, noHull);
+  mute(g, noTurret);
   const [jx, jy] = turretJolt(wreck);
   turret(g, band, -0.15 + jx, jy, 1.0, c, 2.3, false, d, wreck ? 0.12 : 0);
   // commander's split hatch + loader's hatch + the roof .50 on its pintle
@@ -610,11 +643,14 @@ function drawSherman(g: Ctx, band: number, c: Palette, wreck: boolean, long: num
     g.arc(-0.55 + jx, -0.38 + jy, 0.3, 0, TAU);
     g.stroke();
   }
+  unmute(g, noTurret);
+  mute(g, noHull);
   g.fillStyle = c.metalDark;
   g.beginPath();
   g.arc(half - 0.55, 0, 0.16, 0, TAU);
   g.fill();
   mudSkirt(g, 1, long, wide, d);
+  unmute(g, noHull);
 }
 
 function drawPanzer4(g: Ctx, band: number, c: Palette, wreck: boolean, long: number, wide: number, d: Detail): void {
@@ -624,6 +660,9 @@ function drawPanzer4(g: Ctx, band: number, c: Palette, wreck: boolean, long: num
   const botY = wide / 2 - trackH;
   const gap: [number, number] | undefined = wreck ? [-0.5, 0.5] : undefined;
   const botOffset = wreck ? -0.13 : 0;
+  const noHull = bakePart === 'turret';
+  const noTurret = bakePart === 'hull';
+  mute(g, noHull);
   const deckY = -wide / 2 + trackH; // -0.95
   g.fillStyle = c.hullSide;
   g.fillRect(-half, -wide / 2, long, wide); // boxier — square corners, no round
@@ -690,6 +729,8 @@ function drawPanzer4(g: Ctx, band: number, c: Palette, wreck: boolean, long: num
   }
   bolts(g, band, -half + 0.5, deckY + 0.03, half - 0.5, deckY + 0.03, 9, d);
   bolts(g, band, -half + 0.5, -deckY - 0.03, half - 0.5, -deckY - 0.03, 9, d);
+  unmute(g, noHull);
+  mute(g, noTurret);
   const [jx, jy] = turretJolt(wreck);
   const tcx = -0.1 + jx;
   // turret Schürzen: a hex standoff ring hung off the turret roof
@@ -718,11 +759,14 @@ function drawPanzer4(g: Ctx, band: number, c: Palette, wreck: boolean, long: num
   }
   turret(g, band, tcx, jy, 0.95, c, 2.8, true, d, wreck ? -0.12 : 0);
   if (!wreck) hatch(g, band, tcx - 0.33, jy, 0.24, c, d);
+  unmute(g, noTurret);
+  mute(g, noHull);
   g.fillStyle = c.metalDark;
   g.beginPath();
   g.arc(half - 0.5, 0, 0.15, 0, TAU);
   g.fill();
   mudSkirt(g, 2, long, wide, d);
+  unmute(g, noHull);
 }
 
 function drawStug(g: Ctx, band: number, c: Palette, wreck: boolean, long: number, wide: number, d: Detail): void {
@@ -1003,13 +1047,14 @@ export function vehicleCacheStats(): { entries: number; bytes: number } {
 // `tphase` (track churn, 0-2) and `occ` (open-top occupancy bucket, 0-3) are
 // extra cache dimensions, so both must be 0 wherever they cannot be seen —
 // the renderer pins them at far bands and on wrecks. See occBucket().
-export function getVehicleSprite(kind: VehicleKey, side: Side, state: State, band: number, tphase = 0, occ = 0): HTMLCanvasElement {
-  const key = `${kind}|${side}|${state}|${band}|${tphase}|${occ}`;
+export function getVehicleSprite(kind: VehicleKey, side: Side, state: State, band: number, tphase = 0, occ = 0, part: VehiclePart = 'all'): HTMLCanvasElement {
+  const key = part === 'all' ? `${kind}|${side}|${state}|${band}|${tphase}|${occ}` : `${kind}|${side}|${state}|${band}|${tphase}|${occ}|${part}`;
   const hit = cache.get(key);
   if (hit) return hit;
   bakePhase = tphase;
   bakeOcc = occ;
   bakeSide = side;
+  bakePart = part;
 
   const px = VEHICLE_SPAN * band;
   const c = document.createElement('canvas');
@@ -1023,10 +1068,13 @@ export function getVehicleSprite(kind: VehicleKey, side: Side, state: State, ban
   const wreck = state === 'dead';
   const pal = paletteFor(side, state);
 
-  hullAO(g, long, wide, band);
-  teamRim(g, -long / 2, -wide / 2, long, wide, band, pal.rim);
+  if (part !== 'turret') {
+    hullAO(g, long, wide, band);
+    teamRim(g, -long / 2, -wide / 2, long, wide, band, pal.rim);
+  }
   drawBody(g, kind, side, pal, wreck, long, wide, true, band);
   if (wreck) ashPatches(g, long, wide, detailFor(band, true));
+  bakePart = 'all';
 
   cache.set(key, c);
   return c;

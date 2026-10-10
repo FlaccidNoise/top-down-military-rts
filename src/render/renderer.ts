@@ -58,6 +58,23 @@ interface RState {
   wx: number; // drawn position (a dragged casualty trails behind his rescuer)
   wy: number;
   dfacing: number; // drawn facing, including the dead man's per-id jitter
+  // Reactions. Each is a moment on the fx clock and a unit vector; the draw
+  // turns them into a few pixels of offset that decay. None of it moves the
+  // man in the sim — he is drawn off his position, never put there.
+  kickAt: number; // he fired: recoil back along (kux, kuy), once per tap
+  kickTaps: number;
+  kickGap: number;
+  kux: number;
+  kuy: number;
+  hitAt: number; // he was hit and lived: a jerk along the round's path
+  hux: number;
+  huy: number;
+  fellAt: number; // he went down: a slide along (fdx, fdy) that stays
+  fdx: number;
+  fdy: number;
+  fall: number; // how far, m
+  restX: number; // where earlier falls already left him, m off his sim position
+  restY: number;
 }
 
 // Render-only per-vehicle state (U7), mirroring the soldier `rs` map. Every
@@ -72,11 +89,25 @@ interface VState {
   di: number; // ring write index
   puffAt: number; // odometer of the last puff
   markAt: number; // odometer of the last rut stamp
+  // The two cues that are NOT on the odometer, because a tank fights standing
+  // still: where the turret points relative to the hull, and the main gun's
+  // last shot. Both ride the fx clock, so they stop with the sim too.
+  turret: number; // rad off the hull's centreline
+  firedAt: number; // ms, fx clock
+  fux: number; // bearing of that shot
+  fuy: number;
 }
 
-const DUST_RING = 6;
+const DUST_RING = 12;
 const DUST_EVERY = 0.5; // m of travel per puff
-const DUST_LIFE = 2.5; // m of travel a puff survives
+const DUST_LIFE = 6; // m of travel a puff survives — a trail a hull-length long, where 2.5 m was gone under the hull itself
+const TURRET_SLEW = 0.7; // rad/s — about 40 degrees a second, a powered traverse
+const RECOIL_MS = 380; // the gun runs back and the hull rocks for this long
+const HULL_MUZZLE = 3.1; // m from the hull centre to the muzzle of a tank gun
+const KICK_MS = 240; // a man's recoil
+const JERK_MS = 280; // a hit man's flinch
+const FALL_MS = 250; // a falling man's slide
+const EXHAUST_TICKS = 26; // sim ticks between exhaust puffs
 const MARK_EVERY = 0.7; // m of travel per rut stamp
 const TRACK_PITCH = 0.16; // m of travel per track-phase step
 
@@ -224,6 +255,19 @@ const HAZE_MAX_SCALE = 22; // px/m — above this you can count boots and haze i
 const MOTE_MIN_SCALE = 20;
 const MOTE_CAP = 24;
 
+// Barrel length: how far down its bearing a shot's flash sits from where the
+// sim says it was fired. A man's rifle, or a tank gun measured from the hull.
+function muzzleReach(weapon: ShotEvent['weapon']): number {
+  return weapon === undefined ? HULL_MUZZLE : 0.9;
+}
+
+// An angle into (-PI, PI].
+function wrapAngle(a: number): number {
+  while (a > Math.PI) a -= Math.PI * 2;
+  while (a <= -Math.PI) a += Math.PI * 2;
+  return a;
+}
+
 // Positive modulo — the wrapping every world-anchored ambient layer needs, and
 // the thing `%` alone gets wrong the moment wind drift goes negative.
 function mod(v: number, m: number): number {
@@ -299,6 +343,8 @@ export class Renderer {
   private deadVehicles = new Set<number>(); // scorch stamped once, on first dead frame
   private lastNow = 0;
   private fxClock = 0; // set once per draw(): the pinnable cosmetic clock overlay pulses read
+  private frameNow = 0; // set once per draw(): the fx clock itself, for the per-unit reactions
+  private fxDt = 0; // seconds of fx clock since the last draw — 0 under pause, which is what stops a turret mid-traverse
   private booms: Boom[] = [];
   private breaches: BreachFx[] = [];
   private moraleFx: MoraleFx[] = [];
@@ -362,7 +408,8 @@ export class Renderer {
       const muzzleSeen = (): boolean => (shooter ? this.sim.soldierVisibleTo(PLAYER_SIDE, shooter) : this.pointSeen(e.fx, e.fy));
       this.pall.feed(e.fx, e.fy, PALL_PER_ROUND * taps, now, this.sim.tick, muzzleSeen);
       this.pall.feed(e.tx, e.ty, PALL_PER_ROUND * 0.6 * taps, now, this.sim.tick, () => this.pointSeen(e.tx, e.ty));
-      this.noteFiring(e, taps, now, muzzleSeen);
+      const d = Math.hypot(e.tx - e.fx, e.ty - e.fy);
+      if (d > 0) this.noteShot(e, shooter, (e.tx - e.fx) / d, (e.ty - e.fy) / d, taps, gap, now, muzzleSeen); // false for a NaN bearing too
       // A miss has to land somewhere past the target — resolve it once, here,
       // rather than 48 edge tests per frame for the shot's whole life.
       if (!e.hit) {
@@ -424,6 +471,23 @@ export class Renderer {
   // has no business seeing. Every other kind (kia, downed, ping, ...) is the
   // ping feed's and the audio layer's business, not the renderer's.
   addUnitEvents(list: UnitEvent[], now: number): void {
+    // A man going down slides a short way along whatever hit him and stays
+    // there. Only when the sim says which way: bled out, or hit inside a hull,
+    // he drops where he stands as he always did.
+    for (const e of list) {
+      if ((e.kind !== 'kia' && e.kind !== 'downed') || e.id === undefined || e.dx === undefined || e.dy === undefined) continue;
+      if (!(Math.abs(e.dx) <= 1) || !(Math.abs(e.dy) <= 1)) continue; // NaN fails both
+      const s = this.sim.soldiers[e.id];
+      if (!s) continue;
+      const st = this.state(s);
+      // A second fall (downed, then killed) starts from where the first left him.
+      st.restX += st.fdx * st.fall;
+      st.restY += st.fdy * st.fall;
+      st.fellAt = now;
+      st.fdx = e.dx;
+      st.fdy = e.dy;
+      st.fall = e.kind === 'kia' ? 0.3 + hash(e.id, 0, 31) * 0.5 : 0.2;
+    }
     for (const e of list) {
       if (e.kind !== 'pinned' && e.kind !== 'rallied' && e.kind !== 'ambush') continue;
       if (this.moraleFx.length >= MAX_MORALE_FX) return; // at the cap: drop, silently
@@ -454,12 +518,46 @@ export class Renderer {
     this.terrain.breachEnclosures();
   }
 
+  // Everything one shot sets going besides its own flash and tracer: the
+  // weapon heats, the firer kicks, the man it hit jerks, a tank's turret snaps
+  // onto the round it just fired. (ux, uy) is the bearing.
+  private noteShot(e: ShotEvent, shooter: Soldier | undefined, ux: number, uy: number, taps: number, gap: number, now: number, muzzleSeen: () => boolean): void {
+    this.noteFiring(e, ux, uy, taps, now, muzzleSeen);
+    // The firer kicks, once per round of his burst.
+    if (shooter) {
+      const st = this.state(shooter);
+      st.kickAt = now;
+      st.kickTaps = taps;
+      st.kickGap = gap;
+      st.kux = ux;
+      st.kuy = uy;
+    }
+    // A man who is hit and lives jerks when the round arrives.
+    const victim = e.hit && e.targetId !== undefined ? this.sim.soldiers[e.targetId] : undefined;
+    if (victim) {
+      const st = this.state(victim);
+      st.hitAt = now + TRAVEL_MS;
+      st.hux = ux;
+      st.huy = uy;
+    }
+    // A main gun carries no weapon key and leaves from the hull's own
+    // position. The drawn turret is snapped onto the shot it just fired — the
+    // sim fires on any bearing at once, and a round leaving the side of a
+    // turret that has not come round yet is the worse lie.
+    if (e.weapon !== undefined) return;
+    for (const v of this.sim.vehicles) {
+      if (!v.alive || Math.abs(v.x - e.fx) > 0.01 || Math.abs(v.y - e.fy) > 0.01) continue;
+      const vs = this.vstate(v);
+      vs.turret = wrapAngle(Math.atan2(uy, ux) - v.facing);
+      vs.firedAt = now;
+      vs.fux = ux;
+      vs.fuy = uy;
+      return;
+    }
+  }
+
   // Heat the weapon this shot came from (see Firing).
-  private noteFiring(e: ShotEvent, taps: number, now: number, seen: () => boolean): void {
-    const d = Math.hypot(e.tx - e.fx, e.ty - e.fy);
-    if (!(d > 0)) return; // also drops a NaN bearing
-    const ux = (e.tx - e.fx) / d;
-    const uy = (e.ty - e.fy) / d;
+  private noteFiring(e: ShotEvent, ux: number, uy: number, taps: number, now: number, seen: () => boolean): void {
     // Soldier ids are >= 0, so a position key goes below zero.
     const key = e.shooterId ?? -1 - (Math.round(e.fx * 2) * 4099 + Math.round(e.fy * 2));
     let f = this.firing.get(key);
@@ -485,8 +583,9 @@ export class Renderer {
     }
     f.heat = Math.min(1, f.heat * Math.exp(-(now - f.at) / GUN_COOL_MS) + HEAT_PER_ROUND * taps);
     f.at = now;
-    f.x = e.fx + ux * 0.9; // the same barrel length shotGeom puts the flash at
-    f.y = e.fy + uy * 0.9;
+    const reach = muzzleReach(e.weapon); // the same barrel length shotGeom puts the flash at
+    f.x = e.fx + ux * reach;
+    f.y = e.fy + uy * reach;
     f.ux = ux;
     f.uy = uy;
   }
@@ -516,6 +615,18 @@ export class Renderer {
         blit(ctx, 'smoke', mx + (f.ux * out + WIND.dx * drift) * F, my + (f.uy * out + WIND.dy * drift) * F, (0.3 + ph * 0.6) * F, a * Math.sin(ph * Math.PI));
       }
     }
+  }
+
+  // Whether any of these blasts earns the frame a beat of hold (main.ts): one
+  // with a tank kill's or a heavy shell's punch, landing inside the view.
+  holdWorthy(booms: BoomEvent[], cam: Camera): boolean {
+    for (const b of booms) {
+      const { spec, k } = blastOf(b);
+      if (spec.shake * k < 0.8) continue;
+      const [x, y] = cam.worldToScreen(b.x, b.y, view.w, view.h);
+      if (x >= 0 && y >= 0 && x <= view.w && y <= view.h) return true;
+    }
+    return false;
   }
 
   // Fog test for an effect anchored to a point rather than to a man.
@@ -646,13 +757,16 @@ export class Renderer {
     // an animated tell on an unpinnable clock is what made art crops
     // unsettleable in the first place (#134, the class #278 tracks).
     this.fxClock = this.flickerOn ? now : 0;
+    this.fxDt = Math.min(0.1, Math.max(0, (now - this.frameNow) / 1000));
+    this.frameNow = now;
     ctx.fillStyle = '#161510'; // darker desaturated earth tone off-map, replacing the flat void
     ctx.fillRect(0, 0, cw, ch); // backdrop stays unshaken so shake never opens a gap at the map edge
     ctx.imageSmoothingEnabled = true;
 
     // Camera shake: world layers only (HUD/picking stay steady — worldToScreen
     // is untouched). Stateless, derived from recent booms' screen proximity plus
-    // a faint tremor from fresh nearby fire. Wall-clock, so it decays under pause.
+    // a faint tremor from fresh nearby fire. On the fx clock like the blasts
+    // that cause it, so a pause holds it where it was.
     const [shx, shy] = this.worldShake(cam, now, cw, ch);
     ctx.save();
     ctx.translate(shx, shy);
@@ -1029,7 +1143,11 @@ export class Renderer {
     }
     trauma = Math.min(1, trauma + Math.min(0.12, fire));
     if (trauma < 0.001) return [0, 0];
-    const mag = Math.pow(trauma, 1.5) * 9; // px; ^1.5 keeps small tremors gentle
+    // px; ^1.5 keeps small tremors gentle. Scaled by how close the camera is:
+    // the same shell is a jolt at squad zoom and a tick with the whole map on
+    // screen, where nine pixels would be the map sliding about. A phone gets
+    // less — the screen is in the hand that is shaking.
+    const mag = Math.pow(trauma, 1.5) * 9 * Math.min(1.3, Math.max(0.3, cam.scale / 14)) * (MOBILE ? 0.6 : 1);
     return [mag * Math.sin(now * 0.09), mag * Math.sin(now * 0.13 + 1.7)];
   }
 
@@ -1478,12 +1596,17 @@ export class Renderer {
   // Odometer bookkeeping (U7): distance travelled since the last frame, with
   // the same >2 m teleport guard drawSoldier uses, plus the rut stamps and
   // dust puffs that fall out of it. Returns the track phase to bake with.
-  private vehicleMotion(v: Vehicle, band: number, scale: number): number {
+  private vstate(v: Vehicle): VState {
     let st = this.vrs.get(v.id);
     if (!st) {
-      st = { px: v.x, py: v.y, dist: 0, dust: [], di: 0, puffAt: 0, markAt: 0 };
+      st = { px: v.x, py: v.y, dist: 0, dust: [], di: 0, puffAt: 0, markAt: 0, turret: 0, firedAt: -1e9, fux: 1, fuy: 0 };
       this.vrs.set(v.id, st);
     }
+    return st;
+  }
+
+  private vehicleMotion(v: Vehicle, band: number, scale: number): number {
+    const st = this.vstate(v);
     const step = Math.hypot(v.x - st.px, v.y - st.py);
     st.px = v.x;
     st.py = v.y;
@@ -1505,6 +1628,8 @@ export class Renderer {
       if (st.dust.length < DUST_RING) st.dust.push(p);
       else st.dust[st.di % DUST_RING] = p;
       st.di++;
+      // ...and some of it stays up: a column on the move raises a haze.
+      if (st.di % 4 === 0) this.pall.feed(p.x, p.y, 0.08, this.frameNow, this.sim.tick);
     }
     return tier(band) >= 2 ? Math.floor(st.dist / TRACK_PITCH) % 3 : 0;
   }
@@ -1516,7 +1641,27 @@ export class Renderer {
       const age = (st.dist - p.at) / DUST_LIFE;
       if (age >= 1) continue;
       const [sx, sy] = cam.worldToScreen(p.x, p.y, cw, ch);
-      blit(ctx, 'dustTan', sx, sy, (0.6 + age * 1.1) * cam.scale, 0.26 * (1 - age));
+      blit(ctx, 'dustTan', sx, sy, (0.7 + age * 1.7) * cam.scale, 0.5 * (1 - age) ** 0.8);
+    }
+    // Idle exhaust: the engine is running whether the hull moves or not. On
+    // the sim tick, and a puff exists only from the tick it was coughed out —
+    // so before the battle has run a tick there is none, and a staged scene
+    // that never steps shows a cold engine.
+    if (cam.scale < 10) return;
+    const tick = this.sim.tick;
+    const cs = Math.cos(v.facing);
+    const sn = Math.sin(v.facing);
+    const slot = Math.floor(tick / EXHAUST_TICKS);
+    for (let j = 0; j < 3; j++) {
+      const born = (slot - j) * EXHAUST_TICKS;
+      if (born < 0) continue;
+      const ph = (tick - born) / (EXHAUST_TICKS * 3);
+      const back = VEHICLE_SPAN * 0.3 + ph * 1.3;
+      const side = (hash(v.id, slot - j, 250) - 0.5) * 0.5 + 0.5;
+      const ex = v.x - back * cs - side * sn + WIND.dx * ph * 1.4;
+      const ey = v.y - back * sn + side * cs + WIND.dy * ph * 1.4;
+      const [sx, sy] = cam.worldToScreen(ex, ey, cw, ch);
+      blit(ctx, 'soot', sx, sy, (0.25 + ph * 0.7) * cam.scale, 0.46 * Math.sin(ph * Math.PI));
     }
   }
 
@@ -1531,11 +1676,35 @@ export class Renderer {
     const band = vehicleBandFor(cam.scale);
     const tphase = this.vehicleMotion(v, band, cam.scale);
     const occ = v.alive ? occBucket(v.kind, this.aboard(v)) : 0;
-    const spr = getVehicleSprite(v.kind, v.side, v.alive ? 'ok' : 'dead', band, tphase, occ);
+    const st = this.vstate(v);
+    const tc = v.alive && tier(band) >= 1 ? turretCenter(v.kind) : null;
+    // Traverse: the turret comes round onto whatever the hull is engaging and
+    // goes back to the centreline when there is nothing. On the fx clock.
+    if (tc) {
+      const tgt = v.targetVehicleId >= 0 ? this.sim.vehicles[v.targetVehicleId] : v.targetSoldierId >= 0 ? this.sim.soldiers[v.targetSoldierId] : undefined;
+      const want = tgt ? wrapAngle(Math.atan2(tgt.y - v.y, tgt.x - v.x) - v.facing) : 0;
+      const diff = wrapAngle(want - st.turret);
+      st.turret += Math.sign(diff) * Math.min(Math.abs(diff), TURRET_SLEW * this.fxDt);
+    } else st.turret = 0;
+    // Recoil: the gun runs back in its cradle and the hull rocks away from
+    // the shot, then both settle.
+    const ra = this.frameNow - st.firedAt;
+    const recoil = v.alive && ra >= 0 && ra < RECOIL_MS ? Math.exp(-ra / 80) : 0;
+    const rock = recoil > 0 ? 0.11 * Math.exp(-ra / 130) * Math.cos(ra / 60) * cam.scale : 0;
     ctx.save();
-    ctx.translate(x, y);
+    ctx.translate(x - st.fux * rock, y - st.fuy * rock);
     ctx.rotate(v.facing);
-    ctx.drawImage(spr, -pad / 2, -pad / 2, pad, pad);
+    if (tc && (Math.abs(st.turret) > 0.004 || recoil > 0.01)) {
+      // Two sprites only while something is off the centreline or moving. A
+      // tank at rest draws the one baked sprite it always has.
+      ctx.drawImage(getVehicleSprite(v.kind, v.side, 'ok', band, tphase, occ, 'hull'), -pad / 2, -pad / 2, pad, pad);
+      ctx.translate(tc[0] * cam.scale, tc[1] * cam.scale);
+      ctx.rotate(st.turret);
+      ctx.translate(-(tc[0] + 0.22 * recoil) * cam.scale, -tc[1] * cam.scale);
+      ctx.drawImage(getVehicleSprite(v.kind, v.side, 'ok', band, 0, 0, 'turret'), -pad / 2, -pad / 2, pad, pad);
+    } else {
+      ctx.drawImage(getVehicleSprite(v.kind, v.side, v.alive ? 'ok' : 'dead', band, tphase, occ), -pad / 2, -pad / 2, pad, pad);
+    }
     ctx.restore();
     if (v.alive && v.id === this.selectedVehicle) {
       ctx.strokeStyle = '#ffe9a0';
@@ -1626,7 +1795,34 @@ export class Renderer {
   private state(s: Soldier): RState {
     let st = this.rs.get(s.id);
     if (!st) {
-      st = { facing: s.side === 'blue' ? 0 : Math.PI, phase: 0, px: s.x, py: s.y, smx: s.x, smy: s.y, wasAlive: true, pose: 'idle', frame: 0, wx: s.x, wy: s.y, dfacing: s.side === 'blue' ? 0 : Math.PI };
+      st = {
+        facing: s.side === 'blue' ? 0 : Math.PI,
+        phase: 0,
+        px: s.x,
+        py: s.y,
+        smx: s.x,
+        smy: s.y,
+        wasAlive: true,
+        pose: 'idle',
+        frame: 0,
+        wx: s.x,
+        wy: s.y,
+        dfacing: s.side === 'blue' ? 0 : Math.PI,
+        kickAt: -1e9,
+        kickTaps: 1,
+        kickGap: 0,
+        kux: 0,
+        kuy: 0,
+        hitAt: -1e9,
+        hux: 0,
+        huy: 0,
+        fellAt: -1e9,
+        fdx: 0,
+        fdy: 0,
+        fall: 0,
+        restX: 0,
+        restY: 0,
+      };
       this.rs.set(s.id, st);
     }
     return st;
@@ -1647,11 +1843,41 @@ export class Renderer {
         wy -= Math.sin(rst.facing) * 1.0;
       }
     }
+    const st = this.state(s);
+    if (!carried) {
+      // Back on his feet: the slide belonged to the fall.
+      if (s.alive && !s.downed && st.fall !== 0) {
+        st.fall = 0;
+        st.restX = 0;
+        st.restY = 0;
+      }
+      const now = this.frameNow;
+      const slid = 1 - (1 - Math.min(1, Math.max(0, (now - st.fellAt) / FALL_MS))) ** 3;
+      wx += st.restX + st.fdx * st.fall * slid;
+      wy += st.restY + st.fdy * st.fall * slid;
+      if (s.alive) {
+        // A few pixels, so they are sized by the legibility floor like the
+        // flash that causes them: at true scale a 10 cm recoil is one pixel.
+        const px = fxScale(cam.scale) / cam.scale;
+        const ka = now - st.kickAt;
+        if (ka >= 0 && ka < (st.kickTaps - 1) * st.kickGap + KICK_MS) {
+          const tap = st.kickGap > 0 ? Math.min(st.kickTaps - 1, Math.floor(ka / st.kickGap)) : 0;
+          const k = 0.11 * Math.exp(-(ka - tap * st.kickGap) / 55) * px;
+          wx -= st.kux * k;
+          wy -= st.kuy * k;
+        }
+        const ha = now - st.hitAt;
+        if (ha >= 0 && ha < JERK_MS) {
+          const k = 0.2 * Math.exp(-ha / 70) * px;
+          wx += st.hux * k;
+          wy += st.huy * k;
+        }
+      }
+    }
     const [x, y] = cam.worldToScreen(wx, wy, cw, ch);
     const pad = SPRITE_SPAN * cam.scale;
     if (x < -pad || y < -pad || x > cw + pad || y > ch + pad) return;
 
-    const st = this.state(s);
     const dx = s.x - st.px;
     const dy = s.y - st.py;
     // >2m in one frame is a sim teleport (vehicle bailout), not movement —
@@ -1982,7 +2208,8 @@ export class Renderer {
     const d = Math.hypot(x1 - x0, y1 - y0) || 1;
     const ux = (x1 - x0) / d;
     const uy = (y1 - y0) / d;
-    return { x1, y1, ux, uy, mx: x0 + ux * cam.scale * 0.9, my: y0 + uy * cam.scale * 0.9, hx: Math.round(t.tx * 100), hy: Math.round(t.ty * 100) };
+    const reach = muzzleReach(t.weapon) * cam.scale;
+    return { x1, y1, ux, uy, mx: x0 + ux * reach, my: y0 + uy * reach, hx: Math.round(t.tx * 100), hy: Math.round(t.ty * 100) };
   }
 
   private onScreen(x: number, y: number, cw: number, ch: number, pad: number): boolean {
