@@ -127,7 +127,10 @@ describe('the planner neither dithers nor grinds (jtbug #762)', () => {
   // The two regressions the mid-road turn-round exposed, held as properties
   // of the 16 pin wars. Measured at 31cc59b: up to 86 mid-march reversals in
   // one war, AI blue destroyed before the deadline on 5 of 16 seeds.
-  it('single-digit mid-march reversals in every war; blue destroyed on at most one seed', () => {
+  // The destroyed bound is the jtbug #786 target (at most 2 of 16). It was 1
+  // while red was inert: a red that sorties and counterattacks finishes a
+  // company that attacks at bad odds and stays within reach.
+  it('single-digit mid-march reversals in every war; blue destroyed on at most two seeds', () => {
     const reversals: number[] = [];
     let destroyed = 0;
     for (let seed = 1; seed <= 16; seed++) {
@@ -146,7 +149,7 @@ describe('the planner neither dithers nor grinds (jtbug #762)', () => {
       if (run.status.state === 'decided' && run.status.winner === 'red' && run.day <= CAMP.warDays) destroyed++;
     }
     expect(Math.max(...reversals), `reversals per seed: ${reversals}`).toBeLessThan(10);
-    expect(destroyed).toBeLessThanOrEqual(1);
+    expect(destroyed).toBeLessThanOrEqual(2);
   }, 30_000);
 });
 

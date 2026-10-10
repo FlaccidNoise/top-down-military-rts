@@ -162,7 +162,7 @@ describe('intel persistence (save v4)', () => {
     };
     for (const f of d.forces) addForce(front, f);
     front.intel = {
-      blue: [{ forceId: 7, pos: { kind: 'node', nodeId: 1 }, strength: 80, seenMin: 840, moving: false }],
+      blue: [{ forceId: 7, pos: { kind: 'node', nodeId: 1 }, strength: 80, seenMin: 840, moving: false, dug: false }],
       red: [],
     };
     expect(saveGameV2(seed, DEFAULT_PRESET.theater, DEFAULT_PRESET.campaign, campaign, front)).toBe(true);

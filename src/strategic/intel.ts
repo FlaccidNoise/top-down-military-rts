@@ -8,12 +8,14 @@
 import type { Side } from '../sim/sim';
 import { graphGap } from './theater/contact';
 import type { Force, FrontV2, StratContact } from './theater/force';
+import { dugIn } from './theater/step';
 
 export interface EnemyContact {
   forceId: number;
   pos: Force['pos'];
   strength: number;
   ageMin: number;
+  dug: boolean; // dug in when last seen: earthworks are plain to see
 }
 
 export interface IntelView {
@@ -36,7 +38,7 @@ export class OmniscientIntel implements IntelView {
   contacts(): EnemyContact[] {
     return this.front.forces
       .filter((f) => f.side !== this.side && f.strength > 0)
-      .map((f) => ({ forceId: f.id, pos: f.pos, strength: f.strength, ageMin: 0 }));
+      .map((f) => ({ forceId: f.id, pos: f.pos, strength: f.strength, ageMin: 0, dug: dugIn(f) }));
   }
 
   control(nodeId: number): Side | null {
@@ -135,7 +137,7 @@ export function updateIntelMinute(front: FrontV2): void {
     for (const g of front.forces) {
       if (g.side === side || g.strength <= 0) continue;
       if (!isDetected(front, side, dist, g)) continue;
-      const snap: StratContact = { forceId: g.id, pos: { ...g.pos }, strength: g.strength, seenMin: front.clockMin, moving: g.path.length > 0 && g.engagedIn === null };
+      const snap: StratContact = { forceId: g.id, pos: { ...g.pos }, strength: g.strength, seenMin: front.clockMin, moving: g.path.length > 0 && g.engagedIn === null, dug: dugIn(g) };
       const i = list.findIndex((c) => c.forceId === g.id);
       if (i >= 0) list[i] = snap;
       else list.push(snap);
@@ -164,6 +166,7 @@ export class ContactIntel implements IntelView {
       pos: c.pos,
       strength: c.strength,
       ageMin: this.front.clockMin - c.seenMin,
+      dug: c.dug,
     }));
   }
 

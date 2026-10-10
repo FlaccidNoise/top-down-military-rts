@@ -9,6 +9,7 @@ import { OmniscientIntel } from '../src/strategic/intel';
 import { BLUE_V2, Commander2, RED_V2, SORTIE_COVER_MIN, type PlannerReport } from '../src/strategic/planner';
 import type { Theater } from '../src/strategic/theater';
 import { addForce, type Force, type ForceRole, type FrontV2 } from '../src/strategic/theater/force';
+import { DIG_IN_MIN } from '../src/strategic/theater/step';
 import { stepWar } from '../src/strategic/theater/war';
 import { lineTheater } from './lib/line-theater';
 
@@ -112,6 +113,47 @@ describe('the reserve is called in for an attack that fails alone', () => {
     const red = commander(fr, 'red');
     expect(whys(red.evaluate(fr, new OmniscientIntel(fr, 'red'))!)).toEqual([`${line.id}:attack>2`]);
     expect(red.plan!.reserveIds).toEqual([reserve.id]);
+  });
+});
+
+describe('postures', () => {
+  it('a garrison digs in at its post, and its sortie is a forced march', () => {
+    const fr = world(theater(2), ['blue', 'blue', 'red', 'red', 'red']);
+    const garrison = put(fr, 'red', 'garrison', { kind: 'node', nodeId: 2 }, 100);
+    evalOnce(fr, 'red');
+    expect(garrison.posture).toBe('dig');
+    put(fr, 'blue', 'line', { kind: 'edge', edgeId: 1, s: 500, dir: -1 }, 30);
+    expect(whys(evalOnce(fr, 'red'))).toEqual([`${garrison.id}:sortie>1`]);
+    expect(garrison.posture).toBe('forced');
+    expect(garrison.dugMin).toBe(0);
+  });
+
+  it('a tired force with no enemy near rests; an enemy near keeps it up', () => {
+    const fr = world(theater(3), ['blue', 'red', 'red', 'red', 'red']);
+    const tired = put(fr, 'red', 'line', { kind: 'node', nodeId: 1 }, 100);
+    put(fr, 'red', 'reserve', { kind: 'node', nodeId: 4 }, 100);
+    tired.fatigue = 0.8;
+    evalOnce(fr, 'red');
+    expect(tired.posture).toBe('rest');
+    put(fr, 'blue', 'line', { kind: 'edge', edgeId: 0, s: 1000, dir: 1 }, 100);
+    evalOnce(fr, 'red');
+    expect(tired.posture).toBe('march');
+  });
+
+  it('a dug-in defender is weighed as dug in: the same attack then needs the reserve', () => {
+    const attack = (dug: boolean): string[] => {
+      const fr = world(theater(2), ['blue', 'blue', 'blue', 'red', 'red']);
+      const def = put(fr, 'blue', 'line', { kind: 'node', nodeId: 2 }, 130);
+      if (dug) {
+        def.posture = 'dig';
+        def.dugMin = DIG_IN_MIN;
+      }
+      put(fr, 'red', 'line', { kind: 'node', nodeId: 3 }, 90);
+      put(fr, 'red', 'reserve', { kind: 'node', nodeId: 3 }, 90);
+      return whys(evalOnce(fr, 'red'));
+    };
+    expect(attack(false)).toEqual(['1:attack>2']);
+    expect(attack(true)).toEqual(['1:attack>2', '2:attack>2']);
   });
 });
 

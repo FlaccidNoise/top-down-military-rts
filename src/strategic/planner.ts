@@ -4,20 +4,22 @@
 // chokepoints (Tarjan articulation nodes, computed once per theater), masses
 // toward concentrationRatio and holds an explicit reserve echelon. TIER 2
 // (force ladder, 60-min cadence): withdraw → relieve → attack (massed, the
-// reserve called in when the axis fails alone) → advance → cut → probe → hold.
-// A garrison keeps its post: it sorties on a lone weaker enemy next door and
-// comes back. Zero RNG anywhere; ties break lowest node id → force id.
+// reserve called in when the axis fails alone) → advance → counterattack →
+// cut → probe → hold. A garrison keeps its post: it sorties on a weaker enemy
+// next door and comes back. Whoever stands takes a posture: dug in on a post
+// or an objective, at rest when tired and safe. Zero RNG anywhere; ties break
+// lowest node id → force id.
 import { lightAt } from '../sim/solar';
 import type { Side } from '../sim/sim';
 import { coarseOdds, TRIVIAL_RATIO } from './bridge';
 import { battleSiteOf, COARSE_DEF_MULT, CROSSING_ASSAULT_MULT, type NetPos, type Theater } from './theater';
 import { anchorNode, CONTACT_M, incidentFoot, otherEnd, pathNodes, route, type Force, type FrontV2 } from './theater/force';
 import { posSupplied, traceSupply } from './theater/supply';
-import { forceEtaMinutes, orderMove, planMove } from './theater/step';
+import { forceEtaMinutes, orderMove, planMove, setPosture } from './theater/step';
 import { THREAT_M } from './theater/war';
 import { graphGap } from './theater/contact';
-import { combatMult, effStrength } from './theater/combat';
-import type { IntelView } from './intel';
+import { combatMult, DIG_DEF_MULT, effStrength } from './theater/combat';
+import type { EnemyContact, IntelView } from './intel';
 import type { WarGoals, WinCondition } from './goals';
 
 export interface DoctrineV2 {
@@ -75,6 +77,12 @@ export const RAID_REST_FATIGUE = 0.5;
 // Massed forces step off so they arrive within this many minutes of each
 // other: the nearer one waits for the farther.
 export const MASS_SYNC_MIN = 60;
+
+// What an enemy is worth on the defence: a dug-in one is harder to shift.
+const holds = (c: EnemyContact): number => c.strength * (c.dug ? DIG_DEF_MULT : 1);
+// Orders that cannot wait go at a forced march. A sortie is one: the post is
+// open until the garrison is back.
+const URGENT = new Set(['withdraw', 'relieve', 'commit-reserve', 'sortie']);
 
 export type StallCode = 'no-forces' | 'no-reachable-objective' | 'no-viable-attack' | 'goals-met-holding';
 export interface PlannerReport {
@@ -272,7 +280,7 @@ export class Commander2 {
       intel
         .contacts()
         .filter((c) => graphGap(t, site, c.pos) <= CONTACT_M)
-        .reduce((a, c) => a + c.strength, 0);
+        .reduce((a, c) => a + holds(c), 0);
     // The first place a march to `dest` meets the enemy: an enemy standing on
     // one of its roads, or a defended node on the path (`via` is the road the
     // march enters that node by, which is what makes a crossing an assault).
@@ -297,7 +305,10 @@ export class Commander2 {
 
     const order = (f: Force, dest: number, why: string): boolean => {
       const r = orderMove(front, f.id, dest);
-      if (r.ok) orders.push({ forceId: f.id, dest, why });
+      if (r.ok) {
+        orders.push({ forceId: f.id, dest, why });
+        setPosture(front, f.id, URGENT.has(why) ? 'forced' : 'march');
+      }
       return r.ok;
     };
     const reorganising = (g: Force): boolean => g.repulsedAtMin !== null && front.clockMin - g.repulsedAtMin < REORG_MIN;
@@ -318,7 +329,7 @@ export class Commander2 {
         const far = otherEnd(e, home);
         if (t.nodes[far].kind === 'ford') continue;
         for (const c of intel.contacts()) {
-          if (!near.has(c.forceId) && (c.pos.kind === 'edge' ? c.pos.edgeId === e.id : c.pos.nodeId === far)) near.set(c.forceId, { strength: c.strength, pos: c.pos, dest: far, via: e.id });
+          if (!near.has(c.forceId) && (c.pos.kind === 'edge' ? c.pos.edgeId === e.id : c.pos.nodeId === far)) near.set(c.forceId, { strength: holds(c), pos: c.pos, dest: far, via: e.id });
         }
       }
       const [c] = [...near.entries()].sort((p, q) => p[1].strength - q[1].strength || p[0] - q[0]).map((x) => x[1]);
@@ -563,6 +574,15 @@ export class Commander2 {
       // Off the objective and nothing to fight: open ground. The reserve
       // stays where it can answer.
       if (!reserve) openGround();
+    }
+
+    // Postures for whoever stands. A garrison at its post and a force on its
+    // objective dig in. A tired force with no enemy near rests.
+    for (const f of own) {
+      if (f.engagedIn !== null || f.path.length > 0) continue;
+      const at = f.pos.kind === 'node' ? f.pos.nodeId : -1;
+      const post = f.role === 'garrison' ? at === f.homeNode : at >= 0 && at === axisOf(f)?.objective;
+      setPosture(front, f.id, post ? 'dig' : f.fatigue >= RAID_REST_FATIGUE && threatAt(f.pos) === 0 ? 'rest' : 'march');
     }
 
     if (orders.length > 0) return { orders, stall: null };

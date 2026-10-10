@@ -78,6 +78,7 @@ export interface StratContact {
   strength: number;
   seenMin: number;
   moving: boolean; // seen on the march: pos.dir is then its heading
+  dug: boolean; // seen dug in
 }
 
 export const EVENT_LOG_CAP = 64;
