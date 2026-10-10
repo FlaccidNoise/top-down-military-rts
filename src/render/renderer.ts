@@ -329,6 +329,8 @@ const TEAM = { blue: '#5b9bd5', red: '#d05c50' } as const;
 // Poses drawn without a helmet on the head — nothing for the glint to sit on.
 const BAREHEAD = new Set<Pose>(['dead', 'surrender2']);
 const HULL_SHADOW_OFF = 0.58;
+// Metres each bearer of a two-man carry stands off the line of the drag.
+const CARRY_ABREAST = 0.34;
 // Stride cycles per metre at a run, against the walk's 1.4: fewer, because
 // the stride is longer. At the 2.8 m/s the sim runs a man it is still more of
 // them a second than the walk (3.4 against 2.5), without the six frames
@@ -2065,6 +2067,18 @@ export class Renderer {
       }
     }
     const st = this.state(s);
+    // A two-man carry. The sim holds both bearers and the casualty on one
+    // point (the second bearer is slaved to the casualty), which drew two men
+    // as one. They go either side of the line of the drag, an arm each.
+    if (s.alive && s.task?.kind === 'rescue' && s.task.phase === 'drag') {
+      const c = this.sim.soldiers[s.task.casualtyId];
+      if (c.helperId >= 0) {
+        const f = this.rs.get(c.carriedBy)?.facing ?? st.facing;
+        const side = c.carriedBy === s.id ? -CARRY_ABREAST : CARRY_ABREAST;
+        wx -= Math.sin(f) * side;
+        wy += Math.cos(f) * side;
+      }
+    }
     if (!carried) {
       // Back on his feet: the slide belonged to the fall.
       if (s.alive && !s.downed && st.fall !== 0) {
