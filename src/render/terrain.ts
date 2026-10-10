@@ -689,7 +689,44 @@ function cobbleStamp(v: number, band: number): HTMLCanvasElement {
 // square with an alpha ramp at its rim. Buildings used to grow straight out of
 // lawn and the crossroads was bare dirt road; this is what makes the village
 // read as a built place.
-function drawPaving(g: Ctx, map: GameMap, patches: PatchIndex, tx0: number, ty0: number, tx1: number, ty1: number, band: number, d: Detail): void {
+// One scratch canvas for a pass that has to be composed before it goes down
+// (the paving). A chunk bake is synchronous, so one is enough: it is sized to
+// the chunk being baked, cleared, and given that chunk's transform.
+let scratch: HTMLCanvasElement | null = null;
+function scratchFor(g: Ctx): Ctx {
+  scratch ??= document.createElement('canvas');
+  if (scratch.width !== g.canvas.width || scratch.height !== g.canvas.height) {
+    scratch.width = g.canvas.width;
+    scratch.height = g.canvas.height;
+  }
+  const s = scratch.getContext('2d')!;
+  s.globalCompositeOperation = 'source-over';
+  s.setTransform(1, 0, 0, 1, 0, 0);
+  s.clearRect(0, 0, scratch.width, scratch.height);
+  s.setTransform(g.getTransform());
+  return s;
+}
+
+// The paving weight of every tile centre as the alpha of one pixel, so that
+// drawn through with smoothing on it is the ramp itself and not a step a tile.
+function bakePaveMask(patches: PatchIndex, w: number, h: number): HTMLCanvasElement {
+  const c = document.createElement('canvas');
+  c.width = w;
+  c.height = h;
+  const cg = c.getContext('2d')!;
+  const img = cg.createImageData(w, h);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const o = (y * w + x) * 4;
+      img.data[o] = img.data[o + 1] = img.data[o + 2] = 255;
+      img.data[o + 3] = Math.round(patches.pavedAt(x, y) * 255);
+    }
+  }
+  cg.putImageData(img, 0, 0);
+  return c;
+}
+
+function drawPaving(g: Ctx, map: GameMap, patches: PatchIndex, tx0: number, ty0: number, tx1: number, ty1: number, band: number, d: Detail, mask: HTMLCanvasElement | null): void {
   for (const b of patches.buildings) {
     if (b.maxX + 1 < tx0 || b.minX - 1 > tx1 || b.maxY + 1 < ty0 || b.minY - 1 > ty1) continue;
     g.strokeStyle = 'rgba(150,138,112,0.22)';
@@ -749,7 +786,7 @@ function drawPaving(g: Ctx, map: GameMap, patches: PatchIndex, tx0: number, ty0:
       }
     }
   }
-  if (patches.squares.length === 0) return;
+  if (patches.squares.length === 0 || !mask) return;
   const roadAt = (x: number, y: number) => map.inBounds(x, y) && map.terrainKeyAt(x, y) === 'road';
   const pavable = (x: number, y: number) => {
     if (!map.inBounds(x, y)) return false;
@@ -760,41 +797,127 @@ function drawPaving(g: Ctx, map: GameMap, patches: PatchIndex, tx0: number, ty0:
     return roadAt(x - 1, y) || roadAt(x + 1, y) || roadAt(x, y - 1) || roadAt(x, y + 1);
   };
   const weight = (x: number, y: number) => (pavable(x, y) ? patches.pavedAt(x, y) : 0);
-  for (let y = ty0; y < ty1; y++) {
-    for (let x = tx0; x < tx1; x++) {
-      const a = weight(x, y);
-      if (a <= 0.01) continue;
-      g.globalAlpha = a;
-      if (d >= 1) g.drawImage(cobbleStamp((hash(x, y, 278) * 6) | 0, band), x, y, 1, 1);
-      else {
-        g.fillStyle = 'rgb(122,115,102)';
-        g.fillRect(x, y, 1, 1);
+  // The setts used to go down a tile at a time, each at its own alpha: the
+  // ramp at the rim of a square was a flight of 1 m steps, and its outline
+  // followed the tiles. Both are now what softenGround does for the ground:
+  // the WEIGHT is the ramp itself, drawn through a one-pixel-per-tile mask
+  // with smoothing on, and the OUTLINE has its staircase corners cut
+  // (ground.ts cornerCuts) so it runs on the diagonal it stood for. Built in a
+  // scratch canvas because the two multiply: setts, minus the cut corners,
+  // times the ramp.
+  const cls = (x: number, y: number): number => (weight(x, y) > 0.01 ? 1 : groundClass(map, patches, x, y) === HARD ? HARD : 2);
+  let any = false;
+  for (let y = ty0; y < ty1 && !any; y++) for (let x = tx0; x < tx1 && !any; x++) any = cls(x, y) === 1;
+  if (!any) return;
+  const s = scratchFor(g);
+  const sett = (x: number, y: number): void => {
+    if (d >= 1) s.drawImage(cobbleStamp((hash(x, y, 278) * 6) | 0, band), x, y, 1, 1);
+    else {
+      s.fillStyle = 'rgb(122,115,102)';
+      s.fillRect(x, y, 1, 1);
+    }
+  };
+  for (let y = ty0; y < ty1; y++) for (let x = tx0; x < tx1; x++) if (cls(x, y) === 1) sett(x, y);
+  // Corner cuts. `ends` records which end of which tile edge a cut took, so
+  // the kerb below stops where the paving now does. A cut is [corner, point on
+  // the horizontal edge, point on the vertical edge, the lone tile].
+  const ends = new Set<string>();
+  const cuts: [number, number, number, number, number, number][] = [];
+  for (let y = ty0; y <= ty1; y++) {
+    for (let x = tx0; x <= tx1; x++) {
+      const m = cornerCuts(cls(x - 1, y - 1), cls(x, y - 1), cls(x - 1, y), cls(x, y));
+      if (m === 0) continue;
+      for (let bit = 0; bit < 4; bit++) {
+        if (!(m & (1 << bit))) continue;
+        const lx = x - 1 + (bit & 1); // the tile that stands alone
+        const ly = y - 1 + (bit >> 1);
+        cuts.push([x, y, cutOnH(lx, y), cutOnV(x, ly), lx, ly]);
+        ends.add(`h${lx},${y},${bit & 1 ? 0 : 1}`); // 0: the edge's west end, 1: its east end
+        ends.add(`v${x},${ly},${bit >> 1 ? 0 : 1}`); // 0: north end, 1: south end
       }
-      g.globalAlpha = 1;
     }
   }
-  // kerb: hard civic boundary wherever paving meets unpaved ground
-  for (let y = ty0; y < ty1; y++) {
-    for (let x = tx0; x < tx1; x++) {
-      if (weight(x, y) <= 0.35) continue;
-      const sides: [number, number, number, number, number, number][] = [
-        [0, -1, x, y, 1, 0.1],
-        [0, 1, x, y + 0.9, 1, 0.1],
-        [-1, 0, x, y, 0.1, 1],
-        [1, 0, x + 0.9, y, 0.1, 1],
-      ];
-      for (const [dx, dy, rx, ry, rw, rh] of sides) {
-        if (weight(x + dx, y + dy) > 0.35) continue;
-        // only where paving meets soft ground — a kerb across the open road
-        // where the ramp happens to fade would cut the run in half
-        if (roadAt(x + dx, y + dy)) continue;
-        g.fillStyle = 'rgba(158,150,132,0.50)';
-        g.fillRect(rx, ry, rw, rh);
-        g.fillStyle = 'rgba(30,26,20,0.30)';
-        g.fillRect(rx + dx * 0.1, ry + dy * 0.1, dx !== 0 ? 0.04 : rw, dy !== 0 ? 0.04 : rh);
+  const tri = (c: (typeof cuts)[0]): void => {
+    s.beginPath();
+    s.moveTo(c[0], c[1]);
+    s.lineTo(c[2], c[1]);
+    s.lineTo(c[0], c[3]);
+    s.closePath();
+  };
+  for (const c of cuts) {
+    if (cls(c[4], c[5]) === 1) continue;
+    // the lone tile is bare and the paving closes over its corner
+    s.save();
+    tri(c);
+    s.clip();
+    sett(c[4], c[5]);
+    s.restore();
+  }
+  s.globalCompositeOperation = 'destination-out';
+  s.fillStyle = '#000';
+  for (const c of cuts) {
+    if (cls(c[4], c[5]) !== 1) continue;
+    tri(c);
+    s.fill();
+  }
+  s.globalCompositeOperation = 'destination-in';
+  s.imageSmoothingEnabled = true; // bilinear between tile centres: this IS the ramp
+  const mx0 = Math.max(0, tx0);
+  const my0 = Math.max(0, ty0);
+  s.drawImage(mask, mx0, my0, tx1 - mx0, ty1 - my0, mx0, my0, tx1 - mx0, ty1 - my0);
+  s.globalCompositeOperation = 'source-over';
+  g.save();
+  g.setTransform(1, 0, 0, 1, 0, 0);
+  g.drawImage(s.canvas, 0, 0);
+  g.restore();
+  if (d === 0) return; // a 10 cm kerb is a tenth of a pixel out here
+  // Kerb: hard civic boundary wherever paving meets unpaved ground. Only
+  // where it meets SOFT ground — a kerb across the open road where the ramp
+  // happens to fade would cut the run in half.
+  const kerbed = (ax: number, ay: number, bx: number, by: number): boolean => weight(ax, ay) > 0.35 && weight(bx, by) <= 0.35 && !roadAt(bx, by);
+  // One stone course along a boundary segment, with its shadow line on the
+  // side (nx, ny) the bare ground is on.
+  const light: Seg[] = [];
+  const dark: Seg[] = [];
+  const kerb = (ax: number, ay: number, bx: number, by: number, nx: number, ny: number): void => {
+    light.push([ax - nx * 0.05, ay - ny * 0.05, bx - nx * 0.05, by - ny * 0.05]);
+    dark.push([ax + nx * 0.02, ay + ny * 0.02, bx + nx * 0.02, by + ny * 0.02]);
+  };
+  for (let y = ty0; y <= ty1; y++) {
+    for (let x = tx0; x <= tx1; x++) {
+      // the edge along y between (x, y-1) and (x, y), then the one along x
+      // between (x-1, y) and (x, y); each from whichever side is paved
+      for (const horiz of [true, false]) {
+        const [px, py] = horiz ? [x, y - 1] : [x - 1, y];
+        const out = kerbed(px, py, x, y) ? 1 : kerbed(x, y, px, py) ? -1 : 0;
+        if (out === 0) continue;
+        const key = horiz ? `h${x},${y}` : `v${x},${y}`;
+        const cut = horiz ? cutOnH(x, y) : cutOnV(x, y);
+        const lo = ends.has(`${key},0`) ? cut : horiz ? x : y;
+        const hi = ends.has(`${key},1`) ? cut : (horiz ? x : y) + 1;
+        if (hi <= lo) continue;
+        if (horiz) kerb(lo, y, hi, y, 0, out);
+        else kerb(x, lo, x, hi, out, 0);
       }
     }
   }
+  for (const c of cuts) {
+    // the cut's own edge, where the paved party is paved enough to have a kerb
+    const lonePaved = cls(c[4], c[5]) === 1;
+    const sx = c[4] < c[0] ? c[4] + 1 : c[4] - 1; // the tile beside the lone one, across the corner
+    const [pvx, bx] = lonePaved ? [c[4], sx] : [sx, c[4]];
+    if (weight(pvx, c[5]) <= 0.35 || roadAt(bx, c[5])) continue;
+    // Unit normal of the cut, turned toward the corner. The corner's side of
+    // the cut is the piece that changed hands: bare ground if the lone tile
+    // was the paved one, paving if it was not.
+    const turn = ((c[0] - c[2]) * (c[1] - c[3]) > 0 ? 1 : -1) * (lonePaved ? 1 : -1);
+    const len = Math.hypot(c[3] - c[1], c[0] - c[2]);
+    kerb(c[2], c[1], c[0], c[3], (-(c[3] - c[1]) * turn) / len, ((c[0] - c[2]) * turn) / len);
+  }
+  g.lineCap = 'butt';
+  strokeSegs(g, light, 0.1, 'rgba(158,150,132,0.50)');
+  strokeSegs(g, dark, 0.04, 'rgba(30,26,20,0.30)');
+  g.lineCap = 'round';
 }
 
 // Crop rows (G4). Everything is keyed on the PARCEL — one 4-connected field
@@ -2056,6 +2179,7 @@ export class TerrainLayer {
   private bakeBudget = 0;
   private patches: PatchIndex;
   private hedges: Hedgerows;
+  private paveMask: HTMLCanvasElement | null = null; // bakePaveMask, built on the first chunk of a map that has a square
   private yards: Yard[];
   // props bucketed by chunk key on their DRAWN extent (a telegraph wire spans
   // 6 m past its pole), so a chunk bake pays only for the clutter it shows and
@@ -2223,7 +2347,8 @@ export class TerrainLayer {
     // after the rows, so a cut corner is not ruled with its old parcel's
     // furrows; before the paving and the wear, which lie on top of the ground
     softenGround(g, this.map, this.patches, tx0, ty0, tx1, ty1, d);
-    drawPaving(g, this.map, this.patches, tx0, ty0, tx1, ty1, band, d);
+    if (this.patches.squares.length > 0) this.paveMask ??= bakePaveMask(this.patches, this.map.w, this.map.h);
+    drawPaving(g, this.map, this.patches, tx0, ty0, tx1, ty1, band, d, this.paveMask);
     drawRoadWear(g, this.map, tx0, ty0, tx1, ty1, d, (x, y) => this.patches.pavedAt(x, y));
     // after the wear pass, which would otherwise lay ruts across the timbers
     if (this.rail) {
