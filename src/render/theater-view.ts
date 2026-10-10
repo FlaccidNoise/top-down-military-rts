@@ -103,6 +103,7 @@ export type MarchPreview =
 
 const ARROW_OWN = '#a9c4f5';
 const ARROW_SEL = '#d4e3ff';
+const ARROW_ENEMY = '#f0a79c';
 const ARROW_PREVIEW = '#ffe9a0';
 const ARROW_CASE = 'rgba(12, 10, 6, 0.85)';
 const FIGHT = '#f0963c'; // contact and battle: one colour, one mark
@@ -739,6 +740,20 @@ export class TheaterView {
         ctx.restore();
       }
     }
+
+    // Enemy marches, as far as intel has them: the road a red force was seen
+    // marching on, to the node ahead of it. Its orders are not known, so the
+    // arrow stops there. Under fog it is the last report, fading with it.
+    const seenMarching: { pos: Force['pos']; conf: number }[] =
+      this.recon === 'contacts'
+        ? (front.intel?.blue ?? []).filter((c) => c.moving).map((c) => ({ pos: c.pos, conf: contactConf(c, front.clockMin) }))
+        : front.forces.filter((f) => f.side === 'red' && f.strength > 0 && f.path.length > 0 && f.engagedIn === null).map((f) => ({ pos: f.pos, conf: 1 }));
+    for (const m of seenMarching) {
+      if (m.pos.kind !== 'edge') continue;
+      ctx.globalAlpha = m.conf;
+      this.arrow(ctx, this.routePts(m.pos, [m.pos.edgeId]), w, h, ARROW_ENEMY, 1.8);
+    }
+    ctx.globalAlpha = 1;
 
     // Marches. Every moving company keeps a thin arrow to where it is going,
     // along the roads it will use. The selected one is brighter.

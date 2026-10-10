@@ -3,14 +3,16 @@
 // nodes by value/ETA/opposition, picks 1..maxAxes graph axes weighted by
 // chokepoints (Tarjan articulation nodes, computed once per theater), masses
 // toward concentrationRatio and holds an explicit reserve echelon. TIER 2
-// (force ladder, 60-min cadence): withdraw → veto → attack → advance → hold.
-// Garrisons never take maneuver orders — doctrine as a FIELD, not terrain
-// inference. Zero RNG anywhere; ties break lowest node id → force id.
+// (force ladder, 60-min cadence): withdraw → relieve → attack (massed, the
+// reserve called in when the axis fails alone) → advance → cut → probe → hold.
+// A garrison keeps its post: it sorties on a lone weaker enemy next door and
+// comes back. Zero RNG anywhere; ties break lowest node id → force id.
 import { lightAt } from '../sim/solar';
 import type { Side } from '../sim/sim';
 import { coarseOdds, TRIVIAL_RATIO } from './bridge';
 import { battleSiteOf, COARSE_DEF_MULT, CROSSING_ASSAULT_MULT, type NetPos, type Theater } from './theater';
-import { CONTACT_M, pathNodes, route, type Force, type FrontV2 } from './theater/force';
+import { anchorNode, CONTACT_M, incidentFoot, otherEnd, pathNodes, route, type Force, type FrontV2 } from './theater/force';
+import { posSupplied, traceSupply } from './theater/supply';
 import { forceEtaMinutes, orderMove, planMove } from './theater/step';
 import { THREAT_M } from './theater/war';
 import { graphGap } from './theater/contact';
@@ -60,6 +62,19 @@ export interface OperationalPlan {
 // doctrine choice, not a tuned value. What it buys is tempo: planner attacks
 // on the node a force was just thrown back from, inside the hour, go 7 -> 0.
 export const REORG_MIN = 240;
+
+// A garrison leaves its post only for a fight it should win: these odds or
+// better against a lone enemy next door.
+export const SORTIE_ODDS = 0.7;
+// A garrison stays in when an enemy it is not sortieing on stands within this
+// many march minutes of its post.
+export const SORTIE_COVER_MIN = 120;
+// A force this tired rests instead of setting out for open ground. Without
+// it a raider marches the whole war at fatigue 1.
+export const RAID_REST_FATIGUE = 0.5;
+// Massed forces step off so they arrive within this many minutes of each
+// other: the nearer one waits for the farther.
+export const MASS_SYNC_MIN = 60;
 
 export type StallCode = 'no-forces' | 'no-reachable-objective' | 'no-viable-attack' | 'goals-met-holding';
 export interface PlannerReport {
@@ -209,10 +224,7 @@ export class Commander2 {
     const own = intel.own().sort((a, b) => a.id - b.id);
     if (own.length === 0) return { orders: [], stall: 'no-forces' };
     const plan = this.plan!;
-    if (plan.axes.length === 0) {
-      const anyTarget = controlNodes(this.goals[this.side]).some((n) => intel.control(n) !== this.side);
-      return { orders: [], stall: anyTarget ? 'no-reachable-objective' : 'goals-met-holding' };
-    }
+    const enemy: Side = this.side === 'blue' ? 'red' : 'blue';
 
     // Deadline pressure (OQ14): the attack floor decays toward suicideOdds —
     // which is absolute — as the deadline closes.
@@ -256,18 +268,19 @@ export class Commander2 {
       return blocked ? null : march.nominalMin;
     };
 
-    // The first place a march to `dest` meets the enemy: a defended node on
-    // the path, or an enemy standing on one of its roads. Null when the way
-    // is open as far as intel knows.
-    const firstFight = (f: Force, dest: number): { site: NetPos; defEff: number } | null => {
+    const defendersNear = (site: NetPos): number =>
+      intel
+        .contacts()
+        .filter((c) => graphGap(t, site, c.pos) <= CONTACT_M)
+        .reduce((a, c) => a + c.strength, 0);
+    // The first place a march to `dest` meets the enemy: an enemy standing on
+    // one of its roads, or a defended node on the path (`via` is the road the
+    // march enters that node by, which is what makes a crossing an assault).
+    // Null when the way is open as far as intel knows.
+    const firstFight = (f: Force, dest: number): { site: NetPos; defEff: number; via?: number } | null => {
       const march = planMove(front, f, dest);
       if (!march) return null;
       const nodes = pathNodes(t, march.pos, march.path);
-      const defendersNear = (site: NetPos): number =>
-        intel
-          .contacts()
-          .filter((c) => graphGap(t, site, c.pos) <= CONTACT_M)
-          .reduce((a, c) => a + c.strength, 0);
       for (let i = 0; i < march.path.length; i++) {
         const own = i === 0 && march.pos.kind === 'edge' ? march.pos : null;
         const onRoad = intel
@@ -277,112 +290,287 @@ export class Commander2 {
         if (onRoad) return { site: onRoad.pos, defEff: defendersNear(onRoad.pos) };
         const node: NetPos = { kind: 'node', nodeId: nodes[i] };
         const at = defendersNear(node);
-        if (at > 0) return { site: node, defEff: at };
+        if (at > 0) return { site: node, defEff: at, via: march.path[i] };
       }
       return null;
     };
 
+    const order = (f: Force, dest: number, why: string): boolean => {
+      const r = orderMove(front, f.id, dest);
+      if (r.ok) orders.push({ forceId: f.id, dest, why });
+      return r.ok;
+    };
+    const reorganising = (g: Force): boolean => g.repulsedAtMin !== null && front.clockMin - g.repulsedAtMin < REORG_MIN;
+    // The defender's terrain multiplier at a site, as the resolver composes it.
+    const siteMult = (site: NetPos, approachEdgeId?: number): number => {
+      const { battleClass } = battleSiteOf(t, site, approachEdgeId);
+      const crossing = battleClass === 'bridge-assault' || battleClass === 'ford-assault';
+      return COARSE_DEF_MULT[battleClass] * (crossing ? CROSSING_ASSAULT_MULT : 1);
+    };
+
+    // Sortie: an enemy next door to a garrison's post (on a road out of it,
+    // or at that road's far node), when the garrison should beat everything
+    // next door put together. Returns the node to march on: the weakest
+    // enemy's, lowest id on a tie.
+    const prey = (f: Force, home: number): number | null => {
+      const near = new Map<number, { strength: number; pos: NetPos; dest: number; via: number }>();
+      for (const e of incidentFoot(t, home)) {
+        const far = otherEnd(e, home);
+        if (t.nodes[far].kind === 'ford') continue;
+        for (const c of intel.contacts()) {
+          if (!near.has(c.forceId) && (c.pos.kind === 'edge' ? c.pos.edgeId === e.id : c.pos.nodeId === far)) near.set(c.forceId, { strength: c.strength, pos: c.pos, dest: far, via: e.id });
+        }
+      }
+      const [c] = [...near.entries()].sort((p, q) => p[1].strength - q[1].strength || p[0] - q[0]).map((x) => x[1]);
+      if (!c) return null;
+      // The post is left open for the length of the sortie. Stay in when
+      // another enemy is near enough to walk in meanwhile.
+      const walkIn = intel.contacts().some((o) => !near.has(o.forceId) && (route(t, anchorNode(t, o.pos), home)?.minutes ?? Infinity) <= SORTIE_COVER_MIN);
+      if (walkIn) return null;
+      const all = [...near.values()].reduce((a, x) => a + x.strength, 0);
+      const mult = siteMult(c.pos, c.pos.kind === 'node' ? c.via : undefined);
+      return coarseOdds(effStrength(f), all, mult) >= SORTIE_ODDS ? c.dest : null;
+    };
+
+    // Open ground worth taking, best first: a node whose capture RELIEVES a
+    // cut-off friendly force, then one that CUTS an enemy force off, then the
+    // nearest open node (a PROBE). Only undefended nodes reached by a safe
+    // march with no fight on the way. The enemy's depots are off the table.
+    const mine = traceSupply(front, this.side).traced;
+    const stranded = own.filter((g) => !posSupplied(t, g.pos, mine));
+    let fed: ReturnType<IntelView['contacts']> | null = null;
+    const raid = (f: Force, reliefOnly = false): { dest: number; why: 'relieve' | 'cut' | 'probe' } | null => {
+      if (reliefOnly && stranded.length === 0) return null;
+      if (f.fatigue >= RAID_REST_FATIGUE) return null;
+      if (!fed) {
+        const theirs = traceSupply(front, enemy).traced;
+        fed = intel.contacts().filter((c) => posSupplied(t, c.pos, theirs));
+      }
+      let best: { dest: number; rank: number; gain: number; cost: number } | null = null;
+      for (const n of t.nodes) {
+        if (intel.control(n.id) === this.side || n.kind === 'ford' || t.sources[enemy].includes(n.id)) continue;
+        if (threatAt({ kind: 'node', nodeId: n.id }) > 0) continue;
+        const min = safeMarchMin(f, n.id);
+        if (min === null || firstFight(f, n.id)) continue;
+        let rank = 2;
+        let gain = 0;
+        if (stranded.length > 0 && intel.control(n.id) === enemy) {
+          const opened = traceSupply(front, this.side, { open: n.id }).traced;
+          gain = stranded.filter((g) => posSupplied(t, g.pos, opened)).length;
+          if (gain > 0) rank = 0;
+        }
+        if (rank === 2 && reliefOnly) continue;
+        if (rank === 2) {
+          const closed = traceSupply(front, enemy, { block: n.id }).traced;
+          gain = fed.filter((c) => !posSupplied(t, c.pos, closed)).length;
+          if (gain > 0) rank = 1;
+        }
+        if (!best || rank < best.rank || (rank === best.rank && (gain > best.gain || (gain === best.gain && min < best.cost)))) {
+          best = { dest: n.id, rank, gain, cost: min };
+        }
+      }
+      return best && { dest: best.dest, why: (['relieve', 'cut', 'probe'] as const)[best.rank] };
+    };
+
+    const massOf = (ids: number[]): Force[] => own.filter((g) => ids.includes(g.id));
+    const overwhelmed = (g: Force): boolean => threatAt(g.pos) > this.doctrine.withdrawRatio * effStrength(g);
+
+    // The attack decision for `f` marching on `dest`, as one of the mass
+    // `ids`, wanting odds of `floor`. It is taken on the FIRST fight the march
+    // would have, which is not always at `dest`: an advance on an open
+    // objective used to walk through a defended town on the way with no
+    // decision at all (64 of 369 battles in the 16 pin wars opened that way).
+    //   open  no fight on the way
+    //   go    attack now
+    //   wait  the attack is on, and `f` stands until the mass has closed up
+    //         or its arrival falls in daylight
+    //   no    not on: unsafe march, reorganising, or the odds are short
+    type Call = 'open' | 'go' | 'wait' | 'no';
+    const assault = (f: Force, dest: number, ids: number[], floor: number): Call => {
+      const lead = safeMarchMin(f, dest);
+      if (lead === null) return 'no';
+      const fight = firstFight(f, dest);
+      if (!fight) return 'open';
+      if (reorganising(f)) return 'no';
+      // The decision weighs the MASS: a company goes because the mass it
+      // belongs to clears the floor, and the join machinery stacks them at
+      // the site.
+      const mass = massOf(ids);
+      const ownEff = Math.max(mass.reduce((a, g) => a + effStrength(g), 0), effStrength(f));
+      // Trivial doctrine: never attack INTO a trivial defender.
+      if (fight.defEff >= ownEff * TRIVIAL_RATIO) return 'no';
+      if (coarseOdds(ownEff, fight.defEff, siteMult(fight.site, fight.via)) < floor) return 'no';
+      // Time on target: a force that would arrive well before the rest of the
+      // mass waits for it.
+      const closing = mass.some((g) => {
+        if (g.id === f.id || g.engagedIn !== null || reorganising(g)) return false;
+        const theirs = safeMarchMin(g, dest);
+        return theirs !== null && theirs > lead + MASS_SYNC_MIN;
+      });
+      if (closing) return 'wait';
+      // Dawn doctrine (S52): under night tempo an assault steps off only when
+      // its ARRIVAL falls in light. The eta runs the SAME shadow kernel over
+      // the path orderMove would set, so the decision and the march cannot
+      // disagree. An open march goes at any hour.
+      if (this.opts.nightTempo) {
+        const prospective = planMove(front, f, dest);
+        if (prospective && lightAt(front.clockMin + forceEtaMinutes(front, { ...f, ...prospective }, dest, { nightTempo: true })) < 0.25) return 'wait';
+      }
+      return 'go';
+    };
+
+    // What a force's axis asks of it this hour. 'here' = it holds the
+    // objective. Null = it has no axis (a reserve, or nothing is lost).
+    const axisCalls = new Map<number, Call | 'here' | null>();
+    const axisOf = (f: Force): Axis | undefined => (plan.reserveIds.includes(f.id) ? undefined : (plan.axes.find((ax) => ax.assigned.includes(f.id)) ?? plan.axes[0]));
+    const axisCall = (f: Force): Call | 'here' | null => {
+      const memo = axisCalls.get(f.id);
+      if (memo !== undefined) return memo;
+      const axis = axisOf(f);
+      let call: Call | 'here' | null = null;
+      if (axis) {
+        const target = axis.objective;
+        if (f.pos.kind === 'node' && f.pos.nodeId === target) call = 'here';
+        else {
+          call = assault(f, target, axis.assigned, attackFloor);
+          if (call === 'no') {
+            // The reserve is held back from an attack that works without it,
+            // and called in for one that fails alone: it joins the axis for
+            // the rest of this plan.
+            const called = massOf(plan.reserveIds).filter((g) => g.engagedIn === null && !reorganising(g) && safeMarchMin(g, target) !== null).map((g) => g.id);
+            const massed = called.length > 0 ? assault(f, target, [...axis.assigned, ...called], attackFloor) : 'no';
+            if (massed !== 'no') {
+              plan.reserveIds = plan.reserveIds.filter((id) => !called.includes(id));
+              axis.assigned.push(...called);
+              call = massed;
+            }
+          }
+          if (call !== 'open') attackConsidered = true;
+          if (call === 'go' || call === 'wait') viableSeen = true;
+        }
+      }
+      axisCalls.set(f.id, call);
+      return call;
+    };
+
+    // Hunt: the nearest enemy that the free mobile forces should clearly
+    // beat, and the smallest group of them that does it. One decision for the
+    // side, so the hunters agree on the quarry. A beaten company that stays
+    // within reach is finished off.
+    let quarry: { dest: number; ids: number[] } | null | undefined;
+    const hunt = (): { dest: number; ids: number[] } | null => {
+      if (quarry !== undefined) return quarry;
+      quarry = null;
+      const free = own.filter((g) => g.role !== 'garrison' && g.engagedIn === null && g.queuedAt === null && !overwhelmed(g) && !reorganising(g) && [null, 'no'].includes(axisCall(g)));
+      let best: { dest: number; ids: number[]; cost: number } | null = null;
+      for (const c of intel.contacts()) {
+        const defEff = defendersNear(c.pos);
+        const ends = c.pos.kind === 'node' ? [c.pos.nodeId] : [t.edges[c.pos.edgeId].a, t.edges[c.pos.edgeId].b];
+        // A counterattack, not a pursuit: only an enemy at one of our nodes or
+        // on a road out of one. Across the line it is left alone.
+        if (!ends.some((n) => intel.control(n) === this.side)) continue;
+        for (const dest of ends) {
+          if (t.nodes[dest].kind === 'ford') continue;
+          const reach = free
+            .map((g) => ({ g, min: firstFight(g, dest) ? safeMarchMin(g, dest) : null }))
+            .filter((r): r is { g: Force; min: number } => r.min !== null)
+            .sort((p, q) => p.min - q.min || p.g.id - q.g.id);
+          let eff = 0;
+          const ids: number[] = [];
+          for (const r of reach) {
+            ids.push(r.g.id);
+            eff += effStrength(r.g);
+            if (coarseOdds(eff, defEff, siteMult(c.pos)) < SORTIE_ODDS) continue;
+            if (!best || r.min < best.cost || (r.min === best.cost && dest < best.dest)) best = { dest, ids: [...ids], cost: r.min };
+            break;
+          }
+        }
+      }
+      return (quarry = best && { dest: best.dest, ids: best.ids });
+    };
+
     for (const f of own) {
-      if (f.role === 'garrison' || f.engagedIn !== null || f.queuedAt !== null) continue;
+      if (f.engagedIn !== null || f.queuedAt !== null) continue;
+      // A march, once ordered, is finished: the ladder below is asked only of
+      // a force that stands. The one exception is the withdraw arm. Without
+      // this a force turned round mid-road each time two arms traded places
+      // (attack on, attack off: up to 40 turn-rounds in one war).
+      const marching = f.path.length > 0;
+      if (f.role === 'garrison') {
+        if (f.homeNode === null || marching) continue;
+        const dest = reorganising(f) ? null : prey(f, f.homeNode);
+        if (dest !== null) order(f, dest, 'sortie');
+        // Home again once the way is open: never a fight to get there.
+        else if (!(f.pos.kind === 'node' && f.pos.nodeId === f.homeNode) && safeMarchMin(f, f.homeNode) !== null && !firstFight(f, f.homeNode)) order(f, f.homeNode, 'return');
+        continue;
+      }
 
       // Withdraw arm: local enemies overwhelm. Fall back on the NEAREST
       // friendly node that is clear of the enemy and can be reached clear.
-      if (threatAt(f.pos) > this.doctrine.withdrawRatio * effStrength(f)) {
+      if (overwhelmed(f)) {
         const rear = t.nodes
           .filter((n) => intel.control(n.id) === this.side && threatAt({ kind: 'node', nodeId: n.id }) === 0)
           .map((n) => ({ id: n.id, min: safeMarchMin(f, n.id) }))
           .filter((x): x is { id: number; min: number } => x.min !== null)
           .sort((a, b) => a.min - b.min || a.id - b.id);
-        for (const n of rear) {
-          const r = orderMove(front, f.id, n.id);
-          if (r.ok) {
-            orders.push({ forceId: f.id, dest: n.id, why: 'withdraw' });
-            break;
-          }
-        }
+        for (const n of rear) if (order(f, n.id, 'withdraw')) break;
         continue;
       }
+      if (marching) continue;
 
-      if (plan.reserveIds.includes(f.id)) {
-        // Reserves answer only to commit triggers: a friendly battle going
-        // bad. The enemy side of the ledger reads CONTACTS, never truth —
-        // an engaged enemy is a contact at gap 0, so under fog the sweep
-        // has seen it; under omniscience the values are identical (§4.3).
-        for (const b of [...front.battles].sort((p, q) => p.id - q.id)) {
-          const ids = [b.attackerId, b.defenderId, ...b.joined];
-          const mine = own.filter((x) => ids.includes(x.id));
-          const mineEff = mine.reduce((a, x) => a + effStrength(x), 0);
-          const theirsEff = intel
-            .contacts()
-            .filter((c) => ids.includes(c.forceId))
-            .reduce((a, c) => a + c.strength, 0);
-          if (mine.length > 0 && mineEff < theirsEff && b.site.kind === 'node') {
-            if (safeMarchMin(f, b.site.nodeId) === null) break;
-            const r = orderMove(front, f.id, b.site.nodeId);
-            if (r.ok) orders.push({ forceId: f.id, dest: b.site.nodeId, why: 'commit-reserve' });
-            break;
-          }
+      // A cut-off comrade is relieved before anything else.
+      const openGround = (reliefOnly = false): boolean => {
+        const r = raid(f, reliefOnly);
+        return r !== null && order(f, r.dest, r.why);
+      };
+      if (openGround(true)) continue;
+
+      const reserve = plan.reserveIds.includes(f.id);
+      if (reserve) {
+        // A reserve answers a friendly battle going bad. The enemy side of
+        // the ledger reads CONTACTS, never truth — an engaged enemy is a
+        // contact at gap 0, so under fog the sweep has seen it; under
+        // omniscience the values are identical (§4.3).
+        const losing = [...front.battles]
+          .sort((p, q) => p.id - q.id)
+          .find((b) => {
+            const ids = [b.attackerId, b.defenderId, ...b.joined];
+            const mine = massOf(ids);
+            const theirsEff = intel
+              .contacts()
+              .filter((c) => ids.includes(c.forceId))
+              .reduce((a, c) => a + c.strength, 0);
+            return mine.length > 0 && mine.reduce((a, x) => a + effStrength(x), 0) < theirsEff && b.site.kind === 'node';
+          });
+        if (losing && losing.site.kind === 'node') {
+          if (safeMarchMin(f, losing.site.nodeId) !== null) order(f, losing.site.nodeId, 'commit-reserve');
+          continue;
         }
+      }
+
+      const call = axisCall(f);
+      if (call === 'here' || call === 'wait') continue;
+      if (call === 'open' || call === 'go') {
+        order(f, axisOf(f)!.objective, call === 'go' ? 'attack' : 'advance');
         continue;
       }
-
-      const axis = plan.axes.find((ax) => ax.assigned.includes(f.id)) ?? plan.axes[0];
-      const target = axis.objective;
-      const here = f.pos.kind === 'node' && f.pos.nodeId === target;
-      if (here) continue; // holding the objective
-
-      // The decision is taken on the FIRST fight the march would have, which
-      // is not always at the objective: an 'advance' on an open objective
-      // used to walk through a defended town on the way with no decision at
-      // all (64 of 369 battles in the 16 pin wars opened that way).
-      const fight = firstFight(f, target);
-      const defEff = fight?.defEff ?? 0;
-      if (fight) {
-        attackConsidered = true;
-        if (f.repulsedAtMin !== null && front.clockMin - f.repulsedAtMin < REORG_MIN) continue;
-        // The attack decision weighs the AXIS'S MASS — concentration is the
-        // point: individual companies advance because the mass they belong
-        // to clears the floor, and the reinforcement-join machinery stacks
-        // them at the site.
-        const axisEff = axis.assigned.reduce((a, id) => {
-          const g = own.find((x) => x.id === id);
-          return g && g.strength > 0 ? a + effStrength(g) : a;
-        }, 0);
-        const ownEff = Math.max(axisEff, effStrength(f));
-        // Trivial doctrine: never attack INTO a trivial defender.
-        if (defEff >= ownEff * TRIVIAL_RATIO) continue;
-        const { battleClass } = battleSiteOf(t, fight.site);
-        let mult = COARSE_DEF_MULT[battleClass];
-        if (battleClass === 'bridge-assault' || battleClass === 'ford-assault') mult *= CROSSING_ASSAULT_MULT;
-        if (lightAt(front.clockMin) < 0.25) mult *= 1.0; // nightMult 1.0 until OQ7 lands a value
-        const odds = coarseOdds(ownEff, defEff, mult);
-        if (odds < attackFloor) continue; // held: not viable (yet)
-        // Dawn doctrine (S52): under night tempo an assault steps off only
-        // when its ARRIVAL falls in light — prepared fields of fire beat a
-        // blind approach, and a held force re-checks every eval as the
-        // arrival window sweeps across dawn. Advances (defEff 0) march at
-        // any hour; only the assault waits for first light. The eta runs
-        // the SAME shadow kernel over the prospective path orderMove would
-        // set, so the decision and the march cannot disagree.
-        if (this.opts.nightTempo) {
-          const prospective = planMove(front, f, target);
-          if (prospective) {
-            const eta = forceEtaMinutes(front, { ...f, ...prospective }, target, { nightTempo: true });
-            if (lightAt(front.clockMin + eta) < 0.25) continue;
-          }
-        }
-        viableSeen = true;
+      const q = hunt();
+      if (q?.ids.includes(f.id)) {
+        const c = assault(f, q.dest, q.ids, SORTIE_ODDS);
+        if (c === 'go') order(f, q.dest, 'hunt');
+        if (c === 'go' || c === 'wait') continue;
       }
-      if (safeMarchMin(f, target) === null) continue;
-      const r = orderMove(front, f.id, target);
-      if (r.ok) orders.push({ forceId: f.id, dest: target, why: defEff > 0 ? 'attack' : 'advance' });
-      else if (r.reason === 'already-there' || r.reason === 'engaged') continue;
-      else viableSeen = viableSeen || false;
+      // Off the objective and nothing to fight: open ground. The reserve
+      // stays where it can answer.
+      if (!reserve) openGround();
     }
 
-    const stall: StallCode | null =
-      orders.length > 0 ? null : attackConsidered && !viableSeen ? 'no-viable-attack' : null;
-    return { orders, stall };
+    if (orders.length > 0) return { orders, stall: null };
+    if (plan.axes.length === 0) {
+      const anyTarget = controlNodes(this.goals[this.side]).some((n) => intel.control(n) !== this.side);
+      return { orders, stall: anyTarget ? 'no-reachable-objective' : 'goals-met-holding' };
+    }
+    return { orders, stall: attackConsidered && !viableSeen ? 'no-viable-attack' : null };
   }
 }
 

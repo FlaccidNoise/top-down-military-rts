@@ -32,12 +32,17 @@ export interface Force {
   repulsedAtMin: number | null;
   // Strength at muster. The counter's bar reads strength against it.
   establishment: number;
+  // A garrison's post: the node it sorties from and comes back to. Null for
+  // every other role.
+  homeNode: number | null;
 }
 
 // Creation shape: the realism fields default to fresh at the ONE chokepoint
 // (addForce), so disposition and test literals never carry boilerplate zeros.
-export type ForceInit = Omit<Force, 'id' | 'untracedMin' | 'fatigue' | 'lastEdgeId' | 'repulsedAtMin' | 'establishment'> &
-  Partial<Pick<Force, 'untracedMin' | 'fatigue' | 'lastEdgeId' | 'repulsedAtMin' | 'establishment'>>;
+type ForceDefaulted = 'untracedMin' | 'fatigue' | 'lastEdgeId' | 'repulsedAtMin' | 'establishment' | 'homeNode';
+export type ForceInit = Omit<Force, 'id' | ForceDefaulted> & Partial<Pick<Force, ForceDefaulted>>;
+
+export const garrisonPost = (f: Pick<Force, 'role' | 'pos'>): number | null => (f.role === 'garrison' && f.pos.kind === 'node' ? f.pos.nodeId : null);
 
 export interface CoarseBattle {
   id: number;
@@ -66,6 +71,7 @@ export interface StratContact {
   pos: NetPos;
   strength: number;
   seenMin: number;
+  moving: boolean; // seen on the march: pos.dir is then its heading
 }
 
 export const EVENT_LOG_CAP = 64;
@@ -99,7 +105,7 @@ export function addForce(front: FrontV2, f: ForceInit): Force {
   if (front.forces.length >= MAX_FORCES) {
     throw new Error(`addForce: MAX_FORCES (${MAX_FORCES}) reached — the force cap is asserted here and in makeDisposition, never at generation`);
   }
-  const force: Force = { untracedMin: 0, fatigue: 0, lastEdgeId: null, repulsedAtMin: null, establishment: f.strength, ...f, id: front.nextForceId++ };
+  const force: Force = { untracedMin: 0, fatigue: 0, lastEdgeId: null, repulsedAtMin: null, establishment: f.strength, homeNode: garrisonPost(f), ...f, id: front.nextForceId++ };
   front.forces.push(force);
   return force;
 }

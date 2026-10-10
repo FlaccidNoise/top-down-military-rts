@@ -199,15 +199,28 @@ export function retreatForce(
   opts: { trapped?: 'overrun' | 'stay' } = {},
 ): void {
   const t = front.theater;
-  // The retreat pivots on the node BEHIND the force: its own node, or the
-  // near end of its edge (opposite its direction of travel).
-  const nodeId = f.pos.kind === 'node' ? f.pos.nodeId : (f.pos.dir === 1 ? edgeById(t, f.pos.edgeId).a : edgeById(t, f.pos.edgeId).b);
   const enemies = front.forces.filter((g) => g.side !== f.side && g.strength > 0);
   const nearEnemy = (n: number): number => {
     let best = Infinity;
     for (const g of enemies) best = Math.min(best, graphGap(t, { kind: 'node', nodeId: n }, g.pos));
     return best;
   };
+  // The retreat pivots on a node: the force's own, or the end of its road
+  // BEHIND its direction of travel. A force parked facing its rear (a company
+  // thrown back from a crossing) has the enemy behind it, so when an enemy
+  // stands between it and that end, and none between it and the other, it
+  // goes out by the other. Reading only the direction of travel sent it
+  // through the node it had just been thrown back from.
+  const pivot = (): number => {
+    const pos = f.pos;
+    if (pos.kind === 'node') return pos.nodeId;
+    const e = edgeById(t, pos.edgeId);
+    const through = (end: number): boolean =>
+      enemies.some((g) => (g.pos.kind === 'node' ? g.pos.nodeId === end : g.pos.edgeId === e.id && (end === e.b ? g.pos.s > pos.s : g.pos.s < pos.s)));
+    const [behind, ahead] = pos.dir === 1 ? [e.a, e.b] : [e.b, e.a];
+    return through(behind) && !through(ahead) ? ahead : behind;
+  };
+  const nodeId = pivot();
   const candidates = incidentFoot(t, nodeId)
     .filter((e) => e.id !== approachEdgeId)
     .filter((e) => nearEnemy(otherEnd(e, nodeId)) > THREAT_M)

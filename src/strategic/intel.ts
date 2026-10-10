@@ -131,7 +131,7 @@ export function updateIntelMinute(front: FrontV2): void {
     for (const g of front.forces) {
       if (g.side === side || g.strength <= 0) continue;
       if (!isDetected(front, side, dist, g)) continue;
-      const snap: StratContact = { forceId: g.id, pos: { ...g.pos }, strength: g.strength, seenMin: front.clockMin };
+      const snap: StratContact = { forceId: g.id, pos: { ...g.pos }, strength: g.strength, seenMin: front.clockMin, moving: g.path.length > 0 && g.engagedIn === null };
       const i = list.findIndex((c) => c.forceId === g.id);
       if (i >= 0) list[i] = snap;
       else list.push(snap);

@@ -9,7 +9,7 @@ import type { Campaign } from '../campaign/campaign';
 import { GEN_VERSION, type CampaignConfig, type TheaterConfig } from '../campaign/spec';
 import { makeTheater } from './theatergen';
 import type { OperationalPlan } from './planner';
-import type { CoarseBattle, Force, FrontV2, StratContact, TheaterEvent } from './theater/force';
+import { garrisonPost, type CoarseBattle, type Force, type FrontV2, type StratContact, type TheaterEvent } from './theater/force';
 
 // §4.8: a reloaded commander must NOT forget its axes — a goal-driven
 // opponent that replans on load is a determinism break dressed as
@@ -134,7 +134,7 @@ export function loadGameV2(): LoadV2 {
     ...p.front,
     // Saves written before the realism wave carry no supply/fatigue fields:
     // normalize to fresh, exactly what addForce defaults a new force to.
-    forces: p.front.forces.map((f) => ({ ...f, untracedMin: f.untracedMin ?? 0, fatigue: f.fatigue ?? 0, lastEdgeId: f.lastEdgeId ?? null, repulsedAtMin: f.repulsedAtMin ?? null, establishment: f.establishment ?? f.strength })),
+    forces: p.front.forces.map((f) => ({ ...f, untracedMin: f.untracedMin ?? 0, fatigue: f.fatigue ?? 0, lastEdgeId: f.lastEdgeId ?? null, repulsedAtMin: f.repulsedAtMin ?? null, establishment: f.establishment ?? f.strength, homeNode: f.homeNode === undefined ? garrisonPost(f) : f.homeNode })),
   };
   repairDefiles(front);
   return { status: 'ok', seed: p.seed, cfg: p.theaterCfg, campaignCfg: p.campaignCfg, campaign: p.campaign, front, ai: p.ai };

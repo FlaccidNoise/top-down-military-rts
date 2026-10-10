@@ -11,6 +11,7 @@
 // risk. Friendly and uncontrolled (null) nodes both pass: a lifeline through
 // no-man's-land holds until the enemy actually stands on it.
 import type { Side } from '../../sim/sim';
+import type { NetPos, Theater } from '../theater';
 import type { Force, FrontV2 } from './force';
 
 export const SUPPLY_EVAL_MIN = 60; // trace cadence: each strategic hour
@@ -36,14 +37,17 @@ export interface SupplyTrace {
   interdicted: Set<number>; // foot edge ids carrying a live enemy force
 }
 
-export function traceSupply(front: FrontV2, side: Side): SupplyTrace {
+// `alter` asks a what-if of the same trace: `block` closes one more node to
+// `side`, `open` hands one enemy node back. The planner weighs a cut and a
+// relief with it. The live trace passes neither.
+export function traceSupply(front: FrontV2, side: Side, alter: { block?: number; open?: number } = {}): SupplyTrace {
   const t = front.theater;
   const enemy: Side = side === 'blue' ? 'red' : 'blue';
   const interdicted = new Set<number>();
   for (const g of front.forces) {
     if (g.side === enemy && g.strength > 0 && g.pos.kind === 'edge') interdicted.add(g.pos.edgeId);
   }
-  const blocked = (n: number): boolean => front.controlByNode[n] === enemy;
+  const blocked = (n: number): boolean => n !== alter.open && (n === alter.block || front.controlByNode[n] === enemy);
   const traced = new Set<number>();
   const queue: number[] = [];
   for (const s of t.sources[side]) {
@@ -67,11 +71,12 @@ export function traceSupply(front: FrontV2, side: Side): SupplyTrace {
 
 // A force mid-edge is supplied through either end of its edge; the BFS has
 // already refused ends only reachable over interdicted ground.
-export function forceSupplied(front: FrontV2, f: Force, traced: Set<number>): boolean {
-  if (f.pos.kind === 'node') return traced.has(f.pos.nodeId);
-  const e = front.theater.edges[f.pos.edgeId];
+export function posSupplied(t: Theater, pos: NetPos, traced: Set<number>): boolean {
+  if (pos.kind === 'node') return traced.has(pos.nodeId);
+  const e = t.edges[pos.edgeId];
   return traced.has(e.a) || traced.has(e.b);
 }
+export const forceSupplied = (front: FrontV2, f: Force, traced: Set<number>): boolean => posSupplied(front.theater, f.pos, traced);
 
 // Called every strategic minute by stepWar when the campaign runs supply;
 // does work only on the hour boundary. untracedMin accrues in whole eval

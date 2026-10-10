@@ -158,7 +158,7 @@ describe('planner internals', () => {
     for (const c of cuts) expect(theater.nodes[c]).toBeDefined();
   });
 
-  it('garrisons never receive maneuver orders', () => {
+  it('a garrison is ordered only to sortie and to come home', () => {
     const seed = 2;
     const { theater, initialControlByNode } = makeTheater(seed, CFG);
     const campaign = newCampaign(seed, CAMP.blueCompanies);
@@ -175,7 +175,7 @@ describe('planner internals', () => {
     for (let m = 0; m < 1440; m++) {
       front.clockMin++;
       const r = red.evaluate(front, new OmniscientIntel(front, 'red'));
-      if (r) for (const o of r.orders) expect(garrisonIds.has(o.forceId), `garrison ${o.forceId} ordered to ${o.dest}`).toBe(false);
+      if (r) for (const o of r.orders) if (garrisonIds.has(o.forceId)) expect(['sortie', 'return'], `garrison ${o.forceId} ordered to ${o.dest}`).toContain(o.why);
     }
   });
 });

@@ -46,7 +46,7 @@ const NEXT = {
 type Swatch = { counter: Partial<PlacedCounter> } | { css: string };
 const KEY: [Swatch, string][] = [
   [{ counter: { side: 'blue', letter: 'A', strength: 138 } }, 'Your company, men'],
-  [{ counter: { side: 'red', role: 'garrison', strength: 78 } }, 'Garrison: holds, never moves'],
+  [{ counter: { side: 'red', role: 'garrison', strength: 78 } }, 'Garrison: holds, may sortie'],
   [{ counter: { side: 'red', role: 'line', strength: 95 } }, 'Mobile group: attacks'],
   [{ counter: { side: 'red', role: 'reserve', strength: 108 } }, 'Reserve'],
   [{ counter: { side: 'red', role: 'line', strength: 60, ghost: true, conf: 0.6 } }, 'Last seen, fading'],
@@ -55,6 +55,7 @@ const KEY: [Swatch, string][] = [
   [{ css: 'k-obj k-held' }, 'Objective held'],
   [{ css: 'k-front' }, 'Front line'],
   [{ css: 'k-march' }, 'March'],
+  [{ css: 'k-march k-enemy' }, 'Enemy seen marching'],
   [{ css: 'k-preview' }, 'Order preview'],
   [{ css: 'k-fight' }, 'Battle or contact'],
   [{ css: 'k-road' }, 'Highway, road, track'],
