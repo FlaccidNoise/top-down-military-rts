@@ -5,7 +5,8 @@
 // existing touch grammar ports unchanged. Muted-Normandy palette shared in
 // register with the grid view it replaces.
 import { pointAlong, type Region, type TerrainClass, type Theater, type TheaterNode, type Vec } from '../strategic/theater';
-import type { Force, FrontV2 } from '../strategic/theater/force';
+import type { Force, FrontV2, TheaterEvent } from '../strategic/theater/force';
+import { lightAt } from '../sim/solar';
 import { forceEtaMinutes, type MoveKernelOpts } from '../strategic/theater/step';
 import { supplyTierOf } from '../strategic/theater/supply';
 import { contactConf } from '../strategic/intel';
@@ -137,6 +138,17 @@ function burst(ctx: CanvasRenderingContext2D, x: number, y: number, r: number, s
   ctx.stroke();
 }
 
+// Things that just happened, drawn for a moment on the render clock.
+type Fx =
+  | { kind: 'capture'; at: Vec; side: Side; t0: number }
+  | { kind: 'retreat'; from: Vec; to: Vec; side: Side; t0: number };
+const FX_MS = { capture: 1800, retreat: 6000 } as const;
+const WASH_FADE_MS = 900;
+// Full dark puts this much night over the ground. Towns, names and counters
+// are drawn after it and stay at full strength.
+const NIGHT_ALPHA = 0.5;
+const NIGHT = '6, 10, 30';
+
 export class TheaterView {
   zoomMul = 1;
   panX = 0;
@@ -147,6 +159,18 @@ export class TheaterView {
   recon: ReconMode = 'omniscient'; // S53: 'contacts' fogs every enemy-derived mark
   private flashText = '';
   private flashUntil = 0;
+  // The event log's signature when the flash went up. `undefined` = take it
+  // on the next draw. A later event clears the flash: at 60x a six-second
+  // "Able moving" outlived the march by hours.
+  private flashSig: string | undefined | null = null;
+  // The render clock: wall time, so the map is alive while the war is paused
+  // and does not strobe at 60x. scripts/stratsweep.mjs freezes it.
+  frozenAt: number | null = null;
+  private fx: Fx[] = [];
+  private readonly seenEvents = new WeakSet<TheaterEvent>();
+  private eventsPrimed = false;
+  private readonly lastXY = new Map<number, Vec>();
+  private washWas: { layer: FrontLayer; t0: number } | null = null;
   private readonly smoothed = new Map<number, Vec[]>();
   private readonly labelW = new Map<string, number>();
   private readonly patterns = new Map<string, CanvasPattern | null>();
@@ -161,6 +185,45 @@ export class TheaterView {
   flash(text: string): void {
     this.flashText = text;
     this.flashUntil = performance.now() + 6000;
+    this.flashSig = undefined;
+  }
+
+  private now(): number {
+    return this.frozenAt ?? performance.now();
+  }
+
+  // New theater events become marks on the map. Events already in the log
+  // when the view first draws (a loaded war) are history, not news.
+  private takeEvents(front: FrontV2): void {
+    const t0 = this.now();
+    for (const e of front.events) {
+      if (this.seenEvents.has(e)) continue;
+      this.seenEvents.add(e);
+      if (!this.eventsPrimed) continue;
+      if (e.kind === 'capture' && e.nodeId !== undefined) {
+        const side = front.controlByNode[e.nodeId];
+        if (side) this.fx.push({ kind: 'capture', at: this.theater.nodes[e.nodeId].pos, side, t0 });
+      } else if (e.kind === 'retreat') {
+        for (const id of e.forceIds) {
+          const f = front.forces.find((x) => x.id === id);
+          const from = this.lastXY.get(id);
+          // Under fog an enemy's retreat would draw where he went.
+          if (!f || !from || (this.recon === 'contacts' && f.side === 'red')) continue;
+          const to = this.forceXY(f);
+          if (Math.hypot(to.x - from.x, to.y - from.y) > 200) this.fx.push({ kind: 'retreat', from, to, side: f.side, t0 });
+        }
+      }
+    }
+    this.eventsPrimed = true;
+    for (const f of front.forces) this.lastXY.set(f.id, this.forceXY(f));
+    this.fx = this.fx.filter((x) => t0 - x.t0 < FX_MS[x.kind]);
+    const last = front.events[front.events.length - 1];
+    const sig = `${front.events.length}:${last?.min}:${last?.text}`;
+    if (this.flashSig === undefined) this.flashSig = sig;
+    else if (this.flashSig !== null && this.flashSig !== sig) {
+      this.flashText = '';
+      this.flashSig = null;
+    }
   }
 
   // Base fit: the whole theater inside the viewport with a margin.
@@ -342,6 +405,8 @@ export class TheaterView {
   }
 
   draw(ctx: CanvasRenderingContext2D, front: FrontV2, selectedForce: number, paused: boolean, speed: number, w: number, h: number): void {
+    this.takeEvents(front);
+    const now = this.now();
     const { scale, ox, oy } = this.layout(w, h);
     ctx.fillStyle = MAP_BG;
     ctx.fillRect(0, 0, w, h);
@@ -390,14 +455,18 @@ export class TheaterView {
     // Whose ground: a soft wash, drawn stretched from one pixel per grid cell
     // so its edge is a gradient, not a border.
     const fl = this.frontLayer(front.controlByNode);
-    if (fl.wash) {
-      const r = washRectM(this.theater);
-      ctx.save();
-      ctx.globalAlpha = WASH_ALPHA;
-      ctx.imageSmoothingEnabled = true;
-      ctx.drawImage(fl.wash, ox + r.x * scale, oy + r.y * scale, r.w * scale, r.h * scale);
-      ctx.restore();
+    // A capture MOVES the wash: the old ground fades out under the new.
+    const fade = this.washWas ? Math.min(1, (now - this.washWas.t0) / WASH_FADE_MS) : 1;
+    if (fade >= 1) this.washWas = null;
+    const r = washRectM(this.theater);
+    ctx.save();
+    ctx.imageSmoothingEnabled = true;
+    for (const [layer, k] of [[this.washWas?.layer, 1 - fade], [fl, fade]] as const) {
+      if (!layer?.wash || k <= 0) continue;
+      ctx.globalAlpha = WASH_ALPHA * k;
+      ctx.drawImage(layer.wash, ox + r.x * scale, oy + r.y * scale, r.w * scale, r.h * scale);
     }
+    ctx.restore();
 
     // Rivers over ground, under roads.
     for (const rv of this.theater.rivers) {
@@ -465,6 +534,13 @@ export class TheaterView {
     }
     ctx.setLineDash([]);
 
+    // Night, from the same solar model the march and the battle read. Over
+    // the ground, the roads and the front; under the towns and the forces.
+    const dark = NIGHT_ALPHA * (1 - Math.min(1, lightAt(front.clockMin) / 0.5));
+    if (dark > 0.01) {
+      ctx.fillStyle = `rgba(${NIGHT}, ${dark.toFixed(3)})`;
+      ctx.fillRect(ox, oy, mapW, mapH);
+    }
     ctx.restore(); // end of the bounds clip
     // A neatline: the map is a sheet with an edge, not a shape in a void.
     ctx.strokeStyle = 'rgba(12, 10, 6, 0.9)';
@@ -542,8 +618,7 @@ export class TheaterView {
         tw = ctx.measureText(l.text).width;
         this.labelW.set(key, tw);
       }
-      // Above the place, else beside it. An objective name is never dropped:
-      // if every seat is taken it keeps the first.
+      // Above the place, else beside it, else under it.
       // A name of a place the HUD leaves visible stays visible: it slides
       // sideways off a screen edge, and a seat under a panel is no seat.
       const shown = l.sx >= clearRect.x0 && l.sx <= clearRect.x1 && l.sy >= clearRect.y0 && l.sy <= clearRect.y1 + 40;
@@ -559,7 +634,11 @@ export class TheaterView {
         (!shown || (s.rect.y0 >= clearRect.y0 && s.rect.y1 <= clearRect.y1)) &&
         !placed.some((p) => s.rect.x0 < p.x1 && s.rect.x1 > p.x0 && s.rect.y0 < p.y1 && s.rect.y1 > p.y0);
       const free = seats.find(open);
-      const seat = free ?? (l.rank < 0 ? seats[0] : null);
+      // An objective name is never dropped. With every seat taken it takes
+      // the one that covers least.
+      const covered = (s: (typeof seats)[number]): number =>
+        placed.reduce((a, p) => a + Math.max(0, Math.min(s.rect.x1, p.x1) - Math.max(s.rect.x0, p.x0)) * Math.max(0, Math.min(s.rect.y1, p.y1) - Math.max(s.rect.y0, p.y0)), 0);
+      const seat = free ?? (l.rank < 0 ? seats.reduce((best, s) => (covered(s) < covered(best) ? s : best)) : null);
       if (!seat) continue;
       placed.push(seat.rect);
       ctx.strokeText(l.text, seat.cx, seat.y);
@@ -567,8 +646,11 @@ export class TheaterView {
       ctx.fillText(l.text, seat.cx, seat.y);
     }
 
-    // Battles: a pulsing ring at the site (deterministic phase from clock).
-    // Under fog only battles with an OWN participant ring — an AI-vs-AI
+    // Battles in progress: a burst that sits OUTSIDE the objective ring, with
+    // a ring that breathes out from the site. On the render clock: it moves
+    // while the war is paused and keeps one pace at any game speed. (It
+    // pulsed on clockMin % 8: frozen when paused, a 7.5 Hz flicker at 60x.)
+    // Under fog only battles with an OWN participant show — an AI-vs-AI
     // fight behind the line would leak positions the sweep never earned.
     for (const b of front.battles) {
       if (this.recon === 'contacts') {
@@ -577,12 +659,42 @@ export class TheaterView {
       }
       const p = b.site.kind === 'node' ? this.theater.nodes[b.site.nodeId].pos : pointAlong(this.theater.edges[b.site.edgeId], b.site.s);
       const [sx, sy] = this.toScreen(p.x, p.y, w, h);
-      const pulse = 8 + 3 * Math.sin((front.clockMin % 8) / 8 * Math.PI * 2);
-      ctx.strokeStyle = '#c9803c';
-      ctx.lineWidth = 2;
+      const beat = (now % 1400) / 1400;
+      ctx.strokeStyle = FIGHT;
+      ctx.globalAlpha = 1 - beat;
+      ctx.lineWidth = 2.5;
       ctx.beginPath();
-      ctx.arc(sx, sy, pulse, 0, Math.PI * 2);
+      ctx.arc(sx, sy, 22 + beat * 16, 0, Math.PI * 2);
       ctx.stroke();
+      ctx.globalAlpha = 1;
+      // Beside the place: its name is above it and its counters hang below.
+      burst(ctx, sx + 30, sy, 10 + 1.5 * Math.sin(beat * Math.PI * 2), (now / 6000) * Math.PI * 2);
+    }
+
+    // What just happened: a capture rings the town in its new holder's
+    // colour, a retreat leaves a short arrow from where the force stood.
+    for (const x of this.fx) {
+      const k = (now - x.t0) / FX_MS[x.kind];
+      if (x.kind === 'capture') {
+        const [sx, sy] = this.toScreen(x.at.x, x.at.y, w, h);
+        for (const lag of [0, 0.25]) {
+          const kk = k - lag;
+          if (kk <= 0 || kk >= 1) continue;
+          ctx.strokeStyle = OWNER_RIM[x.side];
+          ctx.globalAlpha = 1 - kk;
+          ctx.lineWidth = 4 * (1 - kk) + 1;
+          ctx.beginPath();
+          ctx.arc(sx, sy, 12 + kk * 46, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+        ctx.globalAlpha = 1;
+      } else {
+        ctx.save();
+        ctx.globalAlpha = Math.min(1, 2 * (1 - k));
+        ctx.setLineDash([5, 4]);
+        this.arrow(ctx, [x.from, x.to], w, h, OWNER_RIM[x.side], 2.5);
+        ctx.restore();
+      }
     }
 
     // Marches. Every moving company keeps a thin arrow to where it is going,
@@ -646,6 +758,7 @@ export class TheaterView {
   frontLayer(control: readonly (Side | null)[]): FrontLayer {
     const key = controlKey(control);
     if (!this.frontCache || key !== this.frontKey) {
+      if (this.frontCache) this.washWas = { layer: this.frontCache, t0: this.now() };
       this.frontKey = key;
       this.frontCache = buildFrontLayer(this.theater, control);
     }

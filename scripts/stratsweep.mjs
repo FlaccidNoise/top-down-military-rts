@@ -63,6 +63,43 @@ const STATES = {
     const v2 = window.__game.getV2();
     v2.selectedForce = v2.front.forces.find((f) => f.side === 'blue').id;
   },
+  // A battle in progress: Able marches on the nearest garrisoned objective
+  // until contact, and the contact is opened as a timed battle.
+  battle: async () => {
+    const { orderMove } = await import('/src/strategic/theater/step.ts');
+    const { openBattle } = await import('/src/strategic/theater/war.ts');
+    const v2 = window.__game.getV2();
+    const f = v2.front.forces.find((x) => x.side === 'blue');
+    orderMove(v2.front, f.id, v2.front.theater.objectiveNodes[0]);
+    window.__game.stepTheater(600);
+    if (!v2.pending) throw new Error('battle: the march met nobody in ten hours');
+    openBattle(v2.front, v2.pending);
+    v2.pending = null;
+    for (const id of ['debrief', 'contact']) { const el = document.getElementById(id); if (el) el.style.display = 'none'; }
+    window.__game.freezeFx(1960); // 40% through a beat: the ring is out and still strong
+  },
+  // 02:00 on day 2: the night wash.
+  night: () => {
+    window.__game.stepTheater(20 * 60);
+  },
+  // News on the map, frozen mid-animation: a town changes hands (ring, and
+  // the wash half-way through its move) and a company falls back (arrow).
+  events: async () => {
+    const { pushEvent } = await import('/src/strategic/theater/force.ts');
+    const frame = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    const v2 = window.__game.getV2();
+    const front = v2.front;
+    await frame(); // the log as it stands is history
+    const [a, b] = front.forces.filter((f) => f.side === 'blue');
+    const town = front.theater.objectiveNodes.find((n) => front.controlByNode[n] !== 'blue');
+    front.controlByNode[town] = 'blue';
+    pushEvent(front, { min: front.clockMin, kind: 'capture', text: `${front.theater.nodes[town].name} taken`, forceIds: [a.id], nodeId: town });
+    const e = front.theater.edges.find((x) => x.moveClass !== 'rail' && (x.a === b.pos.nodeId || x.b === b.pos.nodeId));
+    b.pos = { kind: 'edge', edgeId: e.id, s: e.a === b.pos.nodeId ? 1500 : e.lengthM - 1500, dir: e.a === b.pos.nodeId ? 1 : -1 };
+    pushEvent(front, { min: front.clockMin, kind: 'retreat', text: `${b.name} falls back`, forceIds: [b.id] });
+    await frame(); // taken in at render time 1000
+    window.__game.freezeFx(1450);
+  },
   // Three counters on one town, with every pip lit: the fan-out and the
   // counter's vocabulary. Positions and states are written directly.
   stack: async () => {
@@ -156,9 +193,9 @@ for (const device of DEVICES) {
   const { browser, page, errors } = await boot(device);
   for (const state of want) {
     await newCampaign(page);
+    await page.evaluate(() => window.__game.freezeFx(1000));
     await page.evaluate(STATES[state]);
     await ACTS[state]?.(page, device);
-    await page.evaluate(() => window.__game.freezeFx?.(1000));
     await page.waitForTimeout(150);
     if (PERF) {
       const ms = await page.evaluate(() => {

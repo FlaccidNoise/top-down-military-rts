@@ -1503,6 +1503,11 @@ html.mobile #theater-hud .hbtn { min-height: 44px; }
 #theater-hud .th-ev-contact, #theater-hud .th-ev-battle-resolved { color: #c9a06c; }
 #theater-hud .th-ev-capture { color: #9ab27d; }
 #theater-hud .th-ev-overrun { color: #b06a5a; }
+#theater-hud .th-ev-replacements { color: #9ab27d; }
+/* A log line is a door to where it happened. */
+#theater-hud .th-ev[data-ev] { cursor: pointer; }
+#theater-hud .th-ev[data-ev]:hover { text-decoration: underline; }
+html.mobile #theater-hud .th-ev[data-ev] { padding: 6px 0; }
 /* Parts the HUD shows and hides in place. Keep this after the rules above:
    several of them set display, and at equal specificity the later one wins. */
 #theater-hud [hidden] { display: none; }

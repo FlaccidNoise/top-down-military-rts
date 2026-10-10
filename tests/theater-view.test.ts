@@ -2,7 +2,8 @@
 // framing operation is checked against the CLEAR rectangle, not the canvas.
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_PRESET } from '../src/campaign/presets';
-import { makeHeadlessWorld } from '../src/strategic/headless';
+import { makeHeadlessWorld, runHeadlessWar } from '../src/strategic/headless';
+import { pushEvent } from '../src/strategic/theater/force';
 import { fmtEta, THEATER_ZOOM_MAX, TheaterView } from '../src/render/theater-view';
 import { COUNTER_W, counterRect, layoutCounters, type CounterSpec, type PlacedCounter } from '../src/render/theater-counters';
 
@@ -78,6 +79,76 @@ describe('territory and the front line', () => {
 
   it('one side holding everything leaves no front', () => {
     expect(v.frontLayer(control.map(() => 'blue')).lines).toEqual([]);
+  });
+});
+
+// A canvas that accepts every call and draws nothing: enough to run the whole
+// frame headless. A throw in the theater frame loop does not crash the game,
+// it leaves a wrong picture, so the frame is run here for real.
+const fakeCtx = (): CanvasRenderingContext2D =>
+  new Proxy({} as Record<string, unknown>, {
+    get: (store, key: string) =>
+      key in store ? store[key] : key === 'measureText' ? () => ({ width: 40 }) : key === 'createPattern' ? () => null : () => undefined,
+    set: (store, key: string, value) => {
+      store[key] = value;
+      return true;
+    },
+  }) as unknown as CanvasRenderingContext2D;
+interface Inner { fx: { kind: string }[]; flashText: string }
+
+describe('the frame, and what just happened', () => {
+  it('draws a whole war without a throw: day, night, marches, battles, captures, retreats', () => {
+    const w = makeHeadlessWorld(3, DEFAULT_PRESET.theater, DEFAULT_PRESET.campaign);
+    const v = Object.assign(new TheaterView(w.front.theater), { supplyOn: true, inset: DESKTOP.inset });
+    const ctx = fakeCtx();
+    let frames = 0;
+    let news = 0;
+    runHeadlessWar(w, 60 * 24 * 4, () => {
+      if (w.front.clockMin % 7 !== 0) return;
+      v.draw(ctx, w.front, w.front.forces[0].id, false, 60, DESKTOP.w, DESKTOP.h);
+      frames++;
+      news += (v as unknown as Inner).fx.length;
+    });
+    expect(frames).toBeGreaterThan(500);
+    expect(news).toBeGreaterThan(0); // captures and retreats became marks
+  });
+
+  it('a capture or a retreat in the log becomes a mark; the log a war was loaded with does not', () => {
+    const fresh = makeHeadlessWorld(19440606, DEFAULT_PRESET.theater, DEFAULT_PRESET.campaign);
+    const fr = fresh.front;
+    const town = fr.theater.objectiveNodes[0];
+    pushEvent(fr, { min: fr.clockMin, kind: 'capture', text: 'old news', forceIds: [], nodeId: town });
+    const v = Object.assign(new TheaterView(fr.theater), { frozenAt: 1000 });
+    const inner = v as unknown as Inner;
+    const frame = (): void => v.draw(fakeCtx(), fr, -1, true, 10, DESKTOP.w, DESKTOP.h);
+    frame();
+    expect(inner.fx).toEqual([]);
+
+    fr.controlByNode[town] = 'blue';
+    pushEvent(fr, { min: fr.clockMin, kind: 'capture', text: 'taken', forceIds: [], nodeId: town });
+    const b = fr.forces.find((f) => f.side === 'blue')!;
+    const e = fr.theater.edges.find((x) => x.moveClass !== 'rail' && b.pos.kind === 'node' && (x.a === b.pos.nodeId || x.b === b.pos.nodeId))!;
+    b.pos = { kind: 'edge', edgeId: e.id, s: e.lengthM / 2, dir: 1 };
+    pushEvent(fr, { min: fr.clockMin, kind: 'retreat', text: `${b.name} falls back`, forceIds: [b.id] });
+    frame();
+    expect(inner.fx.map((x) => x.kind).sort()).toEqual(['capture', 'retreat']);
+    v.frozenAt = 1000 + 60_000; // long after: the marks are gone
+    frame();
+    expect(inner.fx).toEqual([]);
+  });
+
+  it('the order flash clears on the next theater event', () => {
+    const fresh = makeHeadlessWorld(19440606, DEFAULT_PRESET.theater, DEFAULT_PRESET.campaign);
+    const v = new TheaterView(fresh.front.theater);
+    const inner = v as unknown as Inner;
+    const frame = (): void => v.draw(fakeCtx(), fresh.front, -1, true, 10, DESKTOP.w, DESKTOP.h);
+    v.flash('Able moving');
+    frame();
+    frame();
+    expect(inner.flashText).toBe('Able moving');
+    pushEvent(fresh.front, { min: fresh.front.clockMin, kind: 'arrival', text: 'Able arrives', forceIds: [] });
+    frame();
+    expect(inner.flashText).toBe('');
   });
 });
 

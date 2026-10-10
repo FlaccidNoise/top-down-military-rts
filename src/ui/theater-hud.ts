@@ -8,7 +8,7 @@ import { fmtEta } from '../render/theater-view';
 import { MOBILE } from '../render/view';
 
 import type { WarGoals } from '../strategic/goals';
-import { pathDestination, type Force, type FrontV2 } from '../strategic/theater/force';
+import { pathDestination, type Force, type FrontV2, type TheaterEvent } from '../strategic/theater/force';
 import { forceEtaMinutes } from '../strategic/theater/step';
 import { supplyTierOf } from '../strategic/theater/supply';
 import { SPEED_LABELS } from './strat-hud';
@@ -27,12 +27,15 @@ export interface TheaterHudCallbacks {
   fitAll(): void;
   /** Halt the selected company where it stands. */
   halt(): void;
+  /** Centre the map on where a logged event happened. */
+  focus(e: TheaterEvent): void;
 }
 
 export class TheaterHud {
   readonly root: HTMLDivElement;
   private lastSig = '';
   private lastLogSig = '';
+  private logged: TheaterEvent[] = [];
   private readonly top: HTMLElement;
   private readonly obj: HTMLElement;
   private readonly clock: HTMLElement;
@@ -93,6 +96,8 @@ export class TheaterHud {
       if ((e.target as HTMLElement).closest('[data-th="menu"]')) { this.cb.openMenu(); return; }
       if ((e.target as HTMLElement).closest('[data-th="halt"]')) { this.cb.halt(); return; }
       if ((e.target as HTMLElement).closest('[data-th="fit"]')) { this.cb.fitAll(); return; }
+      const line = (e.target as HTMLElement).closest('[data-ev]');
+      if (line) { this.cb.focus(this.logged[Number(line.getAttribute('data-ev'))]); return; }
       const btn = (e.target as HTMLElement).closest('[data-clock]');
       if (!btn) return;
       const v = btn.getAttribute('data-clock')!;
@@ -163,14 +168,13 @@ export class TheaterHud {
     const logSig = `${front.events.length}|${lastEvent?.min ?? ''}|${lastEvent?.text ?? ''}`;
     if (logSig !== this.lastLogSig) {
       this.lastLogSig = logSig;
-      this.log.innerHTML = front.events
-        .slice(-8)
-        .map((e) => {
+      this.logged = front.events.slice(-8).reverse();
+      this.log.innerHTML = this.logged
+        .map((e, i) => {
           const eh = Math.floor((e.min % 1440) / 60).toString().padStart(2, '0');
           const em = (e.min % 60).toString().padStart(2, '0');
-          return `<div class="th-ev th-ev-${e.kind}">${eh}${em} ${e.text}</div>`;
+          return `<div class="th-ev th-ev-${e.kind}" data-ev="${i}">${eh}${em} ${e.text}</div>`;
         })
-        .reverse()
         .join('') || `<div class="th-ev">${EMPTY_LOG}</div>`;
     }
   }

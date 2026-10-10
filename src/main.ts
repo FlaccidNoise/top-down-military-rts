@@ -41,7 +41,7 @@ import { makeWarGoals, warStatus, type WarGoals } from './strategic/goals';
 import { DEPLOY_ATK_DEPTH, DEPLOY_DEF_LINE, DEPLOY_DEF_DEFAULT } from './strategic/deploy';
 import { ContactIntel, OmniscientIntel, type IntelView } from './strategic/intel';
 import { Commander2, RED_V2 } from './strategic/planner';
-import { addForce, type CoarseBattle, type FrontV2, type MoveReject } from './strategic/theater/force';
+import { addForce, pushEvent, type CoarseBattle, type FrontV2, type MoveReject } from './strategic/theater/force';
 import { firstContactOnMarch, orderHalt, orderMove, previewMove } from './strategic/theater/step';
 import { battleCatchUpMin, openBattle, retreatForce, stepWar } from './strategic/theater/war';
 import { syncStrengthsV2 } from './strategic/theater/sync';
@@ -410,6 +410,14 @@ const theaterHud = new TheaterHud({
   setSpeed: (i) => { speedIdx = i; tutorial?.notify('speed-changed'); },
   openMenu: () => { openPauseMenu(); },
   fitAll: () => { S().v2?.view.fitAll(view.w, view.h); },
+  focus: (e) => {
+    const v2 = S().v2;
+    if (!v2) return;
+    // The place, else one of OUR forces in it: never the enemy's true position.
+    const own = v2.front.forces.find((f) => f.side === 'blue' && e.forceIds.includes(f.id));
+    const at = e.nodeId !== undefined ? v2.front.theater.nodes[e.nodeId].pos : own ? v2.view.forceXY(own) : null;
+    if (at) v2.view.centerOn(at, view.w, view.h);
+  },
   halt: () => {
     const v2 = S().v2;
     if (!v2) return;
@@ -815,7 +823,10 @@ function stepTheaterMinuteV2(v2: SessionV2): void {
     advanceDays(S().campaign, v2.front.day - prevDay);
     if (v2.front.day % REINFORCE_CYCLE_DAYS === 0) {
       const arrived = fillReplacements(S().campaign, v2.front.day * 31 + 7, REINFORCE_PER_COMPANY);
-      if (arrived > 0) v2.view.flash(`+${arrived} replacements arrived`);
+      if (arrived > 0) {
+        v2.view.flash(`+${arrived} replacements arrived`);
+        pushEvent(v2.front, { min: v2.front.clockMin, kind: 'replacements', text: `${arrived} replacements arrive`, forceIds: [] });
+      }
     }
     syncStrengthsV2(S().campaign, v2.front);
     prevDay = v2.front.day;
@@ -1859,6 +1870,12 @@ function cycleFloorFocus(): void {
   // runs (red planner, war step, day roll). scripts/stratsweep.mjs stages its
   // states with this: a wall-clock run at 60x never stops on the same minute
   // twice. Returns the minutes stepped; stops at a contact.
+  // Freeze (or with null, release) the theater's render clock, so a mark that
+  // animates is the same frame on every run of the sweep.
+  freezeFx: (t: number | null) => {
+    const v2 = S().v2;
+    if (v2) v2.view.frozenAt = t;
+  },
   stepTheater: (minutes: number): number => {
     const v2 = S().v2;
     let n = 0;
@@ -1866,6 +1883,7 @@ function cycleFloorFocus(): void {
       stepTheaterMinuteV2(v2);
       n++;
     }
+    if (v2?.pending) showContactModalV2(v2.pending); // as the frame loop does
     return n;
   },
   startEngagementBattle,

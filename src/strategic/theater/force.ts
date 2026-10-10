@@ -53,7 +53,7 @@ export interface CoarseBattle {
 
 export interface TheaterEvent {
   min: number;
-  kind: 'contact' | 'battle-resolved' | 'capture' | 'arrival' | 'retreat' | 'overrun' | 'stall';
+  kind: 'contact' | 'battle-resolved' | 'capture' | 'arrival' | 'retreat' | 'overrun' | 'stall' | 'replacements';
   text: string;
   forceIds: number[];
   nodeId?: number;
