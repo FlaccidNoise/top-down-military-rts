@@ -4,6 +4,15 @@ Owner ask: audit the game, then upgrade (not polish) battle graphics and effects
 
 Audited tree: `main` at `8a90968`. Epic: jtbug #759.
 
+## Status — 2026-10-10
+
+All four lanes are on `main` at `4f59e33`. Not deployed. `HANDOFF.md` has the list of what landed.
+
+- Balance is in band: blue attacking 6/8 fixed and 8/18 held-out, red attacking 6/16, war pin blue 4/16.
+- Open owner decision, jtbug #797: calibrate auto-resolve to fought battles and rebalance red's strength, or leave the two apart. The measured calibration is in `docs/research/2026-10-09-upgrade-audit/coarse-calibration/` and is not applied.
+- Of "Decisions needed" below: 1 and 2 were taken by the orchestrator (see `docs/decisions/INDEX.md`, 2026-10-10). 4 was taken as fog on, and reverts alone at 15eeb85. 3 and 5 are still open.
+- "Not confirmed" below still stands in full. No human has played this tree.
+
 ## Sources
 
 Five reports, each with `file:line` evidence and a list of what it could not confirm:
