@@ -1,22 +1,30 @@
 import type { Emplacement } from '../sim/emplacement';
 import { smokeAxisAt } from '../sim/wind';
-import { MELEE_STRIKE_RANGE, stanceOf, type BreachEvent, type MeleeEvent, type ShotEvent, type Side, type Sim, type Soldier, type UnitEvent, type Vehicle } from '../sim/sim';
+import { MELEE_STRIKE_RANGE, stanceOf, type BoomEvent, type BreachEvent, type MeleeEvent, type ShotEvent, type Side, type Sim, type Soldier, type UnitEvent, type Vehicle } from '../sim/sim';
+import { gunOf, tapsOf } from './audio';
 import type { Camera } from './camera';
 import { DecalLayer } from './decals';
 import { bandFor, CRAWL_FRAMES, DUDE_SCALE, getShadowSprite, getSprite, glintSprite, headOffset, kitVariant, SPRITE_MIN_SCALE, SPRITE_SPAN, tier, WALK_FRAMES, weaponClass, type Pose } from './dudes';
 import { emplacementBandFor, emplacementFootprintRadius, emplacementSpan, getEmplacementShadow, getEmplacementSprite } from './emplacements';
-import { ballistic, blit, FLASH, flashClass, fxDetail, hazeBand, hotPass, SPIKE_SIDES, traceOvershoot, WIND, type FlashSpec, type FxKind, type Overshoot } from './fx';
+import { ballistic, blastOf, blastScale, blit, FLASH, flashClass, fxDetail, fxScale, hazeBand, hotPass, lightPool, SPIKE_SIDES, traceOvershoot, vignette, WIND, type BlastSpec, type FlashSpec, type FxKind, type Overshoot } from './fx';
 import { SUN, shadowSoftAlpha, sun } from './light';
-import { MarkLayer } from './marks';
+import { BrassLayer, MarkLayer } from './marks';
+import { PallLayer } from './pall';
 import { craterSpots } from './props';
 import { RoofLayer } from './roofs';
 import { TerrainLayer } from './terrain';
 import { MOBILE, view } from './view';
 import { getVehicleShadow, getVehicleSprite, occBucket, trackGauge, turretBlob, turretCenter, vehicleBandFor, VEHICLE_SPAN } from './vehicles';
 
+// One ShotEvent is one abstracted attack. An automatic weapon's attack is a
+// burst, drawn as `taps` rounds `gap` ms apart — the same two numbers the
+// audio layer voices it with (audio.ts gunOf/tapsOf).
 interface Tracer extends ShotEvent {
   at: number; // ms timestamp
   over?: Overshoot; // misses only: where the round actually came down
+  taps: number;
+  gap: number; // ms between taps
+  life: number; // ms until the last tap's dust has settled
 }
 
 interface ShotGeom {
@@ -50,6 +58,23 @@ interface RState {
   wx: number; // drawn position (a dragged casualty trails behind his rescuer)
   wy: number;
   dfacing: number; // drawn facing, including the dead man's per-id jitter
+  // Reactions. Each is a moment on the fx clock and a unit vector; the draw
+  // turns them into a few pixels of offset that decay. None of it moves the
+  // man in the sim — he is drawn off his position, never put there.
+  kickAt: number; // he fired: recoil back along (kux, kuy), once per tap
+  kickTaps: number;
+  kickGap: number;
+  kux: number;
+  kuy: number;
+  hitAt: number; // he was hit and lived: a jerk along the round's path
+  hux: number;
+  huy: number;
+  fellAt: number; // he went down: a slide along (fdx, fdy) that stays
+  fdx: number;
+  fdy: number;
+  fall: number; // how far, m
+  restX: number; // where earlier falls already left him, m off his sim position
+  restY: number;
 }
 
 // Render-only per-vehicle state (U7), mirroring the soldier `rs` map. Every
@@ -64,11 +89,25 @@ interface VState {
   di: number; // ring write index
   puffAt: number; // odometer of the last puff
   markAt: number; // odometer of the last rut stamp
+  // The two cues that are NOT on the odometer, because a tank fights standing
+  // still: where the turret points relative to the hull, and the main gun's
+  // last shot. Both ride the fx clock, so they stop with the sim too.
+  turret: number; // rad off the hull's centreline
+  firedAt: number; // ms, fx clock
+  fux: number; // bearing of that shot
+  fuy: number;
 }
 
-const DUST_RING = 6;
+const DUST_RING = 12;
 const DUST_EVERY = 0.5; // m of travel per puff
-const DUST_LIFE = 2.5; // m of travel a puff survives
+const DUST_LIFE = 6; // m of travel a puff survives — a trail a hull-length long, where 2.5 m was gone under the hull itself
+const TURRET_SLEW = 0.7; // rad/s — about 40 degrees a second, a powered traverse
+const RECOIL_MS = 380; // the gun runs back and the hull rocks for this long
+const HULL_MUZZLE = 3.1; // m from the hull centre to the muzzle of a tank gun
+const KICK_MS = 240; // a man's recoil
+const JERK_MS = 280; // a hit man's flinch
+const FALL_MS = 250; // a falling man's slide
+const EXHAUST_TICKS = 26; // sim ticks between exhaust puffs
 const MARK_EVERY = 0.7; // m of travel per rut stamp
 const TRACK_PITCH = 0.16; // m of travel per track-phase step
 
@@ -76,16 +115,77 @@ interface Boom {
   x: number;
   y: number;
   at: number;
-  r?: number; // blast radius in meters; undefined = the mortar/barrage default
+  spec: BlastSpec; // the recipe for its kind (fx.ts BLAST)
+  k: number; // its size against that recipe's reference radius
   landed: number; // bitmask of debris chunks whose grit decal is already stamped
 }
 
-// Blast radius → visual multiplier. Everything in the explosion (radii,
-// particle counts, camera trauma, crater size) rides this one number, so a
-// grenade cannot read like an 81 mm shell.
-function boomScale(r: number | undefined): number {
-  return Math.min(1.2, Math.max(0.33, (r ?? 9) / 9));
+// A barrage is a dozen rounds and each now hangs for five to nine seconds. The
+// oldest are thin smoke by the time the cap is reached, so they go first.
+const MAX_BOOMS = MOBILE ? 14 : 36;
+
+// Night light (gradeWorld). The grade is drawn at 1/LIGHT_DIV of the view and
+// scaled up: a pool of light has no detail to lose, and the fill is what
+// costs. A phone gets a coarser canvas and half the lights.
+const LIGHT_DIV = MOBILE ? 8 : 6;
+const MAX_LIGHTS = MOBILE ? 12 : 24;
+const LIGHT_CUT = 0.85; // how much of the grade the brightest light removes — never all of it: it is still night
+const MUZZLE_GLOW_MS = 110; // a muzzle flash's light decays on this constant instead of cutting
+const GRADE_PAD = 24; // px past the view on every side, so the shake never shows an ungraded edge
+
+// Pall density one round adds at the muzzle (pall.ts). Thirty-odd rifle shots
+// from one spot, or seven MG42 bursts, fill a puff.
+const PALL_PER_ROUND = 0.03;
+
+// A weapon that has been firing. A live firefight has only a handful of rounds
+// in the air in any one frame, so between them the field went quiet; this is
+// what stays at the source. `heat` rises with every round and cools over a
+// second or two, and while it is up the muzzle trails a wisp of gun smoke — an
+// MG that has been working for ten seconds is visibly a firing position even
+// between bursts. Keyed by the shooter when the sim names him, by where the
+// muzzle was otherwise (an emplaced gun, a hull).
+interface Firing {
+  x: number; // muzzle, world
+  y: number;
+  ux: number; // bearing of the last shot
+  uy: number;
+  heat: number; // 0..1 at `at`
+  at: number; // ms of the last shot, fx clock
+  seen: boolean; // fog answer, re-tested on the fires' throttle
+  seenTick: number;
 }
+// A round going home. The mist it knocks out of a man, thrown on down the
+// shot's line, and once, at the moment it lands, the spatter it leaves on the
+// ground past him. Moderate on purpose: a dark puff and a few drops.
+interface Hit {
+  x: number; // where he was hit, world
+  y: number;
+  ux: number; // the round's bearing
+  uy: number;
+  at: number; // ms it lands, fx clock
+  kill: boolean;
+  k: number; // hash key
+  marked: boolean; // spatter stamped
+}
+const HIT_MS = 380;
+const MAX_HITS = MOBILE ? 12 : 24;
+
+// A pool still spreading under a body: stamped into the decal layer one layer
+// at a time (decals.ts pool), then forgotten.
+interface Bleed {
+  x: number;
+  y: number;
+  r: number; // its final radius, m
+  at: number; // ms, fx clock
+  n: number; // layers stamped so far
+  k: number;
+}
+const POOL_LAYERS = 4;
+const POOL_STEP_MS = 800; // 3 s to full size
+
+const HEAT_PER_ROUND = 0.2;
+const GUN_COOL_MS = 2200; // heat's time constant
+const MAX_FIRING = MOBILE ? 16 : 40;
 
 interface Plane {
   x0: number;
@@ -131,15 +231,17 @@ const MAX_MORALE_FX = MOBILE ? 6 : 10;
 // — a building fire is purely cosmetic, render-derived from blasts the player
 // could see land, and it always burns itself out.
 //
-// Two clocks, deliberately: LIFETIME runs on sim.tick (like barrageMarks), so
-// pausing the game cannot burn a house down; FLICKER runs on wall-clock `now`,
-// because 30 Hz sampling makes a flame visibly step.
+// Two clocks, deliberately: LIFETIME and SPREAD run on sim.tick (like
+// barrageMarks), so pausing the game cannot burn a house down; FLICKER and the
+// cook-off pops run on the fx clock, because 30 Hz sampling makes a flame
+// visibly step.
 interface Fire {
   key: number; // buildingId, or -1000 - vehicle id — also the per-fire hash stream
   x: number;
   y: number;
   vid: number; // >= 0 → vehicle brew-up; -1 → building
   born: number; // sim tick of first ignition
+  at: number; // the same moment on the fx clock, ms — what the cook-off pops count from
   tick: number; // sim tick of the most recent stoke
   hits: number; // blasts feeding it — sets the ceiling on intensity
   seen: boolean; // fog-of-war result, re-tested on a throttle (LOS is not free)
@@ -150,7 +252,15 @@ const FIRE_LIFE_S = 90; // sim seconds a building burns after its last stoke
 const FIRE_FADE_S = 25; // ...of which the last N are a dying smolder
 const FIRE_CAP = 12; // a barraged village must not light every house at once
 const FIRE_SEEN_TICKS = 15; // 0.5 s between fog re-tests per fire
-const FIRE_POOL_ALPHA = 0.09; // warm ground pool — zero this to revoke the second light source
+const FIRE_POOL_ALPHA = 0.14; // warm ground pool — zero this to revoke the second light source
+const FIRE_SPREAD_S = 30; // sim seconds for a well-fed fire to cross its building
+const LICK_CAP = 12; // flames per fire, before the zoom and mobile tiers cut it
+const PLUME_RUN = 9; // m a fire's own smoke is carried downwind before it is gone
+const HULL_FIRE_L = 2.3; // half-extents of the part of a hull that burns, m
+const HULL_FIRE_W = 1;
+const COOKOFF_S = 30; // a brewed-up hull pops for this long, less and less often
+const POP_SLOT_MS = 900; // one chance of a pop per slot
+const POP_MS = 520; // a pop's life
 const BREWUP_FULL_S = 14; // a brewed-up tank rages this long...
 const BREWUP_SETTLE_S = 45; // ...then settles to a smoking hulk by here
 const BREWUP_FLOOR = 0.3;
@@ -174,6 +284,19 @@ const HAZE_MAX_SCALE = 22; // px/m — above this you can count boots and haze i
 const MOTE_MIN_SCALE = 20;
 const MOTE_CAP = 24;
 
+// Barrel length: how far down its bearing a shot's flash sits from where the
+// sim says it was fired. A man's rifle, or a tank gun measured from the hull.
+function muzzleReach(weapon: ShotEvent['weapon']): number {
+  return weapon === undefined ? HULL_MUZZLE : 0.9;
+}
+
+// An angle into (-PI, PI].
+function wrapAngle(a: number): number {
+  while (a > Math.PI) a -= Math.PI * 2;
+  while (a <= -Math.PI) a += Math.PI * 2;
+  return a;
+}
+
 // Positive modulo — the wrapping every world-anchored ambient layer needs, and
 // the thing `%` alone gets wrong the moment wind drift goes negative.
 function mod(v: number, m: number): number {
@@ -181,10 +304,12 @@ function mod(v: number, m: number): number {
 }
 
 const PLANE_MS = 2600;
-const BOOM_MS = 2600; // longest sub-effect (smoke column) sets total lifetime
+const BLAST_FLASH_MS = 70; // the white flash of any blast
+const SPARK_MS = 900; // longest a blast's sparks fly
 const FADE_MS = 150; // faint thread lifetime
 const TRAVEL_MS = 90; // muzzle->target travel time for the bright segment (E3)
 const IMPACT_MS = 250; // impact dust lifetime, starts at TRAVEL_MS (E5)
+const SHOT_MS = TRAVEL_MS + IMPACT_MS; // one round's whole life, muzzle to settled dust
 const CHUNKS: FxKind[] = ['chunk0', 'chunk1', 'chunk2', 'chunk3'];
 
 const TEAM = { blue: '#5b9bd5', red: '#d05c50' } as const;
@@ -247,18 +372,29 @@ export class Renderer {
   private deadVehicles = new Set<number>(); // scorch stamped once, on first dead frame
   private lastNow = 0;
   private fxClock = 0; // set once per draw(): the pinnable cosmetic clock overlay pulses read
+  private frameNow = 0; // set once per draw(): the fx clock itself, for the per-unit reactions
+  private fxDt = 0; // seconds of fx clock since the last draw — 0 under pause, which is what stops a turret mid-traverse
   private booms: Boom[] = [];
   private breaches: BreachFx[] = [];
   private moraleFx: MoraleFx[] = [];
   private moraleSeq = 0;
   private decals: DecalLayer;
   private marks = new MarkLayer();
+  private brass = new BrassLayer();
+  private shotSeq = 0;
+  private pall = new PallLayer();
+  private firing = new Map<number, Firing>();
+  private hits: Hit[] = [];
+  private bleeds: Bleed[] = [];
+  private hitSeq = 0;
   private barrageMarks: { x: number; y: number; tick: number }[] = [];
   private strafeMarks: { x: number; y: number; tick: number }[] = [];
   private planes: Plane[] = [];
   private fires = new Map<number, Fire>();
   private lit: Fire[] = []; // this frame's visible fires, shared by the cool and hot passes
   private licks: number[] = []; // flat (x, y, r, alpha) quads — flame cores queued for the fire hot pass
+  private lights: number[] = []; // flat (x, y, r, strength) quads — this frame's holes in the night grade
+  private gradeCanvas: HTMLCanvasElement | null = null; // the grade at 1/LIGHT_DIV, only ever built at night with a light in view
   private birds: Bird[] = [];
   private boomSeq = 0;
   private haze: { x: number; y: number; len: number; hgt: number; a: number }[];
@@ -294,7 +430,20 @@ export class Renderer {
 
   addEvents(events: ShotEvent[], now: number): void {
     for (const e of events) {
-      const t: Tracer = { ...e, at: now };
+      const gun = gunOf(e.weapon);
+      const taps = tapsOf(gun);
+      const gap = (gun.spacing ?? 0) * 1000;
+      const t: Tracer = { ...e, at: now, taps, gap, life: (taps - 1) * gap + SHOT_MS };
+      // Powder smoke where it was fired from, dust where it landed. A tracer
+      // is drawn ungated, but it is gone in a tenth of a second; haze over a
+      // firing position stays for twenty, so it is fog-tested. The shooter is
+      // the exact test when the sim names him, the point otherwise.
+      const shooter = e.shooterId !== undefined ? this.sim.soldiers[e.shooterId] : undefined;
+      const muzzleSeen = (): boolean => (shooter ? this.sim.soldierVisibleTo(PLAYER_SIDE, shooter) : this.pointSeen(e.fx, e.fy));
+      this.pall.feed(e.fx, e.fy, PALL_PER_ROUND * taps, now, this.sim.tick, muzzleSeen);
+      this.pall.feed(e.tx, e.ty, PALL_PER_ROUND * 0.6 * taps, now, this.sim.tick, () => this.pointSeen(e.tx, e.ty));
+      const d = Math.hypot(e.tx - e.fx, e.ty - e.fy);
+      if (d > 0) this.noteShot(e, shooter, (e.tx - e.fx) / d, (e.ty - e.fy) / d, taps, gap, now, muzzleSeen); // false for a NaN bearing too
       // A miss has to land somewhere past the target — resolve it once, here,
       // rather than 48 edge tests per frame for the shot's whole life.
       if (!e.hit) {
@@ -320,17 +469,23 @@ export class Renderer {
     }
   }
 
-  addBooms(booms: { x: number; y: number; r?: number }[], now: number): void {
+  addBooms(booms: BoomEvent[], now: number): void {
     for (const b of booms) {
       this.boomSeq++;
-      this.booms.push({ ...b, at: now, landed: 0 });
-      this.decals.scorch(b.x, b.y, boomScale(b.r));
+      const { spec, k } = blastOf(b);
+      this.booms.push({ x: b.x, y: b.y, at: now, spec, k, landed: 0 });
+      if (this.booms.length > MAX_BOOMS) this.booms.shift();
+      // The dust the blast leaves in the air once its own smoke has gone.
+      // Dust only: pall is pale, and a brew-up's smoke is black and the sim's.
+      // Ungated, like the blast itself.
+      this.pall.feed(b.x, b.y, Math.min(1, spec.dust * spec.fire * k * 0.5), now, this.sim.tick);
+      this.decals.scorch(b.x, b.y, spec.crater * k);
       this.roofs.noteImpact(b.x, b.y); // roof damage is render-derived from the same detonation, never from sim HP
       // Ignition is render-derived: a blast inside a building footprint is the
       // only cause of a building fire, because that is the only cause the
       // player watched happen.
       const bid = this.sim.map.buildingIdAt(Math.floor(b.x), Math.floor(b.y));
-      if (bid >= 0) this.stoke(bid, b.x, b.y, -1);
+      if (bid >= 0 && this.sim.buildings[bid]) this.stoke(bid, b.x, b.y, -1, now);
       this.flush(b.x, b.y, now);
     }
   }
@@ -350,6 +505,23 @@ export class Renderer {
   // has no business seeing. Every other kind (kia, downed, ping, ...) is the
   // ping feed's and the audio layer's business, not the renderer's.
   addUnitEvents(list: UnitEvent[], now: number): void {
+    // A man going down slides a short way along whatever hit him and stays
+    // there. Only when the sim says which way: bled out, or hit inside a hull,
+    // he drops where he stands as he always did.
+    for (const e of list) {
+      if ((e.kind !== 'kia' && e.kind !== 'downed') || e.id === undefined || e.dx === undefined || e.dy === undefined) continue;
+      if (!(Math.abs(e.dx) <= 1) || !(Math.abs(e.dy) <= 1)) continue; // NaN fails both
+      const s = this.sim.soldiers[e.id];
+      if (!s) continue;
+      const st = this.state(s);
+      // A second fall (downed, then killed) starts from where the first left him.
+      st.restX += st.fdx * st.fall;
+      st.restY += st.fdy * st.fall;
+      st.fellAt = now;
+      st.fdx = e.dx;
+      st.fdy = e.dy;
+      st.fall = e.kind === 'kia' ? 0.3 + hash(e.id, 0, 31) * 0.5 : 0.2;
+    }
     for (const e of list) {
       if (e.kind !== 'pinned' && e.kind !== 'rallied' && e.kind !== 'ambush') continue;
       if (this.moraleFx.length >= MAX_MORALE_FX) return; // at the cap: drop, silently
@@ -378,6 +550,175 @@ export class Renderer {
     // Once for the batch, not once per edge: it re-derives the whole
     // free-standing index, and a barrage delivers four breaches at a time.
     this.terrain.breachEnclosures();
+  }
+
+  // Everything one shot sets going besides its own flash and tracer: the
+  // weapon heats, the firer kicks, the man it hit jerks, a tank's turret snaps
+  // onto the round it just fired. (ux, uy) is the bearing.
+  private noteShot(e: ShotEvent, shooter: Soldier | undefined, ux: number, uy: number, taps: number, gap: number, now: number, muzzleSeen: () => boolean): void {
+    const seen = this.noteFiring(e, ux, uy, taps, now, muzzleSeen);
+    // An automatic weapon drops a case per round, out to its right.
+    if (seen && taps > 1) {
+      for (let i = 0; i < taps; i++) {
+        const k = this.shotSeq++;
+        const out = 0.45 + hash(k, 0, 641) * 0.55;
+        const back = hash(k, 0, 642) * 0.6 - 0.1;
+        this.brass.add(e.fx - uy * out - ux * back, e.fy + ux * out - uy * back);
+      }
+    }
+    // The firer kicks, once per round of his burst.
+    if (shooter) {
+      const st = this.state(shooter);
+      st.kickAt = now;
+      st.kickTaps = taps;
+      st.kickGap = gap;
+      st.kux = ux;
+      st.kuy = uy;
+    }
+    // A man who is hit and lives jerks when the round arrives, and either way
+    // it knocks a dark puff out of him — if the player can see him. A tracer
+    // is ungated; blood on a man in the fog is the sim telling on him.
+    const victim = e.hit && e.targetId !== undefined ? this.sim.soldiers[e.targetId] : undefined;
+    if (victim) {
+      const st = this.state(victim);
+      st.hitAt = now + TRAVEL_MS;
+      st.hux = ux;
+      st.huy = uy;
+      if (this.sim.soldierVisibleTo(PLAYER_SIDE, victim)) {
+        if (this.hits.length >= MAX_HITS) this.hits.shift();
+        this.hits.push({ x: e.tx, y: e.ty, ux, uy, at: now + TRAVEL_MS, kill: e.kill, k: this.hitSeq++, marked: false });
+      }
+    }
+    // A main gun carries no weapon key and leaves from the hull's own
+    // position. The drawn turret is snapped onto the shot it just fired — the
+    // sim fires on any bearing at once, and a round leaving the side of a
+    // turret that has not come round yet is the worse lie.
+    if (e.weapon !== undefined) return;
+    for (const v of this.sim.vehicles) {
+      if (!v.alive || Math.abs(v.x - e.fx) > 0.01 || Math.abs(v.y - e.fy) > 0.01) continue;
+      const vs = this.vstate(v);
+      vs.turret = wrapAngle(Math.atan2(uy, ux) - v.facing);
+      vs.firedAt = now;
+      vs.fux = ux;
+      vs.fuy = uy;
+      return;
+    }
+  }
+
+  // Heat the weapon this shot came from (see Firing). Returns whether the
+  // player can see it.
+  private noteFiring(e: ShotEvent, ux: number, uy: number, taps: number, now: number, seen: () => boolean): boolean {
+    // Soldier ids are >= 0, so a position key goes below zero.
+    const key = e.shooterId ?? -1 - (Math.round(e.fx * 2) * 4099 + Math.round(e.fy * 2));
+    let f = this.firing.get(key);
+    if (!f) {
+      if (this.firing.size >= MAX_FIRING) {
+        let cold = key;
+        let least = Infinity;
+        for (const [k, o] of this.firing) {
+          const h = o.heat * Math.exp(-(now - o.at) / GUN_COOL_MS);
+          if (h < least) {
+            least = h;
+            cold = k;
+          }
+        }
+        this.firing.delete(cold);
+      }
+      f = { x: 0, y: 0, ux, uy, heat: 0, at: now, seen: false, seenTick: -1e9 };
+      this.firing.set(key, f);
+    }
+    if (this.sim.tick - f.seenTick >= FIRE_SEEN_TICKS) {
+      f.seen = seen();
+      f.seenTick = this.sim.tick;
+    }
+    f.heat = Math.min(1, f.heat * Math.exp(-(now - f.at) / GUN_COOL_MS) + HEAT_PER_ROUND * taps);
+    f.at = now;
+    const reach = muzzleReach(e.weapon); // the same barrel length shotGeom puts the flash at
+    f.x = e.fx + ux * reach;
+    f.y = e.fy + uy * reach;
+    f.ux = ux;
+    f.uy = uy;
+    return f.seen;
+  }
+
+  // The wisp a working weapon trails. Three puffs on staggered two-second
+  // lives, pushed off the muzzle and carried on the wind, so a hot gun smokes
+  // steadily where a single shot only puffs.
+  private drawGunSmoke(ctx: CanvasRenderingContext2D, cam: Camera, now: number, cw: number, ch: number): void {
+    if (this.firing.size === 0) return;
+    const F = fxScale(cam.scale);
+    for (const [key, f] of this.firing) {
+      const heat = f.heat * Math.exp(-(now - f.at) / GUN_COOL_MS);
+      if (!(heat >= 0.03)) {
+        this.firing.delete(key);
+        continue;
+      }
+      if (!f.seen) continue;
+      const [mx, my] = cam.worldToScreen(f.x, f.y, cw, ch);
+      if (!this.onScreen(mx, my, cw, ch, 4 * F)) continue;
+      const a = 0.45 * Math.min(1, heat * 1.6);
+      // Three even on a phone: two puffs this size are two discs, three overlap
+      // into a streak.
+      for (let j = 0; j < 3; j++) {
+        const ph = mod(now / 1800 + j / 3 + hash(key, 0, 620), 1);
+        const out = 0.4 + ph * 0.5;
+        const drift = ph * 1.6;
+        blit(ctx, 'smoke', mx + (f.ux * out + WIND.dx * drift) * F, my + (f.uy * out + WIND.dy * drift) * F, (0.3 + ph * 0.6) * F, a * Math.sin(ph * Math.PI));
+      }
+    }
+  }
+
+  // Whether any of these blasts earns the frame a beat of hold (main.ts): one
+  // with a tank kill's or a heavy shell's punch, landing inside the view.
+  holdWorthy(booms: BoomEvent[], cam: Camera): boolean {
+    for (const b of booms) {
+      const { spec, k } = blastOf(b);
+      if (spec.shake * k < 0.8) continue;
+      const [x, y] = cam.worldToScreen(b.x, b.y, view.w, view.h);
+      if (x >= 0 && y >= 0 && x <= view.w && y <= view.h) return true;
+    }
+    return false;
+  }
+
+  // The puff at each hit, and its spatter. Off the cool pass, under the grade.
+  private drawHits(ctx: CanvasRenderingContext2D, cam: Camera, now: number, cw: number, ch: number): void {
+    if (this.hits.length === 0) return;
+    const F = fxScale(cam.scale);
+    this.hits = this.hits.filter((h) => now - h.at < HIT_MS);
+    for (const h of this.hits) {
+      const age = now - h.at;
+      if (age < 0) continue; // the round is still in the air
+      if (!h.marked) {
+        h.marked = true;
+        this.decals.spatter(h.x, h.y, h.ux, h.uy, h.kill ? 6 : 3, h.k);
+      }
+      const [x, y] = cam.worldToScreen(h.x, h.y, cw, ch);
+      if (!this.onScreen(x, y, cw, ch, 3 * F)) continue;
+      const t = age / HIT_MS;
+      const big = h.kill ? 1.3 : 1;
+      for (let i = 0; i < 3; i++) {
+        const along = (0.1 + (1 - (1 - t) ** 2) * (0.45 + i * 0.35)) * F;
+        const lat = (hash(h.k, i, 630) - 0.5) * 0.3 * F;
+        blit(ctx, 'blood', x + h.ux * along - h.uy * lat, y + h.uy * along + h.ux * lat, (0.13 + i * 0.05 + t * 0.22) * big * F, 0.8 * (1 - t) ** 1.3);
+      }
+    }
+  }
+
+  // Grow the pools: each takes its next layer when its time comes.
+  private spreadPools(now: number): void {
+    for (let i = this.bleeds.length - 1; i >= 0; i--) {
+      const b = this.bleeds[i];
+      while (b.n < POOL_LAYERS && now - b.at >= b.n * POOL_STEP_MS) {
+        this.decals.pool(b.x, b.y, b.r * (0.4 + (0.6 * b.n) / (POOL_LAYERS - 1)), b.k * 7 + b.n);
+        b.n++;
+      }
+      if (b.n >= POOL_LAYERS) this.bleeds.splice(i, 1);
+    }
+  }
+
+  // Fog test for an effect anchored to a point rather than to a man.
+  private pointSeen(x: number, y: number): boolean {
+    return this.sim.fowDisabled || this.sim.sideSeesPoint(PLAYER_SIDE, x, y);
   }
 
   // Put birds up if this blast landed in or beside woods. The 1-in-2 gate is
@@ -452,7 +793,7 @@ export class Renderer {
 
   // Light or feed a fire. The ignition point never moves once set: a second
   // shell in the same house makes the fire angrier, not relocated.
-  private stoke(key: number, x: number, y: number, vid: number): void {
+  private stoke(key: number, x: number, y: number, vid: number, now: number): void {
     const f = this.fires.get(key);
     if (f) {
       f.tick = this.sim.tick;
@@ -463,7 +804,7 @@ export class Renderer {
       }
       return;
     }
-    this.fires.set(key, { key, x, y, vid, born: this.sim.tick, tick: this.sim.tick, hits: 1, seen: false, seenTick: -1e9 });
+    this.fires.set(key, { key, x, y, vid, born: this.sim.tick, at: now, tick: this.sim.tick, hits: 1, seen: false, seenTick: -1e9 });
     if (this.fires.size <= FIRE_CAP) return;
     let oldest = -1;
     let oldestTick = Infinity;
@@ -503,13 +844,16 @@ export class Renderer {
     // an animated tell on an unpinnable clock is what made art crops
     // unsettleable in the first place (#134, the class #278 tracks).
     this.fxClock = this.flickerOn ? now : 0;
+    this.fxDt = Math.min(0.1, Math.max(0, (now - this.frameNow) / 1000));
+    this.frameNow = now;
     ctx.fillStyle = '#161510'; // darker desaturated earth tone off-map, replacing the flat void
     ctx.fillRect(0, 0, cw, ch); // backdrop stays unshaken so shake never opens a gap at the map edge
     ctx.imageSmoothingEnabled = true;
 
     // Camera shake: world layers only (HUD/picking stay steady — worldToScreen
     // is untouched). Stateless, derived from recent booms' screen proximity plus
-    // a faint tremor from fresh nearby fire. Wall-clock, so it decays under pause.
+    // a faint tremor from fresh nearby fire. On the fx clock like the blasts
+    // that cause it, so a pause holds it where it was.
     const [shx, shy] = this.worldShake(cam, now, cw, ch);
     ctx.save();
     ctx.translate(shx, shy);
@@ -521,8 +865,10 @@ export class Renderer {
     ctx.strokeStyle = 'rgba(18,16,12,0.7)';
     ctx.lineWidth = 2;
     ctx.strokeRect(mx0, my0, mx1 - mx0, my1 - my0);
+    this.spreadPools(now);
     this.decals.draw(ctx, cam, cw, ch);
     this.marks.draw(ctx, cam, cw, ch);
+    this.brass.draw(ctx, cam, cw, ch);
     this.roofs.update(this.sim, cam, dt || 1 / 60);
     this.roofs.drawShadows(ctx, cam, cw, ch);
     this.roofs.drawWalls(ctx, cam, cw, ch);
@@ -587,6 +933,9 @@ export class Renderer {
     for (const v of this.sim.vehicles) if (v.alive && visV(v)) this.drawVehicle(ctx, cam, v, cw, ch);
     for (const e of this.sim.emplacements) if (this.sim.emplacementVisibleTo(PLAYER_SIDE, e)) this.drawEmplacement(ctx, cam, e, selectedSquads, cw, ch);
 
+    // Hanging dust and powder smoke: over the men standing in it, under the
+    // roofs, and well under the sim's smoke screens further down.
+    this.pall.draw(ctx, cam, now, cw, ch);
     this.drawFire(ctx, cam, now, cw, ch);
     this.roofs.drawTops(ctx, cam, cw, ch);
     this.roofs.drawChimneySmoke(ctx, cam, cw, ch);
@@ -597,7 +946,10 @@ export class Renderer {
     // Ambient grade (N7): one source-over lerp toward the hour's tint, the
     // last world-space draw — everything the sun lights sits under it. Sized
     // past the viewport so the shake translate never exposes an ungraded edge.
-    this.gradeWorld(ctx, cw, ch);
+    // This frame's lights: holes in the night grade, and a halo in the hot
+    // batch by day or night.
+    const lights = this.gatherLights(cam, now, cw, ch);
+    this.gradeWorld(ctx, lights, cw, ch);
     // The frame's ONE additive batch, hoisted ABOVE the grade: 'lighter' adds
     // a fixed increment, so the same flash over a graded-dark floor gains
     // contrast for free — night punch nobody has to tune (§3.3). The cost,
@@ -609,6 +961,10 @@ export class Renderer {
     this.drawContacts(ctx, cam, cw, ch);
     this.drawBarrageMarks(ctx, cam, now, cw, ch);
     ctx.restore();
+    // Screen finish: the vignette, the last thing the renderer draws and the
+    // one thing outside the shake — it is the lens, not the world. One blit.
+    // The overlays main.ts draws after this (selection, pings) stay full value.
+    ctx.drawImage(vignette(), 0, 0, cw, ch);
   }
 
   // Ambient world grade (design §3.1/§3.2): source-over, never multiply — a
@@ -618,11 +974,105 @@ export class Renderer {
   // and the canonical hour renders untouched by construction. Drawn INSIDE the
   // worldShake envelope (world layers only); the DOM HUD and everything
   // main.ts draws after renderer.draw() returns stay full-brightness.
-  private gradeWorld(ctx: CanvasRenderingContext2D, cw: number, ch: number): void {
+  //
+  // Night light. The grade is the only thing that makes it night, so a light
+  // is a hole in the grade: where a muzzle flashes, a shell bursts or a house
+  // burns, the tint is cut away and the day-lit art under it shows — the man
+  // firing, the two metres of ground round him, the wall behind the blast.
+  // The grade is painted into a low-resolution canvas, the pools are erased
+  // out of it, and it is scaled up over the world in one blit; the upscale is
+  // what makes the pools soft. Pools are light without direction, so no cast
+  // shadow changes and the one-sun rule holds. With no light in view this is
+  // the single fillRect it always was, which is what a static night scene
+  // (and every night crop of the art sweep) still gets.
+  private gradeWorld(ctx: CanvasRenderingContext2D, n: number, cw: number, ch: number): void {
     const [r, g, b, a] = sun().ambient;
     if (a <= 0) return;
     ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${a})`;
-    ctx.fillRect(-24, -24, cw + 48, ch + 48);
+    if (n === 0) {
+      ctx.fillRect(-GRADE_PAD, -GRADE_PAD, cw + GRADE_PAD * 2, ch + GRADE_PAD * 2);
+      return;
+    }
+    const w = Math.ceil((cw + GRADE_PAD * 2) / LIGHT_DIV);
+    const h = Math.ceil((ch + GRADE_PAD * 2) / LIGHT_DIV);
+    if (!this.gradeCanvas || this.gradeCanvas.width !== w || this.gradeCanvas.height !== h) {
+      this.gradeCanvas = document.createElement('canvas');
+      this.gradeCanvas.width = w;
+      this.gradeCanvas.height = h;
+    }
+    const lg = this.gradeCanvas.getContext('2d')!;
+    lg.globalCompositeOperation = 'copy';
+    lg.globalAlpha = 1;
+    lg.fillStyle = ctx.fillStyle;
+    lg.fillRect(0, 0, w, h);
+    lg.globalCompositeOperation = 'destination-out';
+    const pool = lightPool();
+    const L = this.lights;
+    for (let i = 0; i < n * 4; i += 4) {
+      const lr = L[i + 2] / LIGHT_DIV;
+      lg.globalAlpha = L[i + 3];
+      lg.drawImage(pool, (L[i] + GRADE_PAD) / LIGHT_DIV - lr, (L[i + 1] + GRADE_PAD) / LIGHT_DIV - lr, lr * 2, lr * 2);
+    }
+    ctx.drawImage(this.gradeCanvas, -GRADE_PAD, -GRADE_PAD, w * LIGHT_DIV, h * LIGHT_DIV);
+  }
+
+  // This frame's lights, into `lights` as flat (x, y, radius px, strength)
+  // quads, strongest first when there are more than the cap. Returns how many.
+  // Screen space, culled to the view: a light that cannot reach the screen
+  // costs nothing.
+  private gatherLights(cam: Camera, now: number, cw: number, ch: number): number {
+    const L = this.lights;
+    L.length = 0;
+    const S = cam.scale;
+    const add = (x: number, y: number, rad: number, i: number): void => {
+      // written so NaN fails every test and the light is dropped
+      if (!(i > 0.03) || !(rad > 0) || !(x > -rad && y > -rad && x < cw + rad && y < ch + rad)) return;
+      L.push(x, y, rad, Math.min(1, i) * LIGHT_CUT);
+    };
+    // A muzzle flash: full for the flash, then a short afterglow, so a burst
+    // is a flicker of light on the firer and not a strobe of single frames.
+    for (const t of this.tracers) {
+      const fc = FLASH[flashClass(t.weapon)];
+      let lit = 0;
+      for (let k = 0; k < t.taps; k++) {
+        const age = now - t.at - k * t.gap;
+        if (age < 0) break;
+        lit = Math.max(lit, Math.exp(-age / MUZZLE_GLOW_MS));
+      }
+      if (lit <= 0.03) continue;
+      const g = this.shotGeom(cam, t, cw, ch);
+      add(g.mx, g.my, (2 + fc.r * 4.5) * S, lit * 0.9);
+    }
+    // A blast lights the street for as long as it burns.
+    for (const b of this.booms) {
+      const age = now - b.at;
+      if (age >= b.spec.burn) continue;
+      const [x, y] = cam.worldToScreen(b.x, b.y, cw, ch);
+      add(x, y, (b.spec.flash * 2 + b.spec.ring) * 0.8 * b.k * S, (1 - age / b.spec.burn) ** 0.6);
+    }
+    // A fire lights its block, and breathes.
+    for (const f of this.lit) {
+      const it = this.intensity(f);
+      const [x, y] = cam.worldToScreen(f.x, f.y, cw, ch);
+      const [, , hw, hh, , reach] = this.fireBox(f);
+      const flick = 0.9 + 0.1 * Math.sin(now * 0.011 + f.key);
+      add(x, y, (Math.min(reach, Math.hypot(hw, hh)) + 7 + 8 * it) * S, 0.9 * it * flick);
+    }
+    const n = L.length / 4;
+    if (n <= MAX_LIGHTS) return n;
+    // Over the cap: keep the strongest. Selection, not a sort — there are a
+    // few dozen at most and only the first MAX_LIGHTS slots are read.
+    for (let i = 0; i < MAX_LIGHTS; i++) {
+      let best = i;
+      for (let j = i + 1; j < n; j++) if (L[j * 4 + 3] > L[best * 4 + 3]) best = j;
+      if (best === i) continue;
+      for (let q = 0; q < 4; q++) {
+        const tmp = L[i * 4 + q];
+        L[i * 4 + q] = L[best * 4 + q];
+        L[best * 4 + q] = tmp;
+      }
+    }
+    return MAX_LIGHTS;
   }
 
   // The frame's single additive batch (§3.3), AFTER the grade: shot flashes
@@ -634,8 +1084,18 @@ export class Renderer {
     if (this.tracers.length === 0 && this.booms.length === 0 && this.lit.length === 0) return;
     const tier = fxDetail(cam.scale);
     hotPass(ctx, () => {
+      // Glow: one soft warm halo per light, under everything else in the
+      // batch. Restrained on purpose — it is the air round a flash catching
+      // some of it, not bloom — and a little stronger as the grade comes
+      // down, where there is dark for it to show against. Not on a phone.
+      if (!MOBILE) {
+        const L = this.lights;
+        const a = 0.07 + 0.09 * sun().ambient[3];
+        const n = Math.min(L.length, MAX_LIGHTS * 4); // past the cap the list is unsorted leftovers
+        for (let i = 0; i < n; i += 4) blit(ctx, 'fire', L[i], L[i + 1], L[i + 2] * 0.55, L[i + 3] * a);
+      }
       for (const t of this.tracers) this.drawShotHot(ctx, cam, t, now, cw, ch, tier);
-      for (const b of this.booms) this.drawBoomHot(ctx, cam, b, now, cw, ch);
+      for (const b of this.booms) this.drawBoomHot(ctx, cam, b, now, cw, ch, tier);
       this.drawFiresHot(ctx, cam, now, cw, ch, tier);
     });
   }
@@ -775,8 +1235,10 @@ export class Renderer {
     let trauma = 0;
     for (const b of this.booms) {
       const age = now - b.at;
-      if (age > 350) continue;
-      trauma = Math.max(trauma, (1 - age / 350) * prox(b.x, b.y) * (0.45 + 0.55 * boomScale(b.r)));
+      const hit = b.spec.shake * Math.min(1.3, b.k);
+      const ms = 220 + 260 * hit; // a bigger blast rings longer as well as harder
+      if (age > ms) continue;
+      trauma = Math.max(trauma, (1 - age / ms) * prox(b.x, b.y) * hit);
     }
     let fire = 0;
     for (const t of this.tracers) {
@@ -786,7 +1248,11 @@ export class Renderer {
     }
     trauma = Math.min(1, trauma + Math.min(0.12, fire));
     if (trauma < 0.001) return [0, 0];
-    const mag = Math.pow(trauma, 1.5) * 7; // px; ^1.5 keeps small tremors gentle
+    // px; ^1.5 keeps small tremors gentle. Scaled by how close the camera is:
+    // the same shell is a jolt at squad zoom and a tick with the whole map on
+    // screen, where nine pixels would be the map sliding about. A phone gets
+    // less — the screen is in the hand that is shaking.
+    const mag = Math.pow(trauma, 1.5) * 9 * Math.min(1.3, Math.max(0.3, cam.scale / 14)) * (MOBILE ? 0.6 : 1);
     return [mag * Math.sin(now * 0.09), mag * Math.sin(now * 0.13 + 1.7)];
   }
 
@@ -842,7 +1308,13 @@ export class Renderer {
         // Dividing by n as well was tried and turned a 60 m smoke screen into a
         // pale smudge the sim was blinding two squads through.
         const a = envelope * (0.33 + hash(p.x, p.y, 60 + i) * 0.08) * (1 - u * 0.36);
-        blit(ctx, soot && u < 0.34 ? 'soot' : 'smoke', sx, sy, r * cam.scale, a);
+        // A wreck's column stays black nearly to the top and only then thins
+        // to grey: it is the sootiest thing on the field, and the one mark of
+        // a kill that reads with the whole map on screen. Colour only — what
+        // blocks sight is still the sim's plume, puff for puff.
+        const sootF = soot ? Math.min(1, (1 - u) / 0.2) : 0;
+        blit(ctx, 'soot', sx, sy, r * cam.scale, a * sootF * 1.6);
+        blit(ctx, 'smoke', sx, sy, r * cam.scale, a * (1 - sootF));
       }
     }
   }
@@ -926,12 +1398,30 @@ export class Renderer {
     return f.seen;
   }
 
+  // Where fire `f` can burn and how far it has got: the centre of the burning
+  // patch, its half-extents along and across `rot`, and the reach from that
+  // centre. A hull is alight end to end at once. A house catches where the
+  // shell landed and the fire walks out from there across the footprint, the
+  // faster the more blasts have fed it.
+  private fireBox(f: Fire): [cx: number, cy: number, hw: number, hh: number, rot: number, reach: number] {
+    if (f.vid >= 0) return [f.x, f.y, HULL_FIRE_L, HULL_FIRE_W, this.sim.vehicles[f.vid].facing, HULL_FIRE_L];
+    const b = this.sim.buildings[f.key];
+    const hw = Math.max(0.5, b.w / 2 - 0.5);
+    const hh = Math.max(0.5, b.h / 2 - 0.5);
+    const took = Math.min(1, (this.sim.tick - f.born) / 30 / FIRE_SPREAD_S) * Math.min(1, 0.5 + 0.25 * f.hits);
+    return [b.x + b.w / 2, b.y + b.h / 2, hw, hh, 0, 1.2 + took * Math.hypot(hw, hh) * 2];
+  }
+
   // Burning buildings and vehicle brew-ups. Drawn after the roof tops so a
   // flame sits over the roof it is consuming, and before the smoke screens.
   //
-  // The value pair is the whole trick: every bright lick carries a soot blit
-  // directly above it. Bright-alone on pale Normandy ground reads as a glowing
-  // dot; bright-under-dark reads as fire.
+  // The value pair is the whole trick: every bright lick sheds a soot blit
+  // downwind of itself. Bright-alone on pale Normandy ground reads as a
+  // glowing dot; bright-against-dark reads as fire.
+  //
+  // Strict plan view: no flame or smoke here climbs the screen. A flame's
+  // height is its lean down the wind, a plume's is its drift along the same
+  // axis and the shadow it drops down-sun.
   private drawFires(ctx: CanvasRenderingContext2D, cam: Camera, now: number, cw: number, ch: number): void {
     for (const v of this.sim.vehicles) {
       if (!v.burning) continue;
@@ -941,7 +1431,7 @@ export class Renderer {
         f.tick = this.sim.tick; // sim still says it burns — never let it time out
         f.x = v.x;
         f.y = v.y;
-      } else this.stoke(key, v.x, v.y, v.id);
+      } else this.stoke(key, v.x, v.y, v.id, now);
     }
     // Cleared before the early-outs, not after: drawHot() reads lit/licks
     // once this pass has returned, and a stale lick from the frame its fire
@@ -950,64 +1440,130 @@ export class Renderer {
     this.licks.length = 0;
     if (this.fires.size === 0) return;
 
-    const S = cam.scale;
-    const tier = fxDetail(S);
-    const pad = 9 * S;
+    // The blast floor, so a burning house is still a mark with the whole map
+    // on screen (fx.ts blastScale).
+    const S = blastScale(cam.scale);
+    const tier = fxDetail(cam.scale);
+    const lite = (MOBILE ? 0.5 : 1) * (tier === 0 ? 0.5 : 1);
     for (const [key, f] of this.fires) {
       if (f.vid < 0 && (this.sim.tick - f.tick) / 30 >= FIRE_LIFE_S) {
         this.fires.delete(key);
         continue;
       }
+      const [cx, cy, hw, hh, rot, reach] = this.fireBox(f);
+      const pad = (Math.hypot(hw, hh) + PLUME_RUN + 4) * S;
       const [x, y] = cam.worldToScreen(f.x, f.y, cw, ch);
       if (x < -pad || y < -pad || x > cw + pad || y > ch + pad) continue;
       if (!this.fireSeen(f)) continue;
       this.lit.push(f);
 
       const it = this.intensity(f);
-      const b = f.vid < 0 ? this.sim.buildings[key] : undefined;
+      const brew = f.vid >= 0;
+      const span = Math.min(reach, Math.hypot(hw, hh)); // radius of what is alight, m
 
-      // Plume first: it rises behind its own flames. A vehicle's column starts
-      // near-black — a brewed-up tank is the sootiest thing on a WW2 field, and
-      // that column is free readability below the sprite LOD threshold.
-      for (let i = 0; i < 6; i++) {
-        const ph = (((now * 0.0003125 + i / 6 + hash(key + 3000, i, 230)) % 1) + 1) % 1;
-        const lean = WIND.speed * ph * 3.4 * S;
-        const px = x + WIND.dx * lean;
-        const py = y - ph * 6.5 * S + WIND.dy * lean;
-        const pr = (1.1 + ph * 2.3) * S;
-        const pa = 0.68 * (1 - ph * 0.7) * it;
-        // Burning fuel and rubber never greys out the way burning timber does:
-        // a tank's column stays sooty to the top, it just thins.
-        const sootF = f.vid >= 0 ? Math.max(0.4, 1 - ph / 0.8) : Math.max(0, 1 - ph / 0.45);
+      // Plume first: it leaves behind its own flames. A vehicle's is black to
+      // the end — burning fuel and rubber never grey the way burning timber
+      // does — and it is only the root of the column: the sim owns the rest
+      // (drawSmoke), because that one blocks sight.
+      const run = (brew ? 0.6 : 1) * PLUME_RUN * (0.5 + 0.5 * it);
+      const puffs = Math.max(3, Math.round(6 * lite));
+      blit(ctx, 'soot', x + (WIND.dx * run * 0.5 + SUN.dx * 1.6) * S, y + (WIND.dy * run * 0.5 + SUN.dy * 1.6) * S, (span * 0.6 + 1.6) * S, 0.14 * it * sun().alphaMul); // its shadow, down-sun
+      for (let i = 0; i < puffs; i++) {
+        const ph = mod(now * 0.0003125 + i / puffs + hash(key + 3000, i, 230), 1);
+        const px = x + WIND.dx * run * ph * S;
+        const py = y + WIND.dy * run * ph * S;
+        const pr = (span * 0.45 + 0.8 + ph * 2.4) * S;
+        const pa = (brew ? 0.85 : 0.7) * (1 - ph * 0.75) * it;
+        const sootF = brew ? 1 : Math.max(0.15, 1 - ph / 0.6);
         blit(ctx, 'soot', px, py, pr, pa * sootF);
         blit(ctx, 'smoke', px, py, pr, pa * (1 - sootF));
       }
-      // Charred base: the fire's own shadow, so the licks sit in something
-      // burnt instead of floating on clean floor.
-      blit(ctx, 'soot', x, y, (1.4 + 0.9 * it) * S, 0.26 * it);
+      // Charred base and the bed of the fire: what the flames stand in, so
+      // the gaps between them are burning too and not clean floor.
+      blit(ctx, 'soot', x, y, (span * 0.9 + 1) * S, 0.34 * it);
+      for (let i = 0; i < 3; i++) {
+        const a = hash(key + 500, i, 214) * Math.PI * 2;
+        const d = span * 0.4 * hash(key + 500, i, 215) * S;
+        blit(ctx, 'fire', x + Math.cos(a) * d, y + Math.sin(a) * d, (span * 0.6 + 0.7) * S, 0.42 * it);
+      }
 
-      // Licks spread as the fire takes hold: one shell smoulders in a corner, a
-      // fully involved house burns end to end (still clamped to its footprint).
-      const spread = 0.9 + 1.5 * it;
-      const n = 2 + Math.round(2 * it * tier);
+      // Licks, over everything the fire has reached. One shell smoulders in a
+      // corner; a fully involved house, or a hull, burns end to end.
+      const cs = Math.cos(rot);
+      const sn = Math.sin(rot);
+      const windAng = Math.atan2(WIND.dy, WIND.dx);
+      const n = Math.max(3, Math.round(Math.min(LICK_CAP, 4 + span * span * 0.6) * it * lite));
       for (let i = 0; i < n; i++) {
         const hs = hash(key + 1000, i, 212);
-        const size = 0.7 + hash(key + 1000, i, 213) * 0.6; // no two licks the same height
-        let lx = f.x + (hash(key + 1000, i, 210) - 0.5) * spread * 2;
-        let ly = f.y + (hash(key + 1000, i, 211) - 0.5) * spread * 2;
-        if (b) {
-          lx = Math.max(b.x + 0.6, Math.min(b.x + b.w - 0.6, lx));
-          ly = Math.max(b.y + 0.6, Math.min(b.y + b.h - 0.6, ly));
+        let lx: number;
+        let ly: number;
+        if (brew) {
+          const u = (hash(key + 1000, i, 210) - 0.5) * 2 * hw;
+          const w = (hash(key + 1000, i, 211) - 0.5) * 2 * hh;
+          lx = cx + u * cs - w * sn;
+          ly = cy + u * sn + w * cs;
+        } else {
+          // Uniform over the reached disc, held inside the footprint, and
+          // dropped if that still lands in a yard: a multi-part building's
+          // bounding box is not all roof.
+          const a = hash(key + 1000, i, 210) * Math.PI * 2;
+          const d = Math.sqrt(hash(key + 1000, i, 211)) * reach;
+          lx = Math.max(cx - hw, Math.min(cx + hw, f.x + Math.cos(a) * d));
+          ly = Math.max(cy - hh, Math.min(cy + hh, f.y + Math.sin(a) * d));
+          if (this.sim.map.buildingIdAt(Math.floor(lx), Math.floor(ly)) !== key) continue;
         }
-        const [sx, sy0] = cam.worldToScreen(lx, ly, cw, ch);
+        const [sx, sy] = cam.worldToScreen(lx, ly, cw, ch);
         const flick = 0.5 + 0.5 * Math.sin(now * 0.0075 * (7 + hs * 4) + hs * 6.28);
-        const r = (0.5 + 0.34 * flick) * size * it * S;
-        const sy = sy0 - (0.35 + 0.5 * flick) * S;
-        blit(ctx, 'fire', sx, sy, r * 2.2, 0.2); // warm halo — merges neighbouring licks into one body of flame
-        blit(ctx, 'fire', sx, sy, r, 0.9);
-        blit(ctx, 'soot', sx, sy - r * 1.2, r * 1.7, 0.34);
-        this.licks.push(sx, sy, r * 0.45, 0.5 + 0.3 * flick); // hot cores, drawn in the frame's hot batch (drawHot)
+        const size = (brew ? 1 : 0.8) + hash(key + 1000, i, 213) * 0.8; // no two flames the same
+        const r = (0.5 + 0.3 * flick) * size * (0.6 + 0.4 * it) * S;
+        // A flame seen from above is a tongue laid down the wind: that lean is
+        // the only height it has here. A round blit per flame was a row of
+        // glowing dots. Each tongue combs a little off the wind so they do
+        // not line up, and stretches as it flickers.
+        const ang = windAng + (hs - 0.5) * 0.9;
+        const len = r * (1.5 + 1.1 * flick);
+        const ax = Math.cos(ang);
+        const ay = Math.sin(ang);
+        ctx.save();
+        ctx.translate(sx, sy);
+        ctx.rotate(ang);
+        ctx.scale(len / r, 0.85);
+        blit(ctx, 'fire', r * 0.55, 0, r * 1.3, 0.24); // warm halo — merges neighbouring tongues into one body of flame
+        blit(ctx, 'fire', r * 0.5, 0, r, 0.94);
+        ctx.restore();
+        if (i & 1) blit(ctx, 'soot', sx + ax * len * 1.8, sy + ay * len * 1.8, r * 1.3, 0.34); // the smoke it sheds
+        // hot cores, drawn in the frame's hot batch (drawHot): one at the
+        // root, a smaller one up the tongue
+        this.licks.push(sx + ax * len * 0.25, sy + ay * len * 0.25, r * 0.42, 0.5 + 0.3 * flick);
+        this.licks.push(sx + ax * len * 0.8, sy + ay * len * 0.8, r * 0.28, 0.3 + 0.3 * flick);
       }
+
+      // Cook-off: ammunition going up in the hull, one round or a rack at a
+      // time, for the first half minute. The smoke of each pop; its flash and
+      // sparks are in the hot batch.
+      if (brew) {
+        this.eachPop(f, now, (t, k) => {
+          const a = hash(k, 0, 241) * Math.PI * 2;
+          const d = (0.6 + t * 2.6) * S;
+          blit(ctx, 'soot', x + Math.cos(a) * d, y + Math.sin(a) * d, (0.7 + t * 1.5) * S, 0.6 * (1 - t));
+        });
+      }
+    }
+  }
+
+  // The cook-off pops of a burning hull that are live at `now`, as (progress
+  // 0..1, hash key). Stateless: time is cut into slots on the fx clock since
+  // ignition and each slot rolls once for a pop, with odds that run down over
+  // COOKOFF_S. Pausing freezes them mid-air like everything else on that clock.
+  private eachPop(f: Fire, now: number, draw: (t: number, k: number) => void): void {
+    const age = now - f.at;
+    if (!(age >= 0) || age > COOKOFF_S * 1000 + POP_MS) return;
+    const slot = Math.floor(age / POP_SLOT_MS);
+    for (let j = Math.max(0, slot - 1); j <= slot; j++) {
+      const k = f.key * 131 + j;
+      if (hash(k, 0, 240) >= 0.8 * (1 - (j * POP_SLOT_MS) / (COOKOFF_S * 1000))) continue;
+      const t = (age - j * POP_SLOT_MS - hash(k, 0, 242) * (POP_SLOT_MS - POP_MS)) / POP_MS;
+      if (t >= 0 && t < 1) draw(t, k);
     }
   }
 
@@ -1015,25 +1571,60 @@ export class Renderer {
   // never call it with a source-over ctx.
   private drawFiresHot(ctx: CanvasRenderingContext2D, cam: Camera, now: number, cw: number, ch: number, tier: 0 | 1 | 2): void {
     if (this.lit.length === 0) return;
-    const S = cam.scale;
+    const S = blastScale(cam.scale);
+    const F = fxScale(cam.scale);
     for (let i = 0; i < this.licks.length; i += 4) blit(ctx, 'flash', this.licks[i], this.licks[i + 1], this.licks[i + 2], this.licks[i + 3]);
     for (const f of this.lit) {
       const it = this.intensity(f);
       const [x, y] = cam.worldToScreen(f.x, f.y, cw, ch);
+      const [, , hw, hh, , reach] = this.fireBox(f);
+      const span = Math.min(reach, Math.hypot(hw, hh));
       // Warm ground pool: a light POOL, not a light DIRECTION — no cast
-      // shadow anywhere changes, so the one-sun rule still holds.
-      blit(ctx, 'fire', x, y, 3.2 * it * S, FIRE_POOL_ALPHA);
+      // shadow anywhere changes, so the one-sun rule still holds. It widens
+      // and warms as the grade comes down: by day a fire lights a few metres,
+      // at night it is what the street is seen by (gradeWorld cuts the hole,
+      // this puts the firelight colour in it).
+      const dark = sun().ambient[3];
+      blit(ctx, 'fire', x, y, (span + 2.5 + 9 * dark) * it * S, FIRE_POOL_ALPHA * (1 + dark));
+      if (f.vid >= 0) {
+        this.eachPop(f, now, (t, k) => {
+          // A round or a rack going: a hard white flash, a jet of flame out of
+          // whichever hatch gave way, and sparks thrown clear of the hull.
+          const jet = hash(k, 0, 246) * Math.PI * 2;
+          if (t < 0.3) {
+            const fa = 1 - t / 0.3;
+            blit(ctx, 'flash', x, y, (2 + t * 8) * S, fa);
+            blit(ctx, 'flash', x, y, 1.1 * S, fa ** 0.4);
+          }
+          if (t < 0.6) {
+            ctx.save();
+            ctx.translate(x, y);
+            ctx.rotate(jet);
+            ctx.scale(1, 0.3);
+            blit(ctx, 'fire', (1.5 + t * 3) * S, 0, (2 + t * 3.5) * S, (1 - t / 0.6) * 0.9);
+            ctx.restore();
+          }
+          if (tier < 1) return;
+          const secs = (t * POP_MS) / 1000;
+          for (let i = 0; i < (MOBILE ? 5 : 10); i++) {
+            const [dist, z] = ballistic(secs, 7 + hash(k, i, 243) * 12, 3 + hash(k, i, 244) * 4);
+            if (z <= 0 && secs > 0.05) continue;
+            const a = jet + (hash(k, i, 245) - 0.5) * 3.2; // most of them follow the jet
+            blit(ctx, 'spark', x + Math.cos(a) * dist * S, y + Math.sin(a) * dist * S, 0.14 * F, (1 - t) ** 0.6);
+          }
+        });
+      }
       if (tier < 1) continue;
-      // Embers: a fixed pool per fire on staggered wrapping phases, riding
-      // the one wind up and downwind. They die — nothing here accumulates.
-      const ne = Math.max(2, Math.round(8 * it));
+      // Embers: a fixed pool per fire on staggered wrapping phases, carried
+      // off down the one wind. They die — nothing here accumulates.
+      const ne = Math.max(2, Math.round(8 * it * (MOBILE ? 0.5 : 1)));
       for (let i = 0; i < ne; i++) {
         const hs = hash(f.key + 2000, i, 220);
         const life = 1.6 + hs * 1.2;
         const t = ((now * 0.001 + i * 0.37) % life) / life;
-        const ex = x + (WIND.dx * WIND.speed * 1.9 * t + (hash(f.key + 2000, i, 221) - 0.5) * 1.6) * S;
-        const ey = y + (WIND.dy * WIND.speed * 1.9 * t + (hash(f.key + 2000, i, 222) - 0.5) * 1.2) * S - t * 2.6 * S;
-        blit(ctx, 'spark', ex, ey, Math.max(0.6, (0.05 - 0.03 * t) * S), Math.pow(1 - t, 1.6) * 0.8 * it);
+        const ex = x + (WIND.dx * WIND.speed * 2.6 * t + (hash(f.key + 2000, i, 221) - 0.5) * span * 1.4) * S;
+        const ey = y + (WIND.dy * WIND.speed * 2.6 * t + (hash(f.key + 2000, i, 222) - 0.5) * span * 1.4) * S;
+        blit(ctx, 'spark', ex, ey, Math.max(0.8, (0.06 - 0.03 * t) * F), Math.pow(1 - t, 1.6) * 0.8 * it);
       }
     }
   }
@@ -1110,12 +1701,17 @@ export class Renderer {
   // Odometer bookkeeping (U7): distance travelled since the last frame, with
   // the same >2 m teleport guard drawSoldier uses, plus the rut stamps and
   // dust puffs that fall out of it. Returns the track phase to bake with.
-  private vehicleMotion(v: Vehicle, band: number, scale: number): number {
+  private vstate(v: Vehicle): VState {
     let st = this.vrs.get(v.id);
     if (!st) {
-      st = { px: v.x, py: v.y, dist: 0, dust: [], di: 0, puffAt: 0, markAt: 0 };
+      st = { px: v.x, py: v.y, dist: 0, dust: [], di: 0, puffAt: 0, markAt: 0, turret: 0, firedAt: -1e9, fux: 1, fuy: 0 };
       this.vrs.set(v.id, st);
     }
+    return st;
+  }
+
+  private vehicleMotion(v: Vehicle, band: number, scale: number): number {
+    const st = this.vstate(v);
     const step = Math.hypot(v.x - st.px, v.y - st.py);
     st.px = v.x;
     st.py = v.y;
@@ -1137,6 +1733,8 @@ export class Renderer {
       if (st.dust.length < DUST_RING) st.dust.push(p);
       else st.dust[st.di % DUST_RING] = p;
       st.di++;
+      // ...and some of it stays up: a column on the move raises a haze.
+      if (st.di % 4 === 0) this.pall.feed(p.x, p.y, 0.08, this.frameNow, this.sim.tick);
     }
     return tier(band) >= 2 ? Math.floor(st.dist / TRACK_PITCH) % 3 : 0;
   }
@@ -1148,7 +1746,27 @@ export class Renderer {
       const age = (st.dist - p.at) / DUST_LIFE;
       if (age >= 1) continue;
       const [sx, sy] = cam.worldToScreen(p.x, p.y, cw, ch);
-      blit(ctx, 'dustTan', sx, sy, (0.6 + age * 1.1) * cam.scale, 0.26 * (1 - age));
+      blit(ctx, 'dustTan', sx, sy, (0.7 + age * 1.7) * cam.scale, 0.5 * (1 - age) ** 0.8);
+    }
+    // Idle exhaust: the engine is running whether the hull moves or not. On
+    // the sim tick, and a puff exists only from the tick it was coughed out —
+    // so before the battle has run a tick there is none, and a staged scene
+    // that never steps shows a cold engine.
+    if (cam.scale < 10) return;
+    const tick = this.sim.tick;
+    const cs = Math.cos(v.facing);
+    const sn = Math.sin(v.facing);
+    const slot = Math.floor(tick / EXHAUST_TICKS);
+    for (let j = 0; j < 3; j++) {
+      const born = (slot - j) * EXHAUST_TICKS;
+      if (born < 0) continue;
+      const ph = (tick - born) / (EXHAUST_TICKS * 3);
+      const back = VEHICLE_SPAN * 0.3 + ph * 1.3;
+      const side = (hash(v.id, slot - j, 250) - 0.5) * 0.5 + 0.5;
+      const ex = v.x - back * cs - side * sn + WIND.dx * ph * 1.4;
+      const ey = v.y - back * sn + side * cs + WIND.dy * ph * 1.4;
+      const [sx, sy] = cam.worldToScreen(ex, ey, cw, ch);
+      blit(ctx, 'soot', sx, sy, (0.25 + ph * 0.7) * cam.scale, 0.46 * Math.sin(ph * Math.PI));
     }
   }
 
@@ -1163,11 +1781,35 @@ export class Renderer {
     const band = vehicleBandFor(cam.scale);
     const tphase = this.vehicleMotion(v, band, cam.scale);
     const occ = v.alive ? occBucket(v.kind, this.aboard(v)) : 0;
-    const spr = getVehicleSprite(v.kind, v.side, v.alive ? 'ok' : 'dead', band, tphase, occ);
+    const st = this.vstate(v);
+    const tc = v.alive && tier(band) >= 1 ? turretCenter(v.kind) : null;
+    // Traverse: the turret comes round onto whatever the hull is engaging and
+    // goes back to the centreline when there is nothing. On the fx clock.
+    if (tc) {
+      const tgt = v.targetVehicleId >= 0 ? this.sim.vehicles[v.targetVehicleId] : v.targetSoldierId >= 0 ? this.sim.soldiers[v.targetSoldierId] : undefined;
+      const want = tgt ? wrapAngle(Math.atan2(tgt.y - v.y, tgt.x - v.x) - v.facing) : 0;
+      const diff = wrapAngle(want - st.turret);
+      st.turret += Math.sign(diff) * Math.min(Math.abs(diff), TURRET_SLEW * this.fxDt);
+    } else st.turret = 0;
+    // Recoil: the gun runs back in its cradle and the hull rocks away from
+    // the shot, then both settle.
+    const ra = this.frameNow - st.firedAt;
+    const recoil = v.alive && ra >= 0 && ra < RECOIL_MS ? Math.exp(-ra / 80) : 0;
+    const rock = recoil > 0 ? 0.11 * Math.exp(-ra / 130) * Math.cos(ra / 60) * cam.scale : 0;
     ctx.save();
-    ctx.translate(x, y);
+    ctx.translate(x - st.fux * rock, y - st.fuy * rock);
     ctx.rotate(v.facing);
-    ctx.drawImage(spr, -pad / 2, -pad / 2, pad, pad);
+    if (tc && (Math.abs(st.turret) > 0.004 || recoil > 0.01)) {
+      // Two sprites only while something is off the centreline or moving. A
+      // tank at rest draws the one baked sprite it always has.
+      ctx.drawImage(getVehicleSprite(v.kind, v.side, 'ok', band, tphase, occ, 'hull'), -pad / 2, -pad / 2, pad, pad);
+      ctx.translate(tc[0] * cam.scale, tc[1] * cam.scale);
+      ctx.rotate(st.turret);
+      ctx.translate(-(tc[0] + 0.22 * recoil) * cam.scale, -tc[1] * cam.scale);
+      ctx.drawImage(getVehicleSprite(v.kind, v.side, 'ok', band, 0, 0, 'turret'), -pad / 2, -pad / 2, pad, pad);
+    } else {
+      ctx.drawImage(getVehicleSprite(v.kind, v.side, v.alive ? 'ok' : 'dead', band, tphase, occ), -pad / 2, -pad / 2, pad, pad);
+    }
     ctx.restore();
     if (v.alive && v.id === this.selectedVehicle) {
       ctx.strokeStyle = '#ffe9a0';
@@ -1258,7 +1900,34 @@ export class Renderer {
   private state(s: Soldier): RState {
     let st = this.rs.get(s.id);
     if (!st) {
-      st = { facing: s.side === 'blue' ? 0 : Math.PI, phase: 0, px: s.x, py: s.y, smx: s.x, smy: s.y, wasAlive: true, pose: 'idle', frame: 0, wx: s.x, wy: s.y, dfacing: s.side === 'blue' ? 0 : Math.PI };
+      st = {
+        facing: s.side === 'blue' ? 0 : Math.PI,
+        phase: 0,
+        px: s.x,
+        py: s.y,
+        smx: s.x,
+        smy: s.y,
+        wasAlive: true,
+        pose: 'idle',
+        frame: 0,
+        wx: s.x,
+        wy: s.y,
+        dfacing: s.side === 'blue' ? 0 : Math.PI,
+        kickAt: -1e9,
+        kickTaps: 1,
+        kickGap: 0,
+        kux: 0,
+        kuy: 0,
+        hitAt: -1e9,
+        hux: 0,
+        huy: 0,
+        fellAt: -1e9,
+        fdx: 0,
+        fdy: 0,
+        fall: 0,
+        restX: 0,
+        restY: 0,
+      };
       this.rs.set(s.id, st);
     }
     return st;
@@ -1279,11 +1948,41 @@ export class Renderer {
         wy -= Math.sin(rst.facing) * 1.0;
       }
     }
+    const st = this.state(s);
+    if (!carried) {
+      // Back on his feet: the slide belonged to the fall.
+      if (s.alive && !s.downed && st.fall !== 0) {
+        st.fall = 0;
+        st.restX = 0;
+        st.restY = 0;
+      }
+      const now = this.frameNow;
+      const slid = 1 - (1 - Math.min(1, Math.max(0, (now - st.fellAt) / FALL_MS))) ** 3;
+      wx += st.restX + st.fdx * st.fall * slid;
+      wy += st.restY + st.fdy * st.fall * slid;
+      if (s.alive) {
+        // A few pixels, so they are sized by the legibility floor like the
+        // flash that causes them: at true scale a 10 cm recoil is one pixel.
+        const px = fxScale(cam.scale) / cam.scale;
+        const ka = now - st.kickAt;
+        if (ka >= 0 && ka < (st.kickTaps - 1) * st.kickGap + KICK_MS) {
+          const tap = st.kickGap > 0 ? Math.min(st.kickTaps - 1, Math.floor(ka / st.kickGap)) : 0;
+          const k = 0.11 * Math.exp(-(ka - tap * st.kickGap) / 55) * px;
+          wx -= st.kux * k;
+          wy -= st.kuy * k;
+        }
+        const ha = now - st.hitAt;
+        if (ha >= 0 && ha < JERK_MS) {
+          const k = 0.2 * Math.exp(-ha / 70) * px;
+          wx += st.hux * k;
+          wy += st.huy * k;
+        }
+      }
+    }
     const [x, y] = cam.worldToScreen(wx, wy, cw, ch);
     const pad = SPRITE_SPAN * cam.scale;
     if (x < -pad || y < -pad || x > cw + pad || y > ch + pad) return;
 
-    const st = this.state(s);
     const dx = s.x - st.px;
     const dy = s.y - st.py;
     // >2m in one frame is a sim teleport (vehicle bailout), not movement —
@@ -1359,17 +2058,19 @@ export class Renderer {
       st.smy = wy;
     }
 
-    // permanent blood pool, stamped once into decals the first frame death is observed
+    // The pool under a dead man, started the first frame his death is seen. It
+    // spreads over three seconds (spreadPools) and it starts where he comes to
+    // rest, not where he was hit: the slide above ends on it.
     if (!s.alive && st.wasAlive) {
       st.wasAlive = false;
       const dbl = Math.max(s.bloodLoss, s.wounds.length ? 0.35 : 0.2);
-      this.decals.pool(wx, wy, 0.5 + Math.min(1, dbl) * 0.4);
+      this.bleeds.push({ x: s.x + st.restX + st.fdx * st.fall, y: s.y + st.restY + st.fdy * st.fall, r: 0.55 + Math.min(1, dbl) * 0.45, at: this.frameNow, n: 0, k: s.id });
     }
 
     // dynamic blood pool under the immobile wounded, still alive
     if (s.alive && s.downed && s.bloodLoss > 0.02) {
       const r = (0.25 + Math.min(1, s.bloodLoss) * 0.5) * cam.scale;
-      ctx.fillStyle = 'rgba(92,15,12,0.5)';
+      ctx.fillStyle = 'rgba(104,16,12,0.6)';
       ctx.beginPath();
       ctx.ellipse(x + cam.scale * 0.1, y + cam.scale * 0.08, r, r * 0.8, st.facing, 0, Math.PI * 2);
       ctx.fill();
@@ -1587,10 +2288,12 @@ export class Renderer {
     }
 
     // entries must survive past FADE_MS so the dust (which starts at TRAVEL_MS) can finish
-    this.tracers = this.tracers.filter((t) => now - t.at < TRAVEL_MS + IMPACT_MS);
+    this.tracers = this.tracers.filter((t) => now - t.at < t.life);
     for (const t of this.tracers) this.drawShotCool(ctx, cam, t, now, cw, ch);
+    this.drawGunSmoke(ctx, cam, now, cw, ch);
+    this.drawHits(ctx, cam, now, cw, ch);
 
-    this.booms = this.booms.filter((b) => now - b.at < BOOM_MS);
+    this.booms = this.booms.filter((b) => now - b.at < b.spec.hang);
     for (const b of this.booms) this.drawBoom(ctx, cam, b, now, cw, ch, tier);
 
     this.breaches = this.breaches.filter((b) => now - b.at < BREACH_MS);
@@ -1613,84 +2316,134 @@ export class Renderer {
     const d = Math.hypot(x1 - x0, y1 - y0) || 1;
     const ux = (x1 - x0) / d;
     const uy = (y1 - y0) / d;
-    return { x1, y1, ux, uy, mx: x0 + ux * cam.scale * 0.9, my: y0 + uy * cam.scale * 0.9, hx: Math.round(t.tx * 100), hy: Math.round(t.ty * 100) };
+    const reach = muzzleReach(t.weapon) * cam.scale;
+    return { x1, y1, ux, uy, mx: x0 + ux * reach, my: y0 + uy * reach, hx: Math.round(t.tx * 100), hy: Math.round(t.ty * 100) };
   }
 
   private onScreen(x: number, y: number, cw: number, ch: number, pad: number): boolean {
     return x >= -pad && y >= -pad && x <= cw + pad && y <= ch + pad;
   }
 
-  // Source-over half of a shot: the faint thread every round leaves, the
-  // weapon's smoke/dust signature, impact dust and the kill ring.
+  // Tap `i` of a burst: the same muzzle, a strike strayed off the first
+  // round's by the weapon's cone, and its own hash stream so no two flashes of
+  // a burst are the same shape. Tap 0 is the event's own geometry — the round
+  // the sim resolved.
+  private tapGeom(g: ShotGeom, i: number, cone: number): ShotGeom {
+    if (i === 0) return g;
+    const hx = g.hx + i * 7919;
+    const da = (hash(hx, g.hy, 500) - 0.5) * 2 * cone;
+    const len = Math.hypot(g.x1 - g.mx, g.y1 - g.my) * (1 + (hash(hx, g.hy, 501) - 0.5) * 0.08);
+    const cs = Math.cos(da);
+    const sn = Math.sin(da);
+    const ux = g.ux * cs - g.uy * sn;
+    const uy = g.ux * sn + g.uy * cs;
+    return { x1: g.mx + ux * len, y1: g.my + uy * len, ux, uy, mx: g.mx, my: g.my, hx, hy: g.hy };
+  }
+
+  // Source-over half of a shot, once per tap of its burst: the faint thread
+  // every round leaves, the weapon's smoke/dust signature, impact dust and the
+  // kill ring.
   private drawShotCool(ctx: CanvasRenderingContext2D, cam: Camera, t: Tracer, now: number, cw: number, ch: number): void {
-    const g = this.shotGeom(cam, t, cw, ch);
-    const pad = 6 * cam.scale;
-    const muzzleOn = this.onScreen(g.mx, g.my, cw, ch, pad);
-    const impactOn = this.onScreen(g.x1, g.y1, cw, ch, pad);
+    const g0 = this.shotGeom(cam, t, cw, ch);
+    // Everything drawn ROUND the muzzle and the strike is sized by F, the
+    // floored scale (fx.ts fxScale). The two points themselves are not.
+    const F = fxScale(cam.scale);
+    const pad = 6 * F;
+    const muzzleOn = this.onScreen(g0.mx, g0.my, cw, ch, pad);
+    const impactOn = this.onScreen(g0.x1, g0.y1, cw, ch, pad);
     if (!muzzleOn && !impactOn) return;
-    const age = now - t.at;
     const fc = FLASH[flashClass(t.weapon)];
 
-    if (age < FADE_MS) {
-      const a = 1 - age / FADE_MS;
-      ctx.strokeStyle = `rgba(${fc.tracerCol},${(t.hit ? 0.18 : 0.12) * a})`;
-      ctx.lineWidth = fc.tracerW;
-      ctx.beginPath();
-      ctx.moveTo(g.mx, g.my);
-      ctx.lineTo(g.x1, g.y1);
-      ctx.stroke();
-    }
+    for (let i = 0; i < t.taps; i++) {
+      const age = now - t.at - i * t.gap;
+      if (age < 0) break; // this round, and every one behind it, has not left yet
+      if (age >= SHOT_MS) continue;
+      const g = this.tapGeom(g0, i, fc.cone);
 
-    // Rocket back-blast: the cone of smoke out the rear tube. The most
-    // characteristic WW2 silhouette the effects layer was missing.
-    if (muzzleOn && fc.extra === 'backblast' && age < 400) {
-      const bt = age / 400;
-      const reach = 0.6 + bt * 2.4;
-      for (let i = 0; i < 6; i++) {
-        const f = (i + 0.5) / 6; // position along the cone — puffs widen with distance
-        const along = f * reach;
-        const lat = (hash(g.hx, g.hy, 30 + i) - 0.5) * 1.6 * f * reach;
-        const px = g.mx + (-g.ux * along - g.uy * lat) * cam.scale;
-        const py = g.my + (-g.uy * along + g.ux * lat) * cam.scale;
-        const r = (0.3 + f * 0.7 + bt * 0.5) * cam.scale;
-        blit(ctx, 'smoke', px, py, r, (1 - bt) * 0.42 * (1 - f * 0.35));
-        blit(ctx, 'soot', px, py, r * 0.75, (1 - bt) * 0.32 * Math.max(0, 1 - bt / 0.4));
+      // One thread per burst, down the round the sim resolved.
+      if (i === 0 && age < FADE_MS) {
+        const a = 1 - age / FADE_MS;
+        ctx.strokeStyle = `rgba(${fc.tracerCol},${(t.hit ? 0.18 : 0.12) * a})`;
+        ctx.lineWidth = fc.tracerW;
+        ctx.beginPath();
+        ctx.moveTo(g.mx, g.my);
+        ctx.lineTo(g.x1, g.y1);
+        ctx.stroke();
+      }
+
+      // Powder smoke. A muzzle flash is three frames long; this is the part
+      // of a shot that is still on screen a third of a second later, which is
+      // what lets a firing line read as a firing line. Pushed downrange by the
+      // blast and then carried on the wind. Two offset puffs for the first
+      // round, because one is a disc at this size and two are a wisp; the rest
+      // of a burst, and a phone, get the one. Rockets and guns have their own
+      // signatures below.
+      if (muzzleOn && fc.extra === undefined) {
+        const st = age / SHOT_MS;
+        const drift = st * 0.5;
+        const k = Math.sqrt(fc.r / 0.42) * F;
+        for (let j = 0; j < (MOBILE || i > 0 ? 1 : 2); j++) {
+          const along = 0.3 + j * 0.45 + st * (0.25 + j * 0.3);
+          const lat = (hash(g.hx, g.hy, 40 + j) - 0.5) * 0.35;
+          blit(ctx, 'smoke', g.mx + (g.ux * along - g.uy * lat + WIND.dx * drift) * F, g.my + (g.uy * along + g.ux * lat + WIND.dy * drift) * F, (0.26 - j * 0.07 + st * 0.42) * k, (0.36 - j * 0.08) * (1 - st));
+        }
+      }
+
+      // Rocket back-blast: the cone of smoke out the rear tube. The most
+      // characteristic WW2 silhouette the effects layer was missing.
+      if (muzzleOn && fc.extra === 'backblast' && age < 400) {
+        const bt = age / 400;
+        const reach = 0.6 + bt * 2.4;
+        for (let j = 0; j < 6; j++) {
+          const f = (j + 0.5) / 6; // position along the cone — puffs widen with distance
+          const along = f * reach;
+          const lat = (hash(g.hx, g.hy, 30 + j) - 0.5) * 1.6 * f * reach;
+          const px = g.mx + (-g.ux * along - g.uy * lat) * F;
+          const py = g.my + (-g.uy * along + g.ux * lat) * F;
+          const r = (0.3 + f * 0.7 + bt * 0.5) * F;
+          blit(ctx, 'smoke', px, py, r, (1 - bt) * 0.42 * (1 - f * 0.35));
+          blit(ctx, 'soot', px, py, r * 0.75, (1 - bt) * 0.32 * Math.max(0, 1 - bt / 0.4));
+        }
+      }
+
+      // Gun muzzle-blast wash: the ground dust that gives away a gun position.
+      if (muzzleOn && fc.extra === 'wash' && age < 700) {
+        const wt = age / 700;
+        const ahead = Math.atan2(g.uy, g.ux);
+        for (let j = 0; j < 3; j++) {
+          const ca = ahead + (hash(g.hx, g.hy, 50 + j) - 0.5) * 0.7;
+          const dist = (1.5 + wt * 2.5 + hash(g.hx, g.hy, 60 + j) * 0.8) * F;
+          blit(ctx, 'dustTan', g.mx + Math.cos(ca) * dist, g.my + Math.sin(ca) * dist, (0.8 + wt * 1.6) * F, (1 - wt) * 0.35);
+        }
+      }
+
+      if (age < TRAVEL_MS) continue;
+      const dAge = age - TRAVEL_MS;
+      if (t.over) {
+        // The rest of a missed burst walks round the first round's strike.
+        this.drawOvershoot(ctx, cam, g, t.over, dAge, F, g.x1 - g0.x1, g.y1 - g0.y1, cw, ch);
+        continue;
+      }
+      if (!impactOn) continue;
+      if (dAge < IMPACT_MS) this.dirtKick(ctx, g, g.x1, g.y1, dAge / IMPACT_MS, F);
+      if (i === 0 && t.hit && t.kill && dAge < 200) {
+        const kt = dAge / 200;
+        ctx.strokeStyle = `rgba(214, 186, 150, ${(1 - kt) * 0.7})`;
+        ctx.lineWidth = Math.max(1, F * 0.08);
+        ctx.beginPath();
+        ctx.arc(g.x1, g.y1, (0.4 + kt * 2.2) * F, 0, Math.PI * 2);
+        ctx.stroke();
       }
     }
+  }
 
-    // Gun muzzle-blast wash: the ground dust that gives away a gun position.
-    if (muzzleOn && fc.extra === 'wash' && age < 700) {
-      const wt = age / 700;
-      const ahead = Math.atan2(g.uy, g.ux);
-      for (let i = 0; i < 3; i++) {
-        const ca = ahead + (hash(g.hx, g.hy, 50 + i) - 0.5) * 0.7;
-        const dist = (1.5 + wt * 2.5 + hash(g.hx, g.hy, 60 + i) * 0.8) * cam.scale;
-        blit(ctx, 'dustTan', g.mx + Math.cos(ca) * dist, g.my + Math.sin(ca) * dist, (0.8 + wt * 1.6) * cam.scale, (1 - wt) * 0.35);
-      }
-    }
-
-    if (age < TRAVEL_MS) return;
-    const dAge = age - TRAVEL_MS;
-    if (t.over) {
-      this.drawOvershoot(ctx, cam, g, t.over, dAge, cw, ch);
-      return;
-    }
-    if (!impactOn) return;
-    if (dAge < IMPACT_MS) {
-      const dt = dAge / IMPACT_MS;
-      for (let i = 0; i < 3; i++) {
-        const ang = hash(g.hx + i, g.hy, 70) * Math.PI * 2;
-        const dist = (0.12 + dt * 0.3) * cam.scale;
-        blit(ctx, 'dustTan', g.x1 + Math.cos(ang) * dist, g.y1 + Math.sin(ang) * dist, Math.max(1, cam.scale * 0.16), (1 - dt) * 0.5);
-      }
-    }
-    if (t.hit && t.kill && dAge < 200) {
-      const kt = dAge / 200;
-      ctx.strokeStyle = `rgba(214, 186, 150, ${(1 - kt) * 0.7})`;
-      ctx.lineWidth = Math.max(1, cam.scale * 0.08);
-      ctx.beginPath();
-      ctx.arc(g.x1, g.y1, (0.4 + kt * 2.2) * cam.scale, 0, Math.PI * 2);
-      ctx.stroke();
+  // A round going into dirt: three puffs that open as they thin. Shared by the
+  // strike at the target and the miss that comes down past it.
+  private dirtKick(ctx: CanvasRenderingContext2D, g: ShotGeom, x: number, y: number, dt: number, F: number): void {
+    for (let i = 0; i < 3; i++) {
+      const ang = hash(g.hx + i, g.hy, 70) * Math.PI * 2;
+      const dist = (0.12 + dt * 0.3) * F;
+      blit(ctx, 'dustTan', x + Math.cos(ang) * dist, y + Math.sin(ang) * dist, (0.16 + dt * 0.16) * F, (1 - dt) * 0.55);
     }
   }
 
@@ -1698,9 +2451,12 @@ export class Renderer {
   // man losing his nerve is not an additive event.
   private drawMoraleFx(ctx: CanvasRenderingContext2D, cam: Camera, m: MoraleFx, now: number, cw: number, ch: number): void {
     const [x, y] = cam.worldToScreen(m.x, m.y, cw, ch);
-    if (!this.onScreen(x, y, cw, ch, 3 * cam.scale)) return;
+    // Sized by the legibility floor like every other effect round a man
+    // (fx.ts fxScale): at true scale the rallied ring was 5 px across at the
+    // zoom the game is played at.
+    const S = fxScale(cam.scale);
+    if (!this.onScreen(x, y, cw, ch, 3 * S)) return;
     const t = (now - m.at) / MORALE_MS[m.kind];
-    const S = cam.scale;
     if (m.kind === 'pinned') {
       // Dust kicked sideways as he goes flat. Squashed on y and never lifted:
       // this is a man hitting the dirt, not a shell landing.
@@ -1711,9 +2467,11 @@ export class Renderer {
       }
     } else if (m.kind === 'rallied') {
       // Back on his feet. Deliberately the other end of the palette from the
-      // kill ring's pale tan, half its alpha and twice its life — the read is
-      // "settled", and nothing calm should be brighter than a confirmed kill.
-      blit(ctx, 'ringDark', x, y, (0.35 + t * 1.15) * S, (1 - t) * 0.38);
+      // kill ring's pale tan, and twice its life — the read is "settled", and
+      // nothing calm should be brighter than a confirmed kill. The sim emits
+      // this for real now (about 34 a battle); at 0.38 it did not show on
+      // ploughed earth at all.
+      blit(ctx, 'ringDark', x, y, (0.35 + t * 1.15) * S, (1 - t) * 0.6);
     } else {
       // The volley's own flashes land this same tick and they are the show.
       // This is the full stop after them.
@@ -1775,10 +2533,12 @@ export class Renderer {
   // What a missed round hits past the target. Masonry spall is deliberately a
   // different value AND hue family from the earth-brown ground dust, so a
   // player reads "that round hit the wall" without reading its position.
-  private drawOvershoot(ctx: CanvasRenderingContext2D, cam: Camera, g: ShotGeom, o: Overshoot, dAge: number, cw: number, ch: number): void {
-    const [ox, oy] = cam.worldToScreen(o.x, o.y, cw, ch);
-    if (!this.onScreen(ox, oy, cw, ch, 4 * cam.scale)) return;
-    const S = cam.scale;
+  // (dx, dy) is how far this tap of the burst strayed from the first, in px.
+  private drawOvershoot(ctx: CanvasRenderingContext2D, cam: Camera, g: ShotGeom, o: Overshoot, dAge: number, F: number, dx: number, dy: number, cw: number, ch: number): void {
+    const [bx, by] = cam.worldToScreen(o.x, o.y, cw, ch);
+    const ox = bx + dx;
+    const oy = by + dy;
+    if (!this.onScreen(ox, oy, cw, ch, 4 * F)) return;
     if (o.kind === 'wall') {
       const base = Math.atan2(o.ny, o.nx);
       if (dAge < 260) {
@@ -1786,8 +2546,8 @@ export class Renderer {
         const n = 3 + Math.floor(hash(g.hx, g.hy, 120) * 3);
         for (let i = 0; i < n; i++) {
           const ca = base + (hash(g.hx, g.hy, 130 + i) - 0.5) * 1.3;
-          const dist = (0.1 + wt * 0.5) * S;
-          blit(ctx, 'masonry', ox + Math.cos(ca) * dist, oy + Math.sin(ca) * dist, (0.1 + wt * 0.25) * S, (1 - wt) * 0.6);
+          const dist = (0.1 + wt * 0.5) * F;
+          blit(ctx, 'masonry', ox + Math.cos(ca) * dist, oy + Math.sin(ca) * dist, (0.1 + wt * 0.25) * F, (1 - wt) * 0.6);
         }
       }
       if (dAge < 300) {
@@ -1796,7 +2556,7 @@ export class Renderer {
           const ca = base + (hash(g.hx, g.hy, 140 + i) - 0.5) * 1.6;
           const [dist, z] = ballistic(secs, 3 + hash(g.hx, g.hy, 150 + i) * 3, 2 + hash(g.hx, g.hy, 160 + i) * 2);
           if (z <= 0) continue;
-          blit(ctx, CHUNKS[i & 3], ox + Math.cos(ca) * dist * S, oy + Math.sin(ca) * dist * S - z * S * 0.9, 0.06 * S, 1, secs * 7);
+          blit(ctx, CHUNKS[i & 3], ox + Math.cos(ca) * dist * F, oy + Math.sin(ca) * dist * F - z * F * 0.9, 0.06 * F, 1, secs * 7);
         }
       }
       return;
@@ -1808,91 +2568,119 @@ export class Renderer {
       for (let i = 0; i < 4; i++) {
         const drift = (0.3 + hash(g.hx, g.hy, 170 + i) * 0.7) * secs;
         const fall = (0.4 + hash(g.hx, g.hy, 180 + i) * 0.8) * secs; // leaves sink as they drift
-        blit(ctx, 'leaf', ox + (WIND.dx * drift + (hash(g.hx, g.hy, 190 + i) - 0.5) * 0.4) * S, oy + (WIND.dy * drift + fall) * S, 0.09 * S, (1 - ft) * 0.85, hash(g.hx, g.hy, 200 + i) * 6.28 + secs * 3);
+        blit(ctx, 'leaf', ox + (WIND.dx * drift + (hash(g.hx, g.hy, 190 + i) - 0.5) * 0.4) * F, oy + (WIND.dy * drift + fall) * F, 0.09 * F, (1 - ft) * 0.85, hash(g.hx, g.hy, 200 + i) * 6.28 + secs * 3);
       }
       return;
     }
-    if (dAge >= IMPACT_MS) return;
-    const dt = dAge / IMPACT_MS;
-    for (let i = 0; i < 3; i++) {
-      const ang = hash(g.hx + i, g.hy, 70) * Math.PI * 2;
-      const dist = (0.12 + dt * 0.3) * S;
-      blit(ctx, 'dustTan', ox + Math.cos(ang) * dist, oy + Math.sin(ang) * dist, Math.max(1, S * 0.16), (1 - dt) * 0.5);
-    }
+    if (dAge < IMPACT_MS) this.dirtKick(ctx, g, ox, oy, dAge / IMPACT_MS, F);
   }
 
-  // Additive half of a shot: muzzle flash, tracer head, kill flash, ricochet.
+  // Additive half of a shot, once per tap of its burst: muzzle flash, the
+  // round in flight, kill flash, ricochet. An automatic weapon strobes — one
+  // flash per round at the spacing the audio layer voices, never one flash for
+  // the whole burst.
   private drawShotHot(ctx: CanvasRenderingContext2D, cam: Camera, t: Tracer, now: number, cw: number, ch: number, tier: 0 | 1 | 2): void {
-    const g = this.shotGeom(cam, t, cw, ch);
-    const pad = 4 * cam.scale;
-    const muzzleOn = this.onScreen(g.mx, g.my, cw, ch, pad);
-    const impactOn = this.onScreen(g.x1, g.y1, cw, ch, pad);
+    const g0 = this.shotGeom(cam, t, cw, ch);
+    const F = fxScale(cam.scale);
+    const pad = 4 * F;
+    const muzzleOn = this.onScreen(g0.mx, g0.my, cw, ch, pad);
+    const impactOn = this.onScreen(g0.x1, g0.y1, cw, ch, pad);
     if (!muzzleOn && !impactOn) return;
-    const age = now - t.at;
-    const cls = flashClass(t.weapon);
-    const fc = FLASH[cls];
-    const ang = Math.atan2(g.uy, g.ux);
+    const fc = FLASH[flashClass(t.weapon)];
+    const core = Math.min(4, Math.max(1.6, 0.09 * F) * (fc.tracerW > 1 ? 1.3 : 1));
 
-    if (muzzleOn) {
-      if (age < fc.life) this.muzzleFlash(ctx, cam, g, ang, fc, 1 - age / fc.life);
-      // belt rhythm: an MG's second beat 25 ms behind the first is what makes
-      // it read as an MG rather than a fast rifle
-      if (fc.extra === 'double' && age >= 25 && age < 25 + fc.life) this.muzzleFlash(ctx, cam, g, ang, fc, (1 - (age - 25) / fc.life) * 0.4);
-    }
+    for (let i = 0; i < t.taps; i++) {
+      const age = now - t.at - i * t.gap;
+      if (age < 0) break; // this round, and every one behind it, has not left yet
+      // A stray is hot only while it flashes and flies. Past that it is dust,
+      // and the cool pass has it.
+      if (age >= (i === 0 ? SHOT_MS : Math.max(fc.life, TRAVEL_MS))) continue;
+      const g = this.tapGeom(g0, i, fc.cone);
+      const ang = Math.atan2(g.uy, g.ux);
 
-    // 1-in-5 rounds (1-in-3 on a belt) carry a tracer; the irregular rhythm is
-    // what makes sustained fire read right. The rest leave only the thread.
-    if (age < TRAVEL_MS && hash(g.hx, g.hy, 77) < fc.tracerOdds) {
-      const travelT = age / TRAVEL_MS;
-      const segStart = Math.max(0, travelT - 0.11);
-      const px = (f: number) => g.mx + (g.x1 - g.mx) * f;
-      const py = (f: number) => g.my + (g.y1 - g.my) * f;
-      ctx.lineWidth = fc.tracerW;
-      for (let k = 0; k < 3; k++) {
-        ctx.strokeStyle = `rgba(${fc.tracerCol},${0.14 + k * 0.26})`;
-        ctx.beginPath();
-        ctx.moveTo(px(segStart + ((travelT - segStart) * k) / 3), py(segStart + ((travelT - segStart) * k) / 3));
-        ctx.lineTo(px(segStart + ((travelT - segStart) * (k + 1)) / 3), py(segStart + ((travelT - segStart) * (k + 1)) / 3));
-        ctx.stroke();
+      // Held, then cut: 1 - t^2 keeps the flash near full for the two frames a
+      // 60 ms life gets at 60 Hz. A linear fade spent one of them at a third.
+      if (muzzleOn && age < fc.life) this.muzzleFlash(ctx, F, g, ang, fc, 1 - (age / fc.life) ** 2);
+
+      // The round in flight. Every round draws a streak, because a hairline
+      // that only one shot in five carries is not a firefight. 1-in-5 rounds
+      // (1-in-3 on a belt) are tracers and get the body: a wide soft
+      // under-glow, a core that brightens toward the head, and a hot point on
+      // the head. The rest are a thin short streak. The odds are rolled per
+      // round, so a belt throws its tracers at an uneven beat.
+      if (age < TRAVEL_MS) {
+        const tracer = hash(g.hx, g.hy, 77) < fc.tracerOdds;
+        const len = Math.hypot(g.x1 - g.mx, g.y1 - g.my);
+        const head = (age / TRAVEL_MS) * len;
+        // About one frame of flight, held between a floor and a cap in fx
+        // metres so a point-blank shot still shows and a long one is not a beam.
+        const seg = Math.min(head, Math.max(2.5 * F, Math.min(8 * F, len * 0.2)) * (tracer ? 1 : 0.5));
+        const px = (d: number): number => g.mx + g.ux * d;
+        const py = (d: number): number => g.my + g.uy * d;
+        if (tracer) {
+          ctx.lineCap = 'round';
+          ctx.strokeStyle = `rgba(${fc.tracerCol},0.17)`;
+          ctx.lineWidth = core * 3.4;
+          ctx.beginPath();
+          ctx.moveTo(px(head - seg), py(head - seg));
+          ctx.lineTo(px(head), py(head));
+          ctx.stroke();
+          ctx.lineCap = 'butt';
+          ctx.lineWidth = core;
+          for (let k = 0; k < 3; k++) {
+            ctx.strokeStyle = `rgba(${fc.tracerCol},${0.2 + k * 0.3})`;
+            ctx.beginPath();
+            ctx.moveTo(px(head - seg + (seg * k) / 3), py(head - seg + (seg * k) / 3));
+            ctx.lineTo(px(head - seg + (seg * (k + 1)) / 3), py(head - seg + (seg * (k + 1)) / 3));
+            ctx.stroke();
+          }
+          blit(ctx, 'spark', px(head), py(head), core * 1.7, 0.95);
+        } else {
+          ctx.strokeStyle = `rgba(${fc.tracerCol},0.34)`;
+          ctx.lineWidth = Math.max(1, core * 0.6);
+          ctx.beginPath();
+          ctx.moveTo(px(head - seg), py(head - seg));
+          ctx.lineTo(px(head), py(head));
+          ctx.stroke();
+        }
+        continue;
       }
-      blit(ctx, 'spark', px(travelT), py(travelT), Math.max(1, cam.scale * 0.1), 0.95);
-    }
-
-    if (age < TRAVEL_MS) return;
-    const dAge = age - TRAVEL_MS;
-    if (impactOn && t.hit) {
-      if (t.kill && dAge < 200) {
-        const kt = dAge / 200;
-        blit(ctx, 'flash', g.x1, g.y1, Math.max(2, (0.3 + kt * 0.9) * cam.scale), (1 - kt) * 0.8);
-      } else if (dAge < 90) {
-        blit(ctx, 'spark', g.x1, g.y1, Math.max(1.2, cam.scale * 0.18), (1 - dAge / 90) * 0.7);
+      if (i > 0) continue; // only the round the sim resolved strikes anything hot
+      const dAge = age - TRAVEL_MS;
+      if (impactOn && t.hit) {
+        if (t.kill && dAge < 200) {
+          const kt = dAge / 200;
+          blit(ctx, 'flash', g.x1, g.y1, (0.3 + kt * 0.9) * F, (1 - kt) * 0.8);
+        } else if (dAge < 90) {
+          blit(ctx, 'spark', g.x1, g.y1, F * 0.18, (1 - dAge / 90) * 0.7);
+        }
       }
-    }
 
-    // Rounds finding a hard surface — cover at the target, or the masonry a
-    // miss overshoots into — throw sparks back toward the shooter.
-    const hard = t.over ? t.over.kind === 'wall' : t.hit && this.sim.map.terrainAt(Math.floor(t.tx), Math.floor(t.ty)).cover > 0;
-    if (tier < 1 || !hard || dAge >= 260) return;
-    const [hx, hy] = t.over ? cam.worldToScreen(t.over.x, t.over.y, cw, ch) : [g.x1, g.y1];
-    if (!this.onScreen(hx, hy, cw, ch, pad)) return;
-    const secs = dAge / 1000;
-    const back = ang + Math.PI;
-    const n = 2 + Math.floor(hash(g.hx, g.hy, 88) * 3);
-    for (let i = 0; i < n; i++) {
-      const a = back + (hash(g.hx, g.hy, 90 + i) - 0.5) * 2.2;
-      const [dist, z] = ballistic(secs, 4 + hash(g.hx, g.hy, 100 + i) * 5, 2 + hash(g.hx, g.hy, 110 + i) * 3);
-      if (z <= 0) continue;
-      blit(ctx, 'spark', hx + Math.cos(a) * dist * cam.scale, hy + Math.sin(a) * dist * cam.scale - z * cam.scale * 0.9, Math.max(0.9, cam.scale * 0.06), 1 - dAge / 260);
+      // Rounds finding a hard surface — cover at the target, or the masonry a
+      // miss overshoots into — throw sparks back toward the shooter.
+      const hard = t.over ? t.over.kind === 'wall' : t.hit && this.sim.map.terrainAt(Math.floor(t.tx), Math.floor(t.ty)).cover > 0;
+      if (tier < 1 || !hard || dAge >= 260) continue;
+      const [hx, hy] = t.over ? cam.worldToScreen(t.over.x, t.over.y, cw, ch) : [g.x1, g.y1];
+      if (!this.onScreen(hx, hy, cw, ch, pad)) continue;
+      const secs = dAge / 1000;
+      const back = ang + Math.PI;
+      const n = 2 + Math.floor(hash(g.hx, g.hy, 88) * 3);
+      for (let k = 0; k < n; k++) {
+        const a = back + (hash(g.hx, g.hy, 90 + k) - 0.5) * 2.2;
+        const [dist, z] = ballistic(secs, 4 + hash(g.hx, g.hy, 100 + k) * 5, 2 + hash(g.hx, g.hy, 110 + k) * 3);
+        if (z <= 0) continue;
+        blit(ctx, 'spark', hx + Math.cos(a) * dist * F, hy + Math.sin(a) * dist * F - z * F * 0.9, Math.max(0.9, F * 0.06), 1 - dAge / 260);
+      }
     }
   }
 
   // Oriented teardrop core + asymmetric spikes. The flash must be longer along
   // the barrel than across it, and no two spikes may match — three equal
   // spikes at symmetric angles is a UI arrowhead, not a muzzle flash.
-  private muzzleFlash(ctx: CanvasRenderingContext2D, cam: Camera, g: ShotGeom, ang: number, fc: FlashSpec, fa: number): void {
+  private muzzleFlash(ctx: CanvasRenderingContext2D, F: number, g: ShotGeom, ang: number, fc: FlashSpec, fa: number): void {
     if (fa <= 0) return;
-    const fr = Math.max(2, fc.r * cam.scale) * (0.85 + hash(g.hx, g.hy, 3) * 0.3);
-    blit(ctx, 'flash', g.mx, g.my, fr * 2.4, fa * 0.22); // soft outer falloff
+    const fr = fc.r * F * (0.85 + hash(g.hx, g.hy, 3) * 0.3);
+    blit(ctx, 'flash', g.mx, g.my, fr * 3.2, fa * 0.36); // soft outer falloff
     ctx.save();
     ctx.translate(g.mx, g.my);
     ctx.rotate(ang);
@@ -1914,78 +2702,168 @@ export class Renderer {
     }
   }
 
-  // Layered explosion. Order is the whole trick: the dark beats (compression
-  // ring, soot shell) go UNDER the fireball, and the lingering dust is a RING
-  // rather than a filled disc, so nothing paints tan over the hot core the way
-  // the old single-pass draw did.
+  // Layered explosion, one recipe per kind (fx.ts BLAST). Order is the whole
+  // trick: the ground beats (shock ring, dust) go down first, the thrown earth
+  // over them, then smoke, then the fireball with a soot rim biting into its
+  // edge — dark-around-bright is why a blast reads. The smoke lobes outlive
+  // the fire, so the fireball turns into its own column instead of being
+  // replaced by one.
+  //
+  // Strict plan view: no smoke here rises up the screen. A lobe's height is
+  // its drift down the wind axis and the shadow it drops down-sun.
   private drawBoom(ctx: CanvasRenderingContext2D, cam: Camera, b: Boom, now: number, cw: number, ch: number, tier: 0 | 1 | 2): void {
     const age = now - b.at;
-    const rs = boomScale(b.r);
-    const S = cam.scale;
+    const sp = b.spec;
+    const k = b.k;
+    const S = blastScale(cam.scale);
     const [x, y] = cam.worldToScreen(b.x, b.y, cw, ch);
-    const pad = 12 * rs * S;
+    const pad = (Math.max(sp.ring, sp.throw + 3, sp.fire * 4) * k + (WIND.speed * sp.hang) / 1000) * S;
     if (x < -pad || y < -pad || x > cw + pad || y > ch + pad) return;
     const sx = Math.round(b.x * 100);
     const sy = Math.round(b.y * 100);
+    const lite = MOBILE ? 0.5 : 1;
+    const fire = sp.fire * k * S; // fireball radius in px — most of the recipe hangs off it
+    const secs = age / 1000;
 
-    // 30-90 ms: a beat of darkening before the dust — air being displaced
-    if (age >= 30 && age < 90) {
-      const t = (age - 30) / 60;
-      blit(ctx, 'ringDark', x, y, (0.7 + t * 2.2) * rs * S, 0.25 * (1 - t));
+    // The shockwave: a thin pale front with its own dark compression line
+    // just inside it. The pair reads over grass, dirt and cobbles alike, which
+    // a single tan ring at these values never did. It leaves the flash late and
+    // fades on a square, so it is an edge passing and never a circle drawn
+    // round the blast.
+    const ringMs = 240 + sp.ring * k * 16;
+    if (age >= 30 && age < ringMs) {
+      const t = (age - 30) / (ringMs - 30);
+      const rr = (0.3 + 0.7 * (1 - (1 - t) ** 2)) * sp.ring * k * S;
+      const a = Math.min(1, t * 5) * (1 - t);
+      blit(ctx, 'ringDark', x, y, rr * 0.92, 0.3 * a);
+      blit(ctx, 'shock', x, y, rr, 0.5 * a * (1 - t));
+    }
+    // ...and the ground dust it drags up behind it, slower and lower.
+    if (sp.dust > 0.2 && age >= 60 && age < ringMs * 3) {
+      const t = (age - 60) / (ringMs * 3 - 60);
+      blit(ctx, 'ringTan', x, y, (0.8 + (1 - (1 - t) ** 2) * sp.ring * k * 0.62) * S, 0.55 * sp.dust * (1 - t));
     }
 
-    // 40-380 ms: shockwave, a scaled soft annulus (never a 2 px stroked circle)
-    if (age >= 40 && age < 380) {
-      const t = (age - 40) / 340;
-      blit(ctx, 'ringTan', x, y, (0.8 + t * 3.8) * rs * S, 0.55 * (1 - t));
-    }
-
-    // 150-1400 ms: lingering ground dust, a spreading ring plus a small base
-    // disc capped low enough that it can never wash out the fireball
-    if (age >= 150 && age < 1400) {
-      const t = (age - 150) / 1250;
-      blit(ctx, 'ringTan', x, y, (1.2 + t * 3.3) * rs * S, 0.3 * (1 - t));
-      blit(ctx, 'dustTan', x, y, 1.6 * rs * S, 0.14 * (1 - t));
-    }
-
-    // 60-900 ms: soot shell, drawn before the fireball every frame so the hot
-    // core punches through it — dark-around-bright is why a blast reads
-    if (age >= 60 && age < 900) {
-      const t = (age - 60) / 840;
-      for (let i = 0; i < 4; i++) {
-        const a = hash(sx, sy, 110 + i) * Math.PI * 2;
-        const d = (0.55 + 0.7 * hash(sx, sy, 120 + i)) * rs * S;
-        blit(ctx, 'soot', x + Math.cos(a) * d, y + Math.sin(a) * d, (0.9 + t * 2) * rs * S, 0.42 * Math.pow(1 - t, 0.9));
+    // Dust that hangs: lobes that open fast, then spread and thin on the wind
+    // for the rest of the blast's life. Every other lobe is a small dense one,
+    // so the cloud has a body and an edge rather than one airbrushed value.
+    if (sp.dust > 0 && age >= 80 && age < sp.hang) {
+      const t = (age - 80) / (sp.hang - 80);
+      const open = 1 - Math.exp(-(age - 80) / 450);
+      const n = Math.max(3, Math.round((2 + 5 * sp.dust) * lite));
+      const a0 = sp.dust * 0.8 * Math.min(1, (age - 80) / 120) * (1 - t) ** 1.2;
+      const wx = WIND.dx * WIND.speed * secs * 0.5 * S;
+      const wy = WIND.dy * WIND.speed * secs * 0.5 * S;
+      for (let i = 0; i < n; i++) {
+        const knot = i & 1;
+        const ang = hash(sx, sy, 300 + i) * Math.PI * 2;
+        const d = (0.2 + open * (0.4 + hash(sx, sy, 310 + i) * (knot ? 1.3 : 0.8))) * (fire + S) * 1.1;
+        const r = ((0.9 + open * 1.1 + t * 0.9) * fire * (0.8 + hash(sx, sy, 320 + i) * 0.4) + S * 0.6) * (knot ? 0.55 : 1);
+        blit(ctx, 'dustTan', x + Math.cos(ang) * d + wx, y + Math.sin(ang) * d + wy, r, a0 * (knot ? 1 : 0.7));
       }
     }
 
-    // 30-260 ms: three staggered, offset fireball lobes — the asymmetry is
-    // what stops an explosion reading as a disc
-    for (let i = 0; i < 3; i++) {
-      const start = 30 + i * 22;
-      if (age < start || age >= 260) continue;
-      const t = (age - start) / (260 - start);
-      const a = hash(sx, sy, 100 + i) * Math.PI * 2;
-      const d = (0.15 + 0.35 * hash(sx, sy, 130 + i)) * rs * S;
-      const lobe = (0.45 + hash(sx, sy, 135 + i) * 0.5 + t * 2) * rs * S;
-      blit(ctx, 'fire', x + Math.cos(a) * d, y + Math.sin(a) * d, lobe, Math.pow(1 - t, 0.7) * 0.78);
-    }
-
-    // 0-420 ms: dirt ejecta, drooping under gravity and tapering to nothing
-    if (age < 420) {
-      const t = age / 420;
-      const ea = 1 - t;
-      const n = Math.max(4, Math.round((8 + hash(sx, sy, 5) * 5) * rs));
-      ctx.lineWidth = Math.max(0.6, (0.09 - 0.07 * t) * S);
+    // Thrown earth, seen from above: a ragged dark mass punched out of the
+    // ground. Lobes of every size, and the distance squared so most of them
+    // stay close and only a few go wide — an even ring of equal lobes is a
+    // flower, not a fountain.
+    const throwMs = 420 + sp.throw * k * 30;
+    if (sp.spokes > 0 && age < throwMs * 1.4) {
+      const t = age / (throwMs * 1.4);
+      const e = 1 - (1 - t) ** 3;
+      const reach = sp.throw * k * S;
+      const n = Math.max(5, Math.round(sp.spokes * (tier === 0 ? 0.5 : 1) * lite));
+      const a = 0.85 * (1 - t) ** 1.3;
       for (let i = 0; i < n; i++) {
         const ang = hash(sx, sy, 10 + i) * Math.PI * 2;
-        const len = (1.5 + hash(sx, sy, 40 + i) * 2.5) * rs * S * t;
-        const tone = hash(sx, sy, 70 + i);
-        ctx.strokeStyle = `rgba(${Math.round(90 + tone * 40)},${Math.round(65 + tone * 30)},${Math.round(45 + tone * 20)},${ea * 0.7})`;
+        const d = (0.08 + 0.62 * hash(sx, sy, 40 + i) ** 2) * reach * e;
+        const r = (0.06 + 0.17 * hash(sx, sy, 70 + i) ** 1.5) * reach * (0.6 + 0.4 * e) + S * 0.15;
+        blit(ctx, 'dirt', x + Math.cos(ang) * d, y + Math.sin(ang) * d, r, a);
+      }
+    }
+    // ...and the few fast outliers that leave it. Each is a small clod with a
+    // trail behind it that thins to a point and is gone well before the clod
+    // lands. One to four of them, never a spoke per lobe: a dozen straight
+    // lines of one length ending in a knob read as an insect.
+    if (sp.spokes > 0 && tier >= 1 && age < throwMs) {
+      const t = age / throwMs;
+      const e = 1 - (1 - t) ** 2;
+      const F = fxScale(cam.scale);
+      const n = Math.max(1, Math.round((1 + hash(sx, sy, 5) * 0.2 * sp.spokes) * lite));
+      const trail = Math.max(0, 1 - t / 0.55);
+      if (trail > 0) {
+        ctx.fillStyle = `rgba(58,45,30,${0.75 * trail})`;
         ctx.beginPath();
-        ctx.moveTo(x, y);
-        ctx.quadraticCurveTo(x + Math.cos(ang) * len * 0.5, y + Math.sin(ang) * len * 0.5, x + Math.cos(ang) * len, y + Math.sin(ang) * len + t * t * 0.9 * S);
-        ctx.stroke();
+      }
+      for (let i = 0; i < n; i++) {
+        const ang = hash(sx, sy, 360 + i) * Math.PI * 2;
+        const cs = Math.cos(ang);
+        const sn = Math.sin(ang);
+        const len = (0.55 + 0.6 * hash(sx, sy, 370 + i)) * sp.throw * k * S * e;
+        const w = (0.09 + 0.08 * hash(sx, sy, 380 + i)) * F;
+        if (trail > 0) {
+          const tail = len * (0.4 + 0.45 * t);
+          ctx.moveTo(x + cs * tail, y + sn * tail);
+          ctx.lineTo(x + cs * len - sn * w, y + sn * len + cs * w);
+          ctx.lineTo(x + cs * len + sn * w, y + sn * len - cs * w);
+          ctx.closePath();
+        }
+        blit(ctx, CHUNKS[i & 3], x + cs * len, y + sn * len, w * 1.5, 1 - t ** 3, hash(sx, sy, 390 + i) * 6.28 + t * 5);
+      }
+      if (trail > 0) ctx.fill();
+    }
+
+    // Smoke. It starts as the fire's own soot and stays when the fire is out:
+    // the lobes spread, and the ones higher in the column are carried further
+    // downwind. Burning fuel never greys; anything else cools from black.
+    const after = Math.max(0, age - sp.burn) / 1000; // seconds since the fire went out
+    if (sp.smoke > 0 && age >= 40) {
+      const t = age / sp.hang;
+      const open = 1 - Math.exp(-age / (sp.burn * 0.6));
+      const a = sp.smoke * 0.9 * Math.min(1, age / sp.burn) * (1 - t) ** 1.2;
+      const soot = sp.rim > 0.9 ? 1 : 1 - Math.min(1, after / 3) * 0.7;
+      const n = Math.max(3, Math.round((3 + 4 * sp.smoke) * lite));
+      const wind = after * WIND.speed * S;
+      if (sp.smoke >= 0.5 && after > 0) {
+        // The column's shadow. It lands down-sun of the smoke by its height,
+        // which is the only place in a plan view that height can show.
+        const h = Math.min(8, 1 + after * 2.2);
+        blit(ctx, 'soot', x + WIND.dx * wind * 0.5 + SUN.dx * h * 0.3 * S, y + WIND.dy * wind * 0.5 + SUN.dy * h * 0.3 * S, fire * 1.3 * (1 + after * 0.2), 0.22 * sp.smoke * (1 - t) * sun().alphaMul);
+      }
+      for (let i = 0; i < n; i++) {
+        const knot = i & 1; // small and dense between the big soft ones: the roil
+        const u = n > 1 ? i / (n - 1) : 0; // 0 = the base of the column, 1 = its top
+        const ang = hash(sx, sy, 110 + i) * Math.PI * 2 + secs * (hash(sx, sy, 115 + i) - 0.5) * (knot ? 2.2 : 1.2);
+        const d = fire * (0.35 + 0.6 * hash(sx, sy, 120 + i)) * (0.35 + 0.65 * open) * (1 + after * 0.15);
+        const r = fire * (0.62 + 0.3 * hash(sx, sy, 125 + i)) * (0.55 + 0.45 * open) * (1 + after * 0.22) * (knot ? 0.55 : 1);
+        const lx = x + Math.cos(ang) * d + WIND.dx * wind * (0.35 + 0.65 * u);
+        const ly = y + Math.sin(ang) * d + WIND.dy * wind * (0.35 + 0.65 * u);
+        blit(ctx, 'soot', lx, ly, r, a * soot);
+        blit(ctx, 'smoke', lx, ly, r, a * (1 - soot) * 0.8);
+      }
+    }
+
+    // The fireball: staggered offset lobes — the asymmetry is what stops an
+    // explosion reading as a disc. A brew-up rolls: more lobes, further apart.
+    const brew = sp.rim > 0.9;
+    const lobes = brew ? 5 : 3;
+    for (let i = 0; i < lobes; i++) {
+      const start = 20 + i * sp.burn * 0.09;
+      if (age < start || age >= sp.burn) continue;
+      const t = (age - start) / (sp.burn - start);
+      const e = 1 - (1 - t) ** 2;
+      const ang = hash(sx, sy, 100 + i) * Math.PI * 2;
+      const d = fire * (0.15 + (brew ? 0.6 : 0.4) * hash(sx, sy, 130 + i)) * (0.4 + 0.6 * e);
+      blit(ctx, 'fire', x + Math.cos(ang) * d, y + Math.sin(ang) * d, fire * (0.45 + 0.5 * e) * (0.7 + 0.45 * hash(sx, sy, 135 + i)), (1 - t) ** 0.8 * 0.92);
+    }
+    // ...and the soot biting into its edge, thickening as the fire burns out.
+    if (age >= 40 && age < sp.burn + 250) {
+      const t = Math.min(1, age / sp.burn);
+      const a = sp.rim * (0.35 + 0.5 * t) * Math.min(1, (age - 40) / 50) * Math.max(0, 1 - after / 0.25);
+      for (let i = 0; i < lobes + 1; i++) {
+        const ang = hash(sx, sy, 140 + i) * Math.PI * 2 + secs * (hash(sx, sy, 145 + i) - 0.5) * 3;
+        const d = fire * (0.7 + 0.35 * hash(sx, sy, 146 + i)) * (0.45 + 0.55 * t);
+        blit(ctx, 'soot', x + Math.cos(ang) * d, y + Math.sin(ang) * d, fire * (0.34 + 0.22 * hash(sx, sy, 147 + i)) * (0.6 + 0.5 * t), a);
       }
     }
 
@@ -1993,9 +2871,10 @@ export class Renderer {
     // thing that gives a blast mass. Each chunk stamps grit where it lands.
     if (tier >= 1 && age >= 60 && age < 1600) {
       const ts = (age - 60) / 1000;
-      const n = Math.min(24, Math.round((6 + hash(sx, sy, 140) * 6) * rs * tier));
+      const F = fxScale(cam.scale);
+      const n = Math.min(24, Math.round(sp.debris * (tier === 2 ? 1 : 0.6) * lite));
       for (let i = 0; i < n; i++) {
-        const v = (3.5 + hash(sx, sy, 150 + i) * 6) * rs;
+        const v = (3.5 + hash(sx, sy, 150 + i) * 6) * (0.6 + 0.4 * k);
         const vz = 3 + hash(sx, sy, 160 + i) * 3.5;
         const [dist, z] = ballistic(ts, v, vz);
         const ang = hash(sx, sy, 170 + i) * Math.PI * 2;
@@ -2010,49 +2889,82 @@ export class Renderer {
         }
         ctx.fillStyle = `rgba(20,17,12,${0.18 * (1 - Math.min(1, z / 2))})`;
         ctx.beginPath();
-        ctx.ellipse(gx, gy, S * 0.13, S * 0.08, 0, 0, Math.PI * 2);
+        ctx.ellipse(gx, gy, F * 0.13, F * 0.08, 0, 0, Math.PI * 2);
         ctx.fill();
-        const cr = (0.1 + hash(sx, sy, 180 + i) * 0.08) * S;
+        const cr = (0.1 + hash(sx, sy, 180 + i) * 0.08) * F;
         blit(ctx, CHUNKS[i & 3], gx, gy - z * S * 0.9, cr, 1, ts * (4 + hash(sx, sy, 190 + i) * 8));
       }
     }
-
-    // 200-2600 ms: smoke column, leaning on the wind instead of the old
-    // per-boom arbitrary drift, and starting sooty because fire-smoke does
-    const puffs = 4 + Math.round(2 * rs);
-    for (let i = 0; i < puffs; i++) {
-      const start = 200 + i * 180;
-      if (age < start) continue;
-      const pt = (age - start) / (BOOM_MS - start);
-      const secs = (age - start) / 1000;
-      const px = x + WIND.dx * WIND.speed * secs * S;
-      const py = y - pt * 3.4 * rs * S + WIND.dy * WIND.speed * secs * S;
-      const pr = (0.9 + pt * 2.2) * rs * S;
-      const pa = (1 - pt) * 0.3;
-      const sooty = Math.max(0, 1 - secs / 0.9); // fire-smoke starts black and greys as it cools
-      blit(ctx, 'smoke', px, py, pr, pa * (1 - sooty));
-      blit(ctx, 'soot', px, py, pr, pa * sooty);
-    }
   }
 
-  // Additive half of the explosion: strictly the sub-260 ms hot window, so
-  // `lighter` never gets a chance to bleach the muted palette.
-  private drawBoomHot(ctx: CanvasRenderingContext2D, cam: Camera, b: Boom, now: number, cw: number, ch: number): void {
+  // Additive half of the explosion: the flash and its rays, the light the
+  // fireball throws on the ground round it, its hot core, and the sparks.
+  // Nothing here outlives the burn but the sparks, so `lighter` never gets a
+  // chance to bleach the muted palette.
+  private drawBoomHot(ctx: CanvasRenderingContext2D, cam: Camera, b: Boom, now: number, cw: number, ch: number, tier: 0 | 1 | 2): void {
     const age = now - b.at;
-    if (age >= 260) return;
-    const rs = boomScale(b.r);
-    const S = cam.scale;
+    const sp = b.spec;
+    if (age >= Math.max(sp.burn, SPARK_MS)) return;
+    const k = b.k;
+    const S = blastScale(cam.scale);
     const [x, y] = cam.worldToScreen(b.x, b.y, cw, ch);
-    const pad = 6 * rs * S;
+    const pad = Math.max(sp.flash * 2, 18) * k * S;
     if (x < -pad || y < -pad || x > cw + pad || y > ch + pad) return;
-    if (age < 45) {
-      const t = age / 45;
-      blit(ctx, 'flash', x, y, (0.5 + 3.2 * t) * rs * S, Math.pow(1 - t, 0.6));
-      blit(ctx, 'flash', x, y, (0.35 + 0.7 * t) * rs * S, Math.pow(1 - t, 0.35)); // hard white core
+    const sx = Math.round(b.x * 100);
+    const sy = Math.round(b.y * 100);
+    const fire = sp.fire * k * S;
+    if (age < BLAST_FLASH_MS) {
+      const t = age / BLAST_FLASH_MS;
+      const fr = sp.flash * k * S;
+      blit(ctx, 'flash', x, y, fr * (0.45 + 0.55 * Math.sqrt(t)), (1 - t) ** 0.6);
+      blit(ctx, 'flash', x, y, fr * 0.36, (1 - t) ** 0.35); // hard white core
+      // Rays: the flash squeezed thin and thrown out on a few uneven bearings.
+      // A round flash is a disc; a disc with rays is a detonation. Steel
+      // throws more of them, and longer.
+      const rays = sp.sparks > 12 ? 7 : 4;
+      for (let i = 0; i < rays; i++) {
+        ctx.save();
+        ctx.translate(x, y);
+        ctx.rotate(hash(sx, sy, 440 + i) * Math.PI * 2);
+        ctx.scale(1, 0.12 + hash(sx, sy, 450 + i) * 0.08);
+        blit(ctx, 'flash', 0, 0, fr * (sp.sparks > 12 ? 1.9 : 1.35) * (0.6 + hash(sx, sy, 460 + i) * 0.6), (1 - t) * 0.75);
+        ctx.restore();
+      }
     }
-    if (age >= 30) {
-      const t = (age - 30) / 230;
-      blit(ctx, 'fire', x, y, 0.55 * (0.7 + t * 2.4) * rs * S, Math.pow(1 - t, 0.7) * 0.85);
+    if (age < sp.burn) {
+      const t = age / sp.burn;
+      blit(ctx, 'fire', x, y, fire * (1.5 + 0.9 * t), 0.22 * (1 - t)); // a light POOL on the ground, no direction
+      blit(ctx, 'fire', x, y, fire * (0.5 + 0.35 * (1 - (1 - t) ** 2)), (1 - t) ** 0.7 * 0.8);
+      if (t < 0.5) blit(ctx, 'flash', x, y, fire * 0.42, (1 - t * 2) * 0.85);
     }
+    // Sparks: steel, or ammunition. Ballistic like the debris, but hot and
+    // fast. One batched stroke draws every tail, then a hot point per head.
+    if (tier < 1 || sp.sparks === 0 || age >= SPARK_MS) return;
+    const secs = age / 1000;
+    const F = fxScale(cam.scale);
+    const n = Math.round(sp.sparks * (tier === 2 ? 1 : 0.6) * (MOBILE ? 0.5 : 1));
+    ctx.strokeStyle = `rgba(255,214,140,${0.85 * (1 - age / SPARK_MS)})`;
+    ctx.lineWidth = Math.max(1.2, 0.07 * F);
+    ctx.beginPath();
+    for (let i = 0; i < n; i++) {
+      const life = 0.5 + hash(sx, sy, 400 + i) * 0.4;
+      if (secs >= life) continue;
+      const v = (4 + hash(sx, sy, 410 + i) * 11) * Math.sqrt(k);
+      const vz = 3 + hash(sx, sy, 420 + i) * 5;
+      const [dist, z] = ballistic(secs, v, vz);
+      if (z <= 0 && secs > 0.05) continue;
+      const ang = hash(sx, sy, 430 + i) * Math.PI * 2;
+      const cs = Math.cos(ang);
+      const sn = Math.sin(ang);
+      // Flat on the ground plane: a spark's height shows only as how far it
+      // gets before it is gone.
+      const hx = x + cs * dist * S;
+      const hy = y + sn * dist * S;
+      const [d0] = ballistic(Math.max(0, secs - 0.045), v, vz);
+      ctx.moveTo(x + cs * d0 * S, y + sn * d0 * S);
+      ctx.lineTo(hx, hy);
+      blit(ctx, 'spark', hx, hy, 0.13 * F, (1 - secs / life) ** 0.6);
+    }
+    ctx.stroke();
   }
 }

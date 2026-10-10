@@ -2,7 +2,7 @@ import { WEAPONS, type Role, type WeaponKey } from '../sim/data';
 import type { Side } from '../sim/sim';
 import { AO_ALPHA, SUN } from './light';
 import { SpriteCache } from './spritecache';
-import { MOBILE } from './view';
+import { view } from './view';
 
 // Parametric vector soldier, drawn facing +X in meter units, baked into a
 // per-(pose, frame, weapon, side, zoom-band) sprite cache. The renderer draws
@@ -34,13 +34,19 @@ export const SPRITE_SPAN = 3.6; // meters covered by the (square) sprite canvas
 export const DUDE_SCALE = 1.35; // genre-standard oversize so figures read at tactical zoom
 export const SPRITE_MIN_SCALE = 5; // px/m; below this the renderer uses dot LOD
 
-// Bake resolutions (px/m); never upscale on screen. Band 48 bakes ~90px
-// canvases per (pose x frame x weapon x side) on demand and the phone's
-// cam.maxScale is 32, so it could only ever be baked and never displayed.
-const BANDS = MOBILE ? [6, 12, 24] : [6, 12, 24, 48];
+// Bake resolutions, in DEVICE px/m; never upscale on screen. The canvas
+// backing store is scaled by view.dpr (main.ts), so a band picked from CSS
+// px/m was upscaled 2x on every Retina display and phone — at the 14 px/m the
+// game is played at, a man baked at 24 px/m was being drawn across 28 device
+// pixels. Picked from scale * dpr he is baked at 48 and drawn down. A phone
+// tops out at 32 px/m but 64 device px/m, so it gets band 48 too; the cache is
+// byte-budgeted (spritecache.ts), so the cost is eviction, not memory. At
+// dpr 1 nothing changes, which is every art baseline.
+const BANDS = [6, 12, 24, 48];
 
 export function bandFor(scale: number): number {
-  return BANDS.find((b) => b >= scale) ?? BANDS[BANDS.length - 1];
+  const px = scale * view.dpr;
+  return BANDS.find((b) => b >= px) ?? BANDS[BANDS.length - 1];
 }
 
 // Detail tier per bake band — the one gate every piece of kit detail asks.
@@ -88,22 +94,29 @@ function withAlpha(rgba: string, mult: number): string {
 }
 
 // Zoom-attenuated team rim (architecture.md rule 5): full strength at the
-// close bake bands, half at 24, a thin whisper by 48.
+// far zooms, half by 24 px/m, a thin whisper by 48. By ZOOM, so by the band
+// divided back out of device pixels: on a 2x display the band-48 bake is what
+// the 14 px/m play zoom draws, and it must keep the rim that zoom needs.
 function haloMult(band: number): number {
-  if (band <= 12) return 1;
-  if (band === 24) return 0.5;
+  const zoom = band / view.dpr;
+  if (zoom <= 12) return 1;
+  if (zoom <= 24) return 0.5;
   return 0.22;
 }
 
+// A dead man keeps his uniform. The kit dulls a little toward dark wet earth
+// (never toward pale grey, S6) so the living still stand out beside him, but
+// at the 45% this used to be both armies' dead were the same brown mannequin:
+// a corpse has to stay olive or feldgrau to read as one of ours or theirs.
 function deadKit(k: Kit): Kit {
-  const earth = '#332c22'; // dark wet-earth tone — dead kits darken toward the ground, not pale grey (S6)
+  const earth = '#332c22';
   return {
     side: k.side,
-    uniform: mix(k.uniform, earth, 0.45),
-    sleeve: mix(k.sleeve, earth, 0.45),
-    trousers: mix(k.trousers, earth, 0.45),
-    helmet: mix(k.helmet, earth, 0.45),
-    skin: mix(k.skin, earth, 0.3),
+    uniform: mix(k.uniform, earth, 0.16),
+    sleeve: mix(k.sleeve, earth, 0.16),
+    trousers: mix(k.trousers, earth, 0.16),
+    helmet: mix(k.helmet, earth, 0.16),
+    skin: mix(k.skin, earth, 0.14),
     outline: k.outline,
   };
 }

@@ -10,7 +10,7 @@
 //   Dev server must already be running: npm run dev -- --port 5198 --strictPort
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { arg, launch, gotoStaged, deriveTargets, deriveBuilding, wallStage, burst } from './lib/stage.mjs';
+import { arg, launch, gotoStaged, deriveTargets, deriveBuilding, wallStage, burst, ageFx, FX_FLUSH_MS, stageSmoke } from './lib/stage.mjs';
 
 const PORT = Number(arg('port', '5198'));
 const SEED = Number(arg('seed', '7'));
@@ -20,9 +20,9 @@ const OUT = '.screenshots/vfx';
 mkdirSync(OUT, { recursive: true });
 const slug = (s) => s.replace(/[^a-z0-9]+/gi, '-').replace(/^-|-$/g, '').toLowerCase();
 
-// Wall-clock transient effects — must be caught in-page (burst).
+// Fx-clock transient effects — must be caught in-page (burst).
 // Buckets chosen from renderer timing: shots span muzzle(0-60ms)→travel(0-90)→
-// impact(90-340); booms span flash(0-45)→fireball(30-260)→debris→column(→2600).
+// impact(90-340); booms span flash(0-70)→fireball(→burn)→debris→smoke(→hang).
 // A flash is over in 110 ms, so short effects get 4 buckets over 140 ms rather
 // than spending half their columns on an empty tail.
 //
@@ -34,14 +34,25 @@ const DYN = [
   { name: 'muzzle+tracer hit', trigger: { type: 'shot', hit: true, kill: false }, dur: 340, buckets: 6 },
   { name: 'tracer kill', trigger: { type: 'shot', hit: true, kill: true }, dur: 340, buckets: 6 },
   { name: 'tracer miss', trigger: { type: 'shot', hit: false, kill: false }, dur: 340, buckets: 6 },
-  { name: 'muzzle mg42', trigger: { type: 'shot', hit: true, kill: false, weapon: 'mg42' }, dur: 140, buckets: 4 },
-  { name: 'muzzle thompson', trigger: { type: 'shot', hit: true, kill: false, weapon: 'thompson' }, dur: 140, buckets: 4, minPeak: 15 },
+  // Automatic weapons strobe one flash per audio tap (audio.ts GUN): 5 taps at
+  // 50 ms for the MG42, 4 at 86 ms for the Thompson. One bucket per 50 ms, so
+  // the row shows the burst as a row of flashes and not one.
+  { name: 'burst mg42', trigger: { type: 'shot', hit: true, kill: false, weapon: 'mg42' }, dur: 400, buckets: 8 },
+  { name: 'burst thompson', trigger: { type: 'shot', hit: true, kill: false, weapon: 'thompson' }, dur: 400, buckets: 8, minPeak: 15 },
   { name: 'muzzle bazooka', trigger: { type: 'shot', hit: true, kill: false, weapon: 'bazooka' }, dur: 420, buckets: 4 },
   { name: 'cannon blast', trigger: { type: 'shot', hit: true, kill: false, weapon: 'pak40_gun' }, dur: 720, buckets: 4 },
   { name: 'wall strike', anchor: 'wall', trigger: { type: 'shot', hit: false, kill: false }, dur: 400, buckets: 4, roiFrac: 0.3, minPeak: 15 },
-  { name: 'explosion smoke', trigger: { type: 'boom' }, dur: 2600, buckets: 8 },
-  { name: 'grenade boom', trigger: { type: 'boom', r: 3 }, dur: 2600, buckets: 8 },
-  { name: 'barrage boom', trigger: { type: 'boom', r: 9 }, dur: 2600, buckets: 8 },
+  // One row per blast recipe (src/render/fx.ts BLAST), plus the boom with no
+  // kind and no radius, which is what a sim that sends neither still gets.
+  // Radii are the ones sim.ts sends: barrage shell 9, a brew-up none.
+  // Each runs for its own hang time, so the last bucket is the smoke it leaves.
+  { name: 'boom unnamed', trigger: { type: 'boom' }, dur: 5500, buckets: 8 },
+  { name: 'boom grenade', trigger: { type: 'boom', r: 3, kind: 'grenade' }, dur: 2600, buckets: 8 },
+  { name: 'boom mortar', trigger: { type: 'boom', r: 5, kind: 'mortar' }, dur: 5500, buckets: 8 },
+  { name: 'boom shell', trigger: { type: 'boom', r: 9, kind: 'shell' }, dur: 6000, buckets: 8 },
+  { name: 'boom at', trigger: { type: 'boom', r: 3, kind: 'at' }, dur: 3000, buckets: 8 },
+  { name: 'boom bomb', trigger: { type: 'boom', r: 5, kind: 'bomb' }, dur: 7000, buckets: 8 },
+  { name: 'boom brewup', trigger: { type: 'boom', kind: 'brewup' }, dur: 9000, buckets: 8 },
 ];
 
 const { browser, page } = await launch();
@@ -79,10 +90,6 @@ for (const e of DYN) {
   rows.push({ name: e.name, cells });
 }
 
-// Let the last burst's booms/tracers expire so they don't photobomb the static
-// sim-state captures below (BOOM_MS=2600).
-await page.waitForTimeout(2800);
-
 // Static sim-state effects — pause-safe, so a normal screenshot is reliable.
 // Death pose: kill the nearest blue soldier in place (renderer stamps a blood
 // pool the first dead frame, then draws the 'dead' sprite).
@@ -114,24 +121,25 @@ await page.evaluate(
 await page.screenshot({ path: join(OUT, 'death-pose.png') });
 rows.push({ name: 'death pose', cells: [{ file: 'death-pose.png', bucket: 0, age: 0, score: 0 }] });
 
-// Smoke screen (sim.smoke, sim-state): push at ttl 60 so the renderer records
-// maxTtl=60, then drop ttl to 36 → life 0.4 → full opacity while paused.
-await page.evaluate(
-  ({ x, y }) => {
+// Smoke screen (sim.smoke, sim-state): the plume at five ages plus a wreck
+// column, through the same stageSmoke the shot tool uses. The hand-built
+// `{x, y, ttl}` puffs this used to push predate the plume model (V12) and drew
+// nothing at all. Cleared afterwards — a screen this size would sit on top of
+// the brew-up staged below.
+{
+  const v = await stageSmoke(page, anchor);
+  await page.evaluate(({ x, y, scale }) => {
     const g = window.__game;
-    const sim = g.sim;
     g.cam.x = x;
     g.cam.y = y;
-    g.cam.scale = 40;
-    sim.smoke.push({ x: x - 2, y, ttl: 60 }, { x: x + 2, y, ttl: 60 }, { x, y: y - 2, ttl: 60 });
-    return new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => {
-      for (const p of sim.smoke) p.ttl = 36;
-      requestAnimationFrame(() => requestAnimationFrame(r));
-    })));
-  },
-  anchor
-);
-await page.screenshot({ path: join(OUT, 'smoke-screen.png') });
+    g.cam.scale = scale;
+  }, v);
+  await ageFx(page, 0);
+  await page.screenshot({ path: join(OUT, 'smoke-screen.png') });
+  await page.evaluate(() => {
+    window.__game.sim.smoke.length = 0;
+  });
+}
 rows.push({ name: 'smoke screen', cells: [{ file: 'smoke-screen.png', bucket: 0, age: 0, score: 0 }] });
 
 // Pockmarks (marks.ts): twenty misses into one wall. Each target y is offset a
@@ -151,7 +159,7 @@ await page.evaluate(
   },
   house
 );
-await page.waitForTimeout(600); // let the tracers and spall age off; the marks are permanent
+await ageFx(page, 600); // age the tracers and spall off; the marks are permanent
 // Clipped: a 0.15 m chip is ~10 px here and would vanish in a 220 px contact
 // sheet cell, which is the one thing a regression gate cannot afford.
 await page.screenshot({ path: join(OUT, 'pockmarks.png'), clip: { x: 460, y: 220, width: 360, height: 360 } });
@@ -172,7 +180,7 @@ await page.evaluate(
   },
   house
 );
-await page.waitForTimeout(2900);
+await ageFx(page, FX_FLUSH_MS);
 await page.screenshot({ path: join(OUT, 'building-fire.png') });
 rows.push({ name: 'building fire', cells: [{ file: 'building-fire.png', bucket: 0, age: 0, score: 0 }] });
 
@@ -190,7 +198,7 @@ await page.evaluate(
   },
   { x: anchor.x + 6, y: anchor.y }
 );
-await page.waitForTimeout(1200);
+await ageFx(page, 1200);
 await page.screenshot({ path: join(OUT, 'brew-up.png') });
 rows.push({ name: 'vehicle brew-up', cells: [{ file: 'brew-up.png', bucket: 0, age: 0, score: 0 }] });
 

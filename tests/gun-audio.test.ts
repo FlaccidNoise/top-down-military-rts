@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { WEAPONS, type WeaponDef, type WeaponKey } from '../src/sim/data';
-import { GUN } from '../src/render/audio';
+import { GUN, gunOf, tapsOf } from '../src/render/audio';
+import { FLASH, flashClass } from '../src/render/fx';
 
 // Drift tripwire for the gunfire layer. The audio table is keyed per weapon,
 // so a new weapon that never reaches the table would fall back to silence-by-
@@ -54,6 +55,38 @@ describe('GUN audio table', () => {
       expect(GUN[key].decay, key).toBeGreaterThan(GUN.kar98k.decay);
       expect(GUN[key].tail, key).toBeGreaterThan(0);
     }
+  });
+});
+
+// The renderer strobes one muzzle flash per tap off gunOf/tapsOf, the same two
+// functions gunshot() voices a burst with. These pin the contract between the
+// ear and the eye: what a ShotEvent sounds like is what it looks like.
+describe('burst timing shared by the audio and the muzzle flashes', () => {
+  it('reads a burst straight off the GUN table', () => {
+    for (const [key] of entries) {
+      expect(gunOf(key), key).toBe(GUN[key]);
+      expect(tapsOf(GUN[key]), key).toBe(GUN[key].taps ?? 1);
+    }
+    expect(tapsOf(GUN.mg42)).toBe(5);
+    expect(GUN.mg42.spacing).toBe(0.05);
+  });
+
+  it('gives a vehicle main gun, which carries no weapon key, one report', () => {
+    expect(tapsOf(gunOf(undefined))).toBe(1);
+  });
+
+  it('never strobes a weapon whose flash is a single-shot signature', () => {
+    // A back-blast or a muzzle wash repeated five times a burst would be a
+    // different weapon. Only plain flashes may belong to a multi-tap gun.
+    for (const [key] of entries) {
+      if (tapsOf(GUN[key]) > 1) expect(FLASH[flashClass(key)].extra, key).toBeUndefined();
+    }
+  });
+
+  it('keeps a burst short enough that its last flash is out before the next attack', () => {
+    // Longest burst in the table: taps * spacing. Past ~half a second the
+    // strobe of one ShotEvent would run into the next.
+    for (const [key] of entries) expect((tapsOf(GUN[key]) - 1) * (GUN[key].spacing ?? 0), key).toBeLessThan(0.45);
   });
 });
 
