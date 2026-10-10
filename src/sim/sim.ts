@@ -1397,6 +1397,7 @@ export class Sim {
       loadsPresent: [...def.loads],
       cooldown: 0,
       heat: 0,
+      magLeft: WEAPONS[def.weapon].ammo.perUnit, // sited with a belt on the gun, as a soldier spawns with a full magazine
       towedBy: -1,
       targetX: x,
       targetY: y,
@@ -1733,6 +1734,19 @@ export class Sim {
   }
 
   private fireEmplacementSmallArms(e: Emplacement, def: EmplacementDef, w: WeaponDef, firer: Soldier, degrade: number): void {
+    // A belt is ammo.perUnit bursts, as it is in a soldier's hands
+    // (fireSmallArms spends magLeft, and a reload spends the unit). This path
+    // used to spend a whole belt on every burst (#765): a tripod MG42 with 24
+    // belts fired 24 times and was done, while the same gun carried by one
+    // man fired 250 times on his first belt. The change is timed like his
+    // reload, slowed by the same short-crew degrade as everything else here.
+    if (e.magLeft <= 0) {
+      if (this.consumeEmplacementAmmo(e, firer, w.ammo.type)) {
+        e.magLeft = w.ammo.perUnit;
+        e.cooldown = w.ammo.reload * degrade;
+      }
+      return;
+    }
     const crewTeam = this.teams[e.crewTeamId];
     const order = crewTeam.orderState.order;
     const arc = order?.kind === 'defend' || order?.kind === 'ambush' ? order.arc : undefined;
@@ -1746,7 +1760,7 @@ export class Sim {
     if (order?.kind === 'defend' && crewTeam.ambushBonusTick === this.tick) aim *= 1.3;
     const p = this.shotPreview(e.x, e.y, def.weapon, t, false, aim, 0, EYE_H);
     if (!p.visible) return;
-    if (!this.consumeEmplacementAmmo(e, firer, w.ammo.type)) return;
+    e.magLeft--;
     firer.crewSkill.mg = Math.min(1, (firer.crewSkill.mg ?? 0) + 0.0005);
     const hit = this.rng.next() < p.acc;
     const kill = hit ? this.wound(t, this.rng.range(w.damage[0], w.damage[1]), e.x, e.y) : false;
@@ -4618,6 +4632,7 @@ export class Sim {
         Math.round(e.timer * 1e6),
         Math.round(e.cooldown * 1e6),
         Math.round(e.heat * 1e6),
+        e.magLeft,
         e.towedBy,
         e.loadsPresent.length,
         e.hasTarget,
