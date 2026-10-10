@@ -1,10 +1,20 @@
-// The frame-budget gate: what one transient FX family costs renderer.draw() on
-// a full 250-soldier scene. Read `delta` — ms added per frame with the effect
-// at its concurrency cap, against a 16.7 ms budget. `legibility` is the same
+// The frame-budget gate, in two parts.
+//
+// MORALE: what one transient FX family costs renderer.draw() on a full
+// 250-soldier scene. Read `delta` — ms added per frame with the effect at its
+// concurrency cap, against a 16.7 ms budget. `legibility` is the same
 // changed-pixel metric vfx.mjs scores bursts with (its own bar is 40): a
 // transient nobody can see is not cheap, it is missing.
 //
+// WHOLE FRAME: renderer.draw() idle against a heavy combat load, on two views
+// (the squad in its field, the town centre) at the two zooms the game is
+// played at. This is the table to record before and after any FX change. The
+// load is fixed, so two runs compare: 12 blasts of every kind at staggered
+// ages, 60 shots of which 20 are MG bursts, 10 morale crossings, one brewed-up
+// tank, and whatever buildings those blasts set alight.
+//
 //   node scripts/fxcost.mjs --port 5271 [--seed 9] [--scale 24] [--n 400]
+//                           [--device phone] [--hour night] [--frames 150]
 //
 // Dev server must be running: npm run dev -- --port 5271 --strictPort
 //
@@ -20,15 +30,24 @@
 // ages every transient off (now - at), so drawing at `T + 100` keeps a capped
 // set alive and drawing far past its lifetime empties it. Same scene, same
 // soldiers, same terrain in both arms.
-import { arg, launch, gotoStaged, deriveTargets, place } from './lib/stage.mjs';
+//
+// A FRESH PAGE PER SCENE. Enough getImageData calls on one canvas and Chrome
+// demotes it to software raster for the rest of the page's life: a phone run
+// went from 5 ms to 130 ms a frame after ~1,500 readbacks, and a new page
+// measured 3.6 ms on the same view. One scene per page keeps every row under
+// that, and keeps one scene's scorch decals and roof holes out of the next.
+import { arg, launch, gotoStaged, deriveTargets, place, hourMin } from './lib/stage.mjs';
 
 const PORT = Number(arg('port', '5271'));
 const SEED = Number(arg('seed', '9'));
 const SCALE = Number(arg('scale', '24'));
 const N = Number(arg('n', '400'));
+const DEVICE = arg('device', 'desktop');
+const HOUR = hourMin(arg('hour', null));
+const FRAMES = Number(arg('frames', '150'));
 
-const { browser, page } = await launch();
-const kind = await gotoStaged(page, { port: PORT, seed: SEED, camp: 42 });
+const { browser, page } = await launch({ device: DEVICE });
+const kind = await gotoStaged(page, { port: PORT, seed: SEED, camp: 42, hour: HOUR });
 const targets = await deriveTargets(page, { seed: SEED, kind });
 await place(page, targets.units.x, targets.units.y, SCALE);
 
@@ -98,3 +117,96 @@ console.log(`concurrency cap held: ${r.cap} (40 pushed)`);
 console.log(`draw: ${f(r.withFx)} ms with FX at cap, ${f(r.without)} ms without, delta ${f(r.withFx - r.without)} ms`);
 for (const [k, ages] of Object.entries(r.legibility))
   console.log(`legibility ${k.padEnd(8)} ${Object.entries(ages).map(([a, px]) => `${a}ms:${px}px`).join('  ')}`);
+
+// --- whole frame -------------------------------------------------------------
+// The renderer's transient stores. The idle arm empties them for one draw and
+// puts them back, so both arms draw the same terrain, men and decals. A store
+// this build does not have is skipped. Add a new one here when you add it to
+// the renderer, or its cost lands in BOTH arms and the delta hides it.
+const STORES = ['booms', 'tracers', 'moraleFx', 'breaches', 'meleeFx', 'birds'];
+
+async function wholeFrame(view, scale) {
+  const { browser, page } = await launch({ device: DEVICE });
+  const kind = await gotoStaged(page, { port: PORT, seed: SEED, camp: 42, hour: HOUR });
+  const targets = await deriveTargets(page, { seed: SEED, kind });
+  const at = view === 'field' ? targets.units : (targets.place ?? targets.village);
+  const r = await page.evaluate(
+    ({ x, y, scale, n, stores }) => {
+      const g = window.__game;
+      const R = g.renderer;
+      const canvas = document.querySelector('canvas');
+      const ctx = canvas.getContext('2d');
+      g.cam.x = x;
+      g.cam.y = y;
+      g.cam.scale = scale;
+      const T = 500000;
+      const draw = (now) => {
+        const t0 = performance.now();
+        R.draw(ctx, g.cam, [], now);
+        ctx.getImageData(0, 0, 1, 1); // force the flush before stopping the clock
+        return performance.now() - t0;
+      };
+      // Terrain chunks bake on a per-frame budget: draw until the view is warm.
+      for (let i = 0; i < 80; i++) draw(T);
+
+      const KINDS = [
+        ['grenade', 3],
+        ['mortar', 9],
+        ['shell', 12],
+        ['at', 4],
+        ['bomb', 14],
+        ['brewup', 6],
+      ];
+      for (let i = 0; i < 12; i++) {
+        const [kind, r] = KINDS[i % KINDS.length];
+        R.addBooms([{ x: x + ((i % 4) - 1.5) * 5, y: y + (((i / 4) | 0) - 1) * 5, r, kind }], T - i * 180);
+      }
+      for (let i = 0; i < 60; i++) {
+        const a = i * 0.7;
+        R.addEvents(
+          [{ fx: x + Math.cos(a) * 8, fy: y + Math.sin(a) * 8, tx: x - Math.cos(a) * 9, ty: y - Math.sin(a) * 9, hit: i % 3 === 0, kill: i % 9 === 0, weapon: i % 3 === 0 ? 'mg42' : 'garand' }],
+          T - (i % 6) * 40
+        );
+      }
+      for (let i = 0; i < 10; i++) R.addUnitEvents([{ kind: 'pinned', x: x + i - 5, y: y + 2, side: 'blue', name: 'x' }], T - 100);
+      const wreck = g.sim.addVehicle('red', 'panzer4', x + 7, y + 6, 0.6);
+      wreck.alive = false;
+      wreck.burning = true;
+      for (let i = 0; i < 10; i++) draw(T); // the fx atlas and the wreck sprite bake on first use
+
+      let heavy = 0;
+      let idle = 0;
+      let max = 0;
+      const live = Object.fromEntries(stores.filter((k) => R[k]).map((k) => [k, R[k].length]));
+      live.fires = R.fires.size;
+      for (let i = 0; i < n; i++) {
+        const h = draw(T);
+        heavy += h;
+        max = Math.max(max, h);
+        const held = stores.filter((k) => R[k]).map((k) => [k, R[k]]);
+        for (const [k] of held) R[k] = [];
+        const fires = R.fires;
+        R.fires = new Map();
+        wreck.burning = false;
+        idle += draw(T);
+        for (const [k, v] of held) R[k] = v;
+        R.fires = fires;
+        wreck.burning = true;
+      }
+      return { idle: idle / n, heavy: heavy / n, max, live, mpx: (canvas.width * canvas.height) / 1e6 };
+    },
+    { x: at.x, y: at.y, scale, n: FRAMES, stores: STORES }
+  );
+  await browser.close();
+  return r;
+}
+
+console.log(`\nwhole frame: ${DEVICE}${HOUR === null ? '' : `, hour ${arg('hour')}`}, seed ${SEED}, n=${FRAMES} interleaved pairs, renderer.draw() only`);
+console.log('view   px/m   idle ms  heavy ms   delta   max ms   live');
+for (const view of ['field', 'town']) {
+  for (const scale of [14, 24]) {
+    const w = await wholeFrame(view, scale);
+    const live = Object.entries(w.live).filter(([, v]) => v > 0).map(([k, v]) => `${k} ${v}`).join(', ');
+    console.log(`${view.padEnd(6)} ${String(scale).padStart(4)}  ${w.idle.toFixed(2).padStart(8)}  ${w.heavy.toFixed(2).padStart(8)}  ${(w.heavy - w.idle).toFixed(2).padStart(6)}  ${w.max.toFixed(1).padStart(7)}   ${live} (${w.mpx.toFixed(2)} Mpx)`);
+  }
+}

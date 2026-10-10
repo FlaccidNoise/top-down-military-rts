@@ -16,7 +16,7 @@
 //   node scripts/shot.mjs --list                             # presets + effects
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { arg, launch, gotoStaged, deriveTargets, deriveBuilding, wallStage, place, burst, stageEmplacements, stageMorale, stageMoraleFx, stageSmoke, stageVehicles, hourMin, fmtHour, HOUR_PRESETS, stagedHour } from './lib/stage.mjs';
+import { arg, launch, gotoStaged, deriveTargets, deriveBuilding, wallStage, place, burst, ageFx, stageEmplacements, stageMorale, stageMoraleFx, stageSmoke, stageVehicles, hourMin, fmtHour, HOUR_PRESETS, stagedHour } from './lib/stage.mjs';
 
 const has = (name) => process.argv.includes(`--${name}`);
 const PORT = Number(arg('port', '5198'));
@@ -130,7 +130,7 @@ if (has('effect')) {
       },
       { x: view.x, y: view.y, scale: has('scale') ? scale : (view.scale ?? scale), trigger }
     );
-    await page.waitForTimeout(e.hold); // let the blast transient expire; what is left is the fire
+    await ageFx(page, e.hold); // age the blast transient out; what is left is the fire
     await page.screenshot({ path: OUT });
     console.log(`${OUT}  (effect ${name}, ${e.hold}ms after the blast, ${at})`);
     await browser.close();

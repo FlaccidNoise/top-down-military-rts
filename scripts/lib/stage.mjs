@@ -3,14 +3,15 @@
 // One place that knows how to: launch a headless Chrome, boot the game into a
 // pinned, deterministic, PAUSED battle (strongest red defends so it never
 // auto-resolves; nearest blue attacks), derive named scene targets from the
-// map plan, move the camera, and — the hard part — capture short-lived
-// wall-clock VFX by grabbing frames from inside the page.
+// map plan, move the camera, and — the hard part — capture short-lived VFX by
+// grabbing frames from inside the page.
 //
 // Why in-page capture: transient VFX (muzzle 60ms, tracer 90ms, fireball
-// 150ms) age off wall-clock `now` and are drained into the renderer every real
-// frame by main.ts, paused or not. An MCP/Playwright screenshot round-trip
-// (150-400ms) always misses that window, so `burst()` runs a requestAnimation-
-// Frame loop in the page and keeps the brightest frame per age bucket.
+// 150ms) are drained into the renderer every real frame by main.ts and age off
+// its fx clock, which STOPS under pause — and every staged scene is paused. So
+// nothing here waits on wall-clock: `burst()` and `ageFx()` step that clock by
+// hand through `__game.advanceFx`, one rAF per step, and `burst()` keeps the
+// most-changed frame per age bucket. Ages are exact and repeat run to run.
 import { chromium } from 'playwright';
 
 export const arg = (name, dflt) => {
@@ -527,9 +528,11 @@ export function wallStage(b) {
 //                                 and defaults to a rifle. fx/fy/tx/ty override
 //                                 the default 12 m span across the anchor, which
 //                                 is how a miss gets aimed into known masonry
-//   { type:'boom', r }          — enqueues a boom (fireball + ejecta + smoke
+//   { type:'boom', r, kind }    — enqueues a boom (fireball + ejecta + smoke
 //                                 column); r is the blast radius in metres
-//                                 (grenade ~3, mortar/barrage ~9)
+//                                 (grenade ~3, mortar/barrage ~9), kind the
+//                                 sim's blast kind. Both optional, as they are
+//                                 on the sim's own boom
 // Both enqueue exactly like the sim does; main.ts drains them next frame.
 // `roiFrac` tightens the scored/diffed region for deliberately quiet effects.
 //
@@ -542,7 +545,7 @@ export function wallStage(b) {
 // Returns [{ bucket, ageMs, score, dataUrl }] — most-changed frame per bucket.
 export function burst(page, { x, y, scale, trigger, dur, buckets, roiFrac = 0.6 }) {
   return page.evaluate(
-    async ({ x, y, scale, trigger, dur, buckets, roiFrac }) => {
+    async ({ x, y, scale, trigger, dur, buckets, roiFrac, FX_FLUSH_MS }) => {
       const g = window.__game;
       const sim = g.sim;
       const canvas = document.querySelector('canvas');
@@ -582,13 +585,14 @@ export function burst(page, { x, y, scale, trigger, dur, buckets, roiFrac = 0.6 
           kill: trigger.kill,
           weapon: trigger.weapon ?? 'garand',
         });
-      else if (trigger.type === 'boom') sim.pendingBooms.push(trigger.r === undefined ? { x, y } : { x, y, r: trigger.r });
+      else if (trigger.type === 'boom') sim.pendingBooms.push({ x, y, ...(trigger.r === undefined ? {} : { r: trigger.r }), ...(trigger.kind === undefined ? {} : { kind: trigger.kind }) });
 
       const snap = Array.from({ length: buckets }, () => null); // per-bucket best canvas
       const meta = Array.from({ length: buckets }, () => null);
-      const start = performance.now();
-      let age = 0;
-      while ((age = performance.now() - start) < dur) {
+      // One 60 Hz frame of fx clock per real frame. The first pass through the
+      // loop is the frame main.ts drains the trigger on, so it is age 0.
+      const STEP = 1000 / 60;
+      for (let age = 0; age < dur; age += STEP) {
         await raf();
         const d = roi();
         let score = 0;
@@ -605,11 +609,36 @@ export function burst(page, { x, y, scale, trigger, dur, buckets, roiFrac = 0.6 
           c.getContext('2d').drawImage(canvas, 0, 0);
           meta[b] = { bucket: b, ageMs: Math.round(age), score };
         }
+        g.advanceFx(STEP);
       }
+      // Age the leftovers out, so the next burst baselines a clean scene
+      // instead of this one's smoke.
+      g.advanceFx(FX_FLUSH_MS);
+      await raf();
+      await raf();
       return meta
         .map((m, b) => (m ? { ...m, dataUrl: snap[b].toDataURL('image/png') } : null))
         .filter(Boolean);
     },
-    { x, y, scale, trigger, dur, buckets, roiFrac }
+    { x, y, scale, trigger, dur, buckets, roiFrac, FX_FLUSH_MS }
   );
+}
+
+// Longer than any transient the renderer keeps on the fx clock. Advancing by
+// this much empties them all.
+export const FX_FLUSH_MS = 30000;
+
+// Age every fx-clock transient by `ms` under pause, then give the wall-clock
+// reveals (the roof fade after a camera move) `settleMs` of real time. This is
+// what a held shot waits on: `waitForTimeout` alone ages nothing in a paused
+// scene, so "the fire left after the blast" was the blast at age 0.
+export async function ageFx(page, ms, settleMs = 800) {
+  await page.evaluate(async (ms) => {
+    const raf = () => new Promise((r) => requestAnimationFrame(r));
+    await raf(); // whatever was just pushed has to be drained at the OLD clock first
+    window.__game.advanceFx(ms);
+    await raf();
+    await raf();
+  }, ms);
+  await page.waitForTimeout(settleMs);
 }

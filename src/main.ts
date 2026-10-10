@@ -1765,6 +1765,14 @@ function cycleFloorFocus(): void {
     stratPaused = p;
     paused = p;
   },
+  // Step the render clock by hand. fxNow stops with the sim, and every staged
+  // harness scene is paused so nothing in it moves — which also meant a staged
+  // transient never aged and the VFX gate only ever shot the age-0 frame
+  // (#780). Stepping it here ages the effects and nothing else: the sim does
+  // not tick, and a capture lands on an exact age instead of a wall-clock guess.
+  advanceFx: (ms: number) => {
+    fxNow += ms;
+  },
   selectSquad: (i: number) => selectSquad(i),
   selectVehicle: (i: number) => selectVehicle(i),
   getCampaign: () => S().campaign,
