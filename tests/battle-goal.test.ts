@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { GameMap } from '../src/sim/map';
 import { Sim } from '../src/sim/sim';
-import { battleGoal, BREAK_FLOOR_MIN, BREAK_FRACTION, breakFloor, effective, quietPrompt } from '../src/ui/battle-goal';
+import { battleGoal, BREAK_FLOOR_MIN, BREAK_FRACTION, breakFloor, effective, ENEMY_READS, goalText, quietPrompt, type SideStrength } from '../src/ui/battle-goal';
 
 // Two forces far apart on bare ground: nobody is in range, so the only thing
 // that changes a count is this test.
@@ -10,6 +10,16 @@ function standoff(blueSquads: number, redSquads: number, redKind: 'de_gruppe' | 
   for (let i = 0; i < blueSquads; i++) sim.addSquadFromDef('blue', 'us_rifle', 10, 10 + i * 8);
   for (let i = 0; i < redSquads; i++) sim.addSquadFromDef('red', redKind, 390, 10 + i * 8);
   return sim;
+}
+
+/** The enemy's true strength, as the strip reads it with fog off. */
+function enemyExact(sim: Sim): SideStrength {
+  const fog = sim.fowDisabled;
+  sim.fowDisabled = true;
+  const e = battleGoal(sim)!.enemy;
+  sim.fowDisabled = fog;
+  if (!e.exact) throw new Error('fog off must give an exact enemy read');
+  return e.strength;
 }
 
 const takeOut = (sim: Sim, side: 'blue' | 'red'): void => {
@@ -27,7 +37,7 @@ describe('the break-off rule the HUD states is the one the sim runs', () => {
   for (const [blue, red, kind] of [[3, 2, 'de_gruppe'], [2, 3, 'de_gruppe'], [4, 1, 'de_gruppe'], [1, 1, 'de_smg42']] as const) {
     it(`red breaks on the count the strip shows (${blue} v ${red} ${kind})`, () => {
       const sim = standoff(blue, red, kind);
-      const breakAt = battleGoal(sim)!.enemy.breakAt;
+      const breakAt = enemyExact(sim).breakAt;
       if (kind === 'de_smg42') expect(sim.startStrength.red * BREAK_FRACTION).toBeLessThan(BREAK_FLOOR_MIN);
       let lastStanding = -1;
       for (let i = 0; i < 200 && sim.winner === null; i++) {
@@ -81,20 +91,73 @@ describe('battleGoal', () => {
     reds[0].downed = true;
     reds[1].captured = true;
     reds[2].alive = false;
-    expect(battleGoal(sim)!.enemy.now).toBe(reds.length - 3);
-    expect(battleGoal(sim)!.enemy.start).toBe(reds.length);
+    expect(enemyExact(sim).now).toBe(reds.length - 3);
+    expect(enemyExact(sim).start).toBe(reds.length);
   });
 
   it('colours a side by how near its break line it stands', () => {
-    const sim = standoff(1, 3);
+    const sim = standoff(3, 1);
     const g0 = battleGoal(sim)!;
-    expect(g0.enemy.state).toBe('steady');
-    const reds = sim.soldiers.filter((s) => s.side === 'red');
-    for (let i = 0; i < reds.length - g0.enemy.breakAt - 1; i++) reds[i].alive = false;
-    expect(battleGoal(sim)!.enemy.now).toBe(g0.enemy.breakAt + 1);
-    expect(battleGoal(sim)!.enemy.state).toBe('pinned');
-    reds[reds.length - 1].alive = false;
-    expect(battleGoal(sim)!.enemy.state).toBe('broken');
+    expect(g0.own.state).toBe('steady');
+    const blues = sim.soldiers.filter((s) => s.side === 'blue');
+    for (let i = 0; i < blues.length - g0.own.breakAt - 1; i++) blues[i].alive = false;
+    expect(battleGoal(sim)!.own.now).toBe(g0.own.breakAt + 1);
+    expect(battleGoal(sim)!.own.state).toBe('pinned');
+    blues[blues.length - 1].alive = false;
+    expect(battleGoal(sim)!.own.state).toBe('broken');
+  });
+});
+
+// A live enemy body count is intel the fog withholds (owner decision,
+// HANDOFF.md 2026-08-31: morale reads may leak, body counts may not).
+describe('the enemy read under fog', () => {
+  it('never states the live enemy count, at any strength', () => {
+    // 36 blue against 20 red: no red count can be mistaken for the blue one.
+    const sim = standoff(3, 2);
+    expect(sim.fowDisabled).toBe(false);
+    const seen = new Set<string>();
+    while (effective(sim, 'red') > 0) {
+      const g = battleGoal(sim)!;
+      const now = effective(sim, 'red');
+      expect(g.enemy.exact).toBe(false);
+      expect(JSON.stringify(g.enemy)).not.toContain('"now"');
+      expect(goalText(g), `red at ${now}`).not.toMatch(new RegExp(`\\b${now}\\b`));
+      expect(goalText(g)).toContain(`US ${effective(sim, 'blue')}`);
+      seen.add(goalText(g));
+      takeOut(sim, 'red');
+    }
+    // Twenty men down, and the strip said only five different things.
+    expect(seen.size).toBe(ENEMY_READS.length);
+  });
+
+  it('moves in coarse steps from Holding to Broken as the enemy nears its line', () => {
+    const sim = standoff(3, 2);
+    const words: string[] = [];
+    for (;;) {
+      const e = battleGoal(sim)!.enemy;
+      if (e.exact) throw new Error('fog is on');
+      if (words[words.length - 1] !== e.word) words.push(e.word);
+      expect(e.lit).toBe(ENEMY_READS.indexOf(e.word));
+      if (effective(sim, 'red') === 0) break;
+      takeOut(sim, 'red');
+    }
+    expect(words).toEqual(['Holding', 'Shaken', 'Wavering', 'Breaking', 'Broken']);
+  });
+
+  it('reads Broken on exactly the count the sim breaks at', () => {
+    const sim = standoff(3, 2);
+    const breakAt = enemyExact(sim).breakAt;
+    while (effective(sim, 'red') > breakAt + 1) takeOut(sim, 'red');
+    expect(battleGoal(sim)!.enemy).toMatchObject({ word: 'Breaking' });
+    takeOut(sim, 'red');
+    expect(battleGoal(sim)!.enemy).toMatchObject({ word: 'Broken', lit: 0 });
+  });
+
+  it('gives the exact count and break line with fog off', () => {
+    const sim = standoff(3, 2);
+    sim.fowDisabled = true;
+    const g = battleGoal(sim)!;
+    expect(goalText(g)).toBe(`Break them · GE ${sim.startStrength.red} → ${enemyExact(sim).breakAt} · US ${sim.startStrength.blue}`);
   });
 });
 

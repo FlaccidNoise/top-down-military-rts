@@ -3,7 +3,7 @@ import { crewNear, friendlyHasLos, loadsReady, type Emplacement } from '../sim/e
 import { balkHint, canArm, ORDER_AFFORDANCE, type ArmTarget, type OrderAffordance } from './order-data';
 import type { OrderKind } from '../sim/orders';
 import { canBreachByHand, type Sim, type Soldier, type Squad, type Vehicle } from '../sim/sim';
-import { battleGoal, type SideStrength } from './battle-goal';
+import { battleGoal, goalText, type SideStrength } from './battle-goal';
 import { formatBinding, loadKeymap, type Keymap } from './keymap';
 import { MOBILE } from '../render/view';
 import { patchChildren } from './patch';
@@ -452,10 +452,16 @@ export class Hud {
       `<span class="obj-bar"><i style="width:${Math.round((s.now / s.start) * 100)}%;background:${color}"></i>` +
       `<b style="left:${Math.round((s.breakAt / s.start) * 100)}%"></b></span>`;
     const own = g.own.state === 'steady' || g.own.state === 'shaken' ? TEAM.blue : STATE_COLOR[g.own.state];
+    // Under fog the enemy is a coarse read, never a count (battle-goal.ts).
+    const e = g.enemy;
+    const enemy = e.exact
+      ? `GE ${e.strength.now} <em>\u2192 ${e.strength.breakAt}</em>${bar(e.strength, TEAM.red)}`
+      : `GE <span class="obj-segs">${'<i class="on"></i>'.repeat(e.lit)}${'<i></i>'.repeat(e.of - e.lit)}</span><em>${e.word}</em>`;
     el.style.display = '';
+    el.setAttribute('aria-label', goalText(g));
     el.innerHTML =
       `<span class="obj-kind">${g.label}</span>` +
-      `<span class="obj-side ge" title="They break at ${g.enemy.breakAt}">GE ${g.enemy.now} <em>\u2192 ${g.enemy.breakAt}</em>${bar(g.enemy, TEAM.red)}</span>` +
+      `<span class="obj-side ge">${enemy}</span>` +
       `<span class="obj-side us" title="You break at ${g.own.breakAt}">US ${g.own.now}${bar(g.own, own)}</span>`;
   }
 

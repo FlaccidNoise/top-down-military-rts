@@ -660,7 +660,11 @@ button.hbtn:focus-visible,
 #obj-strip { flex: none; gap: var(--sp-3); white-space: nowrap; }
 .obj-kind { color: var(--amber-bright); font-weight: var(--fw-label); letter-spacing: 1px; text-transform: uppercase; }
 .obj-side { display: inline-flex; align-items: center; gap: 6px; }
-.obj-side em { font-style: normal; font-weight: var(--fw-reg); color: var(--muted); }
+.obj-side em { font-style: normal; font-weight: var(--fw-reg); color: var(--muted); text-transform: uppercase; letter-spacing: 1px; }
+/* The enemy under fog: a few coarse segments, never a count. */
+.obj-segs { display: inline-flex; gap: 2px; }
+.obj-segs i { width: 16px; height: 6px; border-radius: 1px; background: var(--track-bg); }
+.obj-segs i.on { background: var(--red); }
 .obj-bar {
   position: relative;
   width: 72px;

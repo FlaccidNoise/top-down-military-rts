@@ -24,10 +24,19 @@ export interface SideStrength {
   state: 'steady' | 'shaken' | 'pinned' | 'broken';
 }
 
+// What the player is told of the enemy's strength. A live body count is intel
+// the fog withholds (the ticker and the top bar follow the same rule), so under
+// fog the strip gives a coarse read: a few segments and one word, both from the
+// true strength against the break line. With fog off the count is exact.
+export const ENEMY_READS = ['Broken', 'Breaking', 'Wavering', 'Shaken', 'Holding'] as const;
+export type EnemyRead =
+  | { exact: true; strength: SideStrength }
+  | { exact: false; lit: number; of: number; word: (typeof ENEMY_READS)[number] };
+
 export interface BattleGoal {
   label: string;
   own: SideStrength;
-  enemy: SideStrength;
+  enemy: EnemyRead;
 }
 
 function strength(sim: Sim, side: Side): SideStrength {
@@ -40,10 +49,26 @@ function strength(sim: Sim, side: Side): SideStrength {
   return { now, start, breakAt, state };
 }
 
+function enemyRead(sim: Sim): EnemyRead {
+  const s = strength(sim, 'red');
+  if (sim.fowDisabled) return { exact: true, strength: s };
+  const of = ENEMY_READS.length - 1;
+  // The share of the ground between full strength and the break line still held.
+  const left = s.start > s.breakAt ? (s.now - s.breakAt) / (s.start - s.breakAt) : 0;
+  const lit = Math.max(0, Math.min(of, Math.ceil(left * of)));
+  return { exact: false, lit, of, word: ENEMY_READS[lit] };
+}
+
 /** null before either side is fielded: the strip has nothing true to say. */
 export function battleGoal(sim: Sim): BattleGoal | null {
   if (sim.startStrength.blue <= 0 || sim.startStrength.red <= 0) return null;
-  return { label: 'Break them', own: strength(sim, 'blue'), enemy: strength(sim, 'red') };
+  return { label: 'Break them', own: strength(sim, 'blue'), enemy: enemyRead(sim) };
+}
+
+/** The strip as plain text: what a screen reader hears, and what the tests read. */
+export function goalText(g: BattleGoal): string {
+  const enemy = g.enemy.exact ? `GE ${g.enemy.strength.now} \u2192 ${g.enemy.strength.breakAt}` : `GE ${g.enemy.word.toLowerCase()}`;
+  return `${g.label} \u00b7 ${enemy} \u00b7 US ${g.own.now}`;
 }
 
 // Screen bearings: +x is east, +y is south.
