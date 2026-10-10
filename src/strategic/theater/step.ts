@@ -237,7 +237,12 @@ export function forceEtaMinutes(front: FrontV2, f: Force, destNodeId: number, op
 // §3.7: every arm maps to a visible flash string at the UI layer; silent
 // returns die here. Lives beside the kernel because the returned ETA runs
 // the shadow march.
-export function orderMove(front: FrontV2, forceId: number, destNodeId: number, opts: MoveKernelOpts = {}): MoveOrder {
+export type MovePreview = { ok: true; etaMin: number; pos: Force['pos']; path: number[] } | { ok: false; reason: MoveReject };
+
+// What orderMove WOULD do, with nothing changed: the same reject ladder, the
+// same plan, the same shadow-march ETA. The map draws its route preview from
+// this, so the preview cannot promise a march the order then refuses.
+export function previewMove(front: FrontV2, forceId: number, destNodeId: number, opts: MoveKernelOpts = {}): MovePreview {
   const f = front.forces.find((x) => x.id === forceId);
   if (!f) return { ok: false, reason: 'unknown-force' };
   if (f.engagedIn !== null) return { ok: false, reason: 'engaged' };
@@ -250,12 +255,18 @@ export function orderMove(front: FrontV2, forceId: number, destNodeId: number, o
   // live: 'Gué-de-Ifs', a town objective the player could not order onto.
   if (dest.kind === 'ford') return { ok: false, reason: 'destination-unholdable' };
   if (f.pos.kind === 'node' && f.pos.nodeId === destNodeId) return { ok: false, reason: 'already-there' };
-
   const plan = planMove(front, f, destNodeId);
   if (!plan) return { ok: false, reason: 'no-route' };
-  f.pos = plan.pos;
-  f.path = plan.path;
-  return { ok: true, etaMin: forceEtaMinutes(front, f, destNodeId, opts) };
+  return { ok: true, pos: plan.pos, path: plan.path, etaMin: forceEtaMinutes(front, { ...f, pos: plan.pos, path: plan.path }, destNodeId, opts) };
+}
+
+export function orderMove(front: FrontV2, forceId: number, destNodeId: number, opts: MoveKernelOpts = {}): MoveOrder {
+  const p = previewMove(front, forceId, destNodeId, opts);
+  if (!p.ok) return p;
+  const f = front.forces.find((x) => x.id === forceId)!;
+  f.pos = p.pos;
+  f.path = p.path;
+  return { ok: true, etaMin: p.etaMin };
 }
 
 // The march a force would make to a node: the path, and the position it

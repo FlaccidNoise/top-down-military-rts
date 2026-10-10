@@ -212,7 +212,7 @@ async function newOperation(page, { tap = false } = {}) {
 
 const theaterTargets = (page) =>
   page.evaluate(async () => {
-    const { orderMove } = await import('/src/strategic/theater/step.ts');
+    const { previewMove } = await import('/src/strategic/theater/step.ts');
     const W = innerWidth, H = innerHeight;
     // The coachmark is DOM too: a click that lands on the bubble teaching the
     // move never reaches the map underneath it.
@@ -238,9 +238,9 @@ const theaterTargets = (page) =>
     // An unheld control node a red garrison is actually sitting on — an empty
     // one flips without a fight and the player never sees a battle — that this
     // company can be ordered onto, weakest first: the target a briefed player
-    // picks. Reachability is asked of orderMove itself rather than guessed at
-    // (a pure ford objective refuses every order), dry-run on a saved path so
-    // the theater is exactly as it was.
+    // picks. Reachability is asked of previewMove, the order's own reject
+    // ladder and plan with nothing changed, rather than guessed at (a pure
+    // ford objective refuses every order).
     const ctrl = v2.goals.blue.find((c) => c.kind === 'control');
     if (!ctrl) throw new Error('blue has no control goal — makeWarGoals changed shape');
     const redAt = (n) => v2.front.forces
@@ -248,11 +248,7 @@ const theaterTargets = (page) =>
       .reduce((a, f) => a + f.strength, 0);
     const wouldTake = (nodeId) => {
       if (!force) return { ok: false, reason: 'no company selected' };
-      const f = v2.front.forces.find((x) => x.id === force.id);
-      const saved = f.path.slice();
-      const r = orderMove(v2.front, force.id, nodeId);
-      f.path = saved;
-      return r;
+      return previewMove(v2.front, force.id, nodeId);
     };
     const cands = ctrl.nodeIds
       .filter((n) => v2.front.controlByNode[n] !== 'blue')

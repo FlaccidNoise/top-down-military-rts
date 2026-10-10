@@ -9,7 +9,7 @@ import {
   type Force,
   type FrontV2,
 } from '../src/strategic/theater/force';
-import { forceEtaMinutes, orderHalt, orderMove, stepMovement } from '../src/strategic/theater/step';
+import { forceEtaMinutes, orderHalt, orderMove, previewMove, stepMovement } from '../src/strategic/theater/step';
 import { MOVE_MPM, type Theater, type TheaterEdge, type Vec } from '../src/strategic/theater';
 
 // Synthetic fixture: precise control over lengths and crossings.
@@ -231,6 +231,23 @@ describe('turning and halting (jtbug #762)', () => {
     expect(orderMove(fr, f.id, 4).ok).toBe(true);
     expect(f.path).toEqual([4, 5]);
     expect(f.pos).toMatchObject({ dir: 1 });
+  });
+
+  it('previewMove changes nothing and promises exactly what orderMove then does', () => {
+    const fr = front();
+    const f = blue(fr);
+    orderMove(fr, f.id, 4);
+    walk(fr, 10);
+    const snapshot = JSON.stringify(fr);
+    const p = previewMove(fr, f.id, 0); // a turn-round: the plan flips the direction
+    expect(JSON.stringify(fr)).toBe(snapshot);
+    expect(p).toMatchObject({ ok: true, path: [2], pos: { edgeId: 2, dir: -1 } });
+    const o = orderMove(fr, f.id, 0);
+    expect(o).toEqual({ ok: true, etaMin: p.ok ? p.etaMin : -1 });
+    expect([f.path, f.pos]).toEqual(p.ok ? [p.path, p.pos] : []);
+    // The reject ladder is the same one.
+    expect(previewMove(fr, f.id, 3)).toEqual({ ok: false, reason: 'destination-unholdable' });
+    expect(previewMove(fr, 999, 0)).toEqual({ ok: false, reason: 'unknown-force' });
   });
 
   it('halt stops a company on the road; it stands there and takes a new order', () => {

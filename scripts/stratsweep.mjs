@@ -57,6 +57,12 @@ const STATES = {
     v2.selectedForce = blue[0].id;
     window.__game.stepTheater(90);
   },
+  // A company selected and the player pointing at an objective: the route
+  // preview. The pointing is real input (see ACTS).
+  preview: () => {
+    const v2 = window.__game.getV2();
+    v2.selectedForce = v2.front.forces.find((f) => f.side === 'blue').id;
+  },
   // Three counters on one town, with every pip lit: the fan-out and the
   // counter's vocabulary. Positions and states are written directly.
   stack: async () => {
@@ -81,6 +87,33 @@ const STATES = {
     const f = v2.front.forces.find((x) => x.side === 'blue');
     orderMove(v2.front, f.id, v2.front.theater.objectiveNodes[0]);
     window.__game.stepTheater(240);
+  },
+};
+
+// Real input a state needs after staging, run from Node. A hover and a held
+// finger cannot be staged by writing state: the game reads the pointer.
+const ACTS = {
+  preview: async (page, device) => {
+    const [x, y] = await page.evaluate(() => {
+      const v2 = window.__game.getV2();
+      const W = window.__game.view.w, H = window.__game.view.h;
+      const i = v2.view.inset;
+      // The first objective that is on screen and clear of the HUD.
+      for (const n of v2.front.theater.objectiveNodes) {
+        const p = v2.front.theater.nodes[n].pos;
+        const [sx, sy] = v2.view.toScreen(p.x, p.y, W, H);
+        if (sx > 20 && sx < W - 20 && sy > i.top + 20 && sy < H - i.bottom - 20) return [sx, sy];
+      }
+      throw new Error('preview: no objective is on screen — boot framing changed');
+    });
+    if (device === 'desktop') {
+      await page.mouse.move(x - 30, y - 30);
+      await page.mouse.move(x, y, { steps: 3 });
+    } else {
+      const cdp = await page.context().newCDPSession(page);
+      await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y }] });
+      await page.waitForTimeout(600); // past the 420 ms hold
+    }
   },
 };
 
@@ -124,6 +157,7 @@ for (const device of DEVICES) {
   for (const state of want) {
     await newCampaign(page);
     await page.evaluate(STATES[state]);
+    await ACTS[state]?.(page, device);
     await page.evaluate(() => window.__game.freezeFx?.(1000));
     await page.waitForTimeout(150);
     if (PERF) {

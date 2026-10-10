@@ -4,6 +4,7 @@
 // the hybrid doctrine. The DOM is built ONCE and update() patches text and
 // classes: a rebuilt button is a new element between mousedown and mouseup,
 // and at 60x that swallowed every click on the clock row (jtbug #761).
+import { fmtEta } from '../render/theater-view';
 import { MOBILE } from '../render/view';
 
 import type { WarGoals } from '../strategic/goals';
@@ -146,8 +147,7 @@ export class TheaterHud {
         // and dusk instead of living only in the order flash.
         const dest = pathDestination(front.theater, sel)!;
         const eta = forceEtaMinutes(front, sel, dest, { nightTempo });
-        const eh = Math.floor(eta / 60);
-        this.setState('th-mov', `moving → ${front.theater.nodes[dest].name} · ETA ${eh > 0 ? `${eh}h` : ''}${(eta % 60).toString().padStart(2, '0')}m`);
+        this.setState('th-mov', `moving → ${front.theater.nodes[dest].name} · ETA ${fmtEta(eta)}`);
       } else this.setState('th-hold', 'holding');
       this.halt.hidden = sel.side !== 'blue' || sel.engagedIn !== null || sel.path.length === 0;
       this.fatFill.className = `th-fat-fill th-fat-${sel.fatigue >= 0.66 ? 'high' : sel.fatigue >= 0.33 ? 'mid' : 'low'}`;

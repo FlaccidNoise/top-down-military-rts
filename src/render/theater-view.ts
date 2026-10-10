@@ -74,11 +74,30 @@ export const THEATER_ZOOM_MAX = 8;
 const FRAME_ZOOM_MAX = 3;
 const PAN_SLACK_PX = 80;
 
+// One ETA format for the card, the preview chip and the order flash.
+export function fmtEta(min: number): string {
+  const h = Math.floor(min / 60);
+  const m = Math.round(min % 60);
+  return h > 0 ? `${h}h${String(m).padStart(2, '0')}m` : `${m}m`;
+}
+
+// The march the player is pointing at, not yet ordered. `ok: false` is a
+// place the selected company cannot be sent.
+export type MarchPreview =
+  | { ok: true; pos: Force['pos']; path: number[]; etaMin: number }
+  | { ok: false; nodeId: number };
+
+const ARROW_OWN = '#a9c4f5';
+const ARROW_SEL = '#d4e3ff';
+const ARROW_PREVIEW = '#ffe9a0';
+const ARROW_CASE = 'rgba(12, 10, 6, 0.85)';
+
 export class TheaterView {
   zoomMul = 1;
   panX = 0;
   panY = 0;
   inset: ViewInset = { left: 0, top: 0, right: 0, bottom: 0 };
+  preview: MarchPreview | null = null; // set by main.ts from the hover or the hold
   supplyOn = false; // S50: gates cut hatching + tier tags (set from CampaignConfig)
   recon: ReconMode = 'omniscient'; // S53: 'contacts' fogs every enemy-derived mark
   private flashText = '';
@@ -439,38 +458,29 @@ export class TheaterView {
       ctx.stroke();
     }
 
+    // Marches. Every moving company keeps a thin arrow to where it is going,
+    // along the roads it will use. The selected one is brighter.
+    for (const f of front.forces) {
+      if (f.side !== 'blue' || f.strength <= 0 || f.path.length === 0 || f.engagedIn !== null) continue;
+      const sel = f.id === selectedForce;
+      this.arrow(ctx, this.routePts(f.pos, f.path), w, h, sel ? ARROW_SEL : ARROW_OWN, sel ? 3 : 1.8);
+    }
+
     // Forces, on top of everything the map says about the ground.
     for (const c of this.counters) drawCounter(ctx, c);
 
-    // Path preview for the selection.
-    const sel = front.forces.find((f) => f.id === selectedForce);
-    if (sel && sel.path.length > 0) {
-      ctx.strokeStyle = 'rgba(230, 220, 200, 0.5)';
-      ctx.lineWidth = 1.5;
-      ctx.setLineDash([4, 4]);
-      ctx.beginPath();
-      const start = this.forceXY(sel);
-      let [px, py] = this.toScreen(start.x, start.y, w, h);
-      ctx.moveTo(px, py);
-      // Walk from the anchor node ahead of the force through each path edge.
-      let at = sel.pos.kind === 'edge'
-        ? (sel.pos.dir === 1 ? this.theater.edges[sel.pos.edgeId].b : this.theater.edges[sel.pos.edgeId].a)
-        : sel.pos.nodeId;
-      {
-        const ap = this.theater.nodes[at].pos;
-        [px, py] = this.toScreen(ap.x, ap.y, w, h);
-        ctx.lineTo(px, py);
-      }
-      for (const eid of sel.path) {
-        if (sel.pos.kind === 'edge' && eid === sel.pos.edgeId) continue; // own edge already drawn
-        const e = this.theater.edges[eid];
-        at = e.a === at ? e.b : e.a;
-        const fp = this.theater.nodes[at].pos;
-        [px, py] = this.toScreen(fp.x, fp.y, w, h);
-        ctx.lineTo(px, py);
-      }
-      ctx.stroke();
-      ctx.setLineDash([]);
+    // The order preview: the real route, bright, with the time it will take.
+    // Drawn over the counters, because it is what the player is looking at.
+    if (this.preview?.ok) {
+      const pts = this.routePts(this.preview.pos, this.preview.path);
+      this.arrow(ctx, pts, w, h, ARROW_PREVIEW, 3.5);
+      const end = pts[pts.length - 1];
+      const [ex, ey] = this.toScreen(end.x, end.y, w, h);
+      this.chip(ctx, fmtEta(this.preview.etaMin), ex, ey, w, ARROW_PREVIEW);
+    } else if (this.preview) {
+      const n = this.theater.nodes[this.preview.nodeId].pos;
+      const [ex, ey] = this.toScreen(n.x, n.y, w, h);
+      this.chip(ctx, '✕', ex, ey, w, '#e2543c');
     }
 
     // Chrome lives in the TheaterHud DOM; the canvas keeps only the flash.
@@ -485,6 +495,87 @@ export class TheaterView {
       ctx.font = '13px ui-monospace, monospace';
       ctx.fillText(this.flashText, w / 2, bar && bar.height > 0 ? bar.bottom + 20 : 24);
     }
+  }
+
+  // The ground a march covers: the rest of the force's own road, then each
+  // road of the path, following the road's own bends.
+  private routePts(pos: Force['pos'], path: readonly number[]): Vec[] {
+    const out: Vec[] = [];
+    let at: number;
+    let rest = path;
+    if (pos.kind === 'edge') {
+      const e = this.theater.edges[pos.edgeId];
+      const s1 = pos.dir === 1 ? e.lengthM : 0;
+      const lo = Math.min(pos.s, s1);
+      const hi = Math.max(pos.s, s1);
+      const span: Vec[] = [pointAlong(e, lo)];
+      let d = 0;
+      for (let i = 1; i < e.polyline.length; i++) {
+        d += Math.hypot(e.polyline[i].x - e.polyline[i - 1].x, e.polyline[i].y - e.polyline[i - 1].y);
+        if (d > lo && d < hi) span.push(e.polyline[i]);
+      }
+      span.push(pointAlong(e, hi));
+      out.push(...(pos.dir === 1 ? span : span.reverse()));
+      at = pos.dir === 1 ? e.b : e.a;
+      if (path[0] === e.id) rest = path.slice(1);
+    } else {
+      at = pos.nodeId;
+      out.push(this.theater.nodes[at].pos);
+    }
+    for (const eid of rest) {
+      const e = this.theater.edges[eid];
+      const fwd = e.a === at;
+      out.push(...(fwd ? e.polyline : [...e.polyline].reverse()));
+      at = fwd ? e.b : e.a;
+    }
+    return out;
+  }
+
+  // A cased line with an arrowhead at its end.
+  private arrow(ctx: CanvasRenderingContext2D, pts: readonly Vec[], w: number, h: number, color: string, width: number): void {
+    if (pts.length < 2) return;
+    const s = pts.map((p) => this.toScreen(p.x, p.y, w, h));
+    const tip = s[s.length - 1];
+    // The direction at the tip, read a few pixels back so a kink at the last
+    // vertex does not turn the head sideways.
+    let back = s[s.length - 2];
+    for (let i = s.length - 2; i >= 0 && Math.hypot(tip[0] - s[i][0], tip[1] - s[i][1]) < 10; i--) back = s[i];
+    const a = Math.atan2(tip[1] - back[1], tip[0] - back[0]);
+    const head = width * 3 + 4;
+    for (const [style, lw] of [[ARROW_CASE, width + 2.5], [color, width]] as const) {
+      ctx.strokeStyle = style;
+      ctx.fillStyle = style;
+      ctx.lineWidth = lw;
+      ctx.beginPath();
+      s.forEach(([x, y], i) => (i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y)));
+      ctx.stroke();
+      const grow = style === ARROW_CASE ? 2 : 0;
+      ctx.beginPath();
+      ctx.moveTo(tip[0] + Math.cos(a) * grow, tip[1] + Math.sin(a) * grow);
+      ctx.lineTo(tip[0] - Math.cos(a - 0.45) * (head + grow), tip[1] - Math.sin(a - 0.45) * (head + grow));
+      ctx.lineTo(tip[0] - Math.cos(a + 0.45) * (head + grow), tip[1] - Math.sin(a + 0.45) * (head + grow));
+      ctx.closePath();
+      ctx.fill();
+    }
+  }
+
+  // A small label on a dark plate beside a point, kept on screen. Beside, not
+  // above: the place's own name sits above it.
+  private chip(ctx: CanvasRenderingContext2D, text: string, x: number, y: number, w: number, color: string): void {
+    ctx.font = 'bold 12px ui-monospace, monospace';
+    const tw = ctx.measureText(text).width + 12;
+    const bx = x + 20 + tw > w - 4 ? x - 20 - tw : x + 20;
+    const by = Math.max(this.inset.top + 4, y - 10);
+    ctx.beginPath();
+    ctx.roundRect(bx, by, tw, 20, 4);
+    ctx.fillStyle = 'rgba(14, 12, 8, 0.92)';
+    ctx.fill();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.fillStyle = color;
+    ctx.textAlign = 'left';
+    ctx.fillText(text, bx + 6, by + 14.5);
   }
 
   // One spec per force the player may see. Own forces are truth. Under fog

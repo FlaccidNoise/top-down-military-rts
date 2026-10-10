@@ -31,7 +31,7 @@ import { ManualScreen } from './ui/manual';
 import { Tutorial } from './ui/tutorial';
 import { TheaterView } from './render/theater-view';
 import { TheaterHud } from './ui/theater-hud';
-import type { ViewInset } from './render/theater-view';
+import { fmtEta, type MarchPreview, type ViewInset } from './render/theater-view';
 import { CustomizeScreen } from './ui/customize';
 import { DEFAULT_PRESET, presetSpec } from './campaign/presets';
 import { SPEC_TAG, specStream, type CampaignConfig, type TheaterConfig } from './campaign/spec';
@@ -42,7 +42,7 @@ import { DEPLOY_ATK_DEPTH, DEPLOY_DEF_LINE, DEPLOY_DEF_DEFAULT } from './strateg
 import { ContactIntel, OmniscientIntel, type IntelView } from './strategic/intel';
 import { Commander2, RED_V2 } from './strategic/planner';
 import { addForce, type CoarseBattle, type FrontV2, type MoveReject } from './strategic/theater/force';
-import { orderHalt, orderMove } from './strategic/theater/step';
+import { orderHalt, orderMove, previewMove } from './strategic/theater/step';
 import { battleCatchUpMin, openBattle, retreatForce, stepWar } from './strategic/theater/war';
 import { syncStrengthsV2 } from './strategic/theater/sync';
 import type { Contact } from './strategic/theater/contact';
@@ -1439,6 +1439,28 @@ function stratTapSelect(sx: number, sy: number): void {
   }
 }
 
+// The march the player is pointing at: the cursor on desktop, the held finger
+// on touch. Asked of previewMove, so what is drawn is what the order will do.
+// Cached per minute: the ETA is a shadow march, and the pointer sits still
+// for many frames.
+let stratHoldAt: { x: number; y: number } | null = null;
+let previewKey = '';
+let previewCached: MarchPreview | null = null;
+function theaterPreview(v2: SessionV2): MarchPreview | null {
+  const at = stratHoldAt ?? (mouse.onCanvas && !stratDrag?.panning ? mouse : null);
+  if (!at || v2.selectedForce < 0 || v2.pending || menu.isOpen) return null;
+  const n = v2.view.nodeAtScreen(at.x, at.y, view.w, view.h);
+  if (n < 0) return null;
+  const f = v2.front.forces.find((x) => x.id === v2.selectedForce);
+  const key = `${v2.selectedForce}:${n}:${v2.front.clockMin}:${f?.path.join(',')}`;
+  if (key !== previewKey) {
+    previewKey = key;
+    const p = previewMove(v2.front, v2.selectedForce, n, { nightTempo: v2.campaignCfg.nightTempo });
+    previewCached = p.ok ? { ok: true, pos: p.pos, path: p.path, etaMin: p.etaMin } : p.reason === 'already-there' ? null : { ok: false, nodeId: n };
+  }
+  return previewCached;
+}
+
 function stratOrderMove(sx: number, sy: number): void {
   const v2 = S().v2;
   if (v2) {
@@ -1448,7 +1470,7 @@ function stratOrderMove(sx: number, sy: number): void {
     const r = orderMove(v2.front, v2.selectedForce, n, { nightTempo: v2.campaignCfg.nightTempo });
     if (!r.ok) v2.view.flash(MOVE_REJECT_TEXT[r.reason]);
     else {
-      v2.view.flash(`${v2.front.forces.find((f) => f.id === v2.selectedForce)!.name} moving — ETA ${Math.round(r.etaMin / 60)}h${Math.round(r.etaMin % 60)}m`);
+      v2.view.flash(`${v2.front.forces.find((f) => f.id === v2.selectedForce)!.name} moving — ETA ${fmtEta(r.etaMin)}`);
       tutorial?.notify('move-ordered');
     }
     return;
@@ -1646,10 +1668,10 @@ const stratTouch: TouchHandlers = {
     cam2.panY += dy;
     cam2.clampPan(view.w, view.h);
   },
-  holdStart: () => {},
-  holdMove: () => {},
-  holdEnd: (x, y) => stratOrderMove(x, y),
-  holdCancel: () => {},
+  holdStart: (x, y) => { stratHoldAt = { x, y }; },
+  holdMove: (x, y) => { stratHoldAt = { x, y }; },
+  holdEnd: (x, y) => { stratHoldAt = null; stratOrderMove(x, y); },
+  holdCancel: () => { stratHoldAt = null; },
   pinch: (factor, mx, my, dmx, dmy) => {
     const v2 = S().v2;
     if (v2) {
@@ -1901,6 +1923,7 @@ function frame(now: number): void {
       v2.view.frameStart(v2.front, view.w, view.h);
     }
     v2.view.clampPan(view.w, view.h);
+    v2.view.preview = theaterPreview(v2);
     v2.view.draw(ctx, v2.front, v2.selectedForce, stratPaused, SPEEDS[speedIdx], view.w, view.h);
     if (touchHold) drawHoldRing(ctx, touchHold, now);
   } else if (mode === 'strategic') {

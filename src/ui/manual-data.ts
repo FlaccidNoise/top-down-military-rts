@@ -253,7 +253,7 @@ export const MANUAL: ManualChapter[] = [
         heading: 'Giving a march order',
         body:
           `Click a company to select it. Right-click a town to march there. ${HOLD_INSTEAD} ` +
-          'The route follows the fastest road chain, and the panel shows the arrival time before you commit.',
+          'The route follows the fastest road chain. Point at a town, or hold a finger on it, and the map draws the route and its arrival time before you commit.',
         keys: { desktop: 'Click, then right-click', touch: `Tap, then ${HOLD} the destination` },
       },
       {

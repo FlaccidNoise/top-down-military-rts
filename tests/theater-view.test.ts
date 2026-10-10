@@ -3,7 +3,7 @@
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_PRESET } from '../src/campaign/presets';
 import { makeHeadlessWorld } from '../src/strategic/headless';
-import { THEATER_ZOOM_MAX, TheaterView } from '../src/render/theater-view';
+import { fmtEta, THEATER_ZOOM_MAX, TheaterView } from '../src/render/theater-view';
 import { COUNTER_W, counterRect, layoutCounters, type CounterSpec, type PlacedCounter } from '../src/render/theater-counters';
 
 const world = makeHeadlessWorld(19440606, DEFAULT_PRESET.theater, DEFAULT_PRESET.campaign);
@@ -49,6 +49,12 @@ describe('counters', () => {
     const sel = placed.find((c) => c.id === 1)!;
     expect([sel.x, sel.y]).toEqual([alone.x, alone.y]);
     expect(overlap(placed[0], placed[1])).toBe(false);
+  });
+});
+
+describe('one ETA format', () => {
+  it('reads the same on the card, the preview chip and the order flash', () => {
+    expect([5, 59, 60, 120, 285].map(fmtEta)).toEqual(['5m', '59m', '1h00m', '2h00m', '4h45m']);
   });
 });
 
