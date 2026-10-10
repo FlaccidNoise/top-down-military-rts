@@ -16,7 +16,7 @@ import {
   SCREEN_PACE_MULT,
   setPosture,
 } from '../src/strategic/theater/step';
-import { battleSides, openBattle, stepWar } from '../src/strategic/theater/war';
+import { battleSides, openBattle, stepWar, walkover } from '../src/strategic/theater/war';
 import { postureEffect } from '../src/ui/theater-hud';
 import { lineFront, place } from './lib/line-theater';
 
@@ -127,6 +127,13 @@ describe('dig in', () => {
     const sides = battleSides(fr, b);
     expect(sides.defEff).toBe(100 * DIG_DEF_MULT);
     expect(sides.atkEff).toBe(100);
+  });
+
+  it('earthworks deny a walkover and never grant one', () => {
+    expect(walkover(500, 100, 100)).toBe('attacker');
+    expect(walkover(500, 100, 100 * DIG_DEF_MULT)).toBeNull();
+    expect(walkover(100, 400, 400 * DIG_DEF_MULT)).toBeNull(); // 4:1 in men, 6:1 dug in: still a fight
+    expect(walkover(100, 500, 500)).toBe('defender');
   });
 
   it('a move order gives the position up', () => {

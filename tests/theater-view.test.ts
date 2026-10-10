@@ -111,7 +111,9 @@ describe('the frame, and what just happened', () => {
       frames++;
       news += (v as unknown as Inner).fx.length;
     });
-    expect(frames).toBeGreaterThan(500);
+    // A frame every 7 minutes for as long as the war lasts, 4 days at most.
+    expect(frames).toBe(Math.floor(w.front.clockMin / 7) - Math.floor(360 / 7));
+    expect(frames).toBeGreaterThan(200);
     expect(news).toBeGreaterThan(0); // captures and retreats became marks
   });
 

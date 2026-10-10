@@ -9,7 +9,8 @@ import { TRIVIAL_RATIO } from '../src/strategic/bridge';
 import { makeHeadlessWorld } from '../src/strategic/headless';
 import type { Contact } from '../src/strategic/theater/contact';
 import { SUPPLY_OUT_MIN } from '../src/strategic/theater/supply';
-import { battleDuration, RETREAT_SETBACK_M } from '../src/strategic/theater/war';
+import { DIG_IN_MIN } from '../src/strategic/theater/step';
+import { battleDuration, openBattle, RETREAT_SETBACK_M } from '../src/strategic/theater/war';
 import { briefWords, contactBrief } from '../src/ui/contact-brief';
 
 const OPTS = { supply: true, fog: false };
@@ -63,17 +64,47 @@ describe('contact brief', () => {
     expect(defend.facts.some((f) => f.startsWith('Stand down'))).toBe(false);
   });
 
-  it('offers auto-resolve at the trivial ratio and says who is in range, honestly', () => {
+  it('offers auto-resolve on a walkover and says who is in range, honestly', () => {
     const { front, c } = atContact();
     const def = front.forces.find((f) => f.id === c.defenderId)!;
     def.strength = 10;
     const b = contactBrief(front, c, OPTS);
     expect(b.trivial).toBe(true);
-    expect(b.odds.endsWith(` Auto-resolve is available at ${TRIVIAL_RATIO}:1.`)).toBe(true);
+    expect(b.odds.endsWith(' A walkover: auto-resolve offered.')).toBe(true);
     expect(b.facts[0]).toBe('None in range to join.');
     const other = front.forces.filter((f) => f.side === 'blue')[1];
     other.pos = { ...def.pos };
     expect(contactBrief(front, c, OPTS).facts[0]).toBe(`In range: ${other.name}. They join only an auto-resolved fight.`);
+  });
+
+  // Isolation as a weapon (jtbug #786): the same garrison, the same company.
+  // Supplied it is a fight. Cut off and starved it is a walkover, and the card
+  // says why. Dug in, numbers alone are not enough, and the card says that.
+  it('a starved garrison is a walkover, a supplied one is not, and the card says why', () => {
+    const { front, c } = atContact();
+    const atk = front.forces.find((f) => f.id === c.attackerId)!;
+    const def = front.forces.find((f) => f.id === c.defenderId)!;
+    def.strength = Math.floor((atk.strength / TRIVIAL_RATIO) * 1.5); // 3.3:1 in men
+    expect(contactBrief(front, c, OPTS).trivial).toBe(false);
+    def.untracedMin = SUPPLY_OUT_MIN;
+    const starved = contactBrief(front, c, OPTS);
+    expect(starved.trivial).toBe(true);
+    expect(starved.odds).toContain('They are out of supply. A walkover: auto-resolve offered.');
+    // The offer is the forced winner the battle is opened with.
+    expect(openBattle(front, c).forced).toBe('attacker');
+  });
+
+  it('a dug-in garrison denies the walkover its numbers would give', () => {
+    const { front, c } = atContact();
+    const def = front.forces.find((f) => f.id === c.defenderId)!;
+    def.strength = 25;
+    def.posture = 'march';
+    expect(contactBrief(front, c, OPTS).trivial).toBe(true);
+    def.posture = 'dig';
+    def.dugMin = DIG_IN_MIN;
+    const dug = contactBrief(front, c, OPTS);
+    expect(dug.trivial).toBe(false);
+    expect(dug.odds).toContain('No walkover: they are dug in.');
   });
 
   it('types no tracked number into its copy', () => {

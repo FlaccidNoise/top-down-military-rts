@@ -8,7 +8,7 @@ import { lightAt } from '../../sim/solar';
 import type { Campaign } from '../../campaign/campaign';
 import { applyCoarseBlueLosses, coarseOutcome, TRIVIAL_RATIO } from '../bridge';
 import type { BattleRecord } from '../../campaign/campaign';
-import { battleSiteOf, COARSE_DEF_MULT, CROSSING_ASSAULT_MULT, type BattleClass, type NetPos, type TheaterEdge } from '../theater';
+import { battleSiteOf, COARSE_DEF_MULT, CROSSING_ASSAULT_MULT, type BattleClass, type NetPos, type Theater, type TheaterEdge } from '../theater';
 import {
   edgeById,
   incidentFoot,
@@ -51,11 +51,42 @@ export function forceById(front: FrontV2, id: number): Force {
   return f;
 }
 
-function trivialForced(atk: Force, def: Force): 'attacker' | 'defender' | null {
-  if (atk.strength <= 0 || def.strength <= 0) return null;
-  if (atk.strength >= def.strength * TRIVIAL_RATIO) return 'attacker';
-  if (def.strength >= atk.strength * TRIVIAL_RATIO) return 'defender';
+// The defender's ground: the battle class of a site and what it multiplies
+// the defence by. ONE chain for the resolver, the walkover test, the planner
+// and the contact card, so none of them can weigh a crossing differently.
+export function siteDefence(t: Theater, site: NetPos, approachEdgeId: number | null | undefined): { battleClass: BattleClass; siteKey: number; mult: number } {
+  const { battleClass, siteKey } = battleSiteOf(t, site, approachEdgeId ?? undefined);
+  const crossing = battleClass === 'bridge-assault' || battleClass === 'ford-assault';
+  return { battleClass, siteKey, mult: COARSE_DEF_MULT[battleClass] * (crossing ? CROSSING_ASSAULT_MULT : 1) };
+}
+
+// A walkover (jtbug #786, resolves #137): one side has TRIVIAL_RATIO times
+// the other's EFFECTIVE strength. Supply, fatigue and posture count on both
+// sides, so a starved garrison is a walkover that a fresh one is not. It read
+// raw headcount before, blind to the one lever the supply rules give. This is
+// the auto-resolve offer and the forced winner.
+//   atkEff   the attackers' effective strength
+//   defEff   the defenders' effective strength
+//   defHeld  the same with digging in counted (defStrength)
+// Earthworks can DENY the attacker a walkover. They never GRANT the defender
+// one: a dug-in company is hard to shift, it is not sure to rout whoever
+// comes.
+//
+// Ground is NOT in the test, and that is measured, not overlooked. With the
+// terrain multiplier denying a walkover (a fresh garrison in a town or behind
+// a bridge), AI blue won 2 of 16 pin wars, or 3 with towns only: the remnant
+// garrisons it used to walk over became fights it loses one time in five,
+// and losing a coarse fight is a rout. The floor for this lane is 4 of 16.
+export function walkover(atkEff: number, defEff: number, defHeld: number): 'attacker' | 'defender' | null {
+  if (atkEff <= 0 || defEff <= 0) return null;
+  if (atkEff >= defHeld * TRIVIAL_RATIO) return 'attacker';
+  if (defEff >= atkEff * TRIVIAL_RATIO) return 'defender';
   return null;
+}
+
+// The walkover test for a contact between two forces, before a battle exists.
+export function contactWalkover(atk: Force, def: Force): 'attacker' | 'defender' | null {
+  return walkover(effStrength(atk), effStrength(def), defStrength(def));
 }
 
 // §3.4: durationMin = min(240, 45 + 1.4 x min(atk, def)); trivial collapses
@@ -70,7 +101,7 @@ export function openBattle(front: FrontV2, c: Contact): CoarseBattle {
   const atk = forceById(front, c.attackerId);
   const def = forceById(front, c.defenderId);
   haltAtContact(front, c);
-  const forced = trivialForced(atk, def);
+  const forced = contactWalkover(atk, def);
   const battle: CoarseBattle = {
     id: front.nextBattleId++,
     site: c.site,
@@ -99,18 +130,11 @@ export function joinBattle(front: FrontV2, battle: CoarseBattle, f: Force): void
   standForce(front, f);
   battle.joined.push(f.id);
   const sides = battleSides(front, battle);
-  battle.forced = trivialForcedStr(sides.atkStrength, sides.defStrength);
+  battle.forced = walkover(sides.atkEff, sides.defenders.reduce((a, d) => a + effStrength(d), 0), sides.defEff);
   battle.endMin = Math.max(
     front.clockMin + 15,
     battle.startMin + battleDuration(sides.atkStrength, sides.defStrength, battle.forced !== null),
   );
-}
-
-function trivialForcedStr(atk: number, def: number): 'attacker' | 'defender' | null {
-  if (atk <= 0 || def <= 0) return null;
-  if (atk >= def * TRIVIAL_RATIO) return 'attacker';
-  if (def >= atk * TRIVIAL_RATIO) return 'defender';
-  return null;
 }
 
 interface BattleSides {
@@ -286,10 +310,8 @@ export function resolveBattleV2(
 ): { attackerWon: boolean; battleClass: BattleClass; record: BattleRecord } {
   const t = front.theater;
   const sides = battleSides(front, battle);
-  const { battleClass, siteKey } = battleSiteOf(t, battle.site, battle.approachEdgeId ?? undefined);
-  let terrainMult = COARSE_DEF_MULT[battleClass];
-  if (battleClass === 'bridge-assault' || battleClass === 'ford-assault') terrainMult *= CROSSING_ASSAULT_MULT;
-  if (lightAt(battle.startMin) < 0.25) terrainMult *= nightMult;
+  const { battleClass, siteKey, mult } = siteDefence(t, battle.site, battle.approachEdgeId);
+  const terrainMult = lightAt(battle.startMin) < 0.25 ? mult * nightMult : mult;
 
   const seed = (campaign.seed ^ (battle.startMin * 7919 + siteKey)) >>> 0;
   const rng = mulberry32(seed);

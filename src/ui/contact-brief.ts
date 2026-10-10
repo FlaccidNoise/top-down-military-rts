@@ -5,12 +5,12 @@
 import type { MapKind } from '../sim/mapgen';
 import { TRIVIAL_RATIO } from '../strategic/bridge';
 import { fmtEta } from '../render/theater-view';
-import { BATTLE_CLASS_TO_MAPKIND, battleSiteOf, type BattleClass } from '../strategic/theater';
+import { BATTLE_CLASS_TO_MAPKIND, type BattleClass } from '../strategic/theater';
 import { graphGap, type Contact } from '../strategic/theater/contact';
 import { CONTACT_M, type Force, type FrontV2 } from '../strategic/theater/force';
 import { dugIn } from '../strategic/theater/step';
 import { supplyTierOf } from '../strategic/theater/supply';
-import { battleDuration, RETREAT_SETBACK_M } from '../strategic/theater/war';
+import { battleDuration, contactWalkover, RETREAT_SETBACK_M, siteDefence } from '../strategic/theater/war';
 
 const FIGHT: Record<BattleClass, string> = {
   settlement: 'Town fight',
@@ -54,14 +54,14 @@ export function contactBrief(front: FrontV2, c: Contact, opts: BriefOpts): Conta
   const atk = front.forces.find((f) => f.id === c.attackerId)!;
   const def = front.forces.find((f) => f.id === c.defenderId)!;
   const playerAttacks = atk.side === 'blue';
-  const trivial =
-    atk.strength > 0 && def.strength > 0 &&
-    (atk.strength >= def.strength * TRIVIAL_RATIO || def.strength >= atk.strength * TRIVIAL_RATIO);
+  // The test openBattle makes: the offer here is the forced winner there.
+  const winner = contactWalkover(atk, def);
+  const trivial = winner !== null;
 
   // The same approach openBattle records, so the class named here is the
   // class the battle is staged as.
   const approach = atk.pos.kind === 'edge' ? atk.pos.edgeId : atk.lastEdgeId;
-  const { battleClass } = battleSiteOf(front.theater, c.site, approach ?? undefined);
+  const { battleClass } = siteDefence(front.theater, c.site, approach);
 
   const state = (f: Force): string =>
     f.side === 'red' && opts.fog
@@ -75,6 +75,24 @@ export function contactBrief(front: FrontV2, c: Contact, opts: BriefOpts): Conta
   const rtxt = ratio < 2 ? ratio.toFixed(1) : Math.round(ratio).toString();
   const odds =
     ratio < 1.1 ? 'Even match.' : own.strength > foe.strength ? `You outnumber them ${rtxt}:1.` : `They outnumber you ${rtxt}:1.`;
+
+  // Why this is a walkover, or why numbers alone are not one. A few words:
+  // the weakest thing about the loser first, then the ground.
+  const weak = (f: Force): string | null => {
+    const tier = opts.supply ? supplyTierOf(f.untracedMin) : 'full';
+    if (tier === 'out') return 'out of supply';
+    if (tier === 'low') return 'low on supply';
+    if (f.fatigue >= 0.66) return 'exhausted';
+    return f.posture === 'rest' ? 'caught at rest' : null;
+  };
+  const playerWins = winner === (playerAttacks ? 'attacker' : 'defender');
+  const because = (f: Force, they: boolean): string => {
+    const w = they && opts.fog ? null : weak(f);
+    return w ? `${they ? 'They are' : 'You are'} ${w}.` : '';
+  };
+  let why = '';
+  if (trivial) why = `${because(playerWins ? foe : own, playerWins)} ${playerWins ? 'A walkover: auto-resolve offered.' : 'They would walk over you.'}`.trim();
+  else if (foe === def && dugIn(def) && own.strength >= foe.strength * TRIVIAL_RATIO) why = 'No walkover: they are dug in.';
 
   // Who else is inside contact range of the site and free. Under fog only
   // our own: an enemy the player has not seen is not on this card. A fought
@@ -92,7 +110,7 @@ export function contactBrief(front: FrontV2, c: Contact, opts: BriefOpts): Conta
     title: c.site.kind === 'node' ? front.theater.nodes[c.site.nodeId].name : 'On the road',
     kind: `${FIGHT[battleClass]} · map: ${GROUND[BATTLE_CLASS_TO_MAPKIND[battleClass]]}`,
     sides: [atk, def].map((f) => ({ name: f.name, side: f.side, men: `${f.strength} men`, state: state(f) })),
-    odds: trivial ? `${odds} Auto-resolve is available at ${TRIVIAL_RATIO}:1.` : odds,
+    odds: why ? `${odds} ${why}` : odds,
     forced: playerAttacks ? null : 'They chose this fight. A defender cannot stand down.',
     facts,
     playerAttacks,

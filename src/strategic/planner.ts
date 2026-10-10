@@ -11,12 +11,12 @@
 // lowest node id → force id.
 import { lightAt } from '../sim/solar';
 import type { Side } from '../sim/sim';
-import { coarseOdds, TRIVIAL_RATIO } from './bridge';
-import { battleSiteOf, COARSE_DEF_MULT, CROSSING_ASSAULT_MULT, type NetPos, type Theater } from './theater';
+import { coarseOdds } from './bridge';
+import type { NetPos, Theater } from './theater';
 import { anchorNode, CONTACT_M, incidentFoot, otherEnd, pathNodes, route, type Force, type FrontV2 } from './theater/force';
 import { posSupplied, traceSupply } from './theater/supply';
 import { forceEtaMinutes, orderMove, planMove, setPosture } from './theater/step';
-import { THREAT_M } from './theater/war';
+import { siteDefence, THREAT_M, walkover } from './theater/war';
 import { graphGap } from './theater/contact';
 import { combatMult, DIG_DEF_MULT, effStrength } from './theater/combat';
 import type { EnemyContact, IntelView } from './intel';
@@ -79,6 +79,9 @@ export const RAID_REST_FATIGUE = 0.5;
 export const MASS_SYNC_MIN = 60;
 
 // What an enemy is worth on the defence: a dug-in one is harder to shift.
+// Intel carries headcount and earthworks. The enemy's supply and fatigue are
+// not read: with them red sortied four times as often on a worn blue company
+// and AI blue won 1 of 16 pin wars.
 const holds = (c: EnemyContact): number => c.strength * (c.dug ? DIG_DEF_MULT : 1);
 // Orders that cannot wait go at a forced march. A sortie is one: the post is
 // open until the garrison is back.
@@ -281,11 +284,16 @@ export class Commander2 {
         .contacts()
         .filter((c) => graphGap(t, site, c.pos) <= CONTACT_M)
         .reduce((a, c) => a + holds(c), 0);
+    const undugNear = (site: NetPos): number =>
+      intel
+        .contacts()
+        .filter((c) => graphGap(t, site, c.pos) <= CONTACT_M)
+        .reduce((a, c) => a + c.strength, 0);
     // The first place a march to `dest` meets the enemy: an enemy standing on
     // one of its roads, or a defended node on the path (`via` is the road the
     // march enters that node by, which is what makes a crossing an assault).
     // Null when the way is open as far as intel knows.
-    const firstFight = (f: Force, dest: number): { site: NetPos; defEff: number; via?: number } | null => {
+    const firstFight = (f: Force, dest: number): { site: NetPos; defEff: number; defRaw: number; via?: number } | null => {
       const march = planMove(front, f, dest);
       if (!march) return null;
       const nodes = pathNodes(t, march.pos, march.path);
@@ -295,10 +303,10 @@ export class Commander2 {
           .contacts()
           .filter((c) => c.pos.kind === 'edge' && c.pos.edgeId === march.path[i] && (!own || (c.pos.s - own.s) * own.dir >= 0))
           .sort((p, q) => p.forceId - q.forceId)[0];
-        if (onRoad) return { site: onRoad.pos, defEff: defendersNear(onRoad.pos) };
+        if (onRoad) return { site: onRoad.pos, defEff: defendersNear(onRoad.pos), defRaw: undugNear(onRoad.pos) };
         const node: NetPos = { kind: 'node', nodeId: nodes[i] };
         const at = defendersNear(node);
-        if (at > 0) return { site: node, defEff: at, via: march.path[i] };
+        if (at > 0) return { site: node, defEff: at, defRaw: undugNear(node), via: march.path[i] };
       }
       return null;
     };
@@ -312,12 +320,7 @@ export class Commander2 {
       return r.ok;
     };
     const reorganising = (g: Force): boolean => g.repulsedAtMin !== null && front.clockMin - g.repulsedAtMin < REORG_MIN;
-    // The defender's terrain multiplier at a site, as the resolver composes it.
-    const siteMult = (site: NetPos, approachEdgeId?: number): number => {
-      const { battleClass } = battleSiteOf(t, site, approachEdgeId);
-      const crossing = battleClass === 'bridge-assault' || battleClass === 'ford-assault';
-      return COARSE_DEF_MULT[battleClass] * (crossing ? CROSSING_ASSAULT_MULT : 1);
-    };
+    const siteMult = (site: NetPos, approachEdgeId?: number): number => siteDefence(t, site, approachEdgeId).mult;
 
     // Sortie: an enemy next door to a garrison's post (on a road out of it,
     // or at that road's far node), when the garrison should beat everything
@@ -408,9 +411,10 @@ export class Commander2 {
       // the site.
       const mass = massOf(ids);
       const ownEff = Math.max(mass.reduce((a, g) => a + effStrength(g), 0), effStrength(f));
-      // Trivial doctrine: never attack INTO a trivial defender.
-      if (fight.defEff >= ownEff * TRIVIAL_RATIO) return 'no';
-      if (coarseOdds(ownEff, fight.defEff, siteMult(fight.site, fight.via)) < floor) return 'no';
+      // Never attack INTO a walkover for the defender (the resolver's test).
+      const mult = siteMult(fight.site, fight.via);
+      if (walkover(ownEff, fight.defRaw, fight.defEff) === 'defender') return 'no';
+      if (coarseOdds(ownEff, fight.defEff, mult) < floor) return 'no';
       // Time on target: a force that would arrive well before the rest of the
       // mass waits for it.
       const closing = mass.some((g) => {
