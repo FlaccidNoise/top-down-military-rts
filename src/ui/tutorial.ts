@@ -223,6 +223,7 @@ export function advance(state: TutorialState, event: TutorialEvent): { state: Tu
 const circleRect = (c: Circle): Rect => ({ left: c.x - c.r, top: c.y - c.r, right: c.x + c.r, bottom: c.y + c.r });
 
 const RING_PERIOD_MS = 1100;
+const RING_PULSE_PX = 14;
 
 /**
  * The pulsing ring on a world mark. Wall clock, not the battle clock: the sim
@@ -242,7 +243,7 @@ export function drawMarkRing(ctx: CanvasRenderingContext2D, c: Circle, now: numb
   ctx.stroke();
   ctx.globalAlpha = 1 - t;
   ctx.beginPath();
-  ctx.arc(c.x, c.y, c.r + 14 * t, 0, Math.PI * 2);
+  ctx.arc(c.x, c.y, c.r + RING_PULSE_PX * t, 0, Math.PI * 2);
   ctx.stroke();
   ctx.restore();
 }
@@ -253,7 +254,7 @@ export class Tutorial {
   private card: HTMLDivElement | null = null;
 
   constructor(
-    private readonly coach: Pick<Coach, 'show' | 'hide' | 'reflow'>,
+    private readonly coach: Pick<Coach, 'show' | 'hide' | 'reflow' | 'rect'>,
     private readonly touch: boolean,
     private readonly openManual: (chapterId: string) => void,
     private readonly storage?: Pick<Storage, 'getItem' | 'setItem'>,
@@ -300,6 +301,15 @@ export class Tutorial {
   ring(): Circle | null {
     const mark = this.shown ? STEPS.find((s) => s.id === this.shown)!.mark : undefined;
     return mark ? this.world(mark) : null;
+  }
+
+  /** The screen the step on show is using: its bubble and its ring. The ticker keeps out. */
+  occupied(): Rect[] {
+    const out: Rect[] = [];
+    if (this.coach.rect) out.push(this.coach.rect);
+    const ring = this.ring();
+    if (ring) out.push(circleRect({ ...ring, r: ring.r + RING_PULSE_PX }));
+    return out;
   }
 
   /** The briefing card's Begin: retires the card and starts the chain. */

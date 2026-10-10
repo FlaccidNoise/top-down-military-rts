@@ -263,7 +263,7 @@ describe('Tutorial.setEnabled (the menu toggle)', () => {
   // The Tutorial class touches the DOM only when it PRESENTS a step; the
   // switch is pure state + storage, so it tests in the node env like the rest.
   const makeTutorial = (storage: Storage) =>
-    new Tutorial({ hide() {}, show() {}, reflow() {} }, false, () => {}, storage);
+    new Tutorial({ hide() {}, show() {}, reflow() {}, rect: null }, false, () => {}, storage);
 
   it('turning it OFF is exactly Skip, and survives a reload', () => {
     const storage = makeStorage();

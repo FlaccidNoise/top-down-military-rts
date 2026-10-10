@@ -29,6 +29,33 @@ export interface OverlayState {
   // The map clear of the HUD, in CSS px. Chips that follow a unit are kept
   // inside it, so one is never cut off by the screen edge or under the roster.
   clear?: { left: number; top: number; right: number; bottom: number }
+  // Screen rectangles the ticker must stay out of: the tutorial's bubble and
+  // the ring it points at, while a step is showing.
+  avoid?: readonly ScreenRect[]
+}
+
+export interface ScreenRect {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+}
+
+/**
+ * Where the ticker's column starts, top edge in px. It hangs from `top` unless
+ * that puts it on one of `avoid`. Then it drops to just under the lowest thing
+ * in its way, and if that runs off `bottom` it goes above the highest one.
+ * With nowhere free it stays at `top`: a covered line beats a lost one.
+ */
+export function dockFeed(x: number, w: number, h: number, top: number, bottom: number, avoid: readonly ScreenRect[]): number {
+  const GAP = 6;
+  const inWay = avoid.filter((r) => r.right > x && r.left < x + w);
+  const free = (y: number): boolean => y >= top && y + h <= bottom && inWay.every((r) => y >= r.bottom + GAP || y + h <= r.top - GAP);
+  if (free(top)) return top;
+  const below = inWay.map((r) => r.bottom + GAP).sort((a, b) => a - b).find(free);
+  if (below !== undefined) return below;
+  const above = inWay.map((r) => r.top - GAP - h).sort((a, b) => b - a).find(free);
+  return above ?? top;
 }
 
 function teamCentroid(sim: Sim, soldierIds: number[]): { x: number; y: number } | null {
@@ -591,7 +618,7 @@ export function drawOverlays(ctx: CanvasRenderingContext2D, cam: Camera, sim: Si
     chip(ctx, (x0 + x1) / 2, (y0 + y1) / 2, st.shot.ok ? `${Math.round(st.shot.acc * 100)}%` : blockedLabel, st.shot.ok ? '#ffe9a0' : '#a0a090', st.clear);
   }
 
-  pings.draw(ctx, sim, cam, cw, ch);
+  pings.draw(ctx, sim, cam, cw, ch, st.clear, st.avoid);
 }
 
 export type ChipVerdict = 'comply' | 'cautious' | 'balk';
@@ -906,7 +933,7 @@ export class EventPings {
     this.pings.push({ side, name, status, color, tick, drama });
   }
 
-  draw(ctx: CanvasRenderingContext2D, sim: Sim, cam: Camera, cw: number, ch: number): void {
+  draw(ctx: CanvasRenderingContext2D, sim: Sim, cam: Camera, cw: number, ch: number, clear?: ScreenRect, avoid: readonly ScreenRect[] = []): void {
     this.pings = this.pings.filter((p) => sim.tick - p.tick < PING_TICKS);
     // A 190px feed hard-anchored at cw-202 is a third of a phone screen and
     // five rows of it reach the roster sheet. Narrow it and show fewer.
@@ -914,7 +941,10 @@ export class EventPings {
     const rows = cw < 500 ? 3 : MAX_VISIBLE;
     const visible = this.pings.slice(-rows).reverse(); // newest at top
     const x = cw - rw - 12;
-    let y = 60; // keep clear of the top bar
+    // Clear of the top bar, and of the tutorial while it is talking. The room
+    // is taken for every row the feed can hold, so a line arriving does not
+    // push the column onto the bubble.
+    let y = dockFeed(x, rw, rows * (ROW_H + ROW_GAP), 60, clear ? clear.bottom : ch, avoid);
     ctx.font = '11px ui-monospace, Menlo, monospace';
     ctx.textBaseline = 'middle';
     ctx.textAlign = 'left';

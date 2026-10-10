@@ -104,6 +104,12 @@ export class Coach {
   private el: HTMLDivElement | null = null;
   private spec: BubbleSpec | null = null;
   private placed = '';
+  private box: Rect | null = null;
+
+  /** Where the bubble is on screen. null = none, or hidden this frame. */
+  get rect(): Rect | null {
+    return this.box;
+  }
 
   show(spec: BubbleSpec): void {
     if (typeof document === 'undefined') return;
@@ -137,6 +143,7 @@ export class Coach {
     this.el = null;
     this.spec = null;
     this.placed = '';
+    this.box = null;
   }
 
   /** Once per frame. `suppressed` = a full-screen menu owns the screen. */
@@ -148,6 +155,7 @@ export class Coach {
       if (this.placed !== 'hidden') {
         el.style.display = 'none';
         this.placed = 'hidden';
+        this.box = null;
       }
       return;
     }
@@ -161,6 +169,7 @@ export class Coach {
       ? { left: Math.max(vp.left, b.left), top: Math.max(vp.top, b.top), right: Math.min(vp.right, b.right), bottom: Math.min(vp.bottom, b.bottom) }
       : vp;
     const p = placeBubble(at.anchor, at.clear, el.offsetWidth, el.offsetHeight, bounds);
+    this.box = { left: p.left, top: p.top, right: p.left + el.offsetWidth, bottom: p.top + el.offsetHeight };
     const key = `${Math.round(p.left)},${Math.round(p.top)},${p.side},${Math.round(p.arrow)}`;
     if (key === this.placed) return;
     this.placed = key;

@@ -2292,6 +2292,7 @@ function frame(now: number): void {
       floorFocus,
       deploy: deployPhase ? { ...deployZone(), bearing: deployBearing() } : null,
       clear: stage,
+      avoid: tutorial?.occupied(),
     }, pings);
     // The battle opens on the player's men: the pointer says which way the enemy is.
     const foe = sim.winner ? null : enemyPointer(sim, stage, (x, y) => cam.worldToScreen(x, y, view.w, view.h));
