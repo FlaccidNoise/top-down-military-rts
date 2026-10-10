@@ -65,6 +65,15 @@ const SUPPRESS_RADIUS = 5; // m around each shot impact
 const PAIN_DECAY = 0.004; // per second
 const SUPP_DECAY = 0.03; // per second
 const AID_SECONDS = 8;
+// Rescue under fire (#790). A casualty lying in the open with an enemy
+// contact this close is dragged to cover before he is treated; a squadmate
+// this close to him comes to make it a two-man carry; and a man needs this
+// much willingness (against RESCUE_WILL) to set out while an enemy who is not
+// himself suppressed has the casualty in his sights.
+const RESCUE_WILL = 0.75;
+const RESCUE_WILL_UNDER_FIRE = 1.05;
+const DRAG_THREAT_RANGE = 150;
+const CARRY_HELP_RADIUS = 15;
 const BARRAGE_DELAY_TICKS = 20 * 30;
 const BARRAGE_ROUNDS = 12;
 const BOUND_LEG = 15; // meters per bounding rush (spec's "15m legs")
@@ -3579,19 +3588,49 @@ export class Sim {
     return s.role === 'aidman' ? AID_SECONDS / 3 : AID_SECONDS;
   }
 
-  // Two-man carry (spec: "walking pace, weapons slung"): a second willing
-  // squadmate within 5m of the casualty when the drag starts attaches too,
-  // trading the solo drag's crouched crawl for a proper carry.
+  // Two-man carry (spec: "walking pace, weapons slung"): the nearest willing
+  // squadmate within CARRY_HELP_RADIUS of the casualty when the drag starts is
+  // called over, trading the solo drag's crouched crawl for a proper carry
+  // once he gets there. The radius was 5 m and the helper was attached on the
+  // spot: he was found twice in 38 battles.
   private findCarryHelper(primary: Soldier, c: Soldier): Soldier | null {
+    let best: Soldier | null = null;
+    let bestD = CARRY_HELP_RADIUS;
     for (const sid of this.squads[c.squadId].soldierIds) {
       const h = this.soldiers[sid];
-      if (h.id === primary.id || h.id === c.id || !h.alive || h.downed || h.task) continue;
+      if (h.id === primary.id || h.id === c.id || !h.alive || h.downed || h.captured || h.task) continue;
       if (h.mental === 'pinned' || h.mental === 'broken') continue;
-      if (Math.hypot(h.x - c.x, h.y - c.y) > 5) continue;
-      if (this.rescueWillingness(h, c) < 0.75) continue;
-      return h;
+      const d = Math.hypot(h.x - c.x, h.y - c.y);
+      if (d > bestD || this.rescueWillingness(h, c) < RESCUE_WILL) continue;
+      best = h;
+      bestD = d;
     }
-    return null;
+    return best;
+  }
+
+  // Whether `side` knows of an enemy within `r` of the point: a man it has in
+  // sight now, or a last-known contact. The side's own intel, nothing more.
+  private contactWithin(side: Side, x: number, y: number, r: number): boolean {
+    for (const p of this.spotted[side].values()) if (Math.hypot(p.x - x, p.y - y) <= r) return true;
+    for (const c of this.contacts[side].values()) if (c.kind === 'infantry' && Math.hypot(c.x - x, c.y - y) <= r) return true;
+    return false;
+  }
+
+  // Whether an enemy the casualty's side has in sight, and who is not himself
+  // pinned or suppressed, can put fire on the spot where the casualty lies.
+  // Smoke on the line breaks it (sightBetween), and so does a base of fire
+  // that has the enemy's head down — the two things a squad does before it
+  // sends a man out.
+  private casualtyUnderFire(c: Soldier): boolean {
+    if (this.inCover(c.x, c.y)) return false;
+    for (const id of this.spotted[c.side].keys()) {
+      const e = this.soldiers[id];
+      if (!e.alive || e.downed || e.captured || e.inVehicle >= 0) continue;
+      if (e.mental === 'pinned' || e.mental === 'broken' || e.suppression > 0.5) continue;
+      if (Math.hypot(e.x - c.x, e.y - c.y) > WEAPONS[e.weapon].range) continue;
+      if (sightBetween(this, e.x, e.y, c.x, c.y, e.level, c.level, eyeOf(this, e), EYE_CROUCH).visible) return true;
+    }
+    return false;
   }
 
   private considerRescue(s: Soldier): void {
@@ -3599,7 +3638,12 @@ export class Sim {
       const c = this.soldiers[sid];
       if (!c.alive || !c.downed || c.stabilized || c.rescuerId >= 0) continue;
       if (Math.hypot(c.x - s.x, c.y - s.y) > 30) continue;
-      if (this.rescueWillingness(s, c) < 0.75) continue;
+      const will = this.rescueWillingness(s, c);
+      if (will < RESCUE_WILL) continue;
+      // He will go for his buddy, but not into a gun that is looking at him:
+      // short of the very bonded and the very brave, a man waits until the
+      // enemy covering the casualty is suppressed or smoked off.
+      if (will < RESCUE_WILL_UNDER_FIRE && this.casualtyUnderFire(c)) continue;
       s.task = { kind: 'rescue', casualtyId: c.id, phase: 'goto', timer: 0 };
       s.path = null;
       s.targetId = -1;
@@ -3631,32 +3675,38 @@ export class Sim {
         return;
       }
       s.path = null;
-      if (s.suppression < 0.35 || this.inCover(c.x, c.y)) {
+      if (c.rescuerId !== s.id) {
+        // Called over to help carry. If the drag is still on and nobody has
+        // the other arm, he takes it; otherwise there is nothing for him here.
+        if (c.carriedBy >= 0 && c.helperId < 0) {
+          c.helperId = s.id;
+          task.phase = 'drag';
+        } else {
+          this.dropTask(s);
+        }
+        return;
+      }
+      // A man down in the open with the enemy about is moved first and
+      // treated second (#790). The test used to be the RESCUER's suppression
+      // on arrival, and a man that suppressed never set out, so he always
+      // arrived calm and knelt where the casualty had been shot: 34 drags in
+      // 2,089 rescues.
+      const spot = !this.inCover(c.x, c.y) && this.contactWithin(s.side, c.x, c.y, DRAG_THREAT_RANGE) ? this.findCoverSpot(s) : null;
+      const path = spot ? astar(this.map, Math.floor(s.x), Math.floor(s.y), spot.x, spot.y) : null;
+      if (!path || path.length < 2) {
         task.phase = 'aid';
         task.timer = this.aidTimer(s);
-      } else {
-        const spot = this.findCoverSpot(s);
-        if (!spot) {
-          task.phase = 'aid';
-          task.timer = this.aidTimer(s);
-          return;
-        }
-        const path = astar(this.map, Math.floor(s.x), Math.floor(s.y), spot.x, spot.y);
-        if (!path || path.length < 2) {
-          task.phase = 'aid';
-          task.timer = this.aidTimer(s);
-          return;
-        }
-        s.path = path.slice(1).map((p) => ({ x: p.x + 0.5, y: p.y + 0.5, l: p.l }));
-        s.pathI = 0;
-        task.phase = 'drag';
-        c.carriedBy = s.id;
-        const helper = this.findCarryHelper(s, c);
-        if (helper) {
-          c.helperId = helper.id;
-          helper.task = { kind: 'rescue', casualtyId: c.id, phase: 'drag', timer: 0 };
-          helper.path = null;
-        }
+        return;
+      }
+      s.path = path.slice(1).map((p) => ({ x: p.x + 0.5, y: p.y + 0.5, l: p.l }));
+      s.pathI = 0;
+      task.phase = 'drag';
+      c.carriedBy = s.id;
+      const helper = this.findCarryHelper(s, c);
+      if (helper) {
+        helper.task = { kind: 'rescue', casualtyId: c.id, phase: 'goto', timer: 0 };
+        helper.path = null;
+        helper.targetId = -1;
       }
       return;
     }
