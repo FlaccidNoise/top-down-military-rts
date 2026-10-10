@@ -18,6 +18,7 @@ import { saveGame } from './strategic/save';
 import { makeDefaultSector } from './strategic/sector';
 import { emplacementOf, Hud, infantrySquads } from './ui/hud';
 import { drawEnemyPointer, enemyPointer, QUIET_PROMPT_S, quietPrompt } from './ui/battle-goal';
+import { debriefHtml } from './ui/debrief';
 import { frameSteps, nextSpeed, type BattleSpeed } from './ui/battle-speed';
 import { StratHud } from './ui/strat-hud';
 import { drawOverlays, EventPings, type TeamPulse } from './ui/overlays';
@@ -928,18 +929,22 @@ function debriefRows(): string {
     .join('');
 }
 
+// The result first, the roster on request: a company's full table is 150 rows.
 function renderDebrief(record: BattleRecord, redLosses: number, groundLine: string, onNext: () => void): void {
-  const enemyLosses = redLosses > 0 ? `~${redLosses} enemy losses` : 'no enemy losses';
-  debriefEl.innerHTML = `<div class="db-scroll"><div class="db">
-    <h1 class="${record.won ? 'win' : 'loss'}">${record.won ? 'VICTORY' : 'DEFEAT'}</h1>
-    <p class="sub">${record.kia.length} KIA · ${record.wounded.length} wounded · ${enemyLosses}</p>
-    <p class="fallen">${record.kia.length > 0 ? 'Fallen: ' + record.kia.join(', ') : 'No one died today.'}</p>
-    <p class="sub">${groundLine}</p>
-    ${debriefRows()}
-    </div></div>
-    <div class="db-actions"><button id="next" class="primary">Return to the front</button></div>`;
+  debriefEl.innerHTML = debriefHtml(
+    { won: record.won, outcome: groundLine, kia: record.kia, wounded: record.wounded.length, enemyLosses: redLosses },
+    [{ id: 'next', label: 'Return to the front', primary: true }, { id: 'db-show-roster', label: 'Show roster' }],
+  );
   debriefEl.style.display = 'flex';
   document.getElementById('next')!.onclick = onNext;
+  const toggle = document.getElementById('db-show-roster')!;
+  toggle.onclick = () => {
+    const mount = document.getElementById('db-roster')!;
+    const open = mount.innerHTML === '';
+    mount.innerHTML = open ? debriefRows() : '';
+    toggle.textContent = open ? 'Hide roster' : 'Show roster';
+    if (open) mount.scrollIntoView({ block: 'start' });
+  };
 }
 
 function showDebrief(): void {

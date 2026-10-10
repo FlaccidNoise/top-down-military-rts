@@ -413,6 +413,12 @@ button.hbtn.active { background: var(--chip-active-bg); border-color: var(--ambe
 #debrief h1.loss { color: var(--red); }
 #debrief .sub { color: var(--muted); margin: 0 0 6px; }
 #debrief .fallen { color: var(--red); margin: 0 0 6px; }
+/* The result as a few large numbers: the first thing read, before any table. */
+#debrief .db-stats { display: flex; gap: var(--sp-6); margin: var(--sp-5) 0 var(--sp-4); }
+#debrief .db-stat b { display: block; font-size: 44px; line-height: 1; font-weight: var(--fw-head); color: var(--paper); }
+#debrief .db-stat.bad b { color: var(--red); }
+#debrief .db-stat span { display: block; margin-top: 6px; color: var(--muted); font-size: var(--fs-sm); letter-spacing: 2px; text-transform: uppercase; }
+#debrief #db-roster:empty { display: none; }
 #debrief .intel { color: var(--paper); margin: 0 0 6px; }
 #debrief .intel b { color: var(--amber); font-weight: var(--fw-label); }
 #debrief .intel .obj { color: var(--amber); }
@@ -1322,7 +1328,8 @@ html.mobile #pausemenu button,
 html.mobile #debrief button { min-height: 44px; }
 /* A row of four menu buttons ran off the right edge of a 390px screen. */
 #mainmenu .db-actions,
-#pausemenu .db-actions { flex-wrap: wrap; }
+#pausemenu .db-actions,
+#debrief .db-actions { flex-wrap: wrap; }
 @media (max-width: 620px) {
   html.mobile #mainmenu .db-actions,
   html.mobile #pausemenu .db-actions { flex-direction: column; }
