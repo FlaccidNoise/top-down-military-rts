@@ -281,6 +281,26 @@ export async function drillToVictory(h, d, ctx) {
   return { ...end, recoveries };
 }
 
+/**
+ * A battle's result is a card over the battle just fought: the fight stopped
+ * where it ended, its HUD gone, the map still showing round the card.
+ */
+export async function checkOverBattle(h, { check, label }, what) {
+  const read = () => h.page.evaluate(() => {
+    const d = document.getElementById('debrief');
+    const parts = [...d.querySelectorAll('.db-scroll, .db-actions')].map((e) => e.getBoundingClientRect());
+    const card = { left: Math.min(...parts.map((r) => r.left)), top: Math.min(...parts.map((r) => r.top)), right: Math.max(...parts.map((r) => r.right)), bottom: Math.max(...parts.map((r) => r.bottom)) };
+    const alpha = /rgba\(.*,\s*([\d.]+)\)/.exec(getComputedStyle(d).backgroundColor);
+    return { over: d.classList.contains('over-battle'), hud: getComputedStyle(document.getElementById('hud')).display, tick: window.__game.sim.tick, share: ((card.right - card.left) * (card.bottom - card.top)) / (innerWidth * innerHeight), dim: alpha ? Number(alpha[1]) : 1, onScreen: card.left >= 0 && card.top >= 0 && card.right <= innerWidth && card.bottom <= innerHeight };
+  });
+  const a = await read();
+  await h.page.waitForTimeout(500);
+  const b = await read();
+  check(a.over && a.hud === 'none', `${label}: ${what} is a card over the battlefield, and the battle HUD is gone (over-battle ${a.over}, #hud ${a.hud})`);
+  check(a.onScreen && a.share < 0.7 && a.dim > 0 && a.dim < 1, `${label}: the battlefield shows round the card, dimmed (the card is ${Math.round(a.share * 100)}% of the screen, the dim ${a.dim})`);
+  check(a.tick === b.tick, `${label}: the battle is stopped behind the card (tick ${a.tick}, then ${b.tick})`);
+}
+
 /** The card that ends the drill. Leaves it on screen. */
 export async function checkEndCard(h, ctx) {
   const { page } = h;
@@ -297,6 +317,7 @@ export async function checkEndCard(h, ctx) {
   check(card.words <= 20, `${label}: the end card is ${card.words} words`);
   check(!card.bubble, `${label}: no tutorial bubble is left over the end card`);
   check(card.doc[0] <= card.doc[1], `${label}: the end card fits the width (${card.doc[0]} <= ${card.doc[1]})`);
+  await checkOverBattle(h, ctx, 'the end card');
   if (shot) await shot('end-card');
   return card;
 }

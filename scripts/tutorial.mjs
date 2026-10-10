@@ -4,10 +4,13 @@
 //   landing -> Play -> the drill, from its first step to the farm taken ->
 //   Start the campaign -> the goal line -> select a company -> march ->
 //   Play the clock -> contact -> deployment -> first battle order -> debrief ->
-//   back on the theater -> reload: Continue first, Training on the menu
+//   back on the theater -> Dig in -> reload: Continue first, Training on the menu
+//
+// and three paths beside it: a first battle the player defends (each device),
+// the first requisition card against a tutorial step, and Skip.
 //
 //   node scripts/tutorial.mjs --port 5331                  # every leg
-//   node scripts/tutorial.mjs --port 5331 --leg desktop    # desktop | phone | landscape | skip | modal
+//   node scripts/tutorial.mjs --port 5331 --leg desktop    # desktop | phone | landscape | defender | requisition | skip | modal
 //   node scripts/tutorial.mjs --port 5331 --shots DIR      # where shots land (default .screenshots/tutorial)
 //   node scripts/tutorial.mjs --port 5331 --seed 1263164463  # replay one campaign exactly (?war=)
 //
@@ -28,6 +31,14 @@
 //     a balance question scripts/firstcontact.mjs answers with numbers.
 //   - the two contact-card strings a first battle cannot reach (a red attack,
 //     a 5:1 mismatch): stagedModalRun().
+//   - THE RED ATTACK OF THE DEFENDER LEG, and one unit event in it. On the first
+//     preset red never comes to a player: he attacks in 60 of 60 wars when he
+//     follows the steps and meets nobody in 40 of 40 when he orders nothing
+//     (scripts/firstcontact.mjs --pick weakest, --pick none, --no-fight). So the
+//     red group is put on a parked blue company. Everything the player then
+//     does is real input. A 'took-over' event is pushed into the sim's own
+//     queue before the staged end, because a battle this short raises none:
+//     it proves the path from the drain to the debrief's highlights.
 //   - the battle speed (4x, through the game's own control).
 //
 // EXPECTED COPY IS IMPORTED, NEVER RETYPED. Bubble text is read out of
@@ -40,7 +51,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { arg } from './lib/stage.mjs';
-import { checkEndCard, checkStep, checkViewport, drillFirstOrder, drillToVictory, manOf, openDevice, overlap, squadOrders, stepView, waitStep } from './lib/play.mjs';
+import { checkEndCard, checkOverBattle, checkStep, checkViewport, drillFirstOrder, drillToVictory, manOf, openDevice, overlap, squadOrders, stepView, waitStep } from './lib/play.mjs';
 
 const PORT = Number(arg('port', '5331'));
 const URL = `http://localhost:${PORT}`;
@@ -49,6 +60,8 @@ const LEG = arg('leg', 'all');
 const SEED = arg('seed', null);
 
 const fails = [];
+// The first-run legs that took an objective in their first battle, and so met the Dig in step.
+const digInLegs = [];
 const check = (ok, msg) => {
   console.log(`  ${ok ? 'ok  ' : 'FAIL'} ${msg}`);
   if (!ok) fails.push(msg);
@@ -135,6 +148,36 @@ const brokenControls = (page, rootSel) =>
     return out;
   }, rootSel);
 
+// The theater's flash line is drawn on the canvas, and the canvas is behind
+// every DOM panel: where it was drawn, and the panels it is under.
+const flashView = (page) =>
+  page.evaluate(() => {
+    const view = window.__game.getV2().view;
+    const f = view.flashRect;
+    const under = f
+      ? [...document.querySelectorAll('#theater-hud .panel')].map((e) => ({ c: e.className.replace('panel', '').trim(), r: e.getBoundingClientRect() })).filter((q) => q.r.width > 0 && q.r.left < f.right && q.r.right > f.left && q.r.top < f.bottom && q.r.bottom > f.top).map((q) => q.c)
+      : [];
+    return { text: f ? view.flashText : null, under, onScreen: !!f && f.left >= 0 && f.top >= 0 && f.right <= innerWidth && f.bottom <= innerHeight };
+  });
+const checkFlash = (f, tag) => check(f.text !== null && f.onScreen && f.under.length === 0, `${tag}: the flash line is on the map, under no panel ("${f.text}"${f.under.length ? `, under: ${f.under.join(', ')}` : ''})`);
+
+// The debrief's highlights: how many, how long, where, and that none is saved.
+const highlightsView = (page) =>
+  page.evaluate(async () => {
+    const { HIGHLIGHTS_SHOWN } = await import('/src/ui/highlights.ts');
+    const list = document.querySelector('#debrief .db-high');
+    const lines = [...document.querySelectorAll('#debrief .db-high li')].map((e) => e.textContent);
+    const roster = document.getElementById('db-show-roster');
+    return {
+      max: HIGHLIGHTS_SHOWN,
+      lines,
+      ahead: !list || (!!roster && !!(list.compareDocumentPosition(roster) & Node.DOCUMENT_POSITION_FOLLOWING) && list.getBoundingClientRect().bottom <= roster.getBoundingClientRect().top),
+      saved: Object.keys(localStorage).filter((k) => lines.some((l) => (localStorage.getItem(k) ?? '').includes(l))),
+    };
+  });
+const checkHighlights = (hi, tag) =>
+  check(hi.lines.length <= hi.max && hi.lines.every((l) => wordsIn(l) <= 8) && hi.ahead && hi.saved.length === 0, `${tag}: at most ${hi.max} highlights, one short line each, ahead of Show roster, none in storage (${hi.lines.length ? hi.lines.join(' | ') : 'none'}${hi.saved.length ? `; SAVED under ${hi.saved.join(', ')}` : ''})`);
+
 const vpOf = (page) => page.evaluate(() => { const r = document.documentElement; return { inner: [innerWidth, innerHeight], doc: [r.scrollWidth, r.scrollHeight], visual: [Math.round(visualViewport.width), Math.round(visualViewport.height)], scale: visualViewport.scale }; });
 
 async function land(h, { expectFresh = true } = {}) {
@@ -168,8 +211,17 @@ async function firstRun(device) {
     check(!menu.buttons.some((b) => b.id === 'mm-continue' || b.id === 'mm-new'), `${device}: no Continue and no setup on a first run`);
     check(!menu.rotate, `${device}: no "turn the phone" screen before the menu`);
     if (h.TOUCH) check(menu.buttons.every((b) => b.h >= 44), `${device}: every menu button is a 44 px target (${menu.buttons.map((b) => `${b.id} ${b.h}`).join(', ')})`);
+    const landing = await page.evaluate(async () => {
+      const { TAGLINE } = await import('/src/ui/mainmenu.ts');
+      const r = (id) => document.getElementById(id).getBoundingClientRect();
+      const play = r('mm-play'), custom = r('mm-custom'), manual = r('mm-manual');
+      const row = document.querySelector('#mainmenu .db-actions').getBoundingClientRect();
+      return { tagline: TAGLINE, shown: document.querySelector('#mainmenu .mm-tag')?.textContent ?? null, share: play.width / row.width, tall: play.height, under: custom.top >= play.bottom && manual.top >= play.bottom, inRow: Math.abs(custom.top - manual.top) < 2 };
+    });
+    check(landing.shown === landing.tagline && wordsIn(landing.tagline) <= 8, `${device}: one line under the title says what this is, in ${wordsIn(landing.tagline)} words ("${landing.shown}")`);
+    check(landing.share > 0.8 && landing.tall <= 80 && landing.under && landing.inRow, `${device}: Play is the width of the menu and the two links are in a row under it (Play ${Math.round(landing.share * 100)}% wide, ${Math.round(landing.tall)} px tall)`);
     const landingWords = await visibleWords(page);
-    check(landingWords <= 8, `${device}: the landing screen is ${landingWords} words`);
+    check(landingWords <= 6 + wordsIn(landing.tagline), `${device}: the landing screen is ${landingWords} words`);
     checkViewport(check, `${device} landing`, await vpOf(page));
     await shot('landing');
 
@@ -242,6 +294,7 @@ async function firstRun(device) {
     const march = await page.evaluate(() => { const v2 = window.__game.getV2(); return { edges: v2.front.forces.find((f) => f.id === v2.selectedForce)?.path.length ?? 0, flash: v2.view.flashText, goal: !!document.getElementById('goal-line') }; });
     check(march.edges > 0, `${device}: a ${h.TOUCH ? 'hold' : 'right-click'} on the ringed town orders the march (${march.edges} edges${march.edges ? '' : `; the view says "${march.flash}"`})`);
     check(!march.goal, `${device}: the goal line goes once the first march is ordered`);
+    checkFlash(await flashView(page), `${device} march`);
 
     // ── Play the clock: the step ends when the clock moves, not when a button is pressed ──
     await waitStep(h, 'play', 5000);
@@ -356,17 +409,41 @@ async function firstRun(device) {
     const deb = await page.evaluate(() => ({ h1: document.querySelector('#debrief h1')?.textContent, stats: document.querySelectorAll('#debrief .db-stat').length, rows: document.querySelectorAll('#debrief tr').length, words: document.querySelector('#debrief .db').innerText.split(/\s+/).filter(Boolean).length }));
     check(deb.h1 === 'VICTORY' && deb.stats === 3 && deb.rows === 0, `${device}: the debrief leads with the result and three numbers, the roster behind a button (${deb.h1}, ${deb.stats} numbers, ${deb.rows} roster rows, ${deb.words} words)`);
     check(!/roster/i.test(v.text), `${device}: the debrief step does not send the player to read the roster ("${v.text}")`);
+    await checkOverBattle(h, ctx, 'the debrief');
+    checkHighlights(await highlightsView(page), device);
     await h.press('#next');
     await until(page, () => window.__game.getSelection().mode === 'strategic', null, { what: 'the theater after the debrief', fix: 'The #next handler sets mode = strategic (src/main.ts showDebrief).' });
     await page.waitForTimeout(400);
     checkViewport(check, `${device} theater after the battle`, await vpOf(page));
     await shot('theater-after');
 
+    // ── Dig in: one line, the first time an objective is taken ──
+    // The first battle is for whatever stands on the road: the ringed town, or
+    // a garrison on the way to it. Only the first is an objective taken.
+    const took = await page.evaluate(() => { const v2 = window.__game.getV2(); return v2.front.theater.objectiveNodes.filter((n) => v2.front.controlByNode[n] === 'blue').map((n) => v2.front.theater.nodes[n].name); });
+    if (took.length === 0) {
+      check((await stepView(page)).step === null, `${device}: the battle was for a town on the way, no objective is held yet, and no Dig in step shows`);
+    } else {
+      digInLegs.push(device);
+      await waitStep(h, 'dig-in', 8000);
+      v = await checkStep(h, 'dig-in', ctx);
+      check(!!v.ring, `${device}: ${took.join(', ')} is taken, and with no company selected the Dig in bubble points at the company on it`);
+      if (v.ring) await h.tap(v.ring);
+      await until(page, () => (document.querySelector('#theater-hud [data-post="dig"]')?.getBoundingClientRect().width ?? 0) > 0, null, { what: "the company's card and its posture row", fix: 'A tap on the ringed company selects it (theaterMark("holder") in src/main.ts) and TheaterHud shows its card with [data-post] buttons.' });
+      v = await checkStep(h, 'dig-in', { check, shot: (name) => shot(`${name}-button`) });
+      check(v.ring === null, `${device}: once the company is selected the ring is gone and the bubble is on its Dig in button`);
+      await h.press('#theater-hud [data-post="dig"]');
+      const dug = await page.evaluate(() => { const v2 = window.__game.getV2(); return { posture: v2.front.forces.find((f) => f.id === v2.selectedForce)?.posture, step: window.__game.tutorialView().step }; });
+      check(dug.posture === 'dig' && dug.step === null, `${device}: Dig in sets the posture and the step is done (posture ${dug.posture}, step ${dug.step})`);
+    }
+
     // ── what the profile remembers ──
     const state = await page.evaluate(async () => {
       const { STEPS, TUTORIAL_STORAGE_KEY } = await import('/src/ui/tutorial.ts');
       return { saved: JSON.parse(localStorage.getItem(TUTORIAL_STORAGE_KEY) ?? 'null'), want: STEPS.filter((s) => s.scene === 'campaign').map((s) => s.id) };
     });
+    // Dig in waits for an objective: a run that took none has not met it.
+    if (took.length === 0) state.want = state.want.filter((id) => id !== 'dig-in');
     const missing = state.want.filter((id) => !(state.saved?.done ?? []).includes(id));
     check(state.saved?.skipped === false && state.saved?.drilled === true && missing.length === 0, `${device}: every campaign step is retired in storage${missing.length ? `: missing ${missing.join(', ')}` : ` (${state.want.length}/${state.want.length})`}`);
 
@@ -382,6 +459,221 @@ async function firstRun(device) {
     check(/Replace/.test(confirm.text ?? '') && confirm.mode === 'menu', `${device}: New campaign over a saved one asks first ("${confirm.text}")`);
 
     check(h.errors.length === 0, `${device}: no page or console errors on the whole run${h.errors.length ? `: ${[...new Set(h.errors)].slice(0, 3).join(' | ')}` : ''}`);
+  } finally {
+    await h.browser.close();
+  }
+}
+
+// ── a first battle the player defends ─────────────────────────────────────
+// The profile started the drill and left it, so every campaign step is still
+// to come, the two battle steps included. The red attack is staged (see the
+// header). What is checked is what a defender reads: a card with one button,
+// a deployment behind his own line, a goal that says to break an attack, a
+// pointer to where it comes from, and a first-order line that does not tell
+// him to go anywhere.
+
+async function defenderRun(device) {
+  console.log(`\n=== ${device} · a first battle the player defends ===`);
+  const h = await openDevice(device);
+  const { page } = h;
+  const shot = shooter(h, `${device}-defender`);
+  const ctx = { check, shot, label: `${device} defender` };
+  const tag = `${device} defender`;
+  try {
+    await page.addInitScript(() => { try { if (!localStorage.getItem('rts.tutorial.v1')) localStorage.setItem('rts.tutorial.v1', JSON.stringify({ skipped: false, done: [], drilled: true })); } catch { /* private mode */ } });
+    await land(h, { expectFresh: false });
+    await h.press('#mm-new');
+    await until(page, () => !!window.__game.getV2(), null, { what: 'a campaign', fix: 'startFirstCampaign in src/main.ts.' });
+    const seed = await page.evaluate(() => window.__game.getV2().seed);
+    console.log(`  campaign seed ${seed}${SEED === null ? ` (rolled; replay with --seed ${seed})` : ' (pinned)'}`);
+    await waitStep(h, 'select-force', 15000);
+    const staged = await page.evaluate(() => {
+      const v2 = window.__game.getV2();
+      const live = (side) => v2.front.forces.filter((f) => f.side === side && f.strength > 0 && f.engagedIn === null);
+      const blue = live('blue').find((f) => f.pos.kind === 'node' && f.path.length === 0);
+      if (!blue) return { ok: false, why: 'no idle blue company parked on a node' };
+      // detectContacts orients on movement first, then on the higher id: a red
+      // force parked on a stationary blue one is the attacker.
+      const red = live('red').filter((f) => f.id > blue.id).sort((a, b) => b.id - a.id)[0];
+      if (!red) return { ok: false, why: 'no red force has an id above a stationary blue force' };
+      red.pos = { ...blue.pos };
+      red.path = [];
+      red.posture = 'march';
+      red.dugMin = 0;
+      red.strength = Math.round(blue.strength * 0.6);
+      return { ok: true, blue: blue.name, red: red.name };
+    });
+    if (!staged.ok) throw new Error(`could not stage the red attack: ${staged.why}`);
+    // The player presses Play before he has marched anywhere.
+    await h.press('#theater-hud [data-clock="pause"]');
+    await until(page, () => !!document.getElementById('fight') && window.__game.tutorialView()?.step === 'contact', null, { timeout: 60000, what: 'the contact card of the red attack and its step', fix: 'The staged forces never met. detectContacts pairs at CONTACT_M each minute (src/strategic/theater/contact.ts).' });
+
+    // ── the contact card: one button ──
+    let v = await checkStep(h, 'contact', ctx);
+    const card = await page.evaluate(() => { const c = document.getElementById('contact'); const r = c.getBoundingClientRect(); return { rect: { left: r.left, top: r.top, right: r.right, bottom: r.bottom }, buttons: [...c.querySelectorAll('button')].filter((b) => b.getBoundingClientRect().width > 0).map((b) => b.textContent), forced: c.querySelector('.fc-forced')?.textContent ?? null, odds: c.querySelector('.fc-odds')?.textContent ?? '' }; });
+    check(card.buttons.join() === 'Defend', `${tag}: the card has one button, Defend, and no Stand down (${card.buttons.join(' / ')})`);
+    check(/chose this fight/i.test(card.forced ?? ''), `${tag}: the card says who chose the fight ("${card.forced}")`);
+    check(/outnumber|Even match/.test(card.odds), `${tag}: the card states the odds in words`);
+    check(!overlap(v.bubble, card.rect), `${tag}: the contact bubble is beside the card, not on it`);
+    await h.press('#fight');
+    await until(page, () => window.__game.getSelection().mode === 'battle', null, { what: 'the battle to boot', fix: 'startTheaterBattle threw: read the console.' });
+    if (await page.evaluate(() => getComputedStyle(document.getElementById('rotate')).display !== 'none')) await h.press('#rotate-anyway');
+
+    // ── deployment, as the defender ──
+    await waitStep(h, 'deploy', 15000);
+    v = await checkStep(h, 'deploy', ctx);
+    const dep = await page.evaluate(async () => {
+      const { GOAL_LABEL, defending } = await import('/src/ui/battle-goal.ts');
+      const { DEPLOY_DEF_LINE, DEPLOY_DEF_DEFAULT } = await import('/src/strategic/deploy.ts');
+      const { BATTLE_CLASS_TO_MAPKIND } = await import('/src/strategic/theater.ts');
+      const g = window.__game, s = g.sim;
+      const strip = document.getElementById('obj-strip');
+      const sr = strip.getBoundingClientRect();
+      // Its parts, left to right: none off the strip, none under the next, none spilling its own box.
+      const parts = [...strip.children].map((c) => ({ r: c.getBoundingClientRect(), spill: c.scrollWidth - c.clientWidth }));
+      const line = DEPLOY_DEF_LINE[BATTLE_CLASS_TO_MAPKIND[g.getV2().battle.tb.battleClass]] ?? DEPLOY_DEF_DEFAULT;
+      const men = (side) => s.soldiers.filter((m) => m.alive && m.side === side && m.inVehicle < 0);
+      const meanX = (a) => a.reduce((t, m) => t + m.x, 0) / a.length;
+      return {
+        want: GOAL_LABEL.defend, attack: GOAL_LABEL.attack, label: strip.querySelector('.obj-kind').textContent, defending: defending(s),
+        fits: sr.left >= 0 && sr.right <= innerWidth && parts.every((q, i) => q.r.width > 0 && q.spill <= 1 && q.r.left >= sr.left - 1 && q.r.right <= sr.right + 1 && (i === 0 || q.r.left >= parts[i - 1].r.right - 1)),
+        line, behind: men('blue').filter((m) => m.x >= line).length, of: men('blue').length, redFromWest: meanX(men('red')) < meanX(men('blue')),
+        pointer: g.enemyPointer(), tick: s.tick,
+      };
+    });
+    check(dep.label === dep.want && dep.want !== dep.attack && dep.defending, `${tag}: the goal strip tells a defender to break an attack, not to make one ("${dep.label}")`);
+    check(dep.fits, `${tag}: the goal strip fits the screen with the longer line, and no part of it lies on the next`);
+    check(dep.behind === dep.of, `${tag}: every man deploys behind the defender's line (${dep.behind}/${dep.of} at x >= ${dep.line})`);
+    check(!!dep.pointer && Math.cos(dep.pointer.angle) < 0 === dep.redFromWest, `${tag}: the ENEMY pointer is up in deployment, under the step, and points where the enemy is (${dep.pointer ? `angle ${dep.pointer.angle.toFixed(2)}` : 'not drawn'}, red to the ${dep.redFromWest ? 'west' : 'east'})`);
+    check(dep.tick === 0, `${tag}: the clock is stopped in deployment (tick ${dep.tick})`);
+
+    // ── Play, a squad, an order ──
+    await h.press(h.TOUCH ? '[data-tb="pause"]' : '#hud [data-act="pause"]');
+    await until(page, () => window.__game.sim.tick > 5, null, { what: 'the battle to run after Play', fix: 'The first unpause commits the deployment (src/main.ts, the deployPhase && !paused branch).' });
+    await waitStep(h, 'battle-select', 5000);
+    v = await checkStep(h, 'battle-select', ctx);
+    if (!v.ring) throw new Error('the battle-select step rings no squad: worldMark("squad") in src/main.ts found no blue man on the visible map.');
+    await h.tap(v.ring);
+    await waitStep(h, 'battle-order', 5000);
+    v = await checkStep(h, 'battle-order', ctx);
+    check(/move/i.test(v.text) && !/send|attack|advance/i.test(v.text), `${tag}: the first-order line does not send a defender forward ("${v.text}")`);
+    const squad = (await page.evaluate(() => window.__game.getSelection().squads))[0];
+    const dest = await page.evaluate((q) => {
+      const g = window.__game, s = g.sim, st = g.stage(), canvas = document.querySelector('canvas');
+      const men = s.squads[q].soldierIds.map((i) => s.soldiers[i]).filter((m) => m.alive);
+      const cx = men.reduce((a, m) => a + m.x, 0) / men.length, cy = men.reduce((a, m) => a + m.y, 0) / men.length;
+      const taken = g.tutorialView().occupied;
+      for (const [dx, dy] of [[0, 12], [0, -12], [12, 0], [-12, 0], [8, 8], [8, -8], [0, 20], [0, -20]]) {
+        const [x, y] = g.cam.worldToScreen(cx + dx, cy + dy, innerWidth, innerHeight);
+        if (x > st.left + 12 && x < st.right - 12 && y > st.top + 12 && y < st.bottom - 12 && document.elementFromPoint(x, y) === canvas && !taken.some((r) => x > r.left && x < r.right && y > r.top && y < r.bottom)) return { x, y };
+      }
+      return null;
+    }, squad);
+    if (!dest) throw new Error('no ground near the selected squad is on the visible map and clear of the bubble.');
+    await h.order(dest);
+    // A defender's squad is in a house as often as not, and a hold on a house asks which floor.
+    const floors = await page.evaluate(() => {
+      const rows = [...document.querySelectorAll('#floormenu .fm-row')];
+      if (rows.length === 0) return null;
+      const cs = getComputedStyle(rows[0]);
+      return { rows: rows.map((r) => r.textContent), onTop: rows.every((r) => { const b = r.getBoundingClientRect(); return document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2) === r; }), serif: !/mono/i.test(cs.fontFamily), colour: cs.color };
+    });
+    if (floors) {
+      check(floors.onTop && !floors.serif && floors.colour !== 'rgb(0, 0, 0)', `${tag}: the floor menu a hold on a house opens is over the bubble and in the HUD's type (${floors.rows.join(' / ')}; on top ${floors.onTop}, colour ${floors.colour})`);
+      await h.press('#floormenu .fm-row:last-child');
+    }
+    const first = await squadOrders(page, squad);
+    check(first.some((o) => /^(move|fast|sneak)\//.test(o)) && (await stepView(page)).step === null, `${tag}: the order goes in through the UI and the step is done (${first.join(', ')})`);
+    await shot('first-order');
+
+    // ── the end (staged), and the debrief ──
+    const told = await page.evaluate(async () => {
+      const s = window.__game.sim;
+      if (!Array.isArray(s.pendingUnitEvents)) throw new Error('Sim.pendingUnitEvents is gone: this gate pushes one event into the queue Sim.takeUnitEvents drains (src/sim/sim.ts). Point it at the new queue.');
+      const m = s.soldiers.find((x) => x.alive && x.side === 'blue');
+      s.pendingUnitEvents.push({ kind: 'took-over', x: m.x, y: m.y, side: 'blue', name: m.name, id: m.id });
+      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      s.winner = 'blue';
+      return m.name;
+    });
+    await until(page, () => !!document.querySelector('#debrief #next') && getComputedStyle(document.getElementById('debrief')).display !== 'none', null, { timeout: 20000, what: 'the debrief', fix: 'showDebrief runs 4 s after sim.winner is set (src/main.ts frame loop).' });
+    await waitStep(h, 'debrief', 5000);
+    v = await checkStep(h, 'debrief', ctx);
+    await checkOverBattle(h, ctx, 'the debrief');
+    const deb = await page.evaluate(() => ({ h1: document.querySelector('#debrief h1')?.textContent, outcome: document.querySelector('#debrief .sub')?.textContent ?? '' }));
+    check(deb.h1 === 'VICTORY' && /held/i.test(deb.outcome) && !/ours|taken/i.test(deb.outcome), `${tag}: a defence won is a line held, not ground taken (${deb.h1}: "${deb.outcome}")`);
+    const hi = await highlightsView(page);
+    checkHighlights(hi, tag);
+    check(hi.lines.length === 1 && hi.lines[0].startsWith(`${told} `), `${tag}: what a man did in the battle is on the debrief by his name (${hi.lines.join(' | ') || 'no highlights'}; the event was ${told}'s)`);
+    await h.press('#next');
+    await until(page, () => window.__game.getSelection().mode === 'strategic', null, { what: 'the theater after the debrief', fix: 'The #next handler sets mode = strategic (src/main.ts showDebrief).' });
+    await page.waitForTimeout(600);
+    check((await stepView(page)).step !== 'dig-in', `${tag}: holding ground the player already had does not raise the Dig in step`);
+    check(h.errors.length === 0, `${tag}: no page or console errors on the whole run${h.errors.length ? `: ${[...new Set(h.errors)].slice(0, 3).join(' | ')}` : ''}`);
+  } finally {
+    await h.browser.close();
+  }
+}
+
+// ── the first requisition, against a tutorial step ────────────────────────
+// A requisition card comes up every reinforcement cycle. The first run does
+// not explain it: while it is up the tutorial stands down. The player here
+// presses Play with the first step still on screen and waits for Day 2.
+
+async function requisitionRun(device) {
+  console.log(`\n=== ${device} · the first requisition card, with a tutorial step on screen ===`);
+  const h = await openDevice(device);
+  const { page } = h;
+  const tag = `${device} requisition`;
+  try {
+    await page.addInitScript(() => { try { if (!localStorage.getItem('rts.tutorial.v1')) localStorage.setItem('rts.tutorial.v1', JSON.stringify({ skipped: false, done: [], drilled: true })); } catch { /* private mode */ } });
+    await land(h, { expectFresh: false });
+    await h.press('#mm-new');
+    await until(page, () => !!window.__game.getV2(), null, { what: 'a campaign', fix: 'startFirstCampaign in src/main.ts.' });
+    await waitStep(h, 'select-force', 15000);
+    const view = () => page.evaluate(() => {
+      const v2 = window.__game.getV2();
+      const coach = document.querySelector('.coach');
+      const next = document.querySelector('#theater-hud .th-next');
+      const card = document.querySelector('#theater-hud .th-contact');
+      return {
+        clock: v2.front.clockMin, day: v2.front.day, due: v2.front.requisition?.due === true, card: card.getBoundingClientRect().height > 0 && !!document.getElementById('req'),
+        step: window.__game.tutorialView().step, bubble: !!coach && getComputedStyle(coach).display !== 'none',
+        label: document.querySelector('#theater-hud .st-pause').textContent, next: next.textContent, nextShown: getComputedStyle(next).visibility !== 'hidden',
+      };
+    });
+    await h.press('#theater-hud [data-clock="2"]');
+    await h.press('#theater-hud [data-clock="pause"]');
+    await until(page, () => !!document.getElementById('req'), null, { timeout: 120000, what: 'the first requisition card', fix: 'The day rollover raises front.requisition.due on a REINFORCE_CYCLE_DAYS day and the frame loop calls showRequisitionV2 (src/main.ts).' });
+    await page.waitForTimeout(400);
+    let s = await view();
+    check(s.step === 'select-force' && !s.bubble, `${tag}: the tutorial bubble stands down while the card is up (step ${s.step}, bubble ${s.bubble ? 'on screen' : 'hidden'})`);
+    check(s.nextShown && wordsIn(s.next) <= 5 && /requisition/i.test(s.next), `${tag}: the strip's own line says what to do ("${s.next}")`);
+    check(s.label.includes('Play'), `${tag}: the clock control reads Play while the card waits ("${s.label}")`);
+    // Space on a keyboard, the button on a phone: the clock holds either way, and the label must not say otherwise.
+    const playOn = await page.evaluate(() => { const e = document.querySelector('#theater-hud [data-clock="pause"]'); const r = e.getBoundingClientRect(); const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return top === e || e.contains(top); });
+    if (!h.TOUCH) await page.keyboard.press('Space');
+    else if (playOn) await h.press('#theater-hud [data-clock="pause"]');
+    await page.waitForTimeout(500);
+    const after = await view();
+    check(after.label.includes('Play') && after.clock === s.clock, `${tag}: ${h.TOUCH ? (playOn ? 'a tap on Play' : 'Play is under the card and') : 'Space'} leaves the label on Play and the clock where it was ("${after.label}", minute ${s.clock} then ${after.clock})`);
+    if (!h.TOUCH || playOn) checkFlash(await flashView(page), tag);
+    const pick = await page.evaluate(() => [...document.querySelectorAll('#theater-hud [data-card]')].find((e) => !e.disabled)?.dataset.card ?? null);
+    if (!pick) throw new Error('the requisition card offers nothing that can be picked: requisitionOffer in src/strategic/requisition.ts blocked all four.');
+    await h.press(`#theater-hud [data-card="${pick}"]`);
+    await page.waitForTimeout(500);
+    s = await view();
+    check(!s.card && !s.due, `${tag}: picking ${pick} answers the card`);
+    check(s.step === 'select-force' && s.bubble, `${tag}: the step comes back when the card is gone (step ${s.step}, bubble ${s.bubble ? 'on screen' : 'hidden'})`);
+    await checkStep(h, 'select-force', { check, shot: null });
+    // The next cycle, with no contact in between: the card must come up again
+    // (a hidden first card left its #req behind, and the clock then held for a card nobody could see).
+    await h.press('#theater-hud [data-clock="pause"]');
+    await until(page, () => window.__game.getV2().front.requisition?.due === true, null, { timeout: 120000, what: 'the second requisition to come due', fix: 'The clock did not run after the first card was answered: toggleStratPause in src/main.ts.' });
+    await page.waitForTimeout(600);
+    s = await view();
+    check(s.card, `${tag}: the second requisition card shows when it comes due (day ${s.day})`);
+    check(h.errors.length === 0, `${tag}: no page or console errors${h.errors.length ? `: ${[...new Set(h.errors)].slice(0, 3).join(' | ')}` : ''}`);
   } finally {
     await h.browser.close();
   }
@@ -564,6 +856,11 @@ const legs = [
   ['desktop', 'desktop first run', () => firstRun('desktop')],
   ['phone', 'phone first run', () => firstRun('phone')],
   ['landscape', 'phone landscape first run', () => firstRun('phone-landscape')],
+  ['defender', 'desktop defender', () => defenderRun('desktop')],
+  ['defender', 'phone defender', () => defenderRun('phone')],
+  ['defender', 'phone landscape defender', () => defenderRun('phone-landscape')],
+  ['requisition', 'desktop requisition', () => requisitionRun('desktop')],
+  ['requisition', 'phone requisition', () => requisitionRun('phone')],
   ['skip', 'skip', skipRun],
   ['skip', 'manual', manualRun],
   ['modal', 'staged contact card: a fight red chose', () => stagedModalRun('defender')],
@@ -581,5 +878,6 @@ for (const [leg, name, run] of legs) {
 const mins = ((Date.now() - t0) / 60000).toFixed(1);
 writeFileSync(join(SHOTS, 'result.txt'), `${fails.length ? fails.join('\n') : 'all checks passed'}\n\n${shots.join('\n')}\n`);
 console.log(`\n${shots.length} screenshots in ${SHOTS} (${mins} min)`);
+if (LEG === 'all' || ['desktop', 'phone', 'landscape'].includes(LEG)) console.log(`Dig in step met on: ${digInLegs.join(', ') || 'no leg (each first battle was for a town on the way: run a first-run leg again)'}`);
 console.log(fails.length ? `${fails.length} FAILED:\n${fails.map((f) => `  - ${f}`).join('\n')}` : 'all checks passed');
 process.exit(fails.length ? 1 : 0);

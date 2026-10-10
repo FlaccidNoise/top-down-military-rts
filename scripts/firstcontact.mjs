@@ -4,13 +4,15 @@
 // are and reports.
 //
 //   npx vite-node scripts/firstcontact.mjs -- [--seeds 8] [--start 1] [--presets "Skirmish,Normandy Bocage"]
-//                                             [--pick nearest|weakest] [--cap-min 25] [--no-fight] [--out FILE.jsonl]
+//                                             [--pick nearest|weakest|none] [--cap-min 25] [--no-fight] [--out FILE.jsonl]
 //
 // Per preset and seed it does what the theater tutorial tells a new player to
 // do: take the strongest company and march it at a gold-ringed town it can
 // reach. --pick says which: the nearest (the default, and what a player with
 // no advice does), or the one with the weakest garrison (what the tutorial's
-// ring points at: theaterMark in src/main.ts). The war runs through the same per-minute body main.ts runs
+// ring points at: theaterMark in src/main.ts), or none: the player presses Play
+// and orders nothing, which is how a first battle comes to be one he defends.
+// The war runs through the same per-minute body main.ts runs
 // (red plans, stepWar, the day rolls) until that march meets somebody. The
 // contact is then staged through makeTheaterBattle and fought by the two
 // battle commanders, blue's included: the attack doctrine stands in for a
@@ -40,7 +42,7 @@ const CAP_TICKS = Number(arg('cap-min', 25)) * 60 * 30;
 const FIGHT = !process.argv.includes('--no-fight');
 const OUT = arg('out', null);
 const PICK = arg('pick', 'nearest');
-if (PICK !== 'nearest' && PICK !== 'weakest') throw new Error(`--pick is "nearest" or "weakest", not "${PICK}"`);
+if (PICK !== 'nearest' && PICK !== 'weakest' && PICK !== 'none') throw new Error(`--pick is "nearest", "weakest" or "none", not "${PICK}"`);
 const names = arg('presets', PRESETS.map((p) => p.name).join(',')).split(',');
 const presets = names.map((n) => {
   const p = PRESETS.find((x) => x.name === n.trim());
@@ -75,7 +77,7 @@ function firstContact(preset, seed) {
     redMen: front.forces.filter((f) => f.side === 'red').reduce((a, f) => a + f.strength, 0),
   };
   if (!target) return { ...base, outcome: 'no-reachable-objective' };
-  orderMove(front, company.id, target.n, { nightTempo: preset.campaign.nightTempo });
+  if (PICK !== 'none') orderMove(front, company.id, target.n, { nightTempo: preset.campaign.nightTempo });
 
   let contact = null;
   let prevDay = front.day;
@@ -92,7 +94,7 @@ function firstContact(preset, seed) {
     contact = r.pendingContacts[0] ?? null;
     if (!contact && warStatus(front, goals).state === 'decided') return { ...base, outcome: 'war-decided-first', etaMin: target.p.etaMin };
     // The march arrived and nobody was home: the town flipped without a fight.
-    if (!contact && company.path.length === 0 && front.controlByNode[target.n] === 'blue') return { ...base, outcome: 'walked-in', etaMin: target.p.etaMin };
+    if (!contact && PICK !== 'none' && company.path.length === 0 && front.controlByNode[target.n] === 'blue') return { ...base, outcome: 'walked-in', etaMin: target.p.etaMin };
   }
   if (!contact) return { ...base, outcome: 'no-contact', etaMin: target.p.etaMin };
 
@@ -101,7 +103,7 @@ function firstContact(preset, seed) {
   const blue = atk.side === 'blue' ? atk : def;
   const red = atk.side === 'blue' ? def : atk;
   const met = {
-    ...base, etaMin: Math.round(target.p.etaMin), contactDay: front.day, playerAttacks: atk.side === 'blue',
+    ...base, etaMin: Math.round(target.p.etaMin), contactDay: front.day, contactHour: Math.round((front.clockMin / 60) * 10) / 10, playerAttacks: atk.side === 'blue',
     blue: blue.strength, red: red.strength, ratio: Math.round((blue.strength / red.strength) * 100) / 100, redRole: red.role,
   };
   if (!FIGHT) return { ...met, outcome: 'contact' };
