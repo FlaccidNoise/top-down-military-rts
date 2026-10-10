@@ -6,7 +6,7 @@ import type { Camera } from './camera';
 import { DecalLayer } from './decals';
 import { bandFor, CRAWL_FRAMES, DUDE_SCALE, getShadowSprite, getSprite, glintSprite, headOffset, kitVariant, SPRITE_MIN_SCALE, SPRITE_SPAN, tier, WALK_FRAMES, weaponClass, type Pose } from './dudes';
 import { emplacementBandFor, emplacementFootprintRadius, emplacementSpan, getEmplacementShadow, getEmplacementSprite } from './emplacements';
-import { ballistic, blastOf, blastScale, blit, FLASH, flashClass, fxDetail, fxScale, hazeBand, hotPass, lightPool, SPIKE_SIDES, traceOvershoot, vignette, WIND, type BlastSpec, type FlashSpec, type FxKind, type Overshoot } from './fx';
+import { ballistic, blastOf, blastScale, blit, FLASH, flashClass, fxDetail, fxScale, hazeBand, hotPass, lightPool, lobHeight, SPIKE_SIDES, throwShownFrom, traceOvershoot, vignette, WIND, type GrenadeThrow, type BlastSpec, type FlashSpec, type FxKind, type Overshoot } from './fx';
 import { SUN, shadowSoftAlpha, sun } from './light';
 import { BrassLayer, MarkLayer } from './marks';
 import { PallLayer } from './pall';
@@ -178,6 +178,21 @@ interface Bleed {
 }
 const POOL_LAYERS = 4;
 const POOL_STEP_MS = 800; // 3 s to full size
+
+// A grenade in the air (addGrenades). Flight time is the sim's; `from` is the
+// fraction of it the player is shown the throw from (fx.ts throwShownFrom).
+interface Lob {
+  fromX: number;
+  fromY: number;
+  toX: number;
+  toY: number;
+  at: number; // ms, fx clock
+  ms: number; // flight time
+  from: number;
+  k: number; // hash key: which way it tumbles
+}
+const LOB_REST_MS = 500; // it lies where it landed this long, then the blast has it or it is gone
+const MAX_LOBS = 16;
 
 const HEAT_PER_ROUND = 0.2;
 const GUN_COOL_MS = 2200; // heat's time constant
@@ -375,6 +390,7 @@ export class Renderer {
   private pall = new PallLayer();
   private firing = new Map<number, Firing>();
   private hits: Hit[] = [];
+  private lobs: Lob[] = [];
   private bleeds: Bleed[] = [];
   private hitSeq = 0;
   private barrageMarks: { x: number; y: number; tick: number }[] = [];
@@ -655,6 +671,59 @@ export class Renderer {
         const drift = ph * 1.6;
         blit(ctx, 'smoke', mx + (f.ux * out + WIND.dx * drift) * F, my + (f.uy * out + WIND.dy * drift) * F, (0.3 + ph * 0.6) * F, a * Math.sin(ph * Math.PI));
       }
+    }
+  }
+
+  // Grenades leaving the hand. Fog-gated once, here: a throw is two LOS tests
+  // and there are a handful a minute.
+  addGrenades(list: readonly GrenadeThrow[], now: number): void {
+    for (const t of list) {
+      const ms = (t.flightTicks / 30) * 1000;
+      if (!(ms > 0) || !Number.isFinite(t.fromX + t.fromY + t.toX + t.toY)) continue;
+      const mine = t.side === PLAYER_SIDE;
+      const from = throwShownFrom(mine, mine || this.pointSeen(t.fromX, t.fromY), mine || this.pointSeen(t.toX, t.toY));
+      if (from >= 1) continue;
+      if (this.lobs.length >= MAX_LOBS) this.lobs.shift();
+      this.lobs.push({ fromX: t.fromX, fromY: t.fromY, toX: t.toX, toY: t.toY, at: now, ms, from, k: this.hitSeq++ });
+    }
+  }
+
+  // The throw. Strict plan view: the grenade is drawn where it is over the
+  // ground, on the straight line from hand to target, and nothing lifts it up
+  // the screen. Its height is its SHADOW, thrown down-sun by as far as it is
+  // high: the two part at the hand, are furthest apart at the top of the arc,
+  // and close again where it lands. It is also a touch larger at the top,
+  // which is all a plan view shows of something coming toward the camera.
+  private drawLobs(ctx: CanvasRenderingContext2D, cam: Camera, now: number, cw: number, ch: number): void {
+    if (this.lobs.length === 0) return;
+    this.lobs = this.lobs.filter((l) => now - l.at < l.ms + LOB_REST_MS);
+    const F = fxScale(cam.scale);
+    const shade = sun().alphaMul;
+    for (const l of this.lobs) {
+      const t = Math.min(1, (now - l.at) / l.ms);
+      if (!(t >= l.from)) continue;
+      const dist = Math.hypot(l.toX - l.fromX, l.toY - l.fromY);
+      const z = lobHeight(t, dist);
+      const wx = l.fromX + (l.toX - l.fromX) * t;
+      const wy = l.fromY + (l.toY - l.fromY) * t;
+      const [x, y] = cam.worldToScreen(wx, wy, cw, ch);
+      if (!this.onScreen(x, y, cw, ch, 8 * F)) continue;
+      const r = (0.1 + 0.012 * z) * F;
+      // the shadow: softer and paler the higher the grenade is above it
+      const [sx, sy] = cam.worldToScreen(wx + SUN.dx * z * 0.7, wy + SUN.dy * z * 0.7, cw, ch);
+      ctx.fillStyle = `rgba(14,12,8,${(0.5 - 0.06 * z) * (shade > 0 ? shade : 0.5)})`;
+      ctx.beginPath();
+      ctx.ellipse(sx, sy, r * (1.1 + 0.12 * z), r * (0.8 + 0.09 * z), 0, 0, Math.PI * 2);
+      ctx.fill();
+      // the grenade: a dark body tumbling end over end, with one cold glint
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(hash(l.k, 0, 650) * 6.28 + (t < 1 ? t * 9 : 9));
+      ctx.fillStyle = '#1c1b16';
+      ctx.fillRect(-r * 1.3, -r * 0.75, r * 2.6, r * 1.5);
+      ctx.fillStyle = 'rgba(150,150,132,0.7)';
+      ctx.fillRect(-r * 0.9, -r * 0.6, r * 0.9, r * 0.45);
+      ctx.restore();
     }
   }
 
@@ -2322,6 +2391,7 @@ export class Renderer {
     for (const t of this.tracers) this.drawShotCool(ctx, cam, t, now, cw, ch);
     this.drawGunSmoke(ctx, cam, now, cw, ch);
     this.drawHits(ctx, cam, now, cw, ch);
+    this.drawLobs(ctx, cam, now, cw, ch);
 
     this.booms = this.booms.filter((b) => now - b.at < b.spec.hang);
     for (const b of this.booms) this.drawBoom(ctx, cam, b, now, cw, ch, tier);

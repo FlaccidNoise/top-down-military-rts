@@ -152,6 +152,37 @@ export function ballistic(t: number, v: number, vz: number): [number, number] {
   return [v * t, Math.max(0, vz * t - 4.9 * t * t)];
 }
 
+// A thrown grenade, as the sim reports the throw: where from, where to, and
+// how long it is in the air. Output only.
+export interface GrenadeThrow {
+  fromX: number;
+  fromY: number;
+  toX: number;
+  toY: number;
+  flightTicks: number;
+  side: 'blue' | 'red';
+}
+
+// Height of a lobbed object, metres, at fraction `t` of a flight `dist` metres
+// long: a parabola from the hand to the ground, higher for a longer throw and
+// held between a man's reach and a rooftop. 0 at both ends, and 0 for a `t`
+// outside the flight or not a number.
+export function lobHeight(t: number, dist: number): number {
+  if (!(t > 0) || !(t < 1)) return 0;
+  const apex = Math.min(4, Math.max(1.2, dist * 0.2));
+  return apex >= 1.2 ? apex * 4 * t * (1 - t) : 0; // a NaN distance fails the test
+}
+
+// How much of a throw the player is shown, as the fraction of the flight it
+// appears at: 0 is the whole arc, 1 is none of it. His own side's he always
+// sees. An enemy's he sees whole if he can see where it left; if he can only
+// see where it lands, it comes into view on the way down, because the arc
+// drawn from the hand would point straight at a man he has not found.
+export function throwShownFrom(mine: boolean, fromSeen: boolean, toSeen: boolean): number {
+  if (mine || fromSeen) return 0;
+  return toSeen ? 0.55 : 1;
+}
+
 // Muzzle-signature classes. Deliberately NOT WEAPONS[w].class — data.ts files
 // bazooka, panzerfaust, mortar60 and pak40_gun all under `rifle`, which would
 // give a Panzerfaust a rifle's flash. This table is about what the weapon

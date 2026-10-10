@@ -2,6 +2,7 @@ import { cellXY } from './strategic/sector';
 import { advanceDays, fillReplacements, newCampaign, squadMembers, type BattleRecord, type Campaign } from './campaign/campaign';
 import { AudioEngine } from './render/audio';
 import { Camera } from './render/camera';
+import type { GrenadeThrow } from './render/fx';
 import { Renderer } from './render/renderer';
 import { setSun } from './render/light';
 import { StrategicView, TERRAIN_LABELS } from './render/strategic';
@@ -2130,6 +2131,10 @@ function frame(now: number): void {
       heldAt = now;
     }
     renderer.addBreaches(breaches, fxNow);
+    // Grenade throws, when the sim reports them. takeGrenades() is the sim
+    // lane's and is not on this branch's Sim yet: until it lands this is an
+    // empty list every frame, and the day it lands the throws draw.
+    renderer.addGrenades((sim as { takeGrenades?: () => GrenadeThrow[] }).takeGrenades?.() ?? [], fxNow);
     renderer.addPlanes(sim.takePlanes(), fxNow);
     audio.addShots(shots, cam, cw, chh);
     audio.addMelee(melee, cam, cw, chh);

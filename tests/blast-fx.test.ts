@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { BOOM } from '../src/render/audio';
-import { BLAST, BLAST_FLOOR, blastOf, blastScale, FX_FLOOR, fxScale } from '../src/render/fx';
+import { BLAST, BLAST_FLOOR, blastOf, blastScale, FX_FLOOR, fxScale, lobHeight, throwShownFrom } from '../src/render/fx';
 import type { BoomKind } from '../src/sim/sim';
 
 // The sim names a blast (`kind`) and sizes most of them (`r`; a brew-up has
@@ -81,5 +81,40 @@ describe('legibility floors', () => {
       prev = f;
     }
     expect(fxScale(2)).toBeLessThan(FX_FLOOR);
+  });
+});
+
+// A thrown grenade (fx.ts). Strict plan view: the renderer never lifts it up
+// the screen, so its height exists only as how far its shadow stands off it.
+describe('grenade throw', () => {
+  it('leaves the hand and reaches the ground at height 0, highest at the middle', () => {
+    expect(lobHeight(0, 10)).toBe(0);
+    expect(lobHeight(1, 10)).toBe(0);
+    expect(lobHeight(0.5, 10)).toBeCloseTo(2, 10); // 0.2 of a 10 m throw
+    for (const t of [0.1, 0.3, 0.45]) {
+      expect(lobHeight(t, 10)).toBeCloseTo(lobHeight(1 - t, 10), 10); // the shadow rejoins as it parted
+      expect(lobHeight(t, 10)).toBeLessThan(lobHeight(0.5, 10));
+    }
+  });
+
+  it('holds the apex between a reach and a rooftop', () => {
+    expect(lobHeight(0.5, 1)).toBeCloseTo(1.2, 10); // a toss through a window still arcs
+    expect(lobHeight(0.5, 12)).toBeCloseTo(2.4, 10);
+    expect(lobHeight(0.5, 400)).toBe(4);
+  });
+
+  it('is 0 outside the flight and for garbage, so nothing non-finite reaches a draw call', () => {
+    for (const t of [-0.2, 1.4, Number.NaN, Infinity]) expect(lobHeight(t, 10), String(t)).toBe(0);
+    expect(lobHeight(0.5, Number.NaN)).toBe(0);
+  });
+
+  it('shows the player his own throws whole, and never an arc that points at a man he cannot see', () => {
+    expect(throwShownFrom(true, false, false)).toBe(0);
+    expect(throwShownFrom(false, true, false)).toBe(0); // he saw it leave
+    expect(throwShownFrom(false, true, true)).toBe(0);
+    const late = throwShownFrom(false, false, true); // he sees only where it lands
+    expect(late).toBeGreaterThan(0.5);
+    expect(late).toBeLessThan(1);
+    expect(throwShownFrom(false, false, false)).toBe(1); // none of it
   });
 });
