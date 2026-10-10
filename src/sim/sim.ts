@@ -74,6 +74,14 @@ const BOUND_LEG = 15; // meters per bounding rush (spec's "15m legs")
 // ~0.4 vs a ~0.85 threshold) — then owned the team to the far map edge. Under
 // fire, the same ladder re-runs every 2s, staggered by team id.
 const REAUDIT_TICKS = 60;
+// A man who steadies within this long of being pinned or broken has rallied
+// (#766). The crossing never happens in one tick: suppression decays at most
+// 0.0023 a tick and morale climbs 0.00013, so he always passes through
+// 'shaken' first — the old one-tick test fired 0 times in 38 probed battles.
+// Measured time from the last pinned/broken tick to steady: pinned, two
+// thirds inside 30 s and all inside 120 s; broken, all between 60 and 120 s
+// (morale has to climb from 0.25 to 0.55).
+export const RALLY_WINDOW_TICKS = 120 * 30;
 // Melee (decision log 2026-07-23): proximity-triggered close combat.
 const MELEE_ENGAGE = 2.0; // m — an enemy this close (and reachable on foot) locks both into melee
 const MELEE_CONTACT = 0.9; // m — combatants close to here, then hold
@@ -267,6 +275,7 @@ export interface Soldier {
   grenadeCooldownUntil: number; // tick when next grenade throw is allowed
   entryHoldUntil: number; // waits outside an opening until his own grenade bursts (#217)
   captured: boolean; // alive, out of the fight, untargetable (surrendered at melee contact)
+  lastCowedTick: number; // tick he was last pinned or broken. Output only: it times the 'rallied' event and nothing in the sim reads it, so it is not in snapshot()
 }
 
 export interface Vehicle {
@@ -926,6 +935,7 @@ export class Sim {
       grenadeCooldownUntil: 0,
       entryHoldUntil: 0,
       captured: false,
+      lastCowedTick: -Infinity,
     };
     s.morale = 0.7 + s.courage * 0.3;
     this.soldiers.push(s);
@@ -2976,10 +2986,14 @@ export class Sim {
       : 'steady';
     // Morale drama, one event per crossing. Deterioration into pinned only —
     // a broken man recovering to pinned is good news, not a pin. Rallying
-    // counts from pinned/broken; shaken→steady is too frequent to be drama.
+    // counts from pinned/broken, however long he spent shaken on the way back
+    // up inside RALLY_WINDOW_TICKS; a man who was only ever shaken steadies
+    // too often to be drama.
+    if (s.mental === 'pinned' || s.mental === 'broken') s.lastCowedTick = this.tick;
     if (s.mental === 'pinned' && (wasMental === 'steady' || wasMental === 'shaken')) {
       this.pendingUnitEvents.push({ kind: 'pinned', x: s.x, y: s.y, side: s.side, name: s.name, id: s.id });
-    } else if (s.mental === 'steady' && (wasMental === 'pinned' || wasMental === 'broken')) {
+    } else if (s.mental === 'steady' && wasMental !== 'steady' && this.tick - s.lastCowedTick <= RALLY_WINDOW_TICKS) {
+      s.lastCowedTick = -Infinity; // one rally per pin
       this.pendingUnitEvents.push({ kind: 'rallied', x: s.x, y: s.y, side: s.side, name: s.name, id: s.id });
     }
     if (s.mental === 'broken' && wasMental !== 'broken') {

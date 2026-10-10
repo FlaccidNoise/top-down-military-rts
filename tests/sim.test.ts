@@ -4,7 +4,7 @@ import { ECLASS, EDGE, GameMap, edgeClass, los } from '../src/sim/map';
 import { astar } from '../src/sim/path';
 import { generateMap } from '../src/sim/mapgen';
 import { makeScenario } from '../src/sim/scenario';
-import { DT, Sim, sightBetween, smokePuff, type UnitEvent } from '../src/sim/sim';
+import { DT, RALLY_WINDOW_TICKS, Sim, sightBetween, smokePuff, type UnitEvent } from '../src/sim/sim';
 import { CANON_CLOCK_MIN } from '../src/sim/solar';
 
 describe('line of sight', () => {
@@ -464,20 +464,64 @@ describe('morale drama events', () => {
     expect(kinds.filter((k) => k === 'pinned')).toHaveLength(1);
   });
 
-  it('pinned → steady fires one rallied', () => {
+  // The recovery below is NOT staged. The test this replaces wrote
+  // suppression = 0 by hand, which is the only way a man ever went from
+  // pinned to steady in one tick — so it passed for an event that fired 0
+  // times in 38 real battles (#766). Only the pin is forced; from there
+  // nothing is written and the psych model does the rest.
+  const recover = (sim: Sim, s: { mental: string }, maxTicks: number) => {
+    const kinds: string[] = [];
+    const states = new Set<string>();
+    for (let i = 0; i < maxTicks && s.mental !== 'steady'; i++) {
+      sim.step();
+      states.add(s.mental);
+      kinds.push(...sim.takeUnitEvents().map((e) => e.kind));
+    }
+    kinds.push(...run(sim, 60, () => {})); // and nothing more once he is steady
+    return { kinds, states };
+  };
+
+  it('a pinned man whose suppression decays rallies once, by way of shaken', () => {
     const { sim, s } = loner();
     run(sim, 20, () => {
       s.suppression = 1;
       s.morale = 0.8;
     });
     expect(s.mental).toBe('pinned');
-    const kinds = run(sim, 40, () => {
-      s.suppression = 0;
-      s.morale = 1;
-    });
+    const { kinds, states } = recover(sim, s, 30 * 60);
     expect(s.mental).toBe('steady');
+    expect(states.has('shaken')).toBe(true); // never straight from pinned
     expect(kinds.filter((k) => k === 'rallied')).toHaveLength(1);
     expect(kinds).not.toContain('pinned');
+  });
+
+  it('a broken man whose morale climbs back rallies once', () => {
+    const { sim, s } = loner();
+    run(sim, 20, () => {
+      s.suppression = 1;
+      s.morale = 0.1;
+    });
+    expect(s.mental).toBe('broken');
+    const { kinds, states } = recover(sim, s, 30 * 240);
+    expect(s.mental).toBe('steady');
+    expect(states.has('shaken')).toBe(true);
+    expect(kinds.filter((k) => k === 'rallied')).toHaveLength(1);
+  });
+
+  it('steadying long after the pin is not a rally', () => {
+    const { sim, s } = loner();
+    run(sim, 20, () => {
+      s.suppression = 1;
+      s.morale = 0.8;
+    });
+    // Kept rattled but not pinned until the window has run out.
+    run(sim, RALLY_WINDOW_TICKS + 1, () => {
+      s.suppression = 0.45;
+    });
+    expect(s.mental).toBe('shaken');
+    const { kinds } = recover(sim, s, 30 * 60);
+    expect(s.mental).toBe('steady');
+    expect(kinds).not.toContain('rallied');
   });
 
   it('broken → pinned is a recovery, not a pin', () => {
@@ -544,6 +588,29 @@ describe('morale drama events', () => {
       kinds.push(...sim.takeUnitEvents().map((e) => e.kind));
     }
     expect(kinds).toContain('pinned');
+  });
+
+  // Same staging, run to its end: the fire slackens as men go down, and the
+  // survivors come back up on their own.
+  it('a natural firefight ends with someone rallying', () => {
+    const sim = new Sim(new GameMap(60, 20), 7);
+    sim.addSquad('blue', 'A', [
+      { name: 'A1', weapon: 'garand', x: 10.5, y: 9.5 },
+      { name: 'A2', weapon: 'garand', x: 10.5, y: 10.5 },
+      { name: 'A3', weapon: 'bar', x: 10.5, y: 11.5 },
+    ]);
+    sim.addSquad('red', 'B', [
+      { name: 'B1', weapon: 'kar98k', x: 40.5, y: 9.5 },
+      { name: 'B2', weapon: 'kar98k', x: 40.5, y: 10.5 },
+      { name: 'B3', weapon: 'mg42', x: 40.5, y: 11.5 },
+    ]);
+    const kinds: string[] = [];
+    for (let i = 0; i < 30 * 240 && !kinds.includes('rallied'); i++) {
+      sim.step();
+      kinds.push(...sim.takeUnitEvents().map((e) => e.kind));
+    }
+    expect(kinds).toContain('pinned');
+    expect(kinds).toContain('rallied');
   });
 });
 
