@@ -257,10 +257,18 @@ export const MANUAL: ManualChapter[] = [
         keys: { desktop: 'Click, then right-click', touch: `Tap, then ${HOLD} the destination` },
       },
       {
+        heading: 'Halting and turning back',
+        body:
+          'Halt on the company panel stops a marching company where it stands, on the road if it is between towns. ' +
+          'A new order to a company on a road leaves by whichever end of that road is faster, ' +
+          'so a company you turn round walks back only the ground it covered.',
+        keys: { desktop: 'Halt on the company panel', touch: 'Halt on the company panel' },
+      },
+      {
         heading: 'When an order is refused',
         body:
           'A refused order flashes its reason and never fails silently. ' +
-          'A company already fighting cannot march. A company queued at a bridge must wait its turn. ' +
+          'A company already fighting cannot march or halt. A company queued at a bridge must wait its turn or halt. ' +
           'A town with no road to it has no route. Open water cannot be held.',
       },
       {

@@ -14,13 +14,13 @@ import {
   edgeById,
   FORD_CROSS_MIN,
   leaveDefile,
-  otherEnd,
   pushEvent,
   route,
-  anchorNode,
+  standForce,
   type Force,
   type FrontV2,
   type MoveOrder,
+  type MoveReject,
   type TheaterEvent,
 } from './force';
 import { supplyTierOf } from './supply';
@@ -251,12 +251,54 @@ export function orderMove(front: FrontV2, forceId: number, destNodeId: number, o
   if (dest.kind === 'ford') return { ok: false, reason: 'destination-unholdable' };
   if (f.pos.kind === 'node' && f.pos.nodeId === destNodeId) return { ok: false, reason: 'already-there' };
 
-  const start = anchorNode(front.theater, f.pos);
-  const r = route(front.theater, start, destNodeId);
-  if (!r) return { ok: false, reason: 'no-route' };
-  // Mid-edge: the remaining metres of the current edge precede the route.
-  f.path = f.pos.kind === 'edge' ? [f.pos.edgeId, ...r.edges] : [...r.edges];
-  // A force already mid-edge keeps its position; its first path entry is its
-  // own edge, consumed as it reaches the anchor node.
+  const plan = planMove(front, f, destNodeId);
+  if (!plan) return { ok: false, reason: 'no-route' };
+  f.pos = plan.pos;
+  f.path = plan.path;
   return { ok: true, etaMin: forceEtaMinutes(front, f, destNodeId, opts) };
+}
+
+// The march a force would make to a node: the path, and the position it
+// steps off from. At a node that is the fastest route. Mid-edge the force may
+// leave by EITHER end of its own road, whichever is faster in nominal minutes
+// (ahead on a tie), so a company ten minutes out is ten minutes from where it
+// started. Routing only from the node ahead made it finish the road and walk
+// it again (jtbug #762). The first path entry mid-edge is the force's own
+// edge, consumed as it reaches that end. One function for orderMove and the
+// planner's dawn check, so the decision and the march cannot disagree.
+export function planMove(front: FrontV2, f: Force, destNodeId: number): Pick<Force, 'pos' | 'path'> | null {
+  const t = front.theater;
+  const pos = f.pos;
+  if (pos.kind === 'node') {
+    const r = route(t, pos.nodeId, destNodeId);
+    return r && { pos, path: r.edges };
+  }
+  const e = edgeById(t, pos.edgeId);
+  const leg = (dir: 1 | -1): { dir: 1 | -1; edges: number[]; min: number } | null => {
+    const end = dir === 1 ? e.b : e.a;
+    const r = route(t, end, destNodeId);
+    if (!r) return null;
+    const metres = dir === 1 ? e.lengthM - pos.s : pos.s;
+    return { dir, edges: r.edges, min: metres / e.paceMpm + crossingDwell(front, end, end !== destNodeId) + r.minutes };
+  };
+  const ahead = leg(pos.dir);
+  const back = leg(pos.dir === 1 ? -1 : 1);
+  const best = back && (!ahead || back.min < ahead.min) ? back : ahead;
+  return best && { pos: { ...pos, dir: best.dir }, path: [pos.edgeId, ...best.edges] };
+}
+
+export type HaltOrder = { ok: true } | { ok: false; reason: MoveReject };
+
+// Halt: the force stops where it stands. Mid-road is legal: a force on an
+// edge with no path is the kernel's parked state (contact halts and retreat
+// setbacks already make it), and advanceForce never moves it. The ETA shadow
+// only ever marches a force that has a path, so it stays exact. A queued
+// force may halt: that is its way out of the queue.
+export function orderHalt(front: FrontV2, forceId: number): HaltOrder {
+  const f = front.forces.find((x) => x.id === forceId);
+  if (!f) return { ok: false, reason: 'unknown-force' };
+  if (f.engagedIn !== null) return { ok: false, reason: 'engaged' };
+  if (f.path.length === 0) return { ok: false, reason: 'not-moving' };
+  standForce(front, f);
+  return { ok: true };
 }

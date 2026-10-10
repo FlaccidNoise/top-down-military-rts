@@ -22,6 +22,8 @@ export interface TheaterHudCallbacks {
   setSpeed(idx: number): void;
   /** Save, keybinds and the Field Manual, from the strategic phase. */
   openMenu(): void;
+  /** Halt the selected company where it stands. */
+  halt(): void;
 }
 
 export class TheaterHud {
@@ -40,6 +42,7 @@ export class TheaterHud {
   private readonly forceState: HTMLElement;
   private readonly fatFill: HTMLElement;
   private readonly sup: HTMLElement;
+  private readonly halt: HTMLElement;
   private readonly log: HTMLElement;
 
   constructor(private readonly cb: TheaterHudCallbacks) {
@@ -63,6 +66,7 @@ export class TheaterHud {
         <b class="th-name"></b><span class="th-stat"></span><span class="th-state"></span>
         <span class="th-fat"><span class="th-fat-label">fatigue</span><span class="th-fat-track"><span class="th-fat-fill"></span></span></span>
         <span class="th-sup" hidden></span>
+        <button class="hbtn th-halt" data-th="halt" hidden>■ Halt</button>
       </div>
       <div class="panel th-log"></div>`;
     const q = (sel: string): HTMLElement => this.root.querySelector<HTMLElement>(sel)!;
@@ -78,10 +82,12 @@ export class TheaterHud {
     this.forceState = q('.th-state');
     this.fatFill = q('.th-fat-fill');
     this.sup = q('.th-sup');
+    this.halt = q('.th-halt');
     this.log = q('.th-log');
     document.body.appendChild(this.root);
     this.root.addEventListener('click', (e) => {
       if ((e.target as HTMLElement).closest('[data-th="menu"]')) { this.cb.openMenu(); return; }
+      if ((e.target as HTMLElement).closest('[data-th="halt"]')) { this.cb.halt(); return; }
       const btn = (e.target as HTMLElement).closest('[data-clock]');
       if (!btn) return;
       const v = btn.getAttribute('data-clock')!;
@@ -139,6 +145,7 @@ export class TheaterHud {
         const eh = Math.floor(eta / 60);
         this.setState('th-mov', `moving → ${front.theater.nodes[dest].name} · ETA ${eh > 0 ? `${eh}h` : ''}${(eta % 60).toString().padStart(2, '0')}m`);
       } else this.setState('th-hold', 'holding');
+      this.halt.hidden = sel.side !== 'blue' || sel.engagedIn !== null || sel.path.length === 0;
       this.fatFill.className = `th-fat-fill th-fat-${sel.fatigue >= 0.66 ? 'high' : sel.fatigue >= 0.33 ? 'mid' : 'low'}`;
       this.fatFill.style.width = `${Math.round(sel.fatigue * 100)}%`;
       const tier = supplyTierOf(sel.untracedMin);

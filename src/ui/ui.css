@@ -1486,6 +1486,9 @@ html.mobile #theater-hud .hbtn { min-height: 44px; }
 #theater-hud .th-sup-full { color: var(--muted); }
 #theater-hud .th-sup-low { color: #c9803c; }
 #theater-hud .th-sup-out { color: #b5533c; }
+/* Last row of a bottom-anchored card: the button keeps its place while the
+   ETA text above it changes every game minute. */
+#theater-hud .th-halt { display: block; margin-top: 6px; }
 #theater-hud .th-log {
   position: absolute;
   right: 10px;

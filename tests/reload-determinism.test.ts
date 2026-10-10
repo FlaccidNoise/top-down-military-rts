@@ -12,6 +12,7 @@ import {
 } from '../src/strategic/headless';
 import { warStatus } from '../src/strategic/goals';
 import { loadGameV2, saveGameV2 } from '../src/strategic/save2';
+import { orderHalt, orderMove, stepMovement } from '../src/strategic/theater/step';
 
 const CFG = DEFAULT_PRESET.theater;
 const CAMP = DEFAULT_PRESET.campaign;
@@ -102,5 +103,31 @@ describe('reload determinism (S56)', () => {
       }
     }
     expect(verified, `no seed exercised both mutations: ${skipped.join('; ')}`).toBe(true);
+  });
+
+  it('a company halted mid-road loads where it stood and takes the same order (jtbug #762)', () => {
+    stubStorage();
+    const w = makeHeadlessWorld(1, CFG, CAMP);
+    const f = w.front.forces.find((x) => x.side === 'blue')!;
+    const origin = f.pos.kind === 'node' ? f.pos.nodeId : -1;
+    expect(orderMove(w.front, f.id, w.front.theater.objectiveNodes[0]).ok).toBe(true);
+    for (let m = 0; m < 10; m++) {
+      w.front.clockMin++;
+      stepMovement(w.front);
+    }
+    expect(f.pos.kind).toBe('edge');
+    expect(orderHalt(w.front, f.id)).toEqual({ ok: true });
+    expect(saveGameV2(1, CFG, CAMP, w.campaign, w.front)).toBe(true);
+
+    const g = loadGameV2();
+    if (g.status !== 'ok') throw new Error(`reload: ${g.status}`);
+    const loaded = g.front.forces.find((x) => x.id === f.id)!;
+    expect(loaded).toEqual(f);
+    expect(loaded.path).toEqual([]);
+    // Back the way it came: the reloaded company turns on its own road.
+    const live = orderMove(w.front, f.id, origin);
+    expect(live.ok).toBe(true);
+    expect(orderMove(g.front, f.id, origin)).toEqual(live);
+    expect(loaded).toEqual(f);
   });
 });

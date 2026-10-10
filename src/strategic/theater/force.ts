@@ -215,6 +215,7 @@ export type MoveReject =
   | 'engaged'
   | 'queued-at-defile'
   | 'already-there'
+  | 'not-moving'
   | 'no-route'
   | 'destination-unholdable';
 

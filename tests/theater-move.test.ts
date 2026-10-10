@@ -9,7 +9,7 @@ import {
   type Force,
   type FrontV2,
 } from '../src/strategic/theater/force';
-import { forceEtaMinutes, orderMove, stepMovement } from '../src/strategic/theater/step';
+import { forceEtaMinutes, orderHalt, orderMove, stepMovement } from '../src/strategic/theater/step';
 import { MOVE_MPM, type Theater, type TheaterEdge, type Vec } from '../src/strategic/theater';
 
 // Synthetic fixture: precise control over lengths and crossings.
@@ -173,6 +173,98 @@ describe('bridge defile', () => {
     expect(crossedFirst).toBe(a.id); // FIFO: lower id stepped first, arrived first
     expect(a.pos).toEqual({ kind: 'node', nodeId: 2 });
     expect(b.pos).toEqual({ kind: 'node', nodeId: 2 });
+  });
+});
+
+describe('turning and halting (jtbug #762)', () => {
+  const walk = (fr: FrontV2, minutes: number): void => {
+    for (let m = 0; m < minutes; m++) {
+      stepMovement(fr);
+      fr.clockMin++;
+    }
+  };
+  const arriveIn = (fr: FrontV2, f: Force, nodeId: number): number => {
+    let steps = 0;
+    while (!(f.pos.kind === 'node' && f.pos.nodeId === nodeId) && steps < 1000) {
+      walk(fr, 1);
+      steps++;
+    }
+    return steps;
+  };
+
+  it('ten minutes out is about ten minutes back: a turn-round walks its own edge', () => {
+    const fr = front();
+    const f = blue(fr);
+    expect(orderMove(fr, f.id, 4).ok).toBe(true); // the ford route: e2, e3, e5
+    walk(fr, 10);
+    expect(f.pos).toMatchObject({ kind: 'edge', edgeId: 2, dir: 1 });
+    const back = orderMove(fr, f.id, 0);
+    // Before the fix this routed from the node AHEAD: finish the road, wade
+    // the ford twice, walk the road again (measured live: 155 min for 10).
+    expect(back).toMatchObject({ ok: true });
+    const eta = back.ok ? back.etaMin : -1;
+    expect(eta).toBeGreaterThanOrEqual(10);
+    expect(eta).toBeLessThanOrEqual(11);
+    expect(f.path).toEqual([2]);
+    expect(f.pos).toMatchObject({ kind: 'edge', edgeId: 2, dir: -1 });
+    expect(arriveIn(fr, f, 0)).toBe(eta); // the shadow march stays exact
+  });
+
+  it('a mid-road order leaves by whichever end is faster, even onto another road', () => {
+    const fr = front();
+    const f = blue(fr);
+    f.path = [4]; // the 9 km detour toward node 2
+    walk(fr, 10);
+    // To the bridge: behind is 10 min + e0 (60). Ahead is 170 min + e1 (60).
+    const order = orderMove(fr, f.id, 1);
+    expect(f.path).toEqual([4, 0]);
+    const eta = order.ok ? order.etaMin : -1;
+    expect(eta).toBeLessThanOrEqual(72);
+    expect(arriveIn(fr, f, 1)).toBe(eta);
+  });
+
+  it('a mid-road order keeps going when the node ahead is the faster end', () => {
+    const fr = front();
+    const f = blue(fr);
+    f.pos = { kind: 'edge', edgeId: 4, s: 8500, dir: 1 }; // 10 min short of node 2
+    f.path = [4];
+    expect(orderMove(fr, f.id, 4).ok).toBe(true);
+    expect(f.path).toEqual([4, 5]);
+    expect(f.pos).toMatchObject({ dir: 1 });
+  });
+
+  it('halt stops a company on the road; it stands there and takes a new order', () => {
+    const fr = front();
+    const f = blue(fr);
+    orderMove(fr, f.id, 4);
+    walk(fr, 10);
+    expect(orderHalt(fr, f.id)).toEqual({ ok: true });
+    const stood = { ...f.pos };
+    walk(fr, 30);
+    expect(f.pos).toEqual(stood);
+    expect(f.path).toEqual([]);
+    expect(orderHalt(fr, f.id)).toEqual({ ok: false, reason: 'not-moving' });
+    const again = orderMove(fr, f.id, 4);
+    expect(again.ok).toBe(true);
+    expect(arriveIn(fr, f, 4)).toBe(again.ok ? again.etaMin : -1);
+  });
+
+  it('halt gives up the bridge, mid-crossing or queued, and refuses the engaged', () => {
+    const fr = front();
+    const a = blue(fr, 1);
+    const b = blue(fr, 1);
+    orderMove(fr, a.id, 2);
+    orderMove(fr, b.id, 2);
+    walk(fr, 3);
+    expect(fr.defileQueues[1]).toEqual([a.id, b.id]);
+    expect(orderHalt(fr, a.id)).toEqual({ ok: true });
+    expect(fr.defileQueues[1]).toEqual([b.id]);
+    expect(orderHalt(fr, b.id)).toEqual({ ok: true }); // the one order a queued force takes
+    expect(b.queuedAt).toBeNull();
+    expect(fr.defileQueues[1]).toEqual([]);
+    a.engagedIn = 1;
+    expect(orderHalt(fr, a.id)).toEqual({ ok: false, reason: 'engaged' });
+    expect(orderHalt(fr, 999)).toEqual({ ok: false, reason: 'unknown-force' });
   });
 });
 

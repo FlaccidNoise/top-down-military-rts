@@ -41,7 +41,7 @@ import { DEPLOY_ATK_DEPTH, DEPLOY_DEF_LINE, DEPLOY_DEF_DEFAULT } from './strateg
 import { ContactIntel, OmniscientIntel, type IntelView } from './strategic/intel';
 import { Commander2, RED_V2 } from './strategic/planner';
 import { addForce, type CoarseBattle, type FrontV2, type MoveReject } from './strategic/theater/force';
-import { orderMove } from './strategic/theater/step';
+import { orderHalt, orderMove } from './strategic/theater/step';
 import { battleCatchUpMin, openBattle, retreatForce, stepWar } from './strategic/theater/war';
 import { syncStrengthsV2 } from './strategic/theater/sync';
 import type { Contact } from './strategic/theater/contact';
@@ -405,6 +405,12 @@ const theaterHud = new TheaterHud({
   togglePause: () => { stratPaused = !stratPaused; tutorial?.notify('speed-changed'); },
   setSpeed: (i) => { speedIdx = i; tutorial?.notify('speed-changed'); },
   openMenu: () => { openPauseMenu(); },
+  halt: () => {
+    const v2 = S().v2;
+    if (!v2) return;
+    const r = orderHalt(v2.front, v2.selectedForce);
+    v2.view.flash(r.ok ? `${v2.front.forces.find((f) => f.id === v2.selectedForce)!.name} halts` : MOVE_REJECT_TEXT[r.reason]);
+  },
 });
 const tooltip = new Tooltip(hud.root);
 const healthPanel = new HealthPanel(hud.root, () => { inspectedSoldier = -1; });
@@ -684,6 +690,7 @@ const MOVE_REJECT_TEXT: Record<MoveReject, string> = {
   engaged: 'Engaged — they fight where they stand',
   'queued-at-defile': 'Queued at the bridge — wait for the crossing',
   'already-there': 'Already holding that ground',
+  'not-moving': 'Already halted',
   'no-route': 'No road reaches there',
   'destination-unholdable': "Can't hold open water — take the bridge or the bank",
 };

@@ -10,8 +10,8 @@ import { lightAt } from '../sim/solar';
 import type { Side } from '../sim/sim';
 import { coarseOdds, TRIVIAL_RATIO } from './bridge';
 import { battleSiteOf, COARSE_DEF_MULT, CROSSING_ASSAULT_MULT, type Theater } from './theater';
-import { anchorNode, CONTACT_M, route, type Force, type FrontV2 } from './theater/force';
-import { forceEtaMinutes, orderMove } from './theater/step';
+import { CONTACT_M, route, type Force, type FrontV2 } from './theater/force';
+import { forceEtaMinutes, orderMove, planMove } from './theater/step';
 import { graphGap } from './theater/contact';
 import { combatMult, effStrength } from './theater/combat';
 import type { IntelView } from './intel';
@@ -292,10 +292,9 @@ export class Commander2 {
         // the SAME shadow kernel over the prospective path orderMove would
         // set, so the decision and the march cannot disagree.
         if (this.opts.nightTempo) {
-          const r0 = route(t, anchorNode(t, f.pos), target);
-          if (r0) {
-            const prospective = f.pos.kind === 'edge' ? [f.pos.edgeId, ...r0.edges] : [...r0.edges];
-            const eta = forceEtaMinutes(front, { ...f, path: prospective }, target, { nightTempo: true });
+          const prospective = planMove(front, f, target);
+          if (prospective) {
+            const eta = forceEtaMinutes(front, { ...f, ...prospective }, target, { nightTempo: true });
             if (lightAt(front.clockMin + eta) < 0.25) continue;
           }
         }
