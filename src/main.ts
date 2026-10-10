@@ -1,6 +1,7 @@
 import { cellXY } from './strategic/sector';
 import { advanceDays, fillReplacements, newCampaign, squadMembers, type BattleRecord, type Campaign } from './campaign/campaign';
 import { AudioEngine } from './render/audio';
+import { Barks } from './render/barks';
 import { Camera } from './render/camera';
 import type { GrenadeThrow } from './render/fx';
 import { Renderer } from './render/renderer';
@@ -214,6 +215,7 @@ let commander: RedCommander;
 let blueCommander: RedCommander | undefined;
 let aiControl = false;
 let renderer: Renderer;
+let barks = new Barks();
 let battleCompany = -1;
 let battleTitle = '';
 const cam = new Camera(60, 60);
@@ -690,6 +692,7 @@ function bootBattle(staged: { sim: Sim; commander: RedCommander; blueCommander: 
   aiControl = false;
   battleCompany = staged.companyIndex;
   renderer = new Renderer(sim);
+  barks = new Barks();
   renderer.hazeOn = !hazeOff;
   renderer.flickerOn = !flickerOff;
   battleTitle = title;
@@ -1925,6 +1928,9 @@ function cycleFloorFocus(): void {
   get pings() {
     return pings;
   },
+  get barks() {
+    return barks;
+  },
   commanders,
   cam,
   audio,
@@ -2169,6 +2175,8 @@ function frame(now: number): void {
       .filter((e) => (e.id !== undefined ? sim.soldierVisibleTo('blue', sim.soldiers[e.id]) : e.side === 'blue' || sim.fowDisabled || sim.sideSeesPoint('blue', e.x, e.y)));
     pings.add(unitEvents, sim.tick, teamPulses(sim));
     renderer.addUnitEvents(unitEvents, fxNow);
+    barks.observe(sim, fxNow);
+    barks.addUnitEvents(unitEvents, sim, fxNow);
     audio.addUnitEvents(unitEvents);
 
     const pick = mouse.onCanvas && !targetMode ? pickAt(sim, cam, mouse.x, mouse.y, view.w, view.h) : null;
@@ -2198,6 +2206,7 @@ function frame(now: number): void {
       tutorial?.notify('deploy-commit');
     }
     renderer.draw(ctx, cam, selectedSquads, fxNow, floorFocus);
+    barks.draw(ctx, cam, sim, fxNow, view.w, view.h);
     if (deployPhase) {
       const zone = deployZone();
       const [zx0, zy0] = cam.worldToScreen(zone.x0, 0, view.w, view.h);

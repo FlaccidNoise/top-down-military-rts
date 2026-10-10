@@ -1132,6 +1132,86 @@ describe('casualty chain v2: succession, two-man carry, aidman', () => {
     expect(assistant.role).toBe('gunner'); // succession completed within the window
   });
 
+  // #790. The drag is the picture the casualty chain exists for: a man down in
+  // the open, a squadmate hauling him to the hedge. It needed the RESCUER to
+  // be suppressed when he arrived, and a man that suppressed never set out:
+  // 34 drags in 2,089 rescues.
+  describe('drag under fire (#790)', () => {
+    // A casualty in the open at (20,10), a hedge 8 m west of him, three
+    // squadmates near by, and one German in plain sight 60 m east.
+    const stage = (seed: number, bond: number, courage: number) => {
+      const map = new GameMap(120, 20);
+      for (let y = 4; y < 16; y++) map.setTerrain(12, y, 'hedge');
+      const sim = new Sim(map, seed);
+      const squad = sim.addSquad('blue', 'Able', [
+        { name: 'C', weapon: 'garand', x: 20.5, y: 10.5 },
+        { name: 'R', weapon: 'garand', x: 22.5, y: 10.5, courage },
+        { name: 'H', weapon: 'garand', x: 20.5, y: 14.5, courage },
+        { name: 'X', weapon: 'garand', x: 24.5, y: 6.5, courage: 0 },
+      ]);
+      const [c, r, h, x] = squad.soldierIds.map((id) => sim.soldiers[id]);
+      for (const m of [r, h]) m.bonds[c.id] = bond;
+      x.bonds[c.id] = 0;
+      const enemy = sim.soldiers[sim.addSquad('red', 'r', [{ name: 'E', weapon: 'kar98k', x: 80.5, y: 10.5, ammo: {} }]).soldierIds[0]];
+      enemy.magLeft = 0; // he watches; he does not shoot
+      for (const m of [c, r, h, x]) {
+        m.ammo = {};
+        m.magLeft = 0; // nor do they: whether his head is down is staged per case
+      }
+      c.wounds.push({ part: 0, dmg: 10 });
+      c.pain = 0.9;
+      return { sim, c, r, h, enemy };
+    };
+
+    it('a casualty in the open with the enemy in sight is dragged to cover, and a squadmate comes to carry', () => {
+      const { sim, c, r, h } = stage(71, 1, 1); // bonded and brave: they go whatever is looking
+      let dragged = false;
+      let carried = false;
+      for (let i = 0; i < 30 * 90 && !c.stabilized; i++) {
+        sim.step();
+        if (c.carriedBy === r.id || c.carriedBy === h.id) dragged = true; // whichever of the two looked round first
+        if (c.helperId === r.id || c.helperId === h.id) carried = true;
+      }
+      expect(dragged).toBe(true); // moved first
+      expect(carried).toBe(true); // the other one came over and took an arm
+      expect(sim.inCover(c.x, c.y)).toBe(true); // to cover
+      expect(c.x).toBeLessThan(15);
+      expect(c.stabilized).toBe(true); // and treated second
+    });
+
+    it('with no enemy about he is treated where he lies', () => {
+      const { sim, c, enemy } = stage(72, 1, 1);
+      enemy.x = 118.5;
+      enemy.y = 1.5;
+      for (let y = 0; y < 20; y++) sim.map.setTerrain(100, y, 'hedge'), sim.map.setTerrain(101, y, 'hedge'), sim.map.setTerrain(102, y, 'hedge'); // out of sight: no contact
+      let dragged = false;
+      for (let i = 0; i < 30 * 60 && !c.stabilized; i++) {
+        sim.step();
+        if (c.carriedBy >= 0) dragged = true;
+      }
+      expect(c.stabilized).toBe(true);
+      expect(dragged).toBe(false);
+      expect(c.x).toBeCloseTo(20.5, 1);
+    });
+
+    it('an ordinary squadmate waits while the enemy covering the casualty is up, and goes when his head is down', () => {
+      // bond 0.6, courage 0.5: willing (0.97 against 0.75), not reckless (1.05)
+      const { sim, c, r, h, enemy } = stage(73, 0.6, 0.5);
+      for (let i = 0; i < 30 * 12; i++) sim.step();
+      expect(c.downed).toBe(true);
+      expect(r.task).toBeNull();
+      expect(h.task).toBeNull(); // nobody walks out under that rifle
+      let started = -1;
+      for (let i = 0; i < 30 * 12 && started < 0; i++) {
+        enemy.suppression = 1; // staged: the squad's fire has him pinned
+        sim.step();
+        if (r.task?.kind === 'rescue' || h.task?.kind === 'rescue') started = i;
+      }
+      expect(enemy.mental).toBe('pinned');
+      expect(started).toBeGreaterThanOrEqual(0); // now they go
+    });
+  });
+
   it('a two-man carry drags a casualty faster than a solo drag over the same distance', () => {
     const dragTicks = (helperPresent: boolean) => {
       const sim = new Sim(new GameMap(60, 20), 48);

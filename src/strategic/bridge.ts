@@ -5,7 +5,7 @@ import { BREACH_LIP, BREACH_WIDE, EDGE, type GameMap } from '../sim/map';
 import { generateMap, type Building, type MapKind, type Vec } from '../sim/mapgen';
 import { mulberry32, type Rng } from '../sim/rng';
 import { roadSpot, wireBonds } from '../sim/scenario';
-import { Sim, type BreachEvent, type MemberInit, type Side } from '../sim/sim';
+import { EYE_STAND, Sim, sightBetween, type BreachEvent, type MemberInit, type Side } from '../sim/sim';
 import { lightAt } from '../sim/solar';
 import { COMPANY_TOE, squadHeadcount } from '../sim/toe';
 import { cellIndex, cellXY, type SectorMap } from './sector';
@@ -148,6 +148,48 @@ export const ATTACK_POST_MARGIN = 32; // attack posts start this far east of the
 // other way to keep the module graph acyclic); +4 clears addSquadFromDef's
 // +-3 spawn scatter so no man of a legal squad lands in the zone.
 export const GARRISON_STANDOFF = ATTACK_POST_MARGIN + 4;
+// No garrison anchor is used that can see into the attacker's deployment
+// strip from inside this range (#789). GARRISON_STANDOFF only keeps the
+// garrison out of the strip: 32 of 60 staged battles opened with a defender
+// in plain sight inside 60 m of the start line, and the first second of those
+// battles cost 16 attackers and 116 defenders — the player unpaused into a
+// KIA at T+0:00. A post that can see the start line is not a post, it is the
+// first firefight. 80 m is past the 60 m an MG lying in ambush opens at
+// (ambushThreshold), so a garrison that passes is one the attack walks into.
+// Measured with the rule on, same 60 battles: 0 open inside 60 m, and the
+// first second costs 4 attackers and 2 defenders, all from beyond 75 m.
+export const START_LINE_CLEAR = 80;
+const START_LINE_STEP = 5; // m between the strip points sampled, and they are sampled from x = 2
+// Where a squad's men end up round its anchor: the anchor itself, the +-3 m
+// spawn scatter, and the +-4 m its second team fans to (addSquadFromDef).
+const ANCHOR_FOOTPRINT: [number, number][] = [
+  [0, 0],
+  [3, 0],
+  [-3, 0],
+  [0, 4],
+  [0, -4],
+  [0, 7],
+  [0, -7],
+];
+
+// Whether a standing man at `p` sees a standing man anywhere in the strip
+// inside `range`. Staging only: it is a few hundred rays per anchor.
+function seesStartLine(sim: Sim, p: Vec, range: number): boolean {
+  if (p.x - ATTACK_POST_MARGIN > range) return false;
+  for (let x = 2; x <= ATTACK_POST_MARGIN; x += START_LINE_STEP) {
+    const dx = p.x - x;
+    if (Math.abs(dx) > range) continue;
+    const span = Math.sqrt(range * range - dx * dx);
+    for (let y = Math.max(1, p.y - span); y <= Math.min(sim.map.h - 2, p.y + span); y += START_LINE_STEP) {
+      if (sightBetween(sim, p.x, p.y, x + 0.5, y, 0, 0, EYE_STAND, EYE_STAND).visible) return true;
+    }
+  }
+  return false;
+}
+
+function anchorClearOfStartLine(sim: Sim, a: Vec, range: number): boolean {
+  return !ANCHOR_FOOTPRINT.some(([ox, oy]) => seesStartLine(sim, { x: a.x + ox, y: a.y + oy }, range));
+}
 const FORD_SUPPRESSION = 0.45; // crossing under fire: shaken at spawn (fast-decaying)
 const FORD_STAMINA = 0.65; // an hour wading: no sprinting off the far bank
 
@@ -191,6 +233,9 @@ export function makeStrategicBattle(
   front: Front,
   e: Engagement,
   seed: number,
+  // startLineClear: 0 sites the garrison as it was before #789. The staging
+  // test stages both ways to prove the rule moves men and draws nothing.
+  opts: { startLineClear?: number } = {},
 ): { sim: Sim; commander: RedCommander; blueCommander: RedCommander; name: string; companyIndex: number } {
   const attacker = front.chits.find((ch) => ch.id === e.attackerId)!;
   const defender = front.chits.find((ch) => ch.id === e.defenderId)!;
@@ -348,9 +393,22 @@ export function makeStrategicBattle(
     if (bestD <= GARRISON_RADIUS * GARRISON_RADIUS) sectorAnchors[best].push(a);
   }
   // an objective is always its own anchor, so no sector is ever empty
-  const totalAnchors = sectorAnchors.reduce((n, s) => n + s.length, 0);
-  const weight = sectorAnchors.map((s) => s.length / totalAnchors);
-  const sortedSectorAnchors = sectorAnchors.map((list) => [...list].sort((a, b) => distSq(a, west) - distSq(b, west)));
+  //
+  // Each sector's anchors nearest the approach first, less the ones that can
+  // see the start line (START_LINE_CLEAR): a squad that would have been sited
+  // on one takes the next anchor back in its own sector. A sector with no
+  // anchor out of sight is not garrisoned at all — its share of the men goes
+  // to the sectors behind it, and the attack finds that objective empty. (A
+  // map where NO sector has one keeps the old siting rather than field no
+  // defence.) This is a choice among fixed points and draws nothing: every
+  // squad still makes the same draws in the same order, only from a
+  // different anchor (tests/garrison-standoff.test.ts proves both halves).
+  const clearRange = opts.startLineClear ?? START_LINE_CLEAR;
+  const allSectorAnchors = sectorAnchors.map((list) => [...list].sort((a, b) => distSq(a, west) - distSq(b, west)));
+  const clearSectorAnchors = allSectorAnchors.map((sorted) => sorted.filter((a) => anchorClearOfStartLine(sim, a, clearRange)));
+  const sortedSectorAnchors = clearRange > 0 && clearSectorAnchors.some((list) => list.length > 0) ? clearSectorAnchors : allSectorAnchors;
+  const totalAnchors = sortedSectorAnchors.reduce((n, s) => n + s.length, 0);
+  const weight = sortedSectorAnchors.map((s) => s.length / totalAnchors);
 
   // --- Field defender ---
   if (attackerSide === 'blue') {
@@ -369,6 +427,7 @@ export function makeStrategicBattle(
       let best = 0;
       let bestScore = Infinity;
       weight.forEach((w, sIdx) => {
+        if (w === 0) return; // a sector left empty by START_LINE_CLEAR
         const score = assignedHeadcount[sIdx] / w;
         if (score < bestScore) {
           bestScore = score;
@@ -426,6 +485,7 @@ export function makeStrategicBattle(
       let bestScore = Infinity;
       const hc = squadHeadcount(key);
       weight.forEach((w, sIdx) => {
+        if (w === 0) return; // a sector left empty by START_LINE_CLEAR
         const score = assignedHeadcount[sIdx] / w;
         if (score < bestScore) {
           bestScore = score;
@@ -517,7 +577,10 @@ export function makeStrategicBattle(
     // The gun is dug in on the westernmost contested objective — the first one
     // the attack can legally take — on that garrison's anchor nearest the
     // approach, laid west like every other prepared position here.
-    const firstObj = attackObjectives.reduce((best, o) => (o.x < best.x ? o : best), attackObjectives[0]);
+    // "Contested" means garrisoned: an objective whose sector was left empty
+    // because it looks onto the start line is not where the gun goes.
+    const garrisoned = attackObjectives.filter((o) => (sortedSectorAnchors[sectorObjectives.indexOf(o)]?.length ?? 0) > 0);
+    const firstObj = (garrisoned.length > 0 ? garrisoned : attackObjectives).reduce((best, o) => (o.x < best.x ? o : best));
     // Indexed against sectorObjectives, the list sortedSectorAnchors was built
     // from — plan.objectives drifts from it once an outpost is filtered out.
     const anchor = sortedSectorAnchors[sectorObjectives.indexOf(firstObj)]?.[0] ?? firstObj;
