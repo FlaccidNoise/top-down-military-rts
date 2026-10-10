@@ -93,10 +93,12 @@
   gap: var(--sp-2);
   padding: var(--sp-1) 10px;
 }
-/* The title gives way first: the goal and the buttons never wrap. */
-#topbar #tb-title { display: block; flex: 0 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 24px; }
+/* The battle's name gives way first: the clock, the goal and the buttons never
+   wrap and are never clipped. */
+#topbar #tb-title { flex: 0 1 auto; min-width: 0; white-space: nowrap; }
+#tb-title b { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--amber-bright); font-weight: var(--fw-label); }
+#tb-title .tb-clock { flex: none; }
 #tb-actions .hbtn { white-space: nowrap; }
-#tb-title b { color: var(--amber-bright); font-weight: var(--fw-label); }
 #tb-title .paused { color: var(--amber); letter-spacing: 1px; }
 .us { color: var(--blue); font-weight: var(--fw-label); }
 .ge { color: var(--red); font-weight: var(--fw-label); }
@@ -1235,7 +1237,7 @@ html.mobile #obj-strip { flex: 1 1 auto; justify-content: space-between; }
 /* The action buttons moved into the touchbar; keeping both would put the only
    copy of Pause at the far end of a thumb's reach. */
 html.mobile #tb-actions { display: none; }
-html.mobile #topbar #tb-title { flex: 1 1 auto; line-height: 20px; }
+html.mobile #topbar #tb-title { flex: 1 1 auto; }
 html.mobile #modeline {
   top: auto;
   bottom: calc(var(--touchbar-h, 60px) + 8px);

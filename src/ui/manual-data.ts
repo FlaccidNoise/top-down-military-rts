@@ -21,6 +21,7 @@ import { NIGHT_MARCH_FATIGUE_MULT } from '../strategic/theater/step';
 import { SUPPLY_AMMO_MULT, SUPPLY_LOW_MIN, SUPPLY_OUT_MIN } from '../strategic/theater/supply';
 import { battleDuration, INFILTRATE_MIN, RETREAT_SETBACK_M } from '../strategic/theater/war';
 import { BREAK_FRACTION } from './battle-goal';
+import { BATTLE_SPEEDS } from './battle-speed';
 import { DEFAULTS, formatBinding, LABEL, type ActionId } from './keymap';
 import { ORDER_AFFORDANCE } from './order-data';
 import { HOLD_MS, TAP_SLOP, TWO_TAP_MS } from './touch';
@@ -370,6 +371,11 @@ export const MANUAL: ManualChapter[] = [
         body:
           `A side breaks when it falls under ${pct(BREAK_FRACTION)} of the men it started with. ` +
           'Break them before they break you. The top bar shows both sides and each break line.',
+      },
+      {
+        heading: 'Battle speed',
+        body: `The battle clock runs at ${BATTLE_SPEEDS.map((s) => `${s}×`).join(', ')}. The fight is the same fight at every speed.`,
+        keys: { desktop: `${key('battleSpeed')} cycles the speed`, touch: 'Tap the speed chip beside Play' },
       },
       {
         heading: 'Selecting men',

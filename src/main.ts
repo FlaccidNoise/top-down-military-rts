@@ -18,6 +18,7 @@ import { saveGame } from './strategic/save';
 import { makeDefaultSector } from './strategic/sector';
 import { emplacementOf, Hud, infantrySquads } from './ui/hud';
 import { QUIET_PROMPT_S, quietPrompt } from './ui/battle-goal';
+import { frameSteps, nextSpeed, type BattleSpeed } from './ui/battle-speed';
 import { StratHud } from './ui/strat-hud';
 import { drawOverlays, EventPings, type TeamPulse } from './ui/overlays';
 import { computeShot, pickAt, Tooltip } from './ui/tooltip';
@@ -236,6 +237,7 @@ let deployMsgUntil = 0;
 const deployOverride = new URLSearchParams(location.search).get('deploy'); // ?deploy=atk,defLine — OQ19 tuning
 let winnerAt = -1; // ms timestamp when winner appeared
 let lastOrderTick = 0; // sim tick of the player's last order — the quiet-minute prompt counts from it
+let battleSpeed: BattleSpeed = 1;
 let debriefShown = false;
 let needsBootFrame = false; // re-run bootCamera once the battle HUD is laid out
 const mouse = { x: 0, y: 0, onCanvas: false };
@@ -331,6 +333,7 @@ const hud = new Hud({
     if (mode === 'strategic') stratPaused = !stratPaused;
     else paused = !paused;
   },
+  cycleSpeed: () => { battleSpeed = nextSpeed(battleSpeed); },
   armOrder: (kind) => {
     doArmOrder(kind);
   },
@@ -683,6 +686,7 @@ function bootBattle(staged: { sim: Sim; commander: RedCommander; blueCommander: 
   pings.reset();
   tooltip.clear();
   lastOrderTick = 0;
+  battleSpeed = 1;
 }
 
 function startEngagementBattle(e: Engagement): void {
@@ -1709,6 +1713,7 @@ window.addEventListener('keydown', (e) => {
   }
   
   // Battle mode
+  if (action === 'battleSpeed') { battleSpeed = nextSpeed(battleSpeed); return; }
   if (action === 'aiControl') { aiControl = !aiControl; if (aiControl) { armedOrder = null; setTargetMode(''); } return; }
   if (action === 'floorFocus') { cycleFloorFocus(); return; }
   if (action === 'barrage' && !aiControl && sim.barragesLeft.blue > 0) setTargetMode(targetMode === 'barrage' ? '' : 'barrage');
@@ -1910,23 +1915,19 @@ function frame(now: number): void {
     S().stratView.draw(ctx, S().front, selectedChit, stratPaused, SPEEDS[speedIdx], view.w, view.h);
     if (touchHold) drawHoldRing(ctx, touchHold, now);
   } else {
-    acc += dtReal;
     if (!paused) {
       // Catch-up guard. dtReal is capped at 250ms, which is up to 7 sim steps
       // in one frame — on a phone that already missed its budget that
       // guarantees it misses the next one worse, and the UI locks. Let the
-      // sim run slow instead: 3 steps, then drop the debt. Mobile-gated, so
-      // desktop determinism and the perf tests are untouched.
-      let steps = 0;
-      const maxSteps = MOBILE ? 3 : Infinity;
-      while (acc >= DT_MS && steps < maxSteps) {
+      // sim run slow instead: frameSteps caps the count and drops the debt.
+      // Battle speed multiplies the steps and touches nothing else.
+      const f = frameSteps(acc, dtReal, battleSpeed, MOBILE, DT_MS);
+      for (let i = 0; i < f.steps; i++) {
         commander.update(sim);
         if (aiControl) blueCommander?.update(sim);
         sim.step();
-        acc -= DT_MS;
-        steps++;
       }
-      if (acc >= DT_MS) acc = 0;
+      acc = f.acc;
     } else {
       acc = 0;
     }
@@ -2066,7 +2067,7 @@ function frame(now: number): void {
     // A player who has given no order for a minute of battle is told the goal
     // and where the enemy is. Sim time, so a pause neither starts nor ends it.
     const quiet = !deployPhase && !sim.winner && !aiControl && (sim.tick - lastOrderTick) * DT >= QUIET_PROMPT_S;
-    hud.update(sim, { selectedSquad: primary, selectedSquads, selectedTeam, selectedVehicle, paused, aiControl, targetMode, armedOrder, title: battleTitle, keymap: km, prompt: quiet ? quietPrompt(sim) : null, floorFocus, boxMode, addMode });
+    hud.update(sim, { selectedSquad: primary, selectedSquads, selectedTeam, selectedVehicle, paused, aiControl, targetMode, armedOrder, title: battleTitle, keymap: km, prompt: quiet ? quietPrompt(sim) : null, speed: battleSpeed, floorFocus, boxMode, addMode });
     // A new battle re-indexes sim.soldiers, so an id held across one closes the panel.
     if (inspectedSoldier >= 0 && !sim.soldiers[inspectedSoldier]) inspectedSoldier = -1;
     healthPanel.update(sim, inspectedSoldier);

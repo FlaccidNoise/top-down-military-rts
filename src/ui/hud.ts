@@ -7,6 +7,7 @@ import { battleGoal, type SideStrength } from './battle-goal';
 import { formatBinding, loadKeymap, type Keymap } from './keymap';
 import { MOBILE } from '../render/view';
 import { patchChildren } from './patch';
+import type { BattleSpeed } from './battle-speed';
 
 export const STATE_COLOR = { steady: '#7fbf6a', shaken: '#e0c060', pinned: '#e08a3c', broken: '#d05c50' } as const;
 
@@ -25,6 +26,7 @@ export interface HudCallbacks {
   callBarrage(): void;
   callAirstrike(): void;
   togglePause(): void;
+  cycleSpeed(): void;
   armOrder(kind: OrderKind): void;
   deployEmplacement(): void;
   packEmplacement(): void;
@@ -61,6 +63,7 @@ export interface HudState {
   keymap: Keymap;
   /** The quiet-minute line (goal and enemy bearing), or null while the player is giving orders. */
   prompt: string | null;
+  speed: BattleSpeed;
   floorFocus?: number; // -1/undefined = all floors; 0..maxStories-1 = focus active
   boxMode?: boolean; // touch: drag draws a selection box instead of panning
   addMode?: boolean; // touch: sticky shift (add to selection / force squad order)
@@ -126,6 +129,7 @@ export class Hud {
         <div id="tb-actions">
           <button class="hbtn" data-act="barrage" title="${fb(b.barrage)}"></button>
           <button class="hbtn" data-act="air" title="${fb(b.airstrike)}"></button>
+          <button class="hbtn" data-act="speed" aria-label="Battle speed"></button>
           <button class="hbtn" data-act="pause" title="${fb(b.pause)}"></button>
         </div>
       </div>
@@ -152,6 +156,7 @@ export class Hud {
       const act = (e.target as HTMLElement).closest('button')?.dataset.act;
       if (act === 'barrage') cb.callBarrage();
       else if (act === 'air') cb.callAirstrike();
+      else if (act === 'speed') cb.cycleSpeed();
       else if (act === 'pause') cb.togglePause();
     });
     this.q('#squads').addEventListener('click', (e) => {
@@ -212,6 +217,7 @@ export class Hud {
       // Outside the scroll row: the two controls a player must always be able
       // to reach are never a swipe away (jtbug #783).
       '<div class="tb-pin">' +
+      '<button class="hbtn" data-tb="speed" aria-label="Battle speed"></button>' +
       '<button class="hbtn" data-tb="pause"></button>' +
       '<button class="hbtn" data-tb="menu" aria-label="Menu">⚙</button>' +
       '</div>' +
@@ -235,6 +241,7 @@ export class Hud {
         case 'cancel': cb.cancel(); break;
         case 'barrage': cb.callBarrage(); break;
         case 'air': cb.callAirstrike(); break;
+        case 'speed': cb.cycleSpeed(); break;
         case 'pause': cb.togglePause(); break;
         case 'menu': cb.openMenu(); break;
       }
@@ -319,7 +326,7 @@ export class Hud {
   update(sim: Sim, st: HudState): void {
     this.lastSim = sim;
     this.lastSt = st;
-    const sig = `${(sim.tick / 5) | 0}|${st.prompt}|${primarySquad(st)}|${st.selectedTeam}|${st.selectedVehicle}|${st.paused}|${st.targetMode}|${st.armedOrder}|${sim.winner}|${st.title}|${st.selectedSquads.join(',')}|${this.km.version}|${st.floorFocus ?? -1}|${st.aiControl}|${st.boxMode ?? false}|${st.addMode ?? false}|${this.tb ? this.rosterOpen : false}`;
+    const sig = `${(sim.tick / 5) | 0}|${st.prompt}|${primarySquad(st)}|${st.selectedTeam}|${st.selectedVehicle}|${st.paused}|${st.targetMode}|${st.armedOrder}|${sim.winner}|${st.title}|${st.speed}|${st.selectedSquads.join(',')}|${this.km.version}|${st.floorFocus ?? -1}|${st.aiControl}|${st.boxMode ?? false}|${st.addMode ?? false}|${this.tb ? this.rosterOpen : false}`;
     if (sig === this.sig) return;
     this.sig = sig;
     this.renderTop(sim, st);
@@ -406,6 +413,8 @@ export class Hud {
     air.classList.toggle('active', st.targetMode === 'air');
     tb('pause').textContent = st.paused ? '▶ Play' : '⏸ Pause';
     tb('pause').classList.toggle('active', st.paused);
+    tb('speed').textContent = `${st.speed}×`;
+    tb('speed').classList.toggle('active', st.speed > 1);
     tb('select').classList.toggle('active', !!st.boxMode);
     tb('add').classList.toggle('active', !!st.addMode);
     tb('roster').classList.toggle('active', this.rosterOpen);
@@ -444,7 +453,7 @@ export class Hud {
   private renderTop(sim: Sim, st: HudState): void {
     const secs = Math.floor(sim.tick / 30);
     const clock = `T+${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`;
-    this.q('#tb-title').innerHTML = `<b>${st.title}</b> · ${clock}${st.paused ? ' <span class="paused">⏸ PAUSED</span>' : ''}${st.aiControl ? ' <span class="paused">AI CONTROL</span>' : ''}${st.floorFocus !== undefined && st.floorFocus >= 0 ? ` <span class="paused">⬒ ${floorName(st.floorFocus)} only</span>` : ''}`;
+    this.q('#tb-title').innerHTML = `<b>${st.title}</b><span class="tb-clock">· ${clock}${st.paused ? ' <span class="paused">⏸ PAUSED</span>' : ''}${st.aiControl ? ' <span class="paused">AI CONTROL</span>' : ''}${st.floorFocus !== undefined && st.floorFocus >= 0 ? ` <span class="paused">⬒ ${floorName(st.floorFocus)} only</span>` : ''}</span>`;
     const btn = (act: string) => this.q(`[data-act="${act}"]`) as HTMLButtonElement;
     const f = formatBinding;
     btn('barrage').title = f(this.km.bindings.barrage);
@@ -459,6 +468,9 @@ export class Hud {
     air.disabled = sim.airstrikesLeft.blue <= 0;
     air.classList.toggle('active', st.targetMode === 'air');
     btn('pause').innerHTML = `${st.paused ? '▶ Resume' : '⏸ Pause'} <span class="hk-top">${f(this.km.bindings.pause)}</span>`;
+    btn('speed').title = f(this.km.bindings.battleSpeed);
+    btn('speed').innerHTML = `${st.speed}× <span class="hk-top">${f(this.km.bindings.battleSpeed)}</span>`;
+    btn('speed').classList.toggle('active', st.speed > 1);
   }
 
   private renderSquads(sim: Sim, st: HudState): void {
