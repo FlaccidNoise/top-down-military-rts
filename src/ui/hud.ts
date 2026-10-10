@@ -609,7 +609,7 @@ function squadCard(sim: Sim, sq: Squad, name: string, st: HudState, km: Keymap):
   const widen = MOBILE ? '' : ` <i>(${formatBinding(km.bindings.cancel)} widens)</i>`;
   const focus = isPrimary && st.selectedTeam >= 0 ? `<div class="focus">Team: ${sim.teams[st.selectedTeam]?.name ?? ''}${widen}</div>` : '';
   const rows = isPrimary
-    ? focus + balkChip + empStateRow + (emp ? emplacementContext(sim, emp) : squadContext(men)) + men.map((m) => soldierRow(m)).join('')
+    ? focus + balkChip + empStateRow + (emp ? emplacementContext(sim, emp) : squadContext(men)) + men.map((m) => soldierRow(sim, m)).join('')
     : '';
   return (
     `<div class="card panel${sel ? ' sel' : ''}" data-squad="${sq.id}" tabindex="0" role="button" title="${sq.name}">` +
@@ -631,10 +631,10 @@ const STATUS_COLOR: Record<Exclude<ManStatus, ''>, string> = { KIA: '#6a6a5a', D
 // A man: his state colour, name, weapon, and a word only for what is wrong
 // with him. Morale and suppression as numbers live in the hover card and the
 // health panel a click on the row opens.
-function soldierRow(m: Soldier): string {
+function soldierRow(sim: Sim, m: Soldier): string {
   const status = manStatus(m);
   if (status === 'KIA') return `<div class="srow kia"><span class="chip" style="background:#4a4a3e"></span><span class="nm">${m.name}</span><span class="st">KIA</span></div>`;
-  const ammo = manAmmo(m);
+  const ammo = manAmmo(sim, m);
   const cross = m.wounds.length ? `<span class="flag${m.stabilized || m.bleedRate <= 0 ? ' stab' : ''}">✚</span>` : '';
   return (
     `<div class="srow${status === 'DOWN' ? ' urgent' : ''}" data-soldier="${m.id}" tabindex="0" role="button" title="click to inspect ${m.name}">` +

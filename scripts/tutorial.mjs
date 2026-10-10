@@ -559,15 +559,22 @@ async function desktopLeg() {
       const zone = blueAttacks
         ? { x0: 0, x1: DEPLOY_ATK_DEPTH }
         : { x0: DEPLOY_DEF_LINE[kind] ?? DEPLOY_DEF_DEFAULT, x1: s.map.w };
-      const men = s.soldiers.filter((m) => m.alive && m.side === 'blue' && m.inVehicle < 0);
-      const squad = men[0].squadId;
-      const mine = men.filter((m) => m.squadId === squad);
-      const pick = mine[0];
-      const [sx, sy] = g.cam.worldToScreen(pick.x, pick.y, innerWidth, innerHeight);
-      // A clear spot inside our own strip, away from where they stand.
-      const ty = Math.max(8, Math.min(s.map.h - 8, pick.y + 18));
+      // A man the player can see: the battle opens on part of the company,
+      // and a click on a man under the roster or off the screen selects nobody.
+      const st = g.stage();
+      const scr = (x, y) => g.cam.worldToScreen(x, y, innerWidth, innerHeight);
+      const onStage = (x, y) => { const [px, py] = scr(x, y); return px > st.left + 12 && px < st.right - 12 && py > st.top + 12 && py < st.bottom - 12; };
+      const men = s.soldiers.filter((m) => m.alive && m.side === 'blue' && m.inVehicle < 0 && onStage(m.x, m.y));
+      if (!men.length) throw new Error('no blue soldier is on the visible map at deployment: bootCamera (src/render/framing.ts) did not frame the force');
+      const pick = men[0];
+      const squad = pick.squadId;
+      const mine = s.soldiers.filter((m) => m.alive && m.squadId === squad && m.inVehicle < 0);
+      const [sx, sy] = scr(pick.x, pick.y);
+      // A clear spot inside our own strip and on screen, away from where they stand.
       const tx = Math.max(zone.x0 + 2, Math.min(zone.x1 - 3, pick.x));
-      const [tsx, tsy] = g.cam.worldToScreen(tx, ty, innerWidth, innerHeight);
+      const ty = [18, -18, 12, -12].map((d) => Math.max(8, Math.min(s.map.h - 8, pick.y + d))).find((y) => onStage(tx, y));
+      if (ty === undefined) throw new Error(`no spot near ${pick.name} is both inside the deploy zone and on the visible map`);
+      const [tsx, tsy] = scr(tx, ty);
       return {
         squad, zone, kind, tick: s.tick,
         before: mine.map((m) => ({ id: m.id, x: m.x, y: m.y })),
@@ -590,15 +597,17 @@ async function desktopLeg() {
     check(moved.inZone, `repositioned men stay inside our own ${blueAttacks ? 'attack' : 'defence'} zone on a ${dep.kind} map (x ${dep.zone.x0}–${Math.round(dep.zone.x1)})`);
     check(moved.tick === dep.tick, `the clock never ticked during deployment (tick ${moved.tick})`);
 
-    // ch7 — Resume commits the deployment and starts the fight.
+    // ch7 — Play commits the deployment and starts the fight. The squad placed
+    // above is still selected, so the game skips "Click a squad." and goes
+    // straight to the order step: it does not teach what was just done.
     await page.click('#hud [data-act="pause"]');
-    await waitBubble(page, 'battle-select');
+    await waitBubble(page, 'battle-order');
     const running = await until(page, (t) => window.__game.sim.tick > t + 5 ? window.__game.sim.tick : false, moved.tick, {
       what: 'the sim to advance after Resume',
       fix: 'Resume must clear deployPhase and unpause (src/main.ts, the deployPhase && !paused branch).',
     });
     check(running > moved.tick, `Resume begins the battle (tick ${moved.tick} → ${running})`);
-    await shot(page, 'ch7-battle-select', 'chapter 7: the fight has begun and the battle-select step rings a squad');
+    await shot(page, 'ch7-battle-order', 'chapter 7: the fight has begun and the order step rings the selected squad');
 
     // ch8 — win it for real.
     console.log(`  fighting (budget ${(WIN_BUDGET_MS / 1000).toFixed(0)}s)…`);

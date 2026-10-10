@@ -3,11 +3,12 @@ import { GameMap } from '../src/sim/map';
 import { Sim, type Soldier } from '../src/sim/sim';
 import { LOW_AMMO_SHARE, manAmmo, manStatus, reserveAmmo, shortNames, squadAmmoLow } from '../src/ui/roster';
 
-function squad(): Soldier[] {
+function rifleSim(): Sim {
   const sim = new Sim(new GameMap(40, 40), 3);
   sim.addSquadFromDef('blue', 'us_rifle', 10, 10);
-  return sim.soldiers;
+  return sim;
 }
+const squad = (): Soldier[] => rifleSim().soldiers;
 
 describe('shortNames', () => {
   it('drops the company every squad shares, so nine rows stop reading "Abl…"', () => {
@@ -53,13 +54,25 @@ describe('ammunition is shown only when it is a problem', () => {
   });
 
   it('a man gets a word only when he has no reload left', () => {
-    const [m] = squad();
+    const sim = rifleSim();
+    const [m] = sim.soldiers;
     expect(reserveAmmo(m)).toBeGreaterThan(0);
-    expect(manAmmo(m)).toBe('');
+    expect(manAmmo(sim, m)).toBe('');
     for (const k of Object.keys(m.ammo) as (keyof Soldier['ammo'])[]) m.ammo[k] = 0;
-    expect(manAmmo(m)).toBe('LAST MAG');
+    expect(manAmmo(sim, m)).toBe('LAST MAG');
     m.magLeft = 0;
-    expect(manAmmo(m)).toBe('NO AMMO');
+    expect(manAmmo(sim, m)).toBe('NO AMMO');
+  });
+
+  it('a gunner on a deployed gun is counted from the gun, not from his own pouches', () => {
+    const sim = new Sim(new GameMap(40, 40), 3);
+    sim.addEmplacement('blue', 'm1919_tripod', 10.5, 10.5, 0, 'deployed');
+    const gunner = sim.soldiers.find((s) => s.weapon === 'm1919')!;
+    // His own magazine is not what the gun fires: the belt on the gun is.
+    gunner.magLeft = 0;
+    expect(sim.firingAmmo(gunner).mag).toBeGreaterThan(0);
+    for (const m of sim.soldiers) for (const k of Object.keys(m.ammo) as (keyof Soldier['ammo'])[]) m.ammo[k] = 0;
+    expect(manAmmo(sim, gunner)).toBe('LAST MAG');
   });
 });
 

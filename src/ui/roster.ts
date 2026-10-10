@@ -1,6 +1,6 @@
 // What the roster says about a squad and a man, as words. Pure, no DOM: the
 // HUD (hud.ts) lays these out.
-import type { Soldier } from '../sim/sim';
+import type { Sim, Soldier } from '../sim/sim';
 
 /**
  * Squad names without the company they all share. Every squad of a company is
@@ -32,14 +32,14 @@ export function squadAmmoLow(men: readonly Soldier[]): boolean {
 
 /**
  * The one place a roster row states a man's ammunition: nothing while he has a
- * reload, a word when he does not. This reads the man's own magazine and
- * pouches. An emplaced gunner fires the gun's belt instead; when the sim
- * exposes the count a man is actually firing from, it replaces the two reads
- * below and nothing else changes.
+ * reload, a word when he does not. Counted from what he is firing: his own
+ * magazine and pouches on foot, the gun's belt and its crew's stock when he
+ * serves a deployed gun.
  */
-export function manAmmo(m: Soldier): '' | 'LAST MAG' | 'NO AMMO' {
-  if (reserveAmmo(m) > 0) return '';
-  return m.magLeft > 0 ? 'LAST MAG' : 'NO AMMO';
+export function manAmmo(sim: Sim, m: Soldier): '' | 'LAST MAG' | 'NO AMMO' {
+  const { mag, reserve } = sim.firingAmmo(m);
+  if (reserve > 0) return '';
+  return mag > 0 ? 'LAST MAG' : 'NO AMMO';
 }
 
 export type ManStatus = 'KIA' | 'DOWN' | 'BROKEN' | 'PINNED' | 'SHAKEN' | '';

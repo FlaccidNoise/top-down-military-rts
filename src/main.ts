@@ -930,10 +930,6 @@ function showContactModalV2(c: Contact): void {
   document.getElementById('fight')!.onclick = () => {
     close();
     startTheaterBattle(c);
-  };  document.getElementById('fight')!.onclick = () => {
-    debriefEl.style.display = 'none';
-    tutorial?.notify('contact-closed');
-    startTheaterBattle(c);
   };
   if (trivial) {
     document.getElementById('autoresolve')!.onclick = () => {
@@ -2012,6 +2008,8 @@ function cycleFloorFocus(): void {
   },
   startEngagementBattle,
   showDebrief,
+  // The map clear of the HUD, in CSS px: a gate script clicks only what a player could.
+  stage: stageRect,
   setFow: (on: boolean) => {
     sim.fowDisabled = !on;
   },
