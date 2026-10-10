@@ -140,6 +140,43 @@ describe('battle lifecycle', () => {
   });
 });
 
+describe('bridge defile under contact (jtbug #760)', () => {
+  // Able is mid-crossing (head of the queue, queuedAt null), Baker waits.
+  const twoAtTheBridge = (): { fr: FrontV2; a: Force; b: Force; w: Force } => {
+    const fr = front();
+    const a = mk(fr, 'blue', 1, 'Able', 100, 0);
+    const b = mk(fr, 'blue', 1, 'Baker', 100, 1);
+    const w = mk(fr, 'red', 2, 'Wache', 90);
+    expect(orderMove(fr, a.id, 2).ok).toBe(true);
+    expect(orderMove(fr, b.id, 2).ok).toBe(true);
+    for (let m = 0; m < 3; m++) stepMovement(fr);
+    expect(fr.defileQueues[1]).toEqual([a.id, b.id]);
+    expect([a.queuedAt, b.queuedAt]).toEqual([null, 1]);
+    return { fr, a, b, w };
+  };
+
+  it('a force halted by contact mid-crossing gives up the bridge', () => {
+    const { fr, a, b, w } = twoAtTheBridge();
+    openBattle(fr, { attackerId: a.id, defenderId: w.id, site: w.pos, gapM: 0 });
+    expect(fr.defileQueues[1]).toEqual([b.id]);
+    stepMovement(fr);
+    expect(b.queuedAt).toBeNull(); // Baker crosses: the head is no longer a pinned force
+    expect(b.dwellMin).toBeGreaterThan(0);
+  });
+
+  it('a force that joins a battle while it waits leaves the queue and takes orders afterwards', () => {
+    const { fr, a, b, w } = twoAtTheBridge();
+    const battle = openBattle(fr, { attackerId: a.id, defenderId: w.id, site: w.pos, gapM: 0 });
+    joinBattle(fr, battle, b);
+    expect(b.queuedAt).toBeNull();
+    expect(fr.defileQueues[1]).toEqual([]);
+    battle.forced = 'attacker';
+    fr.clockMin = battle.endMin;
+    resolveBattleV2(fr, newCampaign(7), battle);
+    expect(orderMove(fr, b.id, 0).ok).toBe(true);
+  });
+});
+
 describe('stepWar composition', () => {
   it('a headless mini-war runs: march, contact, battle, resolution, capture', () => {
     const fr = front();

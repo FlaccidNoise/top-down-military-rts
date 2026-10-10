@@ -10,9 +10,11 @@
 // and paste its `PIN seed N {status, day, logLen}` lines into PINNED below,
 // recording the commit here. Never hand-edit a tuple.
 //
-// Recorded 2026-08-05 at de91863, warsweep-v2 seeds 1..16, recon omniscient,
-// DEFAULT_PRESET, no doctrine override. Gates green: 0 hung, 4/16 blue wins,
-// red retook objectives on 15/16 seeds.
+// Recorded 2026-10-09 at the jtbug #760 commit (bridge defile fix, on top of
+// 8a90968), warsweep-v2 seeds 1..16, recon omniscient, DEFAULT_PRESET, no
+// doctrine override. Gates green: 0 hung, 4/16 blue wins, red retook
+// objectives on 15/16 seeds. Seeds 12, 13 and 16 moved from the 2026-08-05
+// freeze: those wars had forces deadlocked at a bridge for 10-12 days.
 import { beforeAll, describe, expect, it } from 'vitest';
 import { DEFAULT_PRESET } from '../src/campaign/presets';
 import { makeHeadlessWorld, runHeadlessWar } from '../src/strategic/headless';
@@ -49,11 +51,11 @@ const PINNED: Tuple[] = [
   { status: 'lost', day: 15, logLen: 37 },
   { status: 'won', day: 12, logLen: 33 },
   { status: 'lost', day: 15, logLen: 55 },
-  { status: 'lost', day: 15, logLen: 20 },
-  { status: 'lost', day: 15, logLen: 26 },
+  { status: 'lost', day: 15, logLen: 55 },
+  { status: 'lost', day: 15, logLen: 37 },
   { status: 'won', day: 6, logLen: 21 },
   { status: 'lost', day: 10, logLen: 23 },
-  { status: 'lost', day: 15, logLen: 32 },
+  { status: 'lost', day: 15, logLen: 36 },
 ];
 
 describe('war pin (S59)', () => {

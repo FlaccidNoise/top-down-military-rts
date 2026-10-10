@@ -136,7 +136,27 @@ export function loadGameV2(): LoadV2 {
     // normalize to fresh, exactly what addForce defaults a new force to.
     forces: p.front.forces.map((f) => ({ ...f, untracedMin: f.untracedMin ?? 0, fatigue: f.fatigue ?? 0, lastEdgeId: f.lastEdgeId ?? null })),
   };
+  repairDefiles(front);
   return { status: 'ok', seed: p.seed, cfg: p.theaterCfg, campaignCfg: p.campaignCfg, campaign: p.campaign, front, ai: p.ai };
+}
+
+// Saves written before jtbug #760 can carry a defile queue headed by a force
+// that left the bridge, or a force still marked queued with no path: the
+// bridge never reopens and the force refuses every order. Keep only the ids
+// that are really waiting at or crossing that bridge, then clear any queuedAt
+// its queue no longer backs. A healthy save passes through unchanged, so the
+// reload-determinism pin holds.
+function repairDefiles(front: FrontV2): void {
+  for (const [key, q] of Object.entries(front.defileQueues)) {
+    const nodeId = Number(key);
+    front.defileQueues[nodeId] = [...new Set(q)].filter((id) => {
+      const f = front.forces.find((x) => x.id === id);
+      return f !== undefined && f.strength > 0 && f.engagedIn === null && f.path.length > 0 && f.pos.kind === 'node' && f.pos.nodeId === nodeId;
+    });
+  }
+  for (const f of front.forces) {
+    if (f.queuedAt !== null && !(front.defileQueues[f.queuedAt] ?? []).includes(f.id)) f.queuedAt = null;
+  }
 }
 
 // The OQ1 roster carry-over: the v3 campaign object is schema-compatible —

@@ -15,6 +15,7 @@ import {
   otherEnd,
   pushEvent,
   route,
+  standForce,
   type CoarseBattle,
   type Force,
   type FrontV2,
@@ -95,7 +96,7 @@ export function openBattle(front: FrontV2, c: Contact): CoarseBattle {
 // guaranteed winner.
 export function joinBattle(front: FrontV2, battle: CoarseBattle, f: Force): void {
   f.engagedIn = battle.id;
-  f.path = [];
+  standForce(front, f);
   battle.joined.push(f.id);
   const sides = battleSides(front, battle);
   battle.forced = trivialForcedStr(sides.atkStrength, sides.defStrength);
@@ -177,8 +178,7 @@ export function retreatForce(
     const dir: 1 | -1 = e.a === nodeId ? 1 : -1;
     const s = dir === 1 ? Math.min(e.lengthM, RETREAT_SETBACK_M) : Math.max(0, e.lengthM - RETREAT_SETBACK_M);
     f.pos = { kind: 'edge', edgeId: e.id, s, dir };
-    f.path = [];
-    f.dwellMin = 0;
+    standForce(front, f);
     pushEvent(front, { min: front.clockMin, kind: 'retreat', text: `${f.name} falls back`, forceIds: [f.id] });
     return;
   }
@@ -187,8 +187,7 @@ export function retreatForce(
     // Voluntary break-off with nowhere to go: HOLD — and hold means stand
     // still whatever the caller left in the path, not resume the march
     // that caused the contact.
-    f.path = [];
-    f.dwellMin = 0;
+    standForce(front, f);
     return;
   }
 
@@ -205,8 +204,7 @@ export function retreatForce(
     }
     if (best) {
       f.pos = { kind: 'node', nodeId: best.n };
-      f.path = [];
-      f.dwellMin = 0;
+      standForce(front, f);
       pushEvent(front, { min: front.clockMin, kind: 'retreat', text: `${f.name} infiltrates to ${t.nodes[best.n].name}`, forceIds: [f.id], nodeId: best.n });
       return;
     }
@@ -297,7 +295,8 @@ export function resolveBattleV2(
       const siteNode = battle.site.kind === 'node' ? battle.site.nodeId : (l.pos.kind === 'edge' && l.pos.dir === 1 ? e.b : e.a);
       const dir: 1 | -1 = e.a === siteNode ? 1 : -1;
       const s = dir === 1 ? Math.min(e.lengthM, RETREAT_SETBACK_M) : Math.max(0, e.lengthM - RETREAT_SETBACK_M);
-      f2Park(l, e.id, s, dir);
+      l.pos = { kind: 'edge', edgeId: e.id, s, dir };
+      standForce(front, l);
       pushEvent(front, { min: front.clockMin, kind: 'retreat', text: `${l.name} thrown back from the crossing`, forceIds: [l.id] });
     } else {
       retreatForce(front, l, battle.approachEdgeId);
@@ -313,12 +312,6 @@ export function resolveBattleV2(
   };
   pushEvent(front, ev);
   return { attackerWon: attackerWins, battleClass, record };
-}
-
-function f2Park(f: Force, edgeId: number, s: number, dir: 1 | -1): void {
-  f.pos = { kind: 'edge', edgeId, s, dir };
-  f.path = [];
-  f.dwellMin = 0;
 }
 
 function siteName(t: FrontV2['theater'], site: CoarseBattle['site']): string {

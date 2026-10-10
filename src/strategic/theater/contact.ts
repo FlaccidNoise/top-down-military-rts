@@ -4,7 +4,7 @@
 // parallel non-incident roads never fight: the negative the old grid could
 // not express. Contact fires at graphGap <= CONTACT_M over FINAL positions
 // each minute, pairing deterministic lower-id-first.
-import { CONTACT_M, edgeById, pushEvent, type Force, type FrontV2, type TheaterEvent } from './force';
+import { CONTACT_M, edgeById, pushEvent, standForce, type Force, type FrontV2, type TheaterEvent } from './force';
 import type { NetPos, Theater } from '../theater';
 
 // Distance from a position to a NODE along its own edge (or 0/∞ at nodes).
@@ -94,15 +94,7 @@ export function detectContacts(front: FrontV2): Contact[] {
 // battle machinery (S16) owns what happens next.
 export function haltAtContact(front: FrontV2, c: Contact): void {
   for (const id of [c.attackerId, c.defenderId]) {
-    const f = front.forces.find((x) => x.id === id)!;
-    f.path = [];
-    f.dwellMin = 0;
-    if (f.queuedAt !== null) {
-      const q = front.defileQueues[f.queuedAt] ?? [];
-      const i = q.indexOf(f.id);
-      if (i >= 0) q.splice(i, 1);
-      f.queuedAt = null;
-    }
+    standForce(front, front.forces.find((x) => x.id === id)!);
   }
 }
 

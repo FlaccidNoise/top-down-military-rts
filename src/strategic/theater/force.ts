@@ -99,6 +99,25 @@ export function addForce(front: FrontV2, f: ForceInit): Force {
   return force;
 }
 
+// A force lets go of the bridge defile: off the FIFO, no longer waiting.
+export function leaveDefile(front: FrontV2, f: Force): void {
+  f.queuedAt = null;
+  for (const q of Object.values(front.defileQueues)) {
+    const i = q.indexOf(f.id);
+    if (i >= 0) q.splice(i, 1);
+  }
+}
+
+// The ONE way a force stops marching: contact, battle join, retreat, crossing
+// setback. Path and dwell clear AND the defile lets go. The force mid-crossing
+// heads its queue with queuedAt null, so a dequeue keyed on queuedAt left it
+// there and the bridge stayed shut for the rest of the war (jtbug #760).
+export function standForce(front: FrontV2, f: Force): void {
+  f.path = [];
+  f.dwellMin = 0;
+  leaveDefile(front, f);
+}
+
 // -- Graph helpers ---------------------------------------------------------
 
 export function edgeById(t: Theater, id: number): TheaterEdge {

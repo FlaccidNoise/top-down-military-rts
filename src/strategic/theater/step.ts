@@ -13,6 +13,7 @@ import {
   BRIDGE_DWELL_MIN,
   edgeById,
   FORD_CROSS_MIN,
+  leaveDefile,
   otherEnd,
   pushEvent,
   route,
@@ -148,11 +149,7 @@ function advanceForce(front: FrontV2, f: Force, budget: number, out: TheaterEven
       if (f.dwellMin < dwellNeed - 1e-9 || budget <= 1e-9) return;
     }
     // Dwell (if any) complete: release the defile slot and step onto the edge.
-    if (!shadow && node.crossing?.kind === 'bridge') {
-      const q = front.defileQueues[nodeId] ?? [];
-      const i = q.indexOf(f.id);
-      if (i >= 0) q.splice(i, 1);
-    }
+    if (!shadow && node.crossing?.kind === 'bridge') leaveDefile(front, f);
     f.dwellMin = 0;
     const e = edgeById(front.theater, f.path[0]);
     const dir: 1 | -1 = e.a === nodeId ? 1 : -1;
