@@ -1,0 +1,2404 @@
+{
+ "date": "2026-10-10",
+ "commit": "e6978e3",
+ "note": "Balance record for the 2026-10 upgrade wave (jtbug #763-#766, #787, #789, #790, #794; tracker #131). AI commander on both sides, clock 14:00, 30-minute cap. Probe: scratchpad lanes/sim/probe.mjs, which wraps Sim and commander methods and draws no rng. The older .balance-*.json files are stale by owner decision and are not comparable: they predate armour, the start-line rule, attacker fire support and the moving defence. Targets set for the wave: blue attacking 6-12 of 18 on the two held-out sets together, red attacking 5-11 of 16. No constant was tuned against any set: each was fixed before the first probe of its item.",
+ "targets": {
+  "blueAttackingCombinedHeldOut": {
+   "band": "6-12 of 18",
+   "got": "8 of 18"
+  },
+  "redAttacking": {
+   "band": "5-11 of 16",
+   "got": "7 of 16"
+  }
+ },
+ "sets": {
+  "fixed": {
+   "what": "blue AI attacks a red AI garrison: open, woods, bourg, road x seeds 1-2. The set every item of the wave was developed against.",
+   "attacker": "blue",
+   "n": 8,
+   "attackerWins": 5,
+   "defenderWins": 3,
+   "holds": 0,
+   "attackerKiaMean": 69.6,
+   "attackerStartMean": 141.8,
+   "defenderKiaMean": 63.0,
+   "defenderStartMean": 113.5,
+   "perBattleRates": {
+    "defenderNeverFiredPct": 25.1,
+    "defenderNeverFiredByReasonPct": {
+     "noLos": 12.3,
+     "outBeforeAnyEnemyInRange": 4.2,
+     "noEnemyEverInRange": 4.0,
+     "task": 1.7,
+     "crewOnGun": 1.4,
+     "broken": 1.2,
+     "melee": 0.2,
+     "outsideArc": 0.1
+    },
+    "defenderPostDriftMedianM": 7,
+    "defenderFellBack": 4.62,
+    "defenderCounterattacks": 0.38,
+    "defenderArcsRelaid": 6.0,
+    "grenadesThrownBothSides": 6.88,
+    "surrenderedBothSides": 1.5,
+    "attackerMortarHeShells": 20.0,
+    "defenderMortarHeShells": 17.62,
+    "defenderHeBurstsWithin10mOfALiveEnemyPct": 93.6,
+    "attackerBarragesCalled": 1.5,
+    "defenderBarragesCalled": 1.0,
+    "attackerAirstrikesCalled": 0.25,
+    "defenderAirstrikesCalled": 0.0,
+    "attackerHullsLost": "2 of 12"
+   },
+   "runs": [
+    {
+     "kind": "bourg",
+     "seed": 1,
+     "winner": "blue",
+     "ticks": 7852,
+     "gameMin": 4.4,
+     "start": {
+      "blue": 143,
+      "red": 115
+     },
+     "blueKiaPct": 33.6,
+     "blueCapPct": 0.0,
+     "redKiaPct": 60.0,
+     "redCapPct": 3.5
+    },
+    {
+     "kind": "bourg",
+     "seed": 2,
+     "winner": "blue",
+     "ticks": 6727,
+     "gameMin": 3.7,
+     "start": {
+      "blue": 143,
+      "red": 115
+     },
+     "blueKiaPct": 39.9,
+     "blueCapPct": 0.0,
+     "redKiaPct": 63.5,
+     "redCapPct": 0.9
+    },
+    {
+     "kind": "open",
+     "seed": 1,
+     "winner": "red",
+     "ticks": 9405,
+     "gameMin": 5.2,
+     "start": {
+      "blue": 143,
+      "red": 115
+     },
+     "blueKiaPct": 67.8,
+     "blueCapPct": 0.0,
+     "redKiaPct": 40.0,
+     "redCapPct": 0.0
+    },
+    {
+     "kind": "open",
+     "seed": 2,
+     "winner": "blue",
+     "ticks": 7176,
+     "gameMin": 4,
+     "start": {
+      "blue": 143,
+      "red": 115
+     },
+     "blueKiaPct": 26.6,
+     "blueCapPct": 0.0,
+     "redKiaPct": 61.7,
+     "redCapPct": 0.0
+    },
+    {
+     "kind": "road",
+     "seed": 1,
+     "winner": "blue",
+     "ticks": 6623,
+     "gameMin": 3.7,
+     "start": {
+      "blue": 143,
+      "red": 115
+     },
+     "blueKiaPct": 36.4,
+     "blueCapPct": 0.0,
+     "redKiaPct": 64.3,
+     "redCapPct": 0.9
+    },
+    {
+     "kind": "road",
+     "seed": 2,
+     "winner": "blue",
+     "ticks": 9096,
+     "gameMin": 5.1,
+     "start": {
+      "blue": 143,
+      "red": 115
+     },
+     "blueKiaPct": 60.1,
+     "blueCapPct": 0.0,
+     "redKiaPct": 67.0,
+     "redCapPct": 0.0
+    },
+    {
+     "kind": "woods",
+     "seed": 1,
+     "winner": "red",
+     "ticks": 10322,
+     "gameMin": 5.7,
+     "start": {
+      "blue": 138,
+      "red": 109
+     },
+     "blueKiaPct": 63.8,
+     "blueCapPct": 0.7,
+     "redKiaPct": 48.6,
+     "redCapPct": 0.0
+    },
+    {
+     "kind": "woods",
+     "seed": 2,
+     "winner": "red",
+     "ticks": 9330,
+     "gameMin": 5.2,
+     "start": {
+      "blue": 138,
+      "red": 109
+     },
+     "blueKiaPct": 65.9,
+     "blueCapPct": 0.7,
+     "redKiaPct": 37.6,
+     "redCapPct": 0.9
+    }
+   ]
+  },
+  "heldOutA": {
+   "what": "the same, open, bourg, road x seeds 3-5. Never tuned against.",
+   "attacker": "blue",
+   "n": 9,
+   "attackerWins": 4,
+   "defenderWins": 5,
+   "holds": 0,
+   "attackerKiaMean": 69.0,
+   "attackerStartMean": 143.0,
+   "defenderKiaMean": 59.6,
+   "defenderStartMean": 115.0,
+   "perBattleRates": {
+    "defenderNeverFiredPct": 34.3,
+    "defenderNeverFiredByReasonPct": {
+     "noLos": 19.3,
+     "noEnemyEverInRange": 6.2,
+     "outBeforeAnyEnemyInRange": 4.2,
+     "broken": 2.4,
+     "crewOnGun": 1.3,
+     "task": 0.8,
+     "outsideArc": 0.2
+    },
+    "defenderPostDriftMedianM": 5,
+    "defenderFellBack": 4.11,
+    "defenderCounterattacks": 0.33,
+    "defenderArcsRelaid": 3.56,
+    "grenadesThrownBothSides": 7.66,
+    "surrenderedBothSides": 1.11,
+    "attackerMortarHeShells": 19.89,
+    "defenderMortarHeShells": 31.56,
+    "defenderHeBurstsWithin10mOfALiveEnemyPct": 95.4,
+    "attackerBarragesCalled": 1.67,
+    "defenderBarragesCalled": 1.0,
+    "attackerAirstrikesCalled": 0.56,
+    "defenderAirstrikesCalled": 0.0,
+    "attackerHullsLost": "1 of 18"
+   },
+   "runs": [
+    {
+     "kind": "bourg",
+     "seed": 3,
+     "winner": "blue",
+     "ticks": 6871,
+     "gameMin": 3.8,
+     "start": {
+      "blue": 143,
+      "red": 115
+     },
+     "blueKiaPct": 23.1,
+     "blueCapPct": 0.0,
+     "redKiaPct": 59.1,
+     "redCapPct": 1.7
+    },
+    {
+     "kind": "bourg",
+     "seed": 4,
+     "winner": "blue",
+     "ticks": 5592,
+     "gameMin": 3.1,
+     "start": {
+      "blue": 143,
+      "red": 115
+     },
+     "blueKiaPct": 22.4,
+     "blueCapPct": 0.0,
+     "redKiaPct": 62.6,
+     "redCapPct": 0.9
+    },
+    {
+     "kind": "bourg",
+     "seed": 5,
+     "winner": "red",
+     "ticks": 8094,
+     "gameMin": 4.5,
+     "start": {
+      "blue": 143,
+      "red": 115
+     },
+     "blueKiaPct": 56.6,
+     "blueCapPct": 0.0,
+     "redKiaPct": 26.1,
+     "redCapPct": 0.0
+    },
+    {
+     "kind": "open",
+     "seed": 3,
+     "winner": "red",
+     "ticks": 9870,
+     "gameMin": 5.5,
+     "start": {
+      "blue": 143,
+      "red": 115
+     },
+     "blueKiaPct": 59.4,
+     "blueCapPct": 0.0,
+     "redKiaPct": 34.8,
+     "redCapPct": 1.7
+    },
+    {
+     "kind": "open",
+     "seed": 4,
+     "winner": "blue",
+     "ticks": 9924,
+     "gameMin": 5.5,
+     "start": {
+      "blue": 143,
+      "red": 115
+     },
+     "blueKiaPct": 35.7,
+     "blueCapPct": 0.0,
+     "redKiaPct": 64.3,
+     "redCapPct": 2.6
+    },
+    {
+     "kind": "open",
+     "seed": 5,
+     "winner": "red",
+     "ticks": 8251,
+     "gameMin": 4.6,
+     "start": {
+      "blue": 143,
+      "red": 115
+     },
+     "blueKiaPct": 61.5,
+     "blueCapPct": 0.0,
+     "redKiaPct": 33.0,
+     "redCapPct": 0.0
+    },
+    {
+     "kind": "road",
+     "seed": 3,
+     "winner": "blue",
+     "ticks": 9359,
+     "gameMin": 5.2,
+     "start": {
+      "blue": 143,
+      "red": 115
+     },
+     "blueKiaPct": 51.0,
+     "blueCapPct": 0.0,
+     "redKiaPct": 66.1,
+     "redCapPct": 0.0
+    },
+    {
+     "kind": "road",
+     "seed": 4,
+     "winner": "red",
+     "ticks": 10748,
+     "gameMin": 6,
+     "start": {
+      "blue": 143,
+      "red": 115
+     },
+     "blueKiaPct": 58.7,
+     "blueCapPct": 0.0,
+     "redKiaPct": 64.3,
+     "redCapPct": 0.0
+    },
+    {
+     "kind": "road",
+     "seed": 5,
+     "winner": "red",
+     "ticks": 11406,
+     "gameMin": 6.3,
+     "start": {
+      "blue": 143,
+      "red": 115
+     },
+     "blueKiaPct": 65.7,
+     "blueCapPct": 0.7,
+     "redKiaPct": 55.7,
+     "redCapPct": 0.9
+    }
+   ]
+  },
+  "heldOutB": {
+   "what": "the same, open, bourg, road x seeds 6-8. Never tuned against.",
+   "attacker": "blue",
+   "n": 9,
+   "attackerWins": 4,
+   "defenderWins": 5,
+   "holds": 0,
+   "attackerKiaMean": 74.0,
+   "attackerStartMean": 143.0,
+   "defenderKiaMean": 61.6,
+   "defenderStartMean": 115.0,
+   "perBattleRates": {
+    "defenderNeverFiredPct": 32.2,
+    "defenderNeverFiredByReasonPct": {
+     "noLos": 18.2,
+     "outBeforeAnyEnemyInRange": 4.9,
+     "noEnemyEverInRange": 4.3,
+     "crewOnGun": 1.7,
+     "broken": 1.4,
+     "task": 1.1,
+     "outsideArc": 0.7
+    },
+    "defenderPostDriftMedianM": 5,
+    "defenderFellBack": 4.0,
+    "defenderCounterattacks": 0.22,
+    "defenderArcsRelaid": 2.44,
+    "grenadesThrownBothSides": 3.88,
+    "surrenderedBothSides": 1.0,
+    "attackerMortarHeShells": 18.22,
+    "defenderMortarHeShells": 33.56,
+    "defenderHeBurstsWithin10mOfALiveEnemyPct": 95.7,
+    "attackerBarragesCalled": 2.0,
+    "defenderBarragesCalled": 1.0,
+    "attackerAirstrikesCalled": 0.22,
+    "defenderAirstrikesCalled": 0.0,
+    "attackerHullsLost": "1 of 18"
+   },
+   "runs": [
+    {
+     "kind": "bourg",
+     "seed": 6,
+     "winner": "red",
+     "ticks": 8952,
+     "gameMin": 5,
+     "start": {
+      "blue": 143,
+      "red": 115
+     },
+     "blueKiaPct": 59.4,
+     "blueCapPct": 0.0,
+     "redKiaPct": 47.0,
+     "redCapPct": 0.0
+    },
+    {
+     "kind": "bourg",
+     "seed": 7,
+     "winner": "blue",
+     "ticks": 12310,
+     "gameMin": 6.8,
+     "start": {
+      "blue": 143,
+      "red": 115
+     },
+     "blueKiaPct": 44.1,
+     "blueCapPct": 0.0,
+     "redKiaPct": 66.1,
+     "redCapPct": 0.0
+    },
+    {
+     "kind": "bourg",
+     "seed": 8,
+     "winner": "red",
+     "ticks": 8816,
+     "gameMin": 4.9,
+     "start": {
+      "blue": 143,
+      "red": 115
+     },
+     "blueKiaPct": 60.8,
+     "blueCapPct": 0.0,
+     "redKiaPct": 61.7,
+     "redCapPct": 1.7
+    },
+    {
+     "kind": "open",
+     "seed": 6,
+     "winner": "red",
+     "ticks": 12427,
+     "gameMin": 6.9,
+     "start": {
+      "blue": 143,
+      "red": 115
+     },
+     "blueKiaPct": 67.1,
+     "blueCapPct": 0.0,
+     "redKiaPct": 35.7,
+     "redCapPct": 0.0
+    },
+    {
+     "kind": "open",
+     "seed": 7,
+     "winner": "blue",
+     "ticks": 9036,
+     "gameMin": 5,
+     "start": {
+      "blue": 143,
+      "red": 115
+     },
+     "blueKiaPct": 32.2,
+     "blueCapPct": 0.0,
+     "redKiaPct": 63.5,
+     "redCapPct": 0.9
+    },
+    {
+     "kind": "open",
+     "seed": 8,
+     "winner": "blue",
+     "ticks": 9768,
+     "gameMin": 5.4,
+     "start": {
+      "blue": 143,
+      "red": 115
+     },
+     "blueKiaPct": 44.8,
+     "blueCapPct": 0.0,
+     "redKiaPct": 60.0,
+     "redCapPct": 0.9
+    },
+    {
+     "kind": "road",
+     "seed": 6,
+     "winner": "red",
+     "ticks": 10197,
+     "gameMin": 5.7,
+     "start": {
+      "blue": 143,
+      "red": 115
+     },
+     "blueKiaPct": 70.6,
+     "blueCapPct": 0.0,
+     "redKiaPct": 59.1,
+     "redCapPct": 0.0
+    },
+    {
+     "kind": "road",
+     "seed": 7,
+     "winner": "blue",
+     "ticks": 7340,
+     "gameMin": 4.1,
+     "start": {
+      "blue": 143,
+      "red": 115
+     },
+     "blueKiaPct": 24.5,
+     "blueCapPct": 0.0,
+     "redKiaPct": 56.5,
+     "redCapPct": 0.9
+    },
+    {
+     "kind": "road",
+     "seed": 8,
+     "winner": "red",
+     "ticks": 8282,
+     "gameMin": 4.6,
+     "start": {
+      "blue": 143,
+      "red": 115
+     },
+     "blueKiaPct": 62.2,
+     "blueCapPct": 0.0,
+     "redKiaPct": 32.2,
+     "redCapPct": 0.0
+    }
+   ]
+  },
+  "redAttacking": {
+   "what": "red AI (Garnison St-Aubin, 109) attacks a blue AI company (138) through makeStrategicBattle: open, bourg, road, woods x seeds 1-4.",
+   "attacker": "red",
+   "n": 16,
+   "attackerWins": 7,
+   "defenderWins": 7,
+   "holds": 2,
+   "attackerKiaMean": 64.0,
+   "attackerStartMean": 115.0,
+   "defenderKiaMean": 71.3,
+   "defenderStartMean": 141.8,
+   "perBattleRates": {
+    "defenderNeverFiredPct": 40.4,
+    "defenderNeverFiredByReasonPct": {
+     "noLos": 23.1,
+     "noEnemyEverInRange": 5.8,
+     "outBeforeAnyEnemyInRange": 5.3,
+     "broken": 2.8,
+     "ambushHold": 1.5,
+     "crewOnGun": 1.4,
+     "task": 0.5,
+     "outsideArc": 0.1,
+     "dry": 0.0
+    },
+    "defenderPostDriftMedianM": 6,
+    "defenderFellBack": 4.81,
+    "defenderCounterattacks": 1.0,
+    "defenderArcsRelaid": 4.5,
+    "grenadesThrownBothSides": 7.49,
+    "surrenderedBothSides": 2.06,
+    "attackerMortarHeShells": 13.12,
+    "defenderMortarHeShells": 29.81,
+    "defenderHeBurstsWithin10mOfALiveEnemyPct": 98.1,
+    "attackerBarragesCalled": 1.81,
+    "defenderBarragesCalled": 2.0,
+    "attackerAirstrikesCalled": 0.0,
+    "defenderAirstrikesCalled": 0.69,
+    "attackerHullsLost": "6 of 36"
+   },
+   "runs": [
+    {
+     "kind": "bourg",
+     "seed": 1,
+     "winner": "red",
+     "ticks": 7475,
+     "gameMin": 4.2,
+     "start": {
+      "blue": 143,
+      "red": 117
+     },
+     "blueKiaPct": 62.9,
+     "blueCapPct": 0.0,
+     "redKiaPct": 55.6,
+     "redCapPct": 0.0
+    },
+    {
+     "kind": "bourg",
+     "seed": 2,
+     "winner": "blue",
+     "ticks": 9198,
+     "gameMin": 5.1,
+     "start": {
+      "blue": 143,
+      "red": 117
+     },
+     "blueKiaPct": 53.1,
+     "blueCapPct": 0.7,
+     "redKiaPct": 61.5,
+     "redCapPct": 0.0
+    },
+    {
+     "kind": "bourg",
+     "seed": 3,
+     "winner": "blue",
+     "ticks": 12107,
+     "gameMin": 6.7,
+     "start": {
+      "blue": 143,
+      "red": 117
+     },
+     "blueKiaPct": 58.7,
+     "blueCapPct": 2.1,
+     "redKiaPct": 58.1,
+     "redCapPct": 0.0
+    },
+    {
+     "kind": "bourg",
+     "seed": 4,
+     "winner": "red",
+     "ticks": 6989,
+     "gameMin": 3.9,
+     "start": {
+      "blue": 143,
+      "red": 117
+     },
+     "blueKiaPct": 64.3,
+     "blueCapPct": 0.7,
+     "redKiaPct": 43.6,
+     "redCapPct": 0.0
+    },
+    {
+     "kind": "open",
+     "seed": 1,
+     "winner": "blue",
+     "ticks": 7786,
+     "gameMin": 4.3,
+     "start": {
+      "blue": 143,
+      "red": 117
+     },
+     "blueKiaPct": 34.3,
+     "blueCapPct": 0.7,
+     "redKiaPct": 51.3,
+     "redCapPct": 0.0
+    },
+    {
+     "kind": "open",
+     "seed": 2,
+     "winner": "red",
+     "ticks": 8464,
+     "gameMin": 4.7,
+     "start": {
+      "blue": 143,
+      "red": 117
+     },
+     "blueKiaPct": 65.7,
+     "blueCapPct": 0.0,
+     "redKiaPct": 38.5,
+     "redCapPct": 1.7
+    },
+    {
+     "kind": "open",
+     "seed": 3,
+     "winner": "blue",
+     "ticks": 9059,
+     "gameMin": 5,
+     "start": {
+      "blue": 143,
+      "red": 117
+     },
+     "blueKiaPct": 44.1,
+     "blueCapPct": 0.7,
+     "redKiaPct": 61.5,
+     "redCapPct": 0.0
+    },
+    {
+     "kind": "open",
+     "seed": 4,
+     "winner": "red",
+     "ticks": 15075,
+     "gameMin": 8.4,
+     "start": {
+      "blue": 143,
+      "red": 117
+     },
+     "blueKiaPct": 65.7,
+     "blueCapPct": 2.8,
+     "redKiaPct": 47.9,
+     "redCapPct": 0.0
+    },
+    {
+     "kind": "road",
+     "seed": 1,
+     "winner": "blue",
+     "ticks": 7359,
+     "gameMin": 4.1,
+     "start": {
+      "blue": 143,
+      "red": 117
+     },
+     "blueKiaPct": 25.9,
+     "blueCapPct": 0.0,
+     "redKiaPct": 60.7,
+     "redCapPct": 0.9
+    },
+    {
+     "kind": "road",
+     "seed": 2,
+     "winner": "red",
+     "ticks": 9405,
+     "gameMin": 5.2,
+     "start": {
+      "blue": 143,
+      "red": 117
+     },
+     "blueKiaPct": 68.5,
+     "blueCapPct": 1.4,
+     "redKiaPct": 61.5,
+     "redCapPct": 0.0
+    },
+    {
+     "kind": "road",
+     "seed": 3,
+     "winner": "red",
+     "ticks": 7223,
+     "gameMin": 4,
+     "start": {
+      "blue": 143,
+      "red": 117
+     },
+     "blueKiaPct": 62.2,
+     "blueCapPct": 0.0,
+     "redKiaPct": 40.2,
+     "redCapPct": 0.0
+    },
+    {
+     "kind": "road",
+     "seed": 4,
+     "winner": "red",
+     "ticks": 8520,
+     "gameMin": 4.7,
+     "start": {
+      "blue": 143,
+      "red": 117
+     },
+     "blueKiaPct": 67.1,
+     "blueCapPct": 0.0,
+     "redKiaPct": 55.6,
+     "redCapPct": 0.0
+    },
+    {
+     "kind": "woods",
+     "seed": 1,
+     "winner": "blue",
+     "ticks": 6835,
+     "gameMin": 3.8,
+     "start": {
+      "blue": 138,
+      "red": 109
+     },
+     "blueKiaPct": 23.2,
+     "blueCapPct": 0.0,
+     "redKiaPct": 60.6,
+     "redCapPct": 1.8
+    },
+    {
+     "kind": "woods",
+     "seed": 2,
+     "winner": "blue",
+     "ticks": 11008,
+     "gameMin": 6.1,
+     "start": {
+      "blue": 138,
+      "red": 109
+     },
+     "blueKiaPct": 13.8,
+     "blueCapPct": 0.0,
+     "redKiaPct": 63.3,
+     "redCapPct": 0.0
+    },
+    {
+     "kind": "woods",
+     "seed": 3,
+     "winner": "hold",
+     "ticks": 54000,
+     "gameMin": 30,
+     "start": {
+      "blue": 138,
+      "red": 109
+     },
+     "blueKiaPct": 44.2,
+     "blueCapPct": 0.0,
+     "redKiaPct": 64.2,
+     "redCapPct": 0.0
+    },
+    {
+     "kind": "woods",
+     "seed": 4,
+     "winner": "hold",
+     "ticks": 54000,
+     "gameMin": 30,
+     "start": {
+      "blue": 138,
+      "red": 109
+     },
+     "blueKiaPct": 48.6,
+     "blueCapPct": 0.7,
+     "redKiaPct": 68.8,
+     "redCapPct": 0.0
+    }
+   ]
+  },
+  "redAttackingTheater": {
+   "what": "red AI Kampfgruppe attacks a dug-in blue AI company through makeTheaterBattle (default preset, theater seeds 1-4, one supporting company a side): settlement, hamlet, roadside, forest. The planner's own floor is coarse odds 0.35: the settlement and hamlet battles are below it and would not be ordered.",
+   "attacker": "red",
+   "n": 16,
+   "attackerWins": 4,
+   "defenderWins": 12,
+   "holds": 0,
+   "attackerKiaMean": 74.2,
+   "attackerStartMean": 124.5,
+   "defenderKiaMean": 65.8,
+   "defenderStartMean": 141.8,
+   "perBattleRates": {
+    "defenderNeverFiredPct": 36.8,
+    "defenderNeverFiredByReasonPct": {
+     "noLos": 22.4,
+     "noEnemyEverInRange": 7.3,
+     "outBeforeAnyEnemyInRange": 2.4,
+     "broken": 1.9,
+     "crewOnGun": 1.4,
+     "ambushHold": 0.8,
+     "outsideArc": 0.3,
+     "task": 0.3,
+     "melee": 0.0
+    },
+    "defenderPostDriftMedianM": 5,
+    "defenderFellBack": 5.75,
+    "defenderCounterattacks": 0.94,
+    "defenderArcsRelaid": 5.31,
+    "grenadesThrownBothSides": 8.31,
+    "surrenderedBothSides": 2.94,
+    "attackerMortarHeShells": 7.94,
+    "defenderMortarHeShells": 22.12,
+    "defenderHeBurstsWithin10mOfALiveEnemyPct": 92.4,
+    "attackerBarragesCalled": 1.94,
+    "defenderBarragesCalled": 2.69,
+    "attackerAirstrikesCalled": 0.0,
+    "defenderAirstrikesCalled": 0.5,
+    "attackerHullsLost": "6 of 36"
+   },
+   "runs": [
+    {
+     "kind": "bourg",
+     "seed": 1,
+     "winner": "blue",
+     "ticks": 6511,
+     "gameMin": 3.6,
+     "start": {
+      "blue": 143,
+      "red": 124
+     },
+     "blueKiaPct": 24.5,
+     "blueCapPct": 0.0,
+     "redKiaPct": 57.3,
+     "redCapPct": 0.0,
+     "theater": {
+      "battleClass": "settlement",
+      "atk": "Reserve-Kampfgruppe",
+      "atkStrength": 116,
+      "defStrength": 138,
+      "coarseOdds": 0.11,
+      "barragesStart": {
+       "blue": 4,
+       "red": 3
+      },
+      "airStart": {
+       "blue": 1,
+       "red": 0
+      }
+     }
+    },
+    {
+     "kind": "bourg",
+     "seed": 2,
+     "winner": "blue",
+     "ticks": 9147,
+     "gameMin": 5.1,
+     "start": {
+      "blue": 143,
+      "red": 122
+     },
+     "blueKiaPct": 33.6,
+     "blueCapPct": 0.0,
+     "redKiaPct": 63.9,
+     "redCapPct": 0.0,
+     "theater": {
+      "battleClass": "settlement",
+      "atk": "Kampfgruppe Ost",
+      "atkStrength": 114,
+      "defStrength": 138,
+      "coarseOdds": 0.11,
+      "barragesStart": {
+       "blue": 4,
+       "red": 4
+      },
+      "airStart": {
+       "blue": 1,
+       "red": 0
+      }
+     }
+    },
+    {
+     "kind": "bourg",
+     "seed": 3,
+     "winner": "blue",
+     "ticks": 7876,
+     "gameMin": 4.4,
+     "start": {
+      "blue": 143,
+      "red": 130
+     },
+     "blueKiaPct": 42.0,
+     "blueCapPct": 0.0,
+     "redKiaPct": 62.3,
+     "redCapPct": 0.0,
+     "theater": {
+      "battleClass": "settlement",
+      "atk": "Reserve-Kampfgruppe",
+      "atkStrength": 127,
+      "defStrength": 138,
+      "coarseOdds": 0.12,
+      "barragesStart": {
+       "blue": 4,
+       "red": 3
+      },
+      "airStart": {
+       "blue": 1,
+       "red": 0
+      }
+     }
+    },
+    {
+     "kind": "bourg",
+     "seed": 4,
+     "winner": "blue",
+     "ticks": 7136,
+     "gameMin": 4,
+     "start": {
+      "blue": 143,
+      "red": 130
+     },
+     "blueKiaPct": 39.9,
+     "blueCapPct": 0.0,
+     "redKiaPct": 57.7,
+     "redCapPct": 0.0,
+     "theater": {
+      "battleClass": "settlement",
+      "atk": "Reserve-Kampfgruppe",
+      "atkStrength": 130,
+      "defStrength": 138,
+      "coarseOdds": 0.12,
+      "barragesStart": {
+       "blue": 4,
+       "red": 3
+      },
+      "airStart": {
+       "blue": 1,
+       "red": 0
+      }
+     }
+    },
+    {
+     "kind": "open",
+     "seed": 1,
+     "winner": "red",
+     "ticks": 15257,
+     "gameMin": 8.5,
+     "start": {
+      "blue": 143,
+      "red": 124
+     },
+     "blueKiaPct": 67.8,
+     "blueCapPct": 2.1,
+     "redKiaPct": 54.8,
+     "redCapPct": 0.0,
+     "theater": {
+      "battleClass": "hamlet",
+      "atk": "Reserve-Kampfgruppe",
+      "atkStrength": 116,
+      "defStrength": 138,
+      "coarseOdds": 0.22,
+      "barragesStart": {
+       "blue": 4,
+       "red": 3
+      },
+      "airStart": {
+       "blue": 1,
+       "red": 0
+      }
+     }
+    },
+    {
+     "kind": "open",
+     "seed": 2,
+     "winner": "blue",
+     "ticks": 10442,
+     "gameMin": 5.8,
+     "start": {
+      "blue": 143,
+      "red": 122
+     },
+     "blueKiaPct": 45.5,
+     "blueCapPct": 2.1,
+     "redKiaPct": 61.5,
+     "redCapPct": 0.0,
+     "theater": {
+      "battleClass": "hamlet",
+      "atk": "Kampfgruppe Ost",
+      "atkStrength": 114,
+      "defStrength": 138,
+      "coarseOdds": 0.22,
+      "barragesStart": {
+       "blue": 4,
+       "red": 3
+      },
+      "airStart": {
+       "blue": 1,
+       "red": 0
+      }
+     }
+    },
+    {
+     "kind": "open",
+     "seed": 3,
+     "winner": "blue",
+     "ticks": 14421,
+     "gameMin": 8,
+     "start": {
+      "blue": 143,
+      "red": 130
+     },
+     "blueKiaPct": 62.2,
+     "blueCapPct": 3.5,
+     "redKiaPct": 63.8,
+     "redCapPct": 0.0,
+     "theater": {
+      "battleClass": "hamlet",
+      "atk": "Reserve-Kampfgruppe",
+      "atkStrength": 127,
+      "defStrength": 138,
+      "coarseOdds": 0.23,
+      "barragesStart": {
+       "blue": 4,
+       "red": 4
+      },
+      "airStart": {
+       "blue": 1,
+       "red": 0
+      }
+     }
+    },
+    {
+     "kind": "open",
+     "seed": 4,
+     "winner": "blue",
+     "ticks": 9368,
+     "gameMin": 5.2,
+     "start": {
+      "blue": 143,
+      "red": 130
+     },
+     "blueKiaPct": 32.2,
+     "blueCapPct": 1.4,
+     "redKiaPct": 58.5,
+     "redCapPct": 0.8,
+     "theater": {
+      "battleClass": "hamlet",
+      "atk": "Reserve-Kampfgruppe",
+      "atkStrength": 130,
+      "defStrength": 138,
+      "coarseOdds": 0.24,
+      "barragesStart": {
+       "blue": 4,
+       "red": 4
+      },
+      "airStart": {
+       "blue": 1,
+       "red": 0
+      }
+     }
+    },
+    {
+     "kind": "road",
+     "seed": 1,
+     "winner": "red",
+     "ticks": 11214,
+     "gameMin": 6.2,
+     "start": {
+      "blue": 143,
+      "red": 124
+     },
+     "blueKiaPct": 68.5,
+     "blueCapPct": 0.0,
+     "redKiaPct": 55.6,
+     "redCapPct": 0.0,
+     "theater": {
+      "battleClass": "roadside",
+      "atk": "Reserve-Kampfgruppe",
+      "atkStrength": 116,
+      "defStrength": 138,
+      "coarseOdds": 0.46,
+      "barragesStart": {
+       "blue": 4,
+       "red": 3
+      },
+      "airStart": {
+       "blue": 1,
+       "red": 0
+      }
+     }
+    },
+    {
+     "kind": "road",
+     "seed": 2,
+     "winner": "blue",
+     "ticks": 11075,
+     "gameMin": 6.2,
+     "start": {
+      "blue": 143,
+      "red": 122
+     },
+     "blueKiaPct": 61.5,
+     "blueCapPct": 1.4,
+     "redKiaPct": 60.7,
+     "redCapPct": 0.0,
+     "theater": {
+      "battleClass": "roadside",
+      "atk": "Kampfgruppe Ost",
+      "atkStrength": 114,
+      "defStrength": 138,
+      "coarseOdds": 0.45,
+      "barragesStart": {
+       "blue": 4,
+       "red": 3
+      },
+      "airStart": {
+       "blue": 1,
+       "red": 0
+      }
+     }
+    },
+    {
+     "kind": "road",
+     "seed": 3,
+     "winner": "red",
+     "ticks": 16667,
+     "gameMin": 9.3,
+     "start": {
+      "blue": 143,
+      "red": 130
+     },
+     "blueKiaPct": 71.3,
+     "blueCapPct": 0.0,
+     "redKiaPct": 66.9,
+     "redCapPct": 0.0,
+     "theater": {
+      "battleClass": "roadside",
+      "atk": "Reserve-Kampfgruppe",
+      "atkStrength": 127,
+      "defStrength": 138,
+      "coarseOdds": 0.48,
+      "barragesStart": {
+       "blue": 4,
+       "red": 3
+      },
+      "airStart": {
+       "blue": 1,
+       "red": 0
+      }
+     }
+    },
+    {
+     "kind": "road",
+     "seed": 4,
+     "winner": "red",
+     "ticks": 7458,
+     "gameMin": 4.1,
+     "start": {
+      "blue": 143,
+      "red": 130
+     },
+     "blueKiaPct": 64.3,
+     "blueCapPct": 1.4,
+     "redKiaPct": 40.0,
+     "redCapPct": 0.0,
+     "theater": {
+      "battleClass": "roadside",
+      "atk": "Reserve-Kampfgruppe",
+      "atkStrength": 130,
+      "defStrength": 138,
+      "coarseOdds": 0.49,
+      "barragesStart": {
+       "blue": 4,
+       "red": 3
+      },
+      "airStart": {
+       "blue": 1,
+       "red": 0
+      }
+     }
+    },
+    {
+     "kind": "woods",
+     "seed": 1,
+     "winner": "blue",
+     "ticks": 13227,
+     "gameMin": 7.3,
+     "start": {
+      "blue": 138,
+      "red": 116
+     },
+     "blueKiaPct": 21.7,
+     "blueCapPct": 0.7,
+     "redKiaPct": 64.7,
+     "redCapPct": 3.4,
+     "theater": {
+      "battleClass": "forest",
+      "atk": "Reserve-Kampfgruppe",
+      "atkStrength": 116,
+      "defStrength": 138,
+      "coarseOdds": 0.36,
+      "barragesStart": {
+       "blue": 4,
+       "red": 3
+      },
+      "airStart": {
+       "blue": 1,
+       "red": 0
+      }
+     }
+    },
+    {
+     "kind": "woods",
+     "seed": 2,
+     "winner": "blue",
+     "ticks": 11709,
+     "gameMin": 6.5,
+     "start": {
+      "blue": 138,
+      "red": 114
+     },
+     "blueKiaPct": 44.2,
+     "blueCapPct": 0.7,
+     "redKiaPct": 64.9,
+     "redCapPct": 1.8,
+     "theater": {
+      "battleClass": "forest",
+      "atk": "Kampfgruppe Ost",
+      "atkStrength": 114,
+      "defStrength": 138,
+      "coarseOdds": 0.36,
+      "barragesStart": {
+       "blue": 4,
+       "red": 3
+      },
+      "airStart": {
+       "blue": 1,
+       "red": 0
+      }
+     }
+    },
+    {
+     "kind": "woods",
+     "seed": 3,
+     "winner": "blue",
+     "ticks": 10573,
+     "gameMin": 5.9,
+     "start": {
+      "blue": 138,
+      "red": 122
+     },
+     "blueKiaPct": 34.8,
+     "blueCapPct": 0.0,
+     "redKiaPct": 63.1,
+     "redCapPct": 0.8,
+     "theater": {
+      "battleClass": "forest",
+      "atk": "Reserve-Kampfgruppe",
+      "atkStrength": 127,
+      "defStrength": 138,
+      "coarseOdds": 0.38,
+      "barragesStart": {
+       "blue": 4,
+       "red": 4
+      },
+      "airStart": {
+       "blue": 1,
+       "red": 0
+      }
+     }
+    },
+    {
+     "kind": "woods",
+     "seed": 4,
+     "winner": "blue",
+     "ticks": 9927,
+     "gameMin": 5.5,
+     "start": {
+      "blue": 138,
+      "red": 122
+     },
+     "blueKiaPct": 26.1,
+     "blueCapPct": 0.0,
+     "redKiaPct": 59.0,
+     "redCapPct": 2.5,
+     "theater": {
+      "battleClass": "forest",
+      "atk": "Reserve-Kampfgruppe",
+      "atkStrength": 130,
+      "defStrength": 138,
+      "coarseOdds": 0.39,
+      "barragesStart": {
+       "blue": 4,
+       "red": 3
+      },
+      "airStart": {
+       "blue": 1,
+       "red": 0
+      }
+     }
+    }
+   ]
+  },
+  "blueAttackingTheaterThin": {
+   "what": "blue AI company (138) attacks the first red garrison of 54 or fewer through makeTheaterBattle, default preset, theater seeds 1-16: the river line a player meets first.",
+   "attacker": "blue",
+   "n": 16,
+   "attackerWins": 16,
+   "defenderWins": 0,
+   "holds": 0,
+   "attackerKiaMean": 10.1,
+   "attackerStartMean": 143.0,
+   "defenderKiaMean": 29.5,
+   "defenderStartMean": 50.5,
+   "perBattleRates": {
+    "defenderNeverFiredPct": 41.2,
+    "defenderNeverFiredByReasonPct": {
+     "noLos": 12.6,
+     "outBeforeAnyEnemyInRange": 12.4,
+     "noEnemyEverInRange": 9.0,
+     "broken": 3.3,
+     "outsideArc": 2.2,
+     "task": 1.0,
+     "crewOnGun": 0.6
+    },
+    "defenderPostDriftMedianM": 6,
+    "defenderFellBack": 1.94,
+    "defenderCounterattacks": 0.0,
+    "defenderArcsRelaid": 1.88,
+    "grenadesThrownBothSides": 2.68,
+    "surrenderedBothSides": 1.62,
+    "attackerMortarHeShells": 22.94,
+    "defenderMortarHeShells": 0.0,
+    "defenderHeBurstsWithin10mOfALiveEnemyPct": 0,
+    "attackerBarragesCalled": 1.44,
+    "defenderBarragesCalled": 1.0,
+    "attackerAirstrikesCalled": 0.88,
+    "defenderAirstrikesCalled": 0.0,
+    "attackerHullsLost": "1 of 32"
+   },
+   "runs": [
+    {
+     "kind": "thin",
+     "seed": 1,
+     "winner": "blue",
+     "ticks": 4646,
+     "gameMin": 2.6,
+     "start": {
+      "blue": 143,
+      "red": 50
+     },
+     "blueKiaPct": 8.4,
+     "blueCapPct": 1.4,
+     "redKiaPct": 56.0,
+     "redCapPct": 8.0,
+     "theater": {
+      "battleClass": "settlement",
+      "atk": "Able",
+      "def": "Garnison Pont-Lantheuil",
+      "atkStrength": 138,
+      "defStrength": 44,
+      "coarseOdds": 0.31,
+      "barragesStart": {
+       "blue": 2,
+       "red": 1
+      },
+      "airStart": {
+       "blue": 1,
+       "red": 0
+      }
+     }
+    },
+    {
+     "kind": "thin",
+     "seed": 10,
+     "winner": "blue",
+     "ticks": 6100,
+     "gameMin": 3.4,
+     "start": {
+      "blue": 143,
+      "red": 57
+     },
+     "blueKiaPct": 6.3,
+     "blueCapPct": 0.0,
+     "redKiaPct": 70.2,
+     "redCapPct": 3.5,
+     "theater": {
+      "battleClass": "settlement",
+      "atk": "Able",
+      "def": "Garnison Pont-Vassy",
+      "atkStrength": 138,
+      "defStrength": 51,
+      "coarseOdds": 0.28,
+      "barragesStart": {
+       "blue": 2,
+       "red": 1
+      },
+      "airStart": {
+       "blue": 1,
+       "red": 0
+      }
+     }
+    },
+    {
+     "kind": "thin",
+     "seed": 11,
+     "winner": "blue",
+     "ticks": 3600,
+     "gameMin": 2,
+     "start": {
+      "blue": 143,
+      "red": 42
+     },
+     "blueKiaPct": 14.7,
+     "blueCapPct": 0.0,
+     "redKiaPct": 59.5,
+     "redCapPct": 0.0,
+     "theater": {
+      "battleClass": "settlement",
+      "atk": "Able",
+      "def": "Garnison Pont-Fontenay",
+      "atkStrength": 138,
+      "defStrength": 36,
+      "coarseOdds": 0.35,
+      "barragesStart": {
+       "blue": 2,
+       "red": 1
+      },
+      "airStart": {
+       "blue": 1,
+       "red": 0
+      }
+     }
+    },
+    {
+     "kind": "thin",
+     "seed": 12,
+     "winner": "blue",
+     "ticks": 4476,
+     "gameMin": 2.5,
+     "start": {
+      "blue": 143,
+      "red": 48
+     },
+     "blueKiaPct": 3.5,
+     "blueCapPct": 0.0,
+     "redKiaPct": 64.6,
+     "redCapPct": 0.0,
+     "theater": {
+      "battleClass": "settlement",
+      "atk": "Able",
+      "def": "Garnison Pont-Tessy",
+      "atkStrength": 138,
+      "defStrength": 42,
+      "coarseOdds": 0.32,
+      "barragesStart": {
+       "blue": 2,
+       "red": 1
+      },
+      "airStart": {
+       "blue": 1,
+       "red": 0
+      }
+     }
+    },
+    {
+     "kind": "thin",
+     "seed": 13,
+     "winner": "blue",
+     "ticks": 3367,
+     "gameMin": 1.9,
+     "start": {
+      "blue": 143,
+      "red": 46
+     },
+     "blueKiaPct": 3.5,
+     "blueCapPct": 0.0,
+     "redKiaPct": 58.7,
+     "redCapPct": 2.2,
+     "theater": {
+      "battleClass": "settlement",
+      "atk": "Able",
+      "def": "Garnison Gu\u00e9-de-Ifs",
+      "atkStrength": 138,
+      "defStrength": 40,
+      "coarseOdds": 0.33,
+      "barragesStart": {
+       "blue": 2,
+       "red": 1
+      },
+      "airStart": {
+       "blue": 1,
+       "red": 0
+      }
+     }
+    },
+    {
+     "kind": "thin",
+     "seed": 14,
+     "winner": "blue",
+     "ticks": 5708,
+     "gameMin": 3.2,
+     "start": {
+      "blue": 143,
+      "red": 57
+     },
+     "blueKiaPct": 3.5,
+     "blueCapPct": 0.0,
+     "redKiaPct": 57.9,
+     "redCapPct": 3.5,
+     "theater": {
+      "battleClass": "settlement",
+      "atk": "Able",
+      "def": "Garnison Pont-Aunay",
+      "atkStrength": 138,
+      "defStrength": 51,
+      "coarseOdds": 0.28,
+      "barragesStart": {
+       "blue": 2,
+       "red": 1
+      },
+      "airStart": {
+       "blue": 1,
+       "red": 0
+      }
+     }
+    },
+    {
+     "kind": "thin",
+     "seed": 15,
+     "winner": "blue",
+     "ticks": 5803,
+     "gameMin": 3.2,
+     "start": {
+      "blue": 143,
+      "red": 53
+     },
+     "blueKiaPct": 2.8,
+     "blueCapPct": 0.0,
+     "redKiaPct": 54.7,
+     "redCapPct": 0.0,
+     "theater": {
+      "battleClass": "settlement",
+      "atk": "Able",
+      "def": "Garnison Pont-Soulles",
+      "atkStrength": 138,
+      "defStrength": 47,
+      "coarseOdds": 0.3,
+      "barragesStart": {
+       "blue": 2,
+       "red": 1
+      },
+      "airStart": {
+       "blue": 1,
+       "red": 0
+      }
+     }
+    },
+    {
+     "kind": "thin",
+     "seed": 16,
+     "winner": "blue",
+     "ticks": 4717,
+     "gameMin": 2.6,
+     "start": {
+      "blue": 143,
+      "red": 56
+     },
+     "blueKiaPct": 10.5,
+     "blueCapPct": 0.0,
+     "redKiaPct": 50.0,
+     "redCapPct": 3.6,
+     "theater": {
+      "battleClass": "settlement",
+      "atk": "Able",
+      "def": "Garnison Gu\u00e9-de-Cametours",
+      "atkStrength": 138,
+      "defStrength": 50,
+      "coarseOdds": 0.28,
+      "barragesStart": {
+       "blue": 2,
+       "red": 1
+      },
+      "airStart": {
+       "blue": 1,
+       "red": 0
+      }
+     }
+    },
+    {
+     "kind": "thin",
+     "seed": 2,
+     "winner": "blue",
+     "ticks": 6666,
+     "gameMin": 3.7,
+     "start": {
+      "blue": 143,
+      "red": 57
+     },
+     "blueKiaPct": 7.0,
+     "blueCapPct": 0.0,
+     "redKiaPct": 64.9,
+     "redCapPct": 5.3,
+     "theater": {
+      "battleClass": "settlement",
+      "atk": "Able",
+      "def": "Garnison Pont-Fontenay",
+      "atkStrength": 138,
+      "defStrength": 51,
+      "coarseOdds": 0.28,
+      "barragesStart": {
+       "blue": 2,
+       "red": 1
+      },
+      "airStart": {
+       "blue": 1,
+       "red": 0
+      }
+     }
+    },
+    {
+     "kind": "thin",
+     "seed": 3,
+     "winner": "blue",
+     "ticks": 3565,
+     "gameMin": 2,
+     "start": {
+      "blue": 143,
+      "red": 46
+     },
+     "blueKiaPct": 4.2,
+     "blueCapPct": 0.0,
+     "redKiaPct": 58.7,
+     "redCapPct": 0.0,
+     "theater": {
+      "battleClass": "settlement",
+      "atk": "Able",
+      "def": "Garnison Pont-Balleroy",
+      "atkStrength": 138,
+      "defStrength": 40,
+      "coarseOdds": 0.33,
+      "barragesStart": {
+       "blue": 2,
+       "red": 1
+      },
+      "airStart": {
+       "blue": 1,
+       "red": 0
+      }
+     }
+    },
+    {
+     "kind": "thin",
+     "seed": 4,
+     "winner": "blue",
+     "ticks": 3676,
+     "gameMin": 2,
+     "start": {
+      "blue": 143,
+      "red": 45
+     },
+     "blueKiaPct": 4.2,
+     "blueCapPct": 0.0,
+     "redKiaPct": 57.8,
+     "redCapPct": 2.2,
+     "theater": {
+      "battleClass": "settlement",
+      "atk": "Able",
+      "def": "Garnison Pont-Percy",
+      "atkStrength": 138,
+      "defStrength": 39,
+      "coarseOdds": 0.34,
+      "barragesStart": {
+       "blue": 2,
+       "red": 1
+      },
+      "airStart": {
+       "blue": 1,
+       "red": 0
+      }
+     }
+    },
+    {
+     "kind": "thin",
+     "seed": 5,
+     "winner": "blue",
+     "ticks": 5821,
+     "gameMin": 3.2,
+     "start": {
+      "blue": 143,
+      "red": 53
+     },
+     "blueKiaPct": 7.0,
+     "blueCapPct": 0.0,
+     "redKiaPct": 54.7,
+     "redCapPct": 3.8,
+     "theater": {
+      "battleClass": "settlement",
+      "atk": "Able",
+      "def": "Garnison Pont-Torcy",
+      "atkStrength": 138,
+      "defStrength": 47,
+      "coarseOdds": 0.3,
+      "barragesStart": {
+       "blue": 2,
+       "red": 1
+      },
+      "airStart": {
+       "blue": 1,
+       "red": 0
+      }
+     }
+    },
+    {
+     "kind": "thin",
+     "seed": 6,
+     "winner": "blue",
+     "ticks": 5335,
+     "gameMin": 3,
+     "start": {
+      "blue": 143,
+      "red": 49
+     },
+     "blueKiaPct": 9.1,
+     "blueCapPct": 0.0,
+     "redKiaPct": 49.0,
+     "redCapPct": 2.0,
+     "theater": {
+      "battleClass": "settlement",
+      "atk": "Able",
+      "def": "Garnison Pont-Hottot",
+      "atkStrength": 138,
+      "defStrength": 43,
+      "coarseOdds": 0.31,
+      "barragesStart": {
+       "blue": 2,
+       "red": 1
+      },
+      "airStart": {
+       "blue": 1,
+       "red": 0
+      }
+     }
+    },
+    {
+     "kind": "thin",
+     "seed": 7,
+     "winner": "blue",
+     "ticks": 5026,
+     "gameMin": 2.8,
+     "start": {
+      "blue": 143,
+      "red": 50
+     },
+     "blueKiaPct": 6.3,
+     "blueCapPct": 0.0,
+     "redKiaPct": 60.0,
+     "redCapPct": 2.0,
+     "theater": {
+      "battleClass": "settlement",
+      "atk": "Able",
+      "def": "Garnison Pont-Aunay",
+      "atkStrength": 138,
+      "defStrength": 44,
+      "coarseOdds": 0.31,
+      "barragesStart": {
+       "blue": 2,
+       "red": 1
+      },
+      "airStart": {
+       "blue": 1,
+       "red": 0
+      }
+     }
+    },
+    {
+     "kind": "thin",
+     "seed": 8,
+     "winner": "blue",
+     "ticks": 4259,
+     "gameMin": 2.4,
+     "start": {
+      "blue": 143,
+      "red": 44
+     },
+     "blueKiaPct": 11.9,
+     "blueCapPct": 0.0,
+     "redKiaPct": 54.5,
+     "redCapPct": 4.5,
+     "theater": {
+      "battleClass": "settlement",
+      "atk": "Able",
+      "def": "Garnison Pont-Br\u00e9moy",
+      "atkStrength": 138,
+      "defStrength": 38,
+      "coarseOdds": 0.34,
+      "barragesStart": {
+       "blue": 2,
+       "red": 1
+      },
+      "airStart": {
+       "blue": 1,
+       "red": 0
+      }
+     }
+    },
+    {
+     "kind": "thin",
+     "seed": 9,
+     "winner": "blue",
+     "ticks": 6543,
+     "gameMin": 3.6,
+     "start": {
+      "blue": 143,
+      "red": 55
+     },
+     "blueKiaPct": 9.8,
+     "blueCapPct": 0.0,
+     "redKiaPct": 61.8,
+     "redCapPct": 1.8,
+     "theater": {
+      "battleClass": "settlement",
+      "atk": "Able",
+      "def": "Garnison Pont-Aunay",
+      "atkStrength": 138,
+      "defStrength": 49,
+      "coarseOdds": 0.29,
+      "barragesStart": {
+       "blue": 2,
+       "red": 1
+      },
+      "airStart": {
+       "blue": 1,
+       "red": 0
+      }
+     }
+    }
+   ]
+  },
+  "blueAttackingTheaterTown": {
+   "what": "the same against the strongest red garrison of each theater (51-108, towns).",
+   "attacker": "blue",
+   "n": 16,
+   "attackerWins": 15,
+   "defenderWins": 1,
+   "holds": 0,
+   "attackerKiaMean": 40.0,
+   "attackerStartMean": 143.0,
+   "defenderKiaMean": 50.4,
+   "defenderStartMean": 80.4,
+   "perBattleRates": {
+    "defenderNeverFiredPct": 31.7,
+    "defenderNeverFiredByReasonPct": {
+     "noLos": 15.1,
+     "noEnemyEverInRange": 6.8,
+     "outBeforeAnyEnemyInRange": 3.2,
+     "broken": 2.6,
+     "task": 1.9,
+     "outsideArc": 1.0,
+     "crewOnGun": 1.0
+    },
+    "defenderPostDriftMedianM": 7,
+    "defenderFellBack": 4.75,
+    "defenderCounterattacks": 0.12,
+    "defenderArcsRelaid": 1.5,
+    "grenadesThrownBothSides": 4.12,
+    "surrenderedBothSides": 1.75,
+    "attackerMortarHeShells": 17.56,
+    "defenderMortarHeShells": 4.81,
+    "defenderHeBurstsWithin10mOfALiveEnemyPct": 98.7,
+    "attackerBarragesCalled": 1.19,
+    "defenderBarragesCalled": 1.06,
+    "attackerAirstrikesCalled": 0.25,
+    "defenderAirstrikesCalled": 0.0,
+    "attackerHullsLost": "9 of 32"
+   },
+   "runs": [
+    {
+     "kind": "town",
+     "seed": 1,
+     "winner": "blue",
+     "ticks": 5929,
+     "gameMin": 3.3,
+     "start": {
+      "blue": 143,
+      "red": 97
+     },
+     "blueKiaPct": 27.3,
+     "blueCapPct": 0.0,
+     "redKiaPct": 63.9,
+     "redCapPct": 2.1,
+     "theater": {
+      "battleClass": "settlement",
+      "atk": "Able",
+      "def": "Garnison St-Manvieu",
+      "atkStrength": 138,
+      "defStrength": 91,
+      "coarseOdds": 0.18,
+      "barragesStart": {
+       "blue": 2,
+       "red": 1
+      },
+      "airStart": {
+       "blue": 1,
+       "red": 0
+      }
+     }
+    },
+    {
+     "kind": "town",
+     "seed": 10,
+     "winner": "blue",
+     "ticks": 6100,
+     "gameMin": 3.4,
+     "start": {
+      "blue": 143,
+      "red": 57
+     },
+     "blueKiaPct": 6.3,
+     "blueCapPct": 0.0,
+     "redKiaPct": 70.2,
+     "redCapPct": 3.5,
+     "theater": {
+      "battleClass": "settlement",
+      "atk": "Able",
+      "def": "Garnison Pont-Vassy",
+      "atkStrength": 138,
+      "defStrength": 51,
+      "coarseOdds": 0.28,
+      "barragesStart": {
+       "blue": 2,
+       "red": 1
+      },
+      "airStart": {
+       "blue": 1,
+       "red": 0
+      }
+     }
+    },
+    {
+     "kind": "town",
+     "seed": 11,
+     "winner": "blue",
+     "ticks": 4548,
+     "gameMin": 2.5,
+     "start": {
+      "blue": 143,
+      "red": 66
+     },
+     "blueKiaPct": 19.6,
+     "blueCapPct": 0.0,
+     "redKiaPct": 59.1,
+     "redCapPct": 0.0,
+     "theater": {
+      "battleClass": "settlement",
+      "atk": "Able",
+      "def": "Garnison \u00c9causseville-sur-Ay",
+      "atkStrength": 138,
+      "defStrength": 60,
+      "coarseOdds": 0.25,
+      "barragesStart": {
+       "blue": 2,
+       "red": 1
+      },
+      "airStart": {
+       "blue": 1,
+       "red": 0
+      }
+     }
+    },
+    {
+     "kind": "town",
+     "seed": 12,
+     "winner": "blue",
+     "ticks": 4475,
+     "gameMin": 2.5,
+     "start": {
+      "blue": 143,
+      "red": 94
+     },
+     "blueKiaPct": 11.2,
+     "blueCapPct": 0.0,
+     "redKiaPct": 58.5,
+     "redCapPct": 2.1,
+     "theater": {
+      "battleClass": "settlement",
+      "atk": "Able",
+      "def": "Garnison Lantheuil-sur-Dr\u00f4me",
+      "atkStrength": 138,
+      "defStrength": 88,
+      "coarseOdds": 0.18,
+      "barragesStart": {
+       "blue": 2,
+       "red": 1
+      },
+      "airStart": {
+       "blue": 1,
+       "red": 0
+      }
+     }
+    },
+    {
+     "kind": "town",
+     "seed": 13,
+     "winner": "blue",
+     "ticks": 6223,
+     "gameMin": 3.5,
+     "start": {
+      "blue": 143,
+      "red": 114
+     },
+     "blueKiaPct": 38.5,
+     "blueCapPct": 0.0,
+     "redKiaPct": 62.3,
+     "redCapPct": 1.8,
+     "theater": {
+      "battleClass": "settlement",
+      "atk": "Able",
+      "def": "Garnison Soulles-sur-Orne",
+      "atkStrength": 138,
+      "defStrength": 108,
+      "coarseOdds": 0.15,
+      "barragesStart": {
+       "blue": 2,
+       "red": 2
+      },
+      "airStart": {
+       "blue": 1,
+       "red": 0
+      }
+     }
+    },
+    {
+     "kind": "town",
+     "seed": 14,
+     "winner": "blue",
+     "ticks": 5708,
+     "gameMin": 3.2,
+     "start": {
+      "blue": 143,
+      "red": 57
+     },
+     "blueKiaPct": 3.5,
+     "blueCapPct": 0.0,
+     "redKiaPct": 57.9,
+     "redCapPct": 3.5,
+     "theater": {
+      "battleClass": "settlement",
+      "atk": "Able",
+      "def": "Garnison Pont-Aunay",
+      "atkStrength": 138,
+      "defStrength": 51,
+      "coarseOdds": 0.28,
+      "barragesStart": {
+       "blue": 2,
+       "red": 1
+      },
+      "airStart": {
+       "blue": 1,
+       "red": 0
+      }
+     }
+    },
+    {
+     "kind": "town",
+     "seed": 15,
+     "winner": "blue",
+     "ticks": 8293,
+     "gameMin": 4.6,
+     "start": {
+      "blue": 143,
+      "red": 110
+     },
+     "blueKiaPct": 51.0,
+     "blueCapPct": 0.0,
+     "redKiaPct": 60.0,
+     "redCapPct": 0.0,
+     "theater": {
+      "battleClass": "settlement",
+      "atk": "Able",
+      "def": "Garnison Isigny",
+      "atkStrength": 138,
+      "defStrength": 104,
+      "coarseOdds": 0.16,
+      "barragesStart": {
+       "blue": 2,
+       "red": 1
+      },
+      "airStart": {
+       "blue": 1,
+       "red": 0
+      }
+     }
+    },
+    {
+     "kind": "town",
+     "seed": 16,
+     "winner": "blue",
+     "ticks": 7763,
+     "gameMin": 4.3,
+     "start": {
+      "blue": 143,
+      "red": 95
+     },
+     "blueKiaPct": 53.1,
+     "blueCapPct": 0.0,
+     "redKiaPct": 62.1,
+     "redCapPct": 0.0,
+     "theater": {
+      "battleClass": "settlement",
+      "atk": "Able",
+      "def": "Garnison \u00c9causseville-sur-Taute",
+      "atkStrength": 138,
+      "defStrength": 89,
+      "coarseOdds": 0.18,
+      "barragesStart": {
+       "blue": 2,
+       "red": 1
+      },
+      "airStart": {
+       "blue": 1,
+       "red": 0
+      }
+     }
+    },
+    {
+     "kind": "town",
+     "seed": 2,
+     "winner": "blue",
+     "ticks": 14523,
+     "gameMin": 8.1,
+     "start": {
+      "blue": 143,
+      "red": 58
+     },
+     "blueKiaPct": 10.5,
+     "blueCapPct": 0.0,
+     "redKiaPct": 72.4,
+     "redCapPct": 0.0,
+     "theater": {
+      "battleClass": "hamlet",
+      "atk": "Able",
+      "def": "Garnison \u00c9causseville-en-Bessin",
+      "atkStrength": 138,
+      "defStrength": 52,
+      "coarseOdds": 0.47,
+      "barragesStart": {
+       "blue": 2,
+       "red": 1
+      },
+      "airStart": {
+       "blue": 1,
+       "red": 0
+      }
+     }
+    },
+    {
+     "kind": "town",
+     "seed": 3,
+     "winner": "blue",
+     "ticks": 5805,
+     "gameMin": 3.2,
+     "start": {
+      "blue": 143,
+      "red": 98
+     },
+     "blueKiaPct": 23.1,
+     "blueCapPct": 0.0,
+     "redKiaPct": 62.2,
+     "redCapPct": 1.0,
+     "theater": {
+      "battleClass": "settlement",
+      "atk": "Able",
+      "def": "Garnison St-Andr\u00e9",
+      "atkStrength": 138,
+      "defStrength": 92,
+      "coarseOdds": 0.18,
+      "barragesStart": {
+       "blue": 2,
+       "red": 1
+      },
+      "airStart": {
+       "blue": 1,
+       "red": 0
+      }
+     }
+    },
+    {
+     "kind": "town",
+     "seed": 4,
+     "winner": "blue",
+     "ticks": 7100,
+     "gameMin": 3.9,
+     "start": {
+      "blue": 143,
+      "red": 69
+     },
+     "blueKiaPct": 41.3,
+     "blueCapPct": 0.7,
+     "redKiaPct": 60.9,
+     "redCapPct": 1.4,
+     "theater": {
+      "battleClass": "settlement",
+      "atk": "Able",
+      "def": "Garnison Mestry",
+      "atkStrength": 138,
+      "defStrength": 63,
+      "coarseOdds": 0.24,
+      "barragesStart": {
+       "blue": 2,
+       "red": 1
+      },
+      "airStart": {
+       "blue": 1,
+       "red": 0
+      }
+     }
+    },
+    {
+     "kind": "town",
+     "seed": 5,
+     "winner": "blue",
+     "ticks": 6663,
+     "gameMin": 3.7,
+     "start": {
+      "blue": 143,
+      "red": 59
+     },
+     "blueKiaPct": 26.6,
+     "blueCapPct": 0.0,
+     "redKiaPct": 64.4,
+     "redCapPct": 1.7,
+     "theater": {
+      "battleClass": "settlement",
+      "atk": "Able",
+      "def": "Garnison Pont-Yvetot",
+      "atkStrength": 138,
+      "defStrength": 53,
+      "coarseOdds": 0.27,
+      "barragesStart": {
+       "blue": 2,
+       "red": 1
+      },
+      "airStart": {
+       "blue": 1,
+       "red": 0
+      }
+     }
+    },
+    {
+     "kind": "town",
+     "seed": 6,
+     "winner": "blue",
+     "ticks": 6924,
+     "gameMin": 3.8,
+     "start": {
+      "blue": 143,
+      "red": 59
+     },
+     "blueKiaPct": 20.3,
+     "blueCapPct": 0.0,
+     "redKiaPct": 66.1,
+     "redCapPct": 1.7,
+     "theater": {
+      "battleClass": "hamlet",
+      "atk": "Able",
+      "def": "Garnison Pont-Cerisy",
+      "atkStrength": 138,
+      "defStrength": 53,
+      "coarseOdds": 0.46,
+      "barragesStart": {
+       "blue": 2,
+       "red": 1
+      },
+      "airStart": {
+       "blue": 1,
+       "red": 0
+      }
+     }
+    },
+    {
+     "kind": "town",
+     "seed": 7,
+     "winner": "blue",
+     "ticks": 5880,
+     "gameMin": 3.3,
+     "start": {
+      "blue": 143,
+      "red": 60
+     },
+     "blueKiaPct": 32.9,
+     "blueCapPct": 0.0,
+     "redKiaPct": 58.3,
+     "redCapPct": 8.3,
+     "theater": {
+      "battleClass": "settlement",
+      "atk": "Able",
+      "def": "Garnison H\u00e9bert-sur-Vire",
+      "atkStrength": 138,
+      "defStrength": 54,
+      "coarseOdds": 0.27,
+      "barragesStart": {
+       "blue": 2,
+       "red": 1
+      },
+      "airStart": {
+       "blue": 1,
+       "red": 0
+      }
+     }
+    },
+    {
+     "kind": "town",
+     "seed": 8,
+     "winner": "blue",
+     "ticks": 7393,
+     "gameMin": 4.1,
+     "start": {
+      "blue": 143,
+      "red": 86
+     },
+     "blueKiaPct": 17.5,
+     "blueCapPct": 1.4,
+     "redKiaPct": 69.8,
+     "redCapPct": 2.3,
+     "theater": {
+      "battleClass": "settlement",
+      "atk": "Able",
+      "def": "Garnison St-Vaast",
+      "atkStrength": 138,
+      "defStrength": 80,
+      "coarseOdds": 0.2,
+      "barragesStart": {
+       "blue": 2,
+       "red": 1
+      },
+      "airStart": {
+       "blue": 1,
+       "red": 0
+      }
+     }
+    },
+    {
+     "kind": "town",
+     "seed": 9,
+     "winner": "red",
+     "ticks": 9640,
+     "gameMin": 5.4,
+     "start": {
+      "blue": 143,
+      "red": 108
+     },
+     "blueKiaPct": 65.0,
+     "blueCapPct": 0.0,
+     "redKiaPct": 60.2,
+     "redCapPct": 1.9,
+     "theater": {
+      "battleClass": "settlement",
+      "atk": "Able",
+      "def": "Garnison Yvetot-la-Campagne",
+      "atkStrength": 138,
+      "defStrength": 102,
+      "coarseOdds": 0.16,
+      "barragesStart": {
+       "blue": 2,
+       "red": 1
+      },
+      "airStart": {
+       "blue": 1,
+       "red": 0
+      }
+     }
+    }
+   ]
+  }
+ }
+}

@@ -89,6 +89,12 @@ const GUN_HELD_RADIUS = 10;
 // A movement order ending this close to a standing enemy is headed for ground
 // that enemy holds (noteClosing). The commander's own "held" radius.
 const CLOSING_RADIUS = 20;
+// A team seen going back (#796): most of its men in the other side's sight
+// and on the move, to a point at least this far toward its own rear. A
+// counterattack is called one when it has that far to come, too: a gun crew
+// shifting two metres beside a post the enemy has reached is not one (the
+// first form said so in a browser, of an sMG42 team's 2 m move).
+const WITHDRAW_SEEN_M = 10;
 // A man who steadies within this long of being pinned or broken has rallied
 // (#766). The crossing never happens in one tick: suppression decays at most
 // 0.0023 a tick and morale climbs 0.00013, so he always passes through
@@ -99,6 +105,12 @@ const CLOSING_RADIUS = 20;
 export const RALLY_WINDOW_TICKS = 120 * 30;
 // Melee (decision log 2026-07-23): proximity-triggered close combat.
 const MELEE_ENGAGE = 2.0; // m — an enemy this close (and reachable on foot) locks both into melee
+// A defend or ambush arc is where a man watches, not a blindfold (#794). With
+// nobody to shoot inside it he engages an enemy he can see inside this range
+// wherever that enemy stands, and such an enemy springs an ambush. Probed
+// over 17 battles: 9 % of all defenders never fired because the only enemy
+// they ever saw in range was outside the arc, at a median of 11 m.
+export const ARC_SELF_DEFENCE = 50;
 // The rout (#790). A broken man runs for his own rear (away from
 // sim.threatAxis), to the nearest leader of his side who is still in hand
 // and not forward of him, and stops inside GATHER of that leader. With no
@@ -485,7 +497,14 @@ export interface UnitEvent {
     | 'reserve-committed'
     | 'culminated'
     | 'smoke-objective'
+    | 'fell-back' // a defending squad gave up its post for the next one back
+    | 'counterattack' // a local reserve went in to retake a lost post
     | 'grenade' // a man threw one: `id` is the thrower
+    // The same sighting as 'closing' below, when the team coming is the
+    // DEFENDER's (a counterattack), and a team seen going back toward its own
+    // rear. Raised by the sim off what the other side can see (noteClosing).
+    | 'countering'
+    | 'withdrawing'
     // A team seen moving onto ground the other side holds. Raised by the sim
     // off what that other side can see, never by a commander: `id` is a man
     // of the team its enemy has in sight.
@@ -784,6 +803,17 @@ export function eyeOf(sim: Sim, s: Soldier): number {
 // terrain.
 // e0/e1 are the observer's and target's heights above their feet; they feed
 // both los()'s profile check and the smoke z-line below, so the two agree.
+// Is (tx, ty) inside the facing arc of a man at (fx, fy)? The span runs
+// arc[0] -> arc[1] in increasing angle, wrapping.
+export function inArc(fx: number, fy: number, tx: number, ty: number, arc: [number, number]): boolean {
+  const twoPi = 2 * Math.PI;
+  const norm = (a: number) => ((a % twoPi) + twoPi) % twoPi;
+  const angle = norm(Math.atan2(ty - fy, tx - fx));
+  const a0 = norm(arc[0]);
+  const a1 = norm(arc[1]);
+  return a0 <= a1 ? angle >= a0 && angle <= a1 : angle >= a0 || angle <= a1;
+}
+
 export function sightBetween(sim: Sim, x0: number, y0: number, x1: number, y1: number, l0 = 0, l1 = 0, e0 = EYE_H, e1 = EYE_H): LosResult {
   const base = los(sim.map, x0, y0, x1, y1, l0, l1, e0, e1);
   if (!base.visible || sim.smoke.length === 0) return base;
@@ -2211,12 +2241,7 @@ export class Sim {
   }
 
   private inArc(fx: number, fy: number, tx: number, ty: number, arc: [number, number]): boolean {
-    const twoPi = 2 * Math.PI;
-    const norm = (a: number) => ((a % twoPi) + twoPi) % twoPi;
-    const angle = norm(Math.atan2(ty - fy, tx - fx));
-    const a0 = norm(arc[0]);
-    const a1 = norm(arc[1]);
-    return a0 <= a1 ? angle >= a0 && angle <= a1 : angle >= a0 || angle <= a1;
+    return inArc(fx, fy, tx, ty, arc);
   }
 
   // Enemy within per-weapon-class range (or a team casualty) converts an
@@ -2231,8 +2256,8 @@ export class Sim {
       const thresh = ambushThreshold(WEAPONS[s.weapon]);
       for (const e of this.soldiers) {
         if (!e.alive || e.downed || e.captured || e.side !== enemySide) continue;
-        if (order.arc && !this.inArc(s.x, s.y, e.x, e.y, order.arc)) continue;
         const d = Math.hypot(e.x - s.x, e.y - s.y);
+        if (order.arc && d > ARC_SELF_DEFENCE && !this.inArc(s.x, s.y, e.x, e.y, order.arc)) continue;
         if (d <= thresh && sightToSoldier(this, s.x, s.y, e, s.level, eyeOf(this, s)).visible) {
           triggered = true;
           break outer;
@@ -2383,6 +2408,14 @@ export class Sim {
   // destination within CLOSING_RADIUS of one of that side's standing men.
   // Run on the spotting cadence, straight after the sweep it reads. Draws no
   // rng and writes nothing the sim reads.
+  //
+  // Two more things a side can see an enemy team do (#796), on the same
+  // rule and from the same sightings. The team coming at held ground belongs
+  // to the side that is DEFENDING the field (it expects its enemy from the
+  // west, threatAxis): that is a counterattack, and it is called one,
+  // 'countering', in place of 'closing' and never beside it. And a team most
+  // of whose men are seen on the move, to a point WITHDRAW_SEEN_M or more
+  // toward its own rear, is 'withdrawing'. One event per order at most.
   private noteClosing(): void {
     for (const team of this.teams) {
       const st = team.orderState;
@@ -2392,21 +2425,39 @@ export class Sim {
       const side = this.squads[team.squadId].side;
       const other: Side = side === 'blue' ? 'red' : 'blue';
       let seen: Soldier | null = null;
+      let men = 0;
+      let seenMoving = 0;
+      let cx = 0;
+      let cy = 0;
       for (const id of team.soldierIds) {
         const m = this.soldiers[id];
-        if (this.eligible(m) && this.soldierVisibleTo(other, m)) {
-          seen = m;
-          break;
-        }
+        if (!this.eligible(m)) continue;
+        men++;
+        cx += m.x;
+        cy += m.y;
+        if (!this.soldierVisibleTo(other, m)) continue;
+        seen ??= m;
+        if (m.path) seenMoving++;
       }
       if (!seen) continue;
+      const said = (kind: 'closing' | 'countering' | 'withdrawing'): void => {
+        this.closingSaid.add(order);
+        this.pendingUnitEvents.push({ kind, x: seen.x, y: seen.y, side, name: seen.name, id: seen.id, team: team.name });
+      };
+      let closing = false;
       for (const o of this.soldiers) {
         if (o.side !== other || !o.alive || o.downed || o.captured || o.inVehicle >= 0) continue;
         if (Math.hypot(o.x - order.x, o.y - order.y) > CLOSING_RADIUS) continue;
-        this.closingSaid.add(order);
-        this.pendingUnitEvents.push({ kind: 'closing', x: seen.x, y: seen.y, side, name: seen.name, id: seen.id, team: team.name });
+        closing = true;
         break;
       }
+      const axis = this.threatAxis[side];
+      const dx = order.x - cx / men;
+      const dy = order.y - cy / men;
+      if (closing) {
+        if (Math.cos(axis) >= 0) said('closing');
+        else if (Math.hypot(dx, dy) >= WITHDRAW_SEEN_M) said('countering');
+      } else if (order.kind !== 'assault' && seenMoving * 2 > men && dx * -Math.cos(axis) + dy * -Math.sin(axis) >= WITHDRAW_SEEN_M) said('withdrawing');
     }
   }
 
@@ -2998,11 +3049,12 @@ export class Sim {
     return false;
   }
 
-  // `arc` restricts candidates to a facing sector (defend/ambush: spec's
-  // "members only acquire targets inside arc"). Vehicle crew are normally
+  // `arc` restricts candidates to a facing sector (defend/ambush). With no
+  // visible target inside it, an enemy inside `near` is taken wherever he is
+  // (ARC_SELF_DEFENCE; the emplaced guns pass none). Vehicle crew are normally
   // hull-protected and untargetable — except an open-top vehicle's pintle
   // gunner, who's standing up in the back exposed to small arms.
-  private acquireSoldierTarget(x: number, y: number, side: Side, range: number, arc?: [number, number], l0 = 0, e0 = EYE_H): number {
+  private acquireSoldierTarget(x: number, y: number, side: Side, range: number, arc?: [number, number], l0 = 0, e0 = EYE_H, near = 0): number {
     const candidates: { id: number; d: number }[] = [];
     for (const e of this.soldiers) {
       if (!e.alive || e.downed || e.captured || e.side === side) continue;
@@ -3018,6 +3070,12 @@ export class Sim {
       const e = this.soldiers[c.id];
       if (arc && !this.inArc(x, y, e.x, e.y, arc)) continue;
       if (sightToSoldier(this, x, y, e, l0, e0).visible) return c.id;
+    }
+    if (!arc) return -1;
+    for (const c of candidates) {
+      if (c.d > near) break;
+      const e = this.soldiers[c.id];
+      if (!this.inArc(x, y, e.x, e.y, arc) && sightToSoldier(this, x, y, e, l0, e0).visible) return c.id;
     }
     return -1;
   }
@@ -4764,7 +4822,7 @@ export class Sim {
   private acquire(s: Soldier): number {
     const order = this.teams[s.teamId].orderState.order;
     const arc = (order?.kind === 'defend' || order?.kind === 'ambush') ? order.arc : undefined;
-    return this.acquireSoldierTarget(s.x, s.y, s.side, WEAPONS[s.weapon].range, arc, s.level, eyeOf(this, s));
+    return this.acquireSoldierTarget(s.x, s.y, s.side, WEAPONS[s.weapon].range, arc, s.level, eyeOf(this, s), ARC_SELF_DEFENCE);
   }
 
   private fire(s: Soldier, t: Soldier): void {

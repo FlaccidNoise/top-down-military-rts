@@ -2640,6 +2640,31 @@ export class TerrainLayer {
     ctx.drawImage(this.surround, sx, sy, (this.map.w + SURROUND_M * 2) * cam.scale, (this.map.h + SURROUND_M * 2) * cam.scale);
   }
 
+  /**
+   * Bake up to `max` of the chunks `draw` would need for this camera and has
+   * not got, and say how many are still to do. For a caller that wants a view
+   * ready BEFORE it shows it (the menu backdrop): left to draw(), a desktop
+   * bakes everything in view inside its first frame.
+   */
+  warm(cam: Camera, cw: number, ch: number, max: number): number {
+    const band = BANDS.find((b) => b >= cam.scale) ?? BANDS[BANDS.length - 1];
+    this.curStep = sun().step;
+    const step = this.stepFor(band);
+    const [wx0, wy0] = cam.screenToWorld(0, 0, cw, ch);
+    const [wx1, wy1] = cam.screenToWorld(cw, ch, cw, ch);
+    let todo = 0;
+    for (let cy = Math.max(0, Math.floor(wy0 / CHUNK)); cy <= Math.min(Math.ceil(this.map.h / CHUNK) - 1, Math.floor(wy1 / CHUNK)); cy++) {
+      for (let cx = Math.max(0, Math.floor(wx0 / CHUNK)); cx <= Math.min(this.chunksW - 1, Math.floor(wx1 / CHUNK)); cx++) {
+        if (this.cache.has(`${cx},${cy},${band},${step}`)) continue;
+        if (max-- > 0) {
+          this.bakeBudget = 1;
+          this.chunk(cx, cy, band, step);
+        } else todo++;
+      }
+    }
+    return todo;
+  }
+
   draw(ctx: Ctx, cam: Camera, cw: number, ch: number): void {
     this.bakeBudget = MOBILE ? MOBILE_BAKES_PER_FRAME : BAKES_PER_FRAME;
     const band = BANDS.find((b) => b >= cam.scale) ?? BANDS[BANDS.length - 1];

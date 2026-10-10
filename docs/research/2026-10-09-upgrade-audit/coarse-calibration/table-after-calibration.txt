@@ -1,0 +1,46 @@
+
+blue attacking: fought (AI both sides, through makeTheaterBattle) against coarse (the constants in src now)
+class            ratio   n  fought win  coarse win   fought: winner lost, loser lost   coarse: winner, loser   best-fit mult for the odds formula in src (mult in src)
+settlement          1   6    0% (0/6)    16%          36%   76%                      54%   76%        1.45 (1.50)
+settlement        1.5   6   50% (3/6)    51%          61%   76%                      51%   76%        
+settlement          2   6  100% (6/6)    77%          40%   76%                      37%   75%        
+settlement          3   6  100% (6/6)    94%          29%   77%                      21%   75%        
+hamlet              1   6   50% (3/6)    56%          67%   76%                      54%   76%        0.95 (0.95)
+hamlet            1.5   6  100% (6/6)    86%          40%   76%                      41%   75%        
+hamlet              2   6  100% (6/6)    95%          23%   76%                      29%   75%        
+hamlet              3   6  100% (6/6)    95%          14%   77%                      21%   75%        
+forest              1   6    0% (0/6)     6%          48%   75%                      54%   76%        1.80 (1.90)
+forest            1.5   6   50% (3/6)    28%          48%   76%                      58%   76%        
+forest              2   6   50% (3/6)    56%          47%   75%                      46%   75%        
+forest              3   6   83% (5/6)    86%          34%   76%                      25%   75%        
+farmland            1   6    0% (0/6)    21%          48%   76%                      54%   76%        1.40 (1.40)
+farmland          1.5   6   67% (4/6)    58%          35%   75%                      49%   76%        
+farmland            2   6   83% (5/6)    81%          38%   76%                      35%   75%        
+farmland            3   6  100% (6/6)    95%          22%   77%                      21%   75%        
+marsh               1   6   50% (3/6)    61%          56%   76%                      54%   76%        0.95 (0.90)
+marsh             1.5   6  100% (6/6)    89%          41%   76%                      40%   75%        
+marsh               2   6  100% (6/6)    95%          30%   76%                      29%   75%        
+marsh               3   6  100% (6/6)    95%          15%   77%                      21%   75%        
+roadside            1   6   50% (3/6)    66%          48%   76%                      54%   76%        0.95 (0.85)
+roadside          1.5   6  100% (6/6)    91%          22%   76%                      39%   75%        
+roadside            2   6  100% (6/6)    95%          28%   76%                      29%   75%        
+roadside            3   6  100% (6/6)    95%          20%   77%                      21%   75%        
+bridge-assault      1   6    0% (0/6)    13%          36%   76%                      54%   76%        1.55 (1.60)
+bridge-assault    1.5   6   33% (2/6)    44%          53%   76%                      53%   76%        
+bridge-assault      2   6  100% (6/6)    72%          43%   76%                      39%   75%        
+bridge-assault      3   6  100% (6/6)    93%          22%   77%                      22%   75%        
+ford-assault        1   6   17% (1/6)     6%          41%   75%                      54%   76%        2.10 (1.92)
+ford-assault      1.5   6   33% (2/6)    28%          53%   75%                      59%   76%        
+ford-assault        2   6   33% (2/6)    55%          53%   75%                      46%   75%        
+ford-assault        3   6   83% (5/6)    86%          32%   76%                      25%   75%        
+losses over all 192 battles: winner p10/median/p90  17%/ 38%/ 64% · loser  75%/ 76%/ 77%
+
+red attacking: fought (AI both sides, through makeTheaterBattle) against coarse (the constants in src now)
+class            ratio   n  fought win  coarse win   fought: winner lost, loser lost   coarse: winner, loser   best-fit mult for the odds formula in src (mult in src)
+settlement          1   4    0% (0/4)    16%          56%   75%                      54%   76%        2.10 (1.50)
+hamlet              1   4   50% (2/4)    56%          60%   75%                      54%   76%        1.00 (0.95)
+forest              1   4    0% (0/4)     6%          35%   75%                      54%   76%        2.10 (1.90)
+farmland            1   4   25% (1/4)    21%          46%   75%                      54%   76%        1.30 (1.40)
+roadside            1   4   75% (3/4)    66%          63%   75%                      54%   76%        0.75 (0.85)
+bridge-assault      1   4    0% (0/4)    13%          24%   75%                      54%   76%        2.10 (1.60)
+losses over all 24 battles: winner p10/median/p90  22%/ 54%/ 69% · loser  75%/ 75%/ 76%

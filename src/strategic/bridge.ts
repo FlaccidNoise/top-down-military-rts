@@ -7,7 +7,7 @@ import { mulberry32, type Rng } from '../sim/rng';
 import { roadSpot, wireBonds } from '../sim/scenario';
 import { EYE_STAND, Sim, sightBetween, type BreachEvent, type MemberInit, type Side } from '../sim/sim';
 import { lightAt } from '../sim/solar';
-import { COMPANY_TOE, squadHeadcount } from '../sim/toe';
+import { COMPANY_TOE, companyHeadcount, squadHeadcount } from '../sim/toe';
 import { cellIndex, cellXY, type SectorMap } from './sector';
 import { Front, type Chit, type Engagement } from './front';
 
@@ -83,7 +83,11 @@ function nudgePassable(map: GameMap, x: number, y: number): Vec {
   return { x, y };
 }
 
-const DIRECT_FIRE = new Set<SquadKey>(['de_gruppe', 'de_smg42']);
+// The squads that take a sector's anchors nearest the approach. The American
+// keys were missing until #794: a defending US company was sited back to
+// front, its rifle squads on the anchors farthest from the attack like so
+// many mortar teams, and its mortars and bazookas in the front line.
+const DIRECT_FIRE = new Set<SquadKey>(['de_gruppe', 'de_smg42', 'us_rifle', 'us_m1919']);
 // Crew-served staging (balance 2026-07): these squads field as DEPLOYED
 // emplacements bound to their own crew squad (addEmplacement roster
 // passthrough keeps campaign names/pids/attrition), instead of bare foot
@@ -129,17 +133,74 @@ function stockpileAmmo(sim: Sim, e: { kind: EmplacementKey; crewTeamId: number }
 // nothing to acquire, and the towed AT guns were data nothing fielded at all.
 // Fields on ground a hull can fight over — woods and river cells stay
 // infantry fights.
-const ARMOR_KINDS = new Set<MapKind>(['road', 'open', 'bridge', 'bourg']);
+export const ARMOR_KINDS = new Set<MapKind>(['road', 'open', 'bridge', 'bourg']);
+// A German attack comes with its assault gun section, two StuG III, where an
+// American one has a single supporting tank (#794: red attacking won 0 of 32
+// probed battles against an AI-held position). This table is a side's own
+// armour; anything attached on top of it comes in through opts.extraArmor,
+// in the same column and the same private stream.
 const ATTACKER_ARMOR: Record<Side, VehicleKey[]> = {
   blue: ['sherman', 'm3_halftrack'],
-  red: ['stug3', 'sdkfz251'],
+  red: ['stug3', 'stug3', 'sdkfz251'],
 };
+// What an attacking German force is given besides (#794), none of it a weapon
+// stat. Barrages on par with the American attacker's two. A fire plan: its
+// tubes are dumped the same double load a prepared defence has, and its
+// commander is briefed to prepare the objective itself (ai.ts, firePlan).
+// And all of its men: the Kampfgruppe used to be cut to one company's table
+// (114) whatever strength it brought, so a 160-strong one attacked as 114. It
+// now fields its strength, the men past the table as more rifle Gruppen, up
+// to FIELD_BUDGET men on the field in all (a full company a side is 257, the
+// scale the frame budget is measured at).
+const ATTACK_BARRAGES = 2;
+const FIELD_BUDGET = 260;
 const DEFENDER_AT: Record<Side, EmplacementKey> = { blue: 'at57', red: 'pak40' };
 const ARMOR_SALT = 0x41726d72; // 'Armr': salts the private staging stream (see makeStrategicBattle)
 // Tiles round a deployed emplacement a hull may not take. 3 clears the pit,
 // its crew and the click-pick radius (tapSelect resolves a vehicle within
 // 3.5 m before it looks at emplacement glyphs).
 const ARMOR_CLEAR = 3;
+
+// The defence's depth, briefed at staging (#794). A squad's fallback positions
+// are the anchors of its own sector at least one bound (FALLBACK_BOUND, a
+// bounding leg) farther from the approach than its own, then the objectives
+// of the sectors behind it, nearest first, FALLBACK_DEPTH of them. A dug-in
+// gun has none: it stays. A sector with two or more rifle squads holds the
+// one sited deepest as its local reserve. All of it is a choice among points
+// already computed: it draws nothing and moves nobody at T+0.
+const FALLBACK_BOUND = 15;
+const FALLBACK_DEPTH = 2;
+const RIFLE_SQUADS = new Set<SquadKey>(['de_gruppe', 'us_rifle']);
+interface Sited {
+  id: number;
+  key: SquadKey;
+  sector: number;
+  anchor: Vec;
+  emplaced: boolean;
+}
+function defenceBrief(sited: Sited[], sectorAnchors: Vec[][], sectorObjectives: Vec[], west: Vec): { fallback: Record<number, Vec[]>; reserve: number[]; sectorOf: Record<number, number> } {
+  const fallback: Record<number, Vec[]> = {};
+  const reserve: number[] = [];
+  const sectorOf: Record<number, number> = {};
+  const back = (a: Vec): number => Math.sqrt(distSq(a, west));
+  for (const s of sited) {
+    sectorOf[s.id] = s.sector;
+    if (s.emplaced) continue;
+    const nearestFirst = (list: Vec[]): Vec[] => list.filter((a) => back(a) >= back(s.anchor) + FALLBACK_BOUND).sort((p, q) => distSq(p, s.anchor) - distSq(q, s.anchor));
+    const own = nearestFirst(sectorAnchors[s.sector] ?? []);
+    const behind = nearestFirst(sectorObjectives.filter((_, i) => i !== s.sector));
+    const list = [...own, ...behind].slice(0, FALLBACK_DEPTH);
+    if (list.length > 0) fallback[s.id] = list;
+  }
+  sectorAnchors.forEach((_, sector) => {
+    const rifles = sited.filter((s) => s.sector === sector && !s.emplaced && RIFLE_SQUADS.has(s.key));
+    if (rifles.length < 2) return;
+    const deepest = rifles.reduce((best, s) => (back(s.anchor) >= back(best.anchor) ? s : best));
+    reserve.push(deepest.id);
+    delete fallback[deepest.id]; // it is what is behind the others
+  });
+  return { fallback, reserve, sectorOf };
+}
 
 export const GARRISON_RADIUS = 45; // meters from an objective a garrison post may sit
 export const ATTACK_POST_MARGIN = 32; // attack posts start this far east of the west spawn (see attackObjectives)
@@ -193,6 +254,42 @@ function anchorClearOfStartLine(sim: Sim, a: Vec, range: number): boolean {
 const FORD_SUPPRESSION = 0.45; // crossing under fire: shaken at spawn (fast-decaying)
 const FORD_STAMINA = 0.65; // an hour wading: no sprinting off the far bank
 
+// Which squads a German force of `strength` men fields (#796). The company
+// table lists its nine Gruppen first and its weapons after them, and a force
+// was fielded off the front of that list: at 91 men it had no mortar, at 80
+// no tripod MG either, and a 60-man garrison was six and a half rifle Gruppen
+// and nothing else. On the theater a garrison is 36 to 109 men, so that was
+// most of them, and with no tube there is no defensive fire at all (probed:
+// 0 HE shells a battle under 99 men, 30 at full strength).
+//
+// A force under strength is a slice of the company, not its first rows:
+// DE_SLICE is the order the table is drawn on, a platoon of three Gruppen and
+// then its share of the weapons, three times over. Every prefix of it is a
+// balanced force: 36 men are a platoon, a tripod MG and a mortar.
+//
+// The squads still FIELD in table order, the last one drawn partial. A full
+// company is therefore the same list in the same order as before, and stages
+// byte for byte as it did.
+export const DE_SLICE = [0, 1, 2, 9, 11, 3, 4, 5, 10, 12, 13, 6, 7, 8, 14, 15];
+export function fieldGerman(strength: number): { key: SquadKey; take: number }[] {
+  const toe: SquadKey[] = COMPANY_TOE.de_grenadier_co;
+  const take = toe.map(() => 0);
+  let remaining = strength;
+  for (const i of DE_SLICE) {
+    if (remaining <= 0) break;
+    take[i] = Math.min(squadHeadcount(toe[i]), remaining);
+    remaining -= take[i];
+  }
+  const fielded = toe.map((key, i) => ({ key, take: take[i] })).filter((f) => f.take > 0);
+  // Past the company's table (an attacking Kampfgruppe may be): more rifle Gruppen.
+  while (remaining > 0) {
+    const n = Math.min(squadHeadcount('de_gruppe'), remaining);
+    fielded.push({ key: 'de_gruppe', take: n });
+    remaining -= n;
+  }
+  return fielded;
+}
+
 // Front-packed partial roster of slot-default members: fields exactly `count`
 // men of a squad def (teams fill in order), so a garrison's headcount always
 // matches its chit strength — no over- or under-fielding on attrited chits.
@@ -235,7 +332,10 @@ export function makeStrategicBattle(
   seed: number,
   // startLineClear: 0 sites the garrison as it was before #789. The staging
   // test stages both ways to prove the rule moves men and draws nothing.
-  opts: { startLineClear?: number } = {},
+  // extraArmor: hulls attached to the ATTACKER on top of its own (a
+  // requisition card). They join the same column, after it, inside the same
+  // private stream, so a battle with none stages byte for byte as before.
+  opts: { startLineClear?: number; extraArmor?: readonly VehicleKey[] } = {},
 ): { sim: Sim; commander: RedCommander; blueCommander: RedCommander; name: string; companyIndex: number } {
   const attacker = front.chits.find((ch) => ch.id === e.attackerId)!;
   const defender = front.chits.find((ch) => ch.id === e.defenderId)!;
@@ -328,14 +428,7 @@ export function makeStrategicBattle(
     }
   } else {
     // --- Red attacker: field from TO&E de_grenadier_co at west spawn ---
-    const atkFielded: { key: SquadKey; take: number }[] = [];
-    let atkRemaining = attacker.strength;
-    for (const key of COMPANY_TOE.de_grenadier_co) {
-      if (atkRemaining <= 0) break;
-      const take = Math.min(squadHeadcount(key), atkRemaining);
-      atkFielded.push({ key, take });
-      atkRemaining -= take;
-    }
+    const atkFielded = fieldGerman(Math.min(attacker.strength, Math.max(companyHeadcount(COMPANY_TOE.de_grenadier_co), FIELD_BUDGET - defender.strength)));
     const yBandH = atkFielded.length > 0 ? (yHi - yLo) / atkFielded.length : yHi - yLo;
     atkFielded.forEach(({ key, take }, i) => {
       const anchor = nudgePassable(plan.map, west.x + 7, yLo + yBandH * (i + 0.5));
@@ -344,6 +437,7 @@ export function makeStrategicBattle(
       if (empKind) {
         // In battery at the deployment line; no post (see blue attacker branch).
         const e2 = sim.addEmplacement('red', empKind, anchor.x, anchor.y, 0, 'deployed', roster);
+        stockpileAmmo(sim, e2); // the fire plan's dump (ATTACK_BARRAGES)
         const squad = sim.squads[sim.teams[e2.crewTeamId].squadId];
         squad.name = `${i + 1}. ${SQUADS[key].name}`;
         return;
@@ -411,17 +505,11 @@ export function makeStrategicBattle(
   const weight = sortedSectorAnchors.map((s) => s.length / totalAnchors);
 
   // --- Field defender ---
+  const sited: Sited[] = [];
   if (attackerSide === 'blue') {
-    // Field exactly defender.strength men: TO&E squads in order, the last one
-    // partial if the strength doesn't land on a squad boundary.
-    const fielded: { key: SquadKey; take: number }[] = [];
-    let remaining = defender.strength;
-    for (const key of COMPANY_TOE.de_grenadier_co) {
-      if (remaining <= 0) break;
-      const take = Math.min(squadHeadcount(key), remaining);
-      fielded.push({ key, take });
-      remaining -= take;
-    }
+    // Field exactly defender.strength men (fieldGerman), and never more than
+    // the company's table: a garrison is one company at most.
+    const fielded = fieldGerman(Math.min(defender.strength, companyHeadcount(COMPANY_TOE.de_grenadier_co)));
     const assignedHeadcount = sectorAnchors.map(() => 0);
     const sectorOfSquad = fielded.map(({ take }) => {
       let best = 0;
@@ -465,6 +553,7 @@ export function makeStrategicBattle(
         squad = sim.addSquadFromDef('red', key, anchor.x, anchor.y, roster);
       }
       commanderPosts[squad.id] = anchor;
+      sited.push({ id: squad.id, key, sector: sectorOfSquad[i], anchor, emplaced: !!empKind });
       squad.name = `${i + 1}. ${SQUADS[key].name}`;
     });
   } else {
@@ -536,10 +625,12 @@ export function makeStrategicBattle(
       }
       squad.name = c.squads[si].name;
       bluePosts[squad.id] = anchor;
+      sited.push({ id: squad.id, key, sector: sectorOfSquad[i], anchor, emplaced: !!empKind });
       defRosters.push(teamRosters.flat());
     });
     wireBonds(sim, defRosters);
   }
+  const brief = defenceBrief(sited, sortedSectorAnchors, sectorObjectives, west);
 
   // --- Field armour and the anti-tank gun ---
   // RNG DISCIPLINE: this block is the LAST staging step and it draws nothing
@@ -569,7 +660,7 @@ export function makeStrategicBattle(
         }
       }
     }
-    ATTACKER_ARMOR[attackerSide].forEach((kind, i) => {
+    [...ATTACKER_ARMOR[attackerSide], ...(opts.extraArmor ?? [])].forEach((kind, i) => {
       const spot = roadSpot(sim, west.x + 2 + i * 6, west.y, taken);
       taken.add(Math.floor(spot.y) * plan.map.w + Math.floor(spot.x));
       sim.addVehicle(attackerSide, kind, spot.x, spot.y, 0);
@@ -593,6 +684,8 @@ export function makeStrategicBattle(
     sim.rng = shared;
   }
 
+  sim.barragesLeft[attackerSide] = Math.max(sim.barragesLeft[attackerSide], ATTACK_BARRAGES);
+
   const { x, y } = cellXY(front.sector, e.cell);
   const stance = attackerSide === 'red' ? 'attack' : 'defend';
   // The debrief is the player's (BLUE) after-action report even when red
@@ -612,7 +705,7 @@ export function makeStrategicBattle(
     side: 'blue',
     stance: attackerSide === 'blue' ? 'attack' : 'defend',
     posts: bluePosts,
-    ...(attackerSide === 'blue' ? { objectives: attackObjectives } : { approach: { x: west.x, y: west.y } }),
+    ...(attackerSide === 'blue' ? { objectives: attackObjectives } : { approach: { x: west.x, y: west.y }, ...brief }),
   });
   return {
     sim,
@@ -620,7 +713,7 @@ export function makeStrategicBattle(
       side: 'red',
       stance,
       posts: commanderPosts,
-      ...(stance === 'attack' ? { objectives: attackObjectives } : { approach: { x: west.x, y: west.y } }),
+      ...(stance === 'attack' ? { objectives: attackObjectives, firePlan: true } : { approach: { x: west.x, y: west.y }, ...brief }),
     }),
     blueCommander,
     name: `${defender.name} at (${x}, ${y})`,

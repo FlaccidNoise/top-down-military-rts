@@ -1,7 +1,7 @@
 import { EMPLACEMENTS, WEAPONS, type WeaponDef } from './data';
 import { crewNear, friendlyHasLos, type Emplacement } from './emplacement';
 import { dangerScore, orderVerdict, type OrderKind, type TeamOrder } from './orders';
-import { CONTACT_TTL, EYE_CROUCH, EYE_STAND, MORTAR_BLAST, SPOT_INTERVAL, sightBetween, type Side, type Sim, type Team } from './sim';
+import { CONTACT_TTL, EYE_CROUCH, EYE_STAND, MORTAR_BLAST, SMOKE_THROW_M, SPOT_INTERVAL, inArc, sightBetween, type Side, type Sim, type Squad, type Team } from './sim';
 
 // Red commander: issues squad orders through the same public order API the
 // player uses. Design requirement (decision log): must maneuver and
@@ -36,6 +36,21 @@ export interface CommanderConfig {
   // squads share ONE post out of the map's three (measured, seeds 1-3) — the
   // attack culminated at its first objective with nowhere left it knew about.
   objectives?: { x: number; y: number }[];
+  // Attack stance: the attack has a fire plan (#794). Its tubes prepare the
+  // objective it is working whether or not a defender has been spotted on it,
+  // as long as the objective itself is under a friendly's eyes, and one
+  // barrage is laid on the first objective as the riflemen come up. The
+  // objective is briefing, never an intel read: this is fire on a map
+  // reference, which is what a preparation is.
+  firePlan?: boolean;
+  // Defend stance, static briefing like posts (#794). `fallback`: where a
+  // squad goes when its post is lost or flanked, one bound at a time, nearest
+  // first; a squad with no entry stands (a dug-in gun). `reserve`: the squads
+  // held back as local reserve. `sectorOf`: squad -> sector, since a reserve
+  // counterattacks inside its own.
+  fallback?: Record<number, { x: number; y: number }[]>;
+  reserve?: number[];
+  sectorOf?: Record<number, number>;
 }
 
 interface ThreatContact {
@@ -179,6 +194,11 @@ const AIR_SAFETY = 70;
 // it never fired in the doctrine suite's campaign battle, and a fight the
 // garrison won in 8,200 ticks became one it lost.
 const BARRAGE_GAP_TICKS = 90 * 30;
+// The fire plan's barrage (CommanderConfig.firePlan) goes down on the first
+// objective when the lead rifle team is inside FAR of it, and not with any
+// man of its own inside NEAR: the rounds fall for a minute.
+const PLAN_BARRAGE_FAR = 150;
+const PLAN_BARRAGE_NEAR = 70;
 // Fire discipline releases against a massed attack (balance 2026-07): ambush
 // is sited for infiltrators and patrols; once the commander's own intel shows
 // this many enemies AT ONCE, the garrison is looking at a company in the open
@@ -186,10 +206,53 @@ const BARRAGE_GAP_TICKS = 90 * 30;
 // that exposes one or two bounding teams at a time stays under the count and
 // keeps facing the ambush it was designed to beat.
 const MASS_RELEASE = 20;
+// Defenders that move (#794). Probed before it: no squad left its post in a
+// battle (median drift 3 m), and a squad with the enemy round it died there.
+//
+// FALL BACK. A post is LOST when the squad on it is at or under LOSS of its
+// starting strength with a spotted enemy inside THREAT of the post, and
+// FLANKED when FLANK_MIN spotted enemies stand inside FLANK_RANGE of it on
+// the side away from the briefed approach. Either way the squad goes one
+// bound, to the next anchor in its briefing, by an ordinary move order (it
+// can refuse), and not again inside COOLDOWN.
+const FALLBACK_THREAT = 30;
+const FALLBACK_LOSS = 0.5;
+const FLANK_RANGE = 40;
+const FLANK_MIN = 2;
+const FALLBACK_COOLDOWN_TICKS = 60 * 30;
+// A withdrawal its men would refuse (the ground back is seen) goes under the
+// squad's own smoke: one grenade SMOKE_M toward the nearest enemy, and the
+// move on the next eval. Not again inside SMOKE_TICKS: a puff lasts 60 s.
+// A reserve whose men refuse the counterattack does the same onto the post
+// it is going for, from as far as a man can throw: five counterattacks
+// watched in a browser before this were ordered, and all five were refused.
+const WITHDRAW_SMOKE_M = 10;
+const WITHDRAW_SMOKE_TICKS = 45 * 30;
+// COUNTERATTACK. A sector's reserve, still at RESERVE_FIT of its strength,
+// goes for a post lost in its sector while a contact stands on it, inside
+// WINDOW of the loss: the attacker is reorganising for that long, and after
+// it the post is his. Once per reserve. It moves up, and charges from
+// ASSAULT_RANGE if the charge is one its men will make.
+const COUNTERATTACK_WINDOW_TICKS = 120 * 30;
+const RESERVE_FIT = 0.5;
+// RE-LAY. A squad on an arc, with spotted enemy inside its weapons' range and
+// none of them inside the arc, turns the arc onto the nearest. Not more often
+// than this: shifting a tripod gun and its crew takes that long.
+const RELAY_TICKS = 20 * 30;
 
 export class RedCommander {
   private lastEval = -EVAL_TICKS;
   private lastBarrageTick = -BARRAGE_GAP_TICKS;
+  private planBarrageFired = false;
+  private postNow = new Map<number, { x: number; y: number }>(); // squadId -> the post it holds, once it has left the briefed one
+  private fallbacksTaken = new Map<number, number>(); // squadId -> how far down its fallback list it is
+  private fellBackTick = new Map<number, number>();
+  private lostPosts: { x: number; y: number; sector: number; tick: number }[] = [];
+  private lostNoted = new Set<number>(); // squads wiped on a post already listed in lostPosts
+  private reserveSent = new Set<number>();
+  private relaidTick = new Map<number, number>();
+  private withdrawSmokeTick = new Map<number, number>();
+  private withdrawing = new Set<number>(); // squads whose smoke is out and whose move back is the next eval's
   private heAim: { x: number; y: number } | null = null; // the HE mission's aim point, while one runs
   private heSeenTick = 0; // last eval a spotted enemy stood inside one burst of it
   private threat: ThreatContact[] = [];
@@ -374,7 +437,7 @@ export class RedCommander {
   // The commander's voice (#787): what it has just decided, for its OWN
   // side's ticker. Output only. It says nothing about the enemy — what a side
   // may know of its enemy comes from the sim's sightings, not from here.
-  private say(sim: Sim, kind: 'reserve-committed' | 'culminated' | 'smoke-objective', at?: { x: number; y: number }): void {
+  private say(sim: Sim, kind: 'reserve-committed' | 'culminated' | 'smoke-objective' | 'fell-back' | 'counterattack', at?: { x: number; y: number }): void {
     const p = at ?? this.centroid(sim, this.committedTeamIds().flatMap((id) => sim.teams[id].soldierIds));
     sim.report({ kind, x: p.x, y: p.y, side: this.cfg.side, name: 'HQ' });
   }
@@ -826,19 +889,36 @@ export class RedCommander {
   // squad in the same eval), so the squad-level broadcast here doesn't hit
   // the fire/move clobber that attack stance's split roles need orderTeam for.
   private runDefend(sim: Sim): void {
+    const seen = this.spottedPositions(sim);
     for (const squad of sim.squads) {
       if (squad.side !== this.cfg.side) continue;
-      const post = this.cfg.posts[squad.id];
+      const post = this.postNow.get(squad.id) ?? this.cfg.posts[squad.id];
       if (!post) continue;
       const members = squad.soldierIds.map((id) => sim.soldiers[id]).filter((s) => s.alive && !s.downed);
-      if (members.length === 0) continue;
+      const confAtPost = this.threatConfNear(post.x, post.y, 12);
+      const fit = members.filter((s) => !s.captured && s.mental !== 'broken').length;
+      if (fit === 0) {
+        // Nobody left to hold it, and the enemy on it: that is a lost post too.
+        if (confAtPost > 0 && !this.lostNoted.has(squad.id)) {
+          this.lostNoted.add(squad.id);
+          this.lostPosts.push({ x: post.x, y: post.y, sector: this.cfg.sectorOf?.[squad.id] ?? -1, tick: sim.tick });
+        }
+        if (members.length === 0) continue;
+      }
       const c = this.centroid(sim, squad.soldierIds);
       const distToPost = Math.hypot(c.x - post.x, c.y - post.y);
       const moving = members.filter((s) => s.path).length > members.length / 2;
-      const confAtPost = this.threatConfNear(post.x, post.y, 12);
       const team = sim.teams[squad.teamIds[0]];
-      if (confAtPost > 0 && distToPost > 8 && !moving) {
-        sim.orderSquad(squad.id, { kind: 'move', x: post.x, y: post.y }, undefined, true); // counterattack a lost post
+      if (this.fallBack(sim, squad, post, fit, seen) || this.counterattack(sim, squad, fit)) continue;
+      if (distToPost > 8 && !moving) {
+        // Off its post and standing: back onto it. With a contact on the post
+        // that is a counterattack; without one it is a squad that routed and
+        // rallied in the rear, or one whose move back was refused (#794: it
+        // used to be sent only at a contact, and a rallied squad sat out the
+        // battle where it had stopped running).
+        if (fit === 0) continue;
+        if (this.reserveSent.has(squad.id) && confAtPost > 0) this.retake(sim, squad, post, distToPost);
+        else sim.orderSquad(squad.id, { kind: 'move', x: post.x, y: post.y }, undefined, true);
       } else if (distToPost <= 8 && !moving) {
         const order = team.orderState.order;
         const approach = this.cfg.approach;
@@ -860,12 +940,122 @@ export class RedCommander {
           } else {
             sim.orderSquad(squad.id, { kind: 'ambush', x: post.x, y: post.y }, undefined, true); // settled in, holding fire
           }
-        } else if (order.kind === 'ambush' && this.spottedPositions(sim).length >= MASS_RELEASE) {
+        } else if (order.kind === 'ambush' && seen.length >= MASS_RELEASE) {
           arcDefend(); // see MASS_RELEASE: fire-at-will against a spotted mass
+        } else if (order.kind === 'defend' && order.arc) {
+          this.relay(sim, squad, post, order.arc, members, seen);
         }
       }
     }
     this.maybeDefendHE(sim);
+  }
+
+  // See FALLBACK_THREAT. True when the squad was ordered back this eval.
+  private fallBack(sim: Sim, squad: Squad, post: { x: number; y: number }, fit: number, seen: { x: number; y: number }[]): boolean {
+    const taken = this.fallbacksTaken.get(squad.id) ?? 0;
+    const next = this.cfg.fallback?.[squad.id]?.[taken];
+    if (!next || fit === 0 || sim.tick - (this.fellBackTick.get(squad.id) ?? -Infinity) < FALLBACK_COOLDOWN_TICKS) return false;
+    const approach = this.cfg.approach;
+    let near = 0;
+    let behind = 0;
+    let nearest: { x: number; y: number } | null = null;
+    let nd = Infinity;
+    for (const p of seen) {
+      const dx = p.x - post.x;
+      const dy = p.y - post.y;
+      const d = Math.hypot(dx, dy);
+      if (d <= FALLBACK_THREAT) near++;
+      if (approach && d <= FLANK_RANGE && dx * (approach.x - post.x) + dy * (approach.y - post.y) < 0) behind++;
+      if (d < nd) {
+        nd = d;
+        nearest = p;
+      }
+    }
+    const lost = near > 0 && fit <= squad.soldierIds.length * FALLBACK_LOSS;
+    // The decision stands across its own smoke, which hides the very enemy it was made on.
+    if (!this.withdrawing.delete(squad.id) && !lost && behind < FLANK_MIN) return false;
+    if (
+      nearest &&
+      orderVerdict(sim, sim.teams[squad.teamIds[0]], { kind: 'move', x: next.x, y: next.y }).verdict === 'balk' &&
+      this.screen(sim, squad, nearest, Math.min(WITHDRAW_SMOKE_M, nd / 2))
+    ) {
+      this.withdrawing.add(squad.id);
+      return true;
+    }
+    this.lostPosts.push({ x: post.x, y: post.y, sector: this.cfg.sectorOf?.[squad.id] ?? -1, tick: sim.tick });
+    this.postNow.set(squad.id, next);
+    this.fallbacksTaken.set(squad.id, taken + 1);
+    this.fellBackTick.set(squad.id, sim.tick);
+    sim.orderSquad(squad.id, { kind: 'move', x: next.x, y: next.y }, undefined, true);
+    this.say(sim, 'fell-back', post);
+    return true;
+  }
+
+  // See COUNTERATTACK_WINDOW_TICKS. True when the reserve was committed this eval.
+  private counterattack(sim: Sim, squad: Squad, fit: number): boolean {
+    if (!this.cfg.reserve?.includes(squad.id) || this.reserveSent.has(squad.id)) return false;
+    if (fit < squad.soldierIds.length * RESERVE_FIT) return false;
+    const sector = this.cfg.sectorOf?.[squad.id];
+    const target = this.lostPosts.find((p) => p.sector === sector && sim.tick - p.tick <= COUNTERATTACK_WINDOW_TICKS && this.threatConfNear(p.x, p.y, 12) > 0);
+    if (!target) return false;
+    this.reserveSent.add(squad.id);
+    this.postNow.set(squad.id, target);
+    const c = this.centroid(sim, squad.soldierIds);
+    this.retake(sim, squad, target, Math.hypot(c.x - target.x, c.y - target.y));
+    this.say(sim, 'counterattack', target);
+    return true;
+  }
+
+  // A committed reserve closing on the post it was sent to retake: a charge
+  // from ASSAULT_RANGE when its men will make one (the same forecast the
+  // attack stance asks before it orders a charge), a move otherwise. A charge
+  // already running is left to run.
+  private retake(sim: Sim, squad: Squad, post: { x: number; y: number }, dist: number): void {
+    const lead = sim.teams[squad.teamIds[0]];
+    if (lead.orderState.order?.kind === 'assault' && lead.orderState.phase === 'executing') return;
+    const close = dist <= ASSAULT_RANGE;
+    const charge = close && orderVerdict(sim, lead, { kind: 'assault', x: post.x, y: post.y }).verdict !== 'balk';
+    // Inside charge range with the charge refused, it does not walk in by
+    // bounds instead (#796: six counterattacks watched, none retook its post,
+    // the ones that moved went in half a squad at a time and were shot 11 m
+    // short). It smokes the post and charges through the smoke. Farther out
+    // it smokes only a move its men refuse.
+    if (!charge && (close || orderVerdict(sim, lead, { kind: 'move', x: post.x, y: post.y }).verdict === 'balk') && this.screen(sim, squad, post, SMOKE_THROW_M - 1)) return;
+    sim.orderSquad(squad.id, { kind: charge ? 'assault' : 'move', x: post.x, y: post.y }, undefined, true);
+  }
+
+  // One of the squad's own smoke grenades toward `at`, no farther than
+  // `reach`. False when it has none left or threw one inside SMOKE_TICKS.
+  private screen(sim: Sim, squad: Squad, at: { x: number; y: number }, reach: number): boolean {
+    const thrower = squad.teamIds.map((id) => sim.teams[id]).find((t) => t.smokeLeft > 0);
+    if (!thrower || sim.tick - (this.withdrawSmokeTick.get(squad.id) ?? -Infinity) < WITHDRAW_SMOKE_TICKS) return false;
+    const c = this.centroid(sim, thrower.soldierIds);
+    const d = Math.hypot(at.x - c.x, at.y - c.y) || 1;
+    const r = Math.min(reach, d);
+    this.withdrawSmokeTick.set(squad.id, sim.tick);
+    sim.orderTeam(thrower.id, { kind: 'smoke', x: c.x + ((at.x - c.x) / d) * r, y: c.y + ((at.y - c.y) / d) * r }, undefined, true);
+    return true;
+  }
+
+  // See RELAY_TICKS.
+  private relay(sim: Sim, squad: Squad, post: { x: number; y: number }, arc: [number, number], members: { weapon: keyof typeof WEAPONS }[], seen: { x: number; y: number }[]): void {
+    if (sim.tick - (this.relaidTick.get(squad.id) ?? -Infinity) < RELAY_TICKS) return;
+    const reach = Math.max(...members.map((s) => WEAPONS[s.weapon].range));
+    let nearest: { x: number; y: number } | null = null;
+    let nd = Infinity;
+    for (const p of seen) {
+      const d = Math.hypot(p.x - post.x, p.y - post.y);
+      if (d > reach) continue;
+      if (inArc(post.x, post.y, p.x, p.y, arc)) return; // it has work where it is laid
+      if (d < nd) {
+        nd = d;
+        nearest = p;
+      }
+    }
+    if (!nearest) return;
+    this.relaidTick.set(squad.id, sim.tick);
+    const center = Math.atan2(nearest.y - post.y, nearest.x - post.x);
+    sim.orderSquad(squad.id, { kind: 'defend', x: post.x, y: post.y, arc: [center - DEFEND_ARC_HALF, center + DEFEND_ARC_HALF] }, undefined, true);
   }
 
   private mid(ps: { x: number; y: number }[]): { x: number; y: number; n: number } {
@@ -939,6 +1129,8 @@ export class RedCommander {
     if (post && !this.isTaken(post)) {
       const on = this.spottedPositions(sim).filter((p) => Math.hypot(p.x - post.x, p.y - post.y) <= PREP_HE_RADIUS);
       target = this.densest(on, DEFEND_HE_RADIUS, PREP_HE_MIN);
+      // With a fire plan and nobody to shoot at yet, the objective itself.
+      if (!target && this.cfg.firePlan) target = { x: post.x, y: post.y, n: 0 };
     }
     this.fireMission(sim, target, PREP_HE_LIFT, PREP_SMOKE_RESERVE);
     this.maybeAirstrike(sim, target);
@@ -1036,6 +1228,16 @@ export class RedCommander {
   // See BARRAGE_GAP_TICKS.
   private maybeBarrage(sim: Sim): void {
     if (sim.barragesLeft[this.cfg.side] <= 0 || sim.tick - this.lastBarrageTick < BARRAGE_GAP_TICKS) return;
+    if (this.cfg.firePlan && !this.planBarrageFired && !this.culminated) {
+      const post = this.maneuverPost(sim);
+      const lead = post && !this.isTaken(post) ? this.leadDistance(sim, post) : undefined;
+      if (post && lead !== undefined && lead <= PLAN_BARRAGE_FAR && !this.ownWithin(sim, post.x, post.y, PLAN_BARRAGE_NEAR)) {
+        sim.callBarrage(this.cfg.side, post.x, post.y);
+        this.planBarrageFired = true;
+        this.lastBarrageTick = sim.tick;
+        return;
+      }
+    }
     const safety = this.cfg.stance === 'attack' ? PREP_HE_LIFT : 0;
     const seen = this.spottedPositions(sim);
     for (const b of seen) {

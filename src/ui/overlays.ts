@@ -805,6 +805,8 @@ const COMMAND: Partial<Record<UnitEvent['kind'], [string, string]>> = {
   'reserve-committed': ['RESERVE COMMITTED', C_STEADY],
   culminated: ['ATTACK CALLED OFF', C_WARN],
   'smoke-objective': ['SMOKE ON OBJECTIVE', C_STEADY],
+  'fell-back': ['FALLING BACK', C_WARN],
+  counterattack: ['COUNTERATTACK', C_STEADY],
 };
 const MAX_KIAS = 12;
 const KIA_CELL = 8; // world meters — casualties inside a cell share one stack
@@ -860,6 +862,12 @@ export class EventPings {
         // sim raises it off blue's own sightings). Blue's own advances raise
         // the same event for the other side and say nothing here.
         this.quiet(e.side, e.team ?? e.name, e.kind, 'CLOSING IN', C_ENEMY, tick);
+      } else if (e.side !== 'blue' && e.kind === 'countering') {
+        // The same sighting as CLOSING IN when the Germans hold the field: a
+        // team of the defence seen coming for ground blue has taken.
+        this.quiet(e.side, e.team ?? e.name, e.kind, 'COUNTERATTACK', C_ENEMY, tick);
+      } else if (e.side !== 'blue' && e.kind === 'withdrawing') {
+        this.quiet(e.side, e.team ?? e.name, e.kind, 'FALLING BACK', C_ENEMY, tick);
       }
       // 'pinned' and 'rallied' are deliberately NOT consumed here. One barrage
       // pins a platoon in a tick and five slots cannot hold that, so the ticker

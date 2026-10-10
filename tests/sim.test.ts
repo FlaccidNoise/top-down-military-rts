@@ -415,7 +415,7 @@ describe('simulation', () => {
   });
 
   it('a team seen moving onto ground the other side holds is announced once, to that side (#787)', () => {
-    const stage = (wall: boolean) => {
+    const stage = (wall: boolean, attacking = true) => {
       const map = new GameMap(80, 20);
       if (wall) for (let y = 0; y < 20; y++) map.setTerrain(40, y, 'hedge'), map.setTerrain(41, y, 'hedge'), map.setTerrain(42, y, 'hedge');
       const sim = new Sim(map, 12);
@@ -429,13 +429,21 @@ describe('simulation', () => {
         s.magLeft = 0;
         s.morale = 1;
       }
+      // Which side attacks is staging's to say (sim.threatAxis: the attacker
+      // expects its enemy at bearing 0), and #796 reads it. Unstaged, the
+      // Germans are the defenders.
+      if (attacking) {
+        sim.threatAxis.red = 0;
+        sim.threatAxis.blue = Math.PI;
+      }
       return { sim, team: sim.teams[red.teamIds[0]] };
     };
+    const MOVES = ['closing', 'countering', 'withdrawing'];
     const closing = (sim: Sim, ticks: number) => {
       const out: UnitEvent[] = [];
       for (let i = 0; i < ticks; i++) {
         sim.step();
-        out.push(...sim.takeUnitEvents().filter((e) => e.kind === 'closing'));
+        out.push(...sim.takeUnitEvents().filter((e) => MOVES.includes(e.kind)));
       }
       return out;
     };
@@ -444,7 +452,7 @@ describe('simulation', () => {
     const open = stage(false);
     open.sim.orderTeam(open.team.id, { kind: 'move', x: 22, y: 10.5 });
     const seen = closing(open.sim, 120);
-    expect(seen.map((e) => [e.side, e.team])).toEqual([['red', open.team.name]]); // once for the order, not once a sweep
+    expect(seen.map((e) => [e.kind, e.side, e.team])).toEqual([['closing', 'red', open.team.name]]); // once for the order, not once a sweep
     expect(open.sim.soldierVisibleTo('blue', open.sim.soldiers[seen[0].id!])).toBe(true); // the man named is one blue can see
 
     // In plain sight, but walking somewhere blue is not.
@@ -457,6 +465,31 @@ describe('simulation', () => {
     hidden.sim.orderTeam(hidden.team.id, { kind: 'move', x: 22, y: 10.5 });
     expect(closing(hidden.sim, 30)).toEqual([]);
     expect(hidden.sim.soldierVisibleTo('blue', hidden.sim.soldiers[1])).toBe(false);
+
+    // #796. The same sighting when the Germans are the ones DEFENDING the
+    // field: a counterattack, said once and in place of the other line.
+    const counter = stage(false, false);
+    counter.sim.orderTeam(counter.team.id, { kind: 'move', x: 22, y: 10.5 });
+    expect(closing(counter.sim, 120).map((e) => [e.kind, e.side, e.team])).toEqual([['countering', 'red', counter.team.name]]);
+    // a few metres' shuffle next to the enemy is not a counterattack
+    const shuffle = stage(false, false);
+    for (const m of shuffle.sim.soldiers.filter((s) => s.side === 'red')) m.x -= 30; // 10 m from the blue man
+    shuffle.sim.orderTeam(shuffle.team.id, { kind: 'move', x: 27.5, y: 10.5 });
+    expect(closing(shuffle.sim, 120)).toEqual([]);
+
+    // And a defending team seen going back: 15 m toward its own rear, the east.
+    const back = stage(false, false);
+    back.sim.orderTeam(back.team.id, { kind: 'move', x: 75.5, y: 10.5 });
+    const gone = closing(back.sim, 120);
+    expect(gone.map((e) => [e.kind, e.side, e.team])).toEqual([['withdrawing', 'red', back.team.name]]);
+    expect(back.sim.soldierVisibleTo('blue', back.sim.soldiers[gone[0].id!])).toBe(true);
+    // not for a shuffle along the line, not for men nobody sees
+    const along = stage(false, false);
+    along.sim.orderTeam(along.team.id, { kind: 'move', x: 62.5, y: 3.5 });
+    expect(closing(along.sim, 120)).toEqual([]);
+    const unseen = stage(true, false);
+    unseen.sim.orderTeam(unseen.team.id, { kind: 'move', x: 75.5, y: 10.5 });
+    expect(closing(unseen.sim, 120)).toEqual([]);
   });
 
   it('waypoint queue dispatches legs in order; a direct order cancels it', () => {

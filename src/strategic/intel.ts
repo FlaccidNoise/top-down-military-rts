@@ -53,7 +53,8 @@ export const INTEL_EVAL_MIN = 15; // detection sweep cadence
 export const DETECT_FORCE_M = 3000; // graph metres from a live own force
 export const DETECT_NODE_M = 1500; // graph metres from an owned node
 export const SCREEN_DETECT_MULT = 2; // a screening force sees this much farther
-const reachOf = (f: Force): number => (f.posture === 'screen' ? DETECT_FORCE_M * SCREEN_DETECT_MULT : DETECT_FORCE_M);
+// So does a company with a recon detachment attached (a requisition card), at any pace.
+const reachOf = (f: Force, day: number): number => (f.posture === 'screen' || f.reconUntilDay > day ? DETECT_FORCE_M * SCREEN_DETECT_MULT : DETECT_FORCE_M);
 
 export function contactConf(c: StratContact, clockMin: number): number {
   return Math.max(0, 1 - (clockMin - c.seenMin) / STRAT_CONTACT_TTL);
@@ -71,7 +72,7 @@ function detectionDist(front: FrontV2, side: Side): Map<number, number> {
   };
   for (const f of front.forces) {
     if (f.side !== side || f.strength <= 0) continue;
-    const head = DETECT_FORCE_M - reachOf(f);
+    const head = DETECT_FORCE_M - reachOf(f, front.day);
     if (f.pos.kind === 'node') seed(f.pos.nodeId, head);
     else {
       const e = t.edges[f.pos.edgeId];
@@ -119,7 +120,7 @@ function isDetected(front: FrontV2, side: Side, dist: Map<number, number>, g: Fo
   // Same-edge / incident geometry the endpoint field can overshoot.
   for (const f of front.forces) {
     if (f.side !== side || f.strength <= 0) continue;
-    if (graphGap(t, f.pos, g.pos) <= reachOf(f)) return true;
+    if (graphGap(t, f.pos, g.pos) <= reachOf(f, front.day)) return true;
   }
   return false;
 }

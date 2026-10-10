@@ -93,6 +93,15 @@ describe('EventPings — commander voice', () => {
     expect(p.labels()).toEqual([]);
   });
 
+  it('a German team seen counterattacking or going back is named, in one line each; blue doing either is not news (#796)', () => {
+    const p = new EventPings();
+    const seen = (kind: UnitEvent['kind'], side: UnitEvent['side'], team: string): UnitEvent => ({ kind, side, name: 'Gefr. Weber', team, x: 10, y: 10, id: 7 });
+    p.add([seen('countering', 'red', '8. Gruppe'), seen('withdrawing', 'red', '1. Gruppe'), seen('countering', 'blue', 'Able 1'), seen('withdrawing', 'blue', 'Able 2')], 0);
+    expect(p.labels()).toEqual(['8. Gruppe — COUNTERATTACK', '1. Gruppe — FALLING BACK']);
+    p.add([seen('withdrawing', 'red', '1. Gruppe')], PIN_COOLDOWN - 1); // its next bound back: same news
+    expect(p.labels()).toHaveLength(2);
+  });
+
   it('a German team seen coming for blue ground is named; a blue advance is not news', () => {
     const p = new EventPings();
     p.add([closing('red', '3. Gruppe'), closing('blue', 'Able 1')], 0);

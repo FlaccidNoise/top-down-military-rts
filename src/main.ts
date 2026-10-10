@@ -1,5 +1,6 @@
 import { advanceDays, fillReplacements, newCampaign, squadMembers, type BattleRecord, type Campaign } from './campaign/campaign';
 import { AudioEngine } from './render/audio';
+import { backdropMode, MenuBackdrop } from './render/backdrop';
 import { Barks, barksOn, setBarksOn } from './render/barks';
 import { Camera } from './render/camera';
 import type { GrenadeThrow } from './render/fx';
@@ -51,6 +52,8 @@ import { ContactIntel, OmniscientIntel, type IntelView } from './strategic/intel
 import { Commander2, RED_V2 } from './strategic/planner';
 import { addForce, pushEvent, type CoarseBattle, type FrontV2, type MoveReject } from './strategic/theater/force';
 import { firstContactOnMarch, orderHalt, orderMove, previewMove, setPosture } from './strategic/theater/step';
+import { applyRequisition, requisitionDue, requisitionOffer, type RequisitionCard } from './strategic/requisition';
+import { resultOfWin, resultTarget } from './strategic/result';
 import { battleCatchUpMin, openBattle, retreatForce, stepWar } from './strategic/theater/war';
 import { syncStrengthsV2 } from './strategic/theater/sync';
 import type { Contact } from './strategic/theater/contact';
@@ -441,7 +444,11 @@ const stratHud = new StratHud({
   setSpeed: (i) => { speedIdx = i; },
 });
 const theaterHud = new TheaterHud({
-  togglePause: () => { stratPaused = !stratPaused; },
+  togglePause: () => {
+    const v2 = S().v2;
+    if (v2 && requisitionDue(v2.front) && !v2.pending) return v2.view.flash('Pick a requisition first');
+    stratPaused = !stratPaused;
+  },
   setSpeed: (i) => { speedIdx = i; },
   openMenu: () => { openPauseMenu(); },
   fitAll: () => { S().v2?.view.fitAll(view.w, view.h); },
@@ -921,20 +928,17 @@ function viewportInset(): { left: number; top: number; bottom: number } {
 // a short screen the bar sits IN the column and takes nothing from the top.
 function theaterInset(): ViewInset {
   const out: ViewInset = { left: 0, top: 0, right: 0, bottom: 0 };
-  const box = (sel: string): DOMRect | null => {
+  // A panel that is narrow and stands against the left edge is part of a side
+  // column and takes width. Any other panel is a strip across the top or the
+  // bottom and takes height. Asked of each panel by itself: the test used to
+  // be "is the side column at least half the screen high", and on a phone on
+  // its side one more line in the bar took the column under that, so every
+  // panel in it was read as a strip and the map was framed into a stamp.
+  for (const sel of ['.th-head', '.th-strip', '.th-force', '.th-log', '.th-contact']) {
     const r = theaterHud.root.querySelector(sel)?.getBoundingClientRect();
-    return r && r.width > 0 && r.height > 0 ? r : null;
-  };
-  const side = box('.th-side');
-  const column = side && side.height >= view.h * 0.5 && side.width < view.w * 0.5 ? side : null;
-  if (column) out.left = column.right;
-  const inColumn = (r: DOMRect): boolean => column !== null && r.right <= column.right + 1;
-  const head = box('.th-head');
-  if (head && !inColumn(head)) out.top = head.bottom;
-  for (const sel of ['.th-strip', '.th-force', '.th-log', '.th-contact']) {
-    const r = box(sel);
-    if (!r || inColumn(r)) continue;
-    if (r.top + r.height / 2 < view.h / 2) out.top = Math.max(out.top, r.bottom);
+    if (!r || r.width <= 0 || r.height <= 0) continue;
+    if (r.left < 24 && r.width < view.w * 0.5) out.left = Math.max(out.left, r.right);
+    else if (r.top + r.height / 2 < view.h / 2) out.top = Math.max(out.top, r.bottom);
     else out.bottom = Math.max(out.bottom, view.h - r.top);
   }
   return out;
@@ -1070,6 +1074,12 @@ function showDrillEnd(): void {
   };
 }
 
+// ?backdrop=0 turns the menu's battle off; ?flicker=0 or a reduced-motion
+// preference holds it on one frame.
+const backdrop = new MenuBackdrop(
+  backdropMode(new URLSearchParams(location.search).get('backdrop'), flickerOff, window.matchMedia('(prefers-reduced-motion: reduce)').matches),
+);
+
 function openMainMenu(): void {
   mode = 'menu';
   mainMenu.setSaveProbe(probeSave());
@@ -1195,11 +1205,10 @@ function stepTheaterMinuteV2(v2: SessionV2): void {
   if (v2.front.day > prevDay) {
     advanceDays(S().campaign, v2.front.day - prevDay);
     if (v2.front.day % REINFORCE_CYCLE_DAYS === 0) {
-      const arrived = fillReplacements(S().campaign, v2.front.day * 31 + 7, REINFORCE_PER_COMPANY);
-      if (arrived > 0) {
-        v2.view.flash(`+${arrived} replacements arrived`);
-        pushEvent(v2.front, { min: v2.front.clockMin, kind: 'replacements', text: `${arrived} replacements arrive`, forceIds: [] });
-      }
+      // The cycle no longer fills by itself: it raises a choice, and the
+      // clock holds until the player has made it (showRequisitionV2).
+      v2.front.requisition = { barrageUntilDay: 0, ...v2.front.requisition, due: true };
+      stratPaused = true;
     }
     syncStrengthsV2(S().campaign, v2.front);
     prevDay = v2.front.day;
@@ -1217,6 +1226,38 @@ function stepTheaterMinuteV2(v2: SessionV2): void {
 // The contact decision. A card in the theater HUD, not a screen over it: the
 // map stays up and is centred on the fight, because where the fight is, what
 // stands near it and what ground it is on are the decision.
+// The requisition sheet: one card in place of the even fill. It shares the
+// contact card's panel, so it is a side card on a desktop and a bottom sheet
+// on a phone. Cards that go to a company go to the one picked in the row.
+function showRequisitionV2(forceId = -1): void {
+  const v2 = S().v2!;
+  const fog = v2.campaignCfg.recon === 'contacts';
+  const companies = v2.front.forces.filter((f) => f.side === 'blue' && f.strength > 0);
+  const chosen = companies.find((f) => f.id === forceId) ?? companies.find((f) => f.id === v2.selectedForce) ?? companies[0];
+  const cards = requisitionOffer(v2.front, S().campaign, chosen?.id ?? -1, fog);
+  theaterHud.showContact(`
+    <h1>REQUISITION <span class="fc-place">Day ${v2.front.day}</span></h1>
+    <p class="fc-kind" id="req">Pick one.</p>
+    ${companies.length > 0 ? `<div class="rq-for">${companies.map((f) => `<button class="hbtn rq-co${f === chosen ? ' active' : ''}" data-co="${f.id}">${f.name}</button>`).join('')}</div>` : ''}
+    <div class="rq-cards">${cards
+      .map((o) => `<button class="hbtn rq-card" data-card="${o.id}"${o.blocked ? ' disabled' : ''}><i>${o.glyph}</i><b>${o.name}</b><span>${o.blocked ?? o.effect}</span></button>`)
+      .join('')}</div>`);
+  theaterHud.contact.querySelectorAll<HTMLElement>('[data-co]').forEach((b) => {
+    b.onclick = () => showRequisitionV2(Number(b.dataset.co));
+  });
+  theaterHud.contact.querySelectorAll<HTMLElement>('[data-card]').forEach((b) => {
+    b.onclick = () => {
+      const r = applyRequisition(v2.front, S().campaign, b.dataset.card as RequisitionCard, chosen?.id ?? -1, fog);
+      if (!r.ok) return v2.view.flash(r.reason);
+      syncStrengthsV2(S().campaign, v2.front);
+      v2.view.flash(r.text);
+      pushEvent(v2.front, { min: v2.front.clockMin, kind: 'replacements', text: r.text, forceIds: chosen ? [chosen.id] : [] });
+      theaterHud.hideContact();
+      save();
+    };
+  });
+}
+
 function showContactModalV2(c: Contact): void {
   const v2 = S().v2!;
   const atk = v2.front.forces.find((f) => f.id === c.attackerId)!;
@@ -1542,9 +1583,20 @@ function showOperationEnd(status: 'won' | 'lost'): void {
   const sess = S();
   const day = sess.v2 ? sess.v2.front.day : sess.front.day;
   const kia = Object.values(S().campaign.soldiers).filter((s) => s.status === 'kia').length;
+  // A win is graded (result.ts): the grade, then the numbers that decided it.
+  // A loss says how far it got. Neither changes who won.
+  const v2 = sess.v2;
+  const grade = v2 && status === 'won' ? resultOfWin(v2.front, sess.campaign, v2.campaignCfg.warDays) : null;
+  const held = v2 ? v2.front.theater.objectiveNodes.filter((n) => v2.front.controlByNode[n] === 'blue').length : 0;
+  const verdict = grade
+    ? `<p class="db-tier db-tier-${grade.tier}">${grade.title}</p><p class="sub">${grade.why}</p>`
+    : v2
+      ? `<p class="sub">${held} of ${v2.front.theater.objectiveNodes.length} objectives held on Day ${day}.</p>`
+      : '';
   showCard(`<div class="db-scroll"><div class="db">
     <h1 class="${status === 'won' ? 'win' : 'loss'}">OPERATION ${status === 'won' ? 'ACCOMPLISHED' : 'FAILED'}</h1>
-    <p class="sub">${S().campaign.log.length} battles fought over ${day} days · ${kia} men killed.</p>
+    ${verdict}
+    <p class="sub">${grade ? `${S().campaign.log.length} battles fought.` : `${S().campaign.log.length} battles fought over ${day} days · ${kia} men killed.`}</p>
     </div></div>
     <div class="db-actions"><button id="next" class="primary">Main menu</button><button id="same">Same theater again</button></div>`, false);
   document.getElementById('next')!.onclick = () => {
@@ -2311,6 +2363,7 @@ function cycleFloorFocus(): void {
   get barks() {
     return barks;
   },
+  backdrop,
   commanders,
   cam,
   audio,
@@ -2413,16 +2466,26 @@ function frame(now: number): void {
   theaterHud.root.style.display = mode === 'strategic' && S().v2 ? '' : 'none';
   // Off the battle map there are no engines and no guns to rumble: wind only.
   if (mode !== 'battle') audio.ambience(hullsHeard, cam, view.w, view.h, true);
+  // The battle behind the main menu (render/backdrop.ts): wanted only while
+  // the menu itself is the thing on screen. Play, a sub-screen or any other
+  // mode stops it and frees its sim. The class drops the menu's own black.
+  backdrop.want(mode === 'menu' && mainMenu.isOpen && !customize.isOpen && !manual.isOpen);
+  document.documentElement.classList.toggle('menu-backdrop', backdrop.shown);
   if (mode === 'menu') {
+    backdrop.frame(ctx, dtReal);
     requestAnimationFrame(frame);
     return;
   }
   if (mode === 'strategic' && S().v2) {
     const v2 = S().v2!;
     hud.updateIdle(v2.selectedForce >= 0 || stratPaused);
-    if (!stratPaused && !v2.pending && !opEnded) {
+    // A requisition waits behind a contact and behind nothing else: the
+    // clock holds until it is answered, and a loaded save shows it again.
+    const reqDue = requisitionDue(v2.front) && !v2.pending && !opEnded;
+    if (reqDue && !document.getElementById('req')) showRequisitionV2();
+    if (!stratPaused && !v2.pending && !reqDue && !opEnded) {
       stratAcc += (dtReal / 1000) * SPEEDS[speedIdx];
-      while (stratAcc >= 1 && !v2.pending) {
+      while (stratAcc >= 1 && !v2.pending && !requisitionDue(v2.front)) {
         stratAcc -= 1;
         stepTheaterMinuteV2(v2);
         // The clock moved: the one thing the Play step was waiting to see.
@@ -2432,7 +2495,7 @@ function frame(now: number): void {
       const st = warStatus(v2.front, v2.goals);
       if (st.state === 'decided') showOperationEnd(st.winner === 'blue' ? 'won' : 'lost');
     }
-    theaterHud.update(v2.front, v2.goals, v2.selectedForce, stratPaused, speedIdx, v2.campaignCfg.supply, v2.campaignCfg.recon === 'contacts', v2.campaignCfg.nightTempo);
+    theaterHud.update(v2.front, v2.goals, v2.selectedForce, stratPaused, speedIdx, v2.campaignCfg.supply, v2.campaignCfg.recon === 'contacts', v2.campaignCfg.nightTempo, resultTarget(v2.front, S().campaign, v2.campaignCfg.warDays));
     // The first objective taken, by a battle or by walking in: one step, once.
     if (tutorial?.wants('objective-captured') && !v2.pending && capturedObjective(v2) !== null) tutorial.notify('objective-captured');
     // One thing talks at a time: while a tutorial step is on screen the

@@ -6,7 +6,7 @@
 import { mulberry32 } from '../../sim/rng';
 import type { TheaterConfig } from '../../campaign/spec';
 import type { Side } from '../../sim/sim';
-import { MOVE_MPM, REGION_PACE_MULT, THEATER_VERSION, type Theater, type TheaterEdge, type Vec } from '../theater';
+import { MOVE_MPM, REGION_PACE_MULT, THEATER_VERSION, type Theater, type TheaterEdge, type TheaterNode, type Vec } from '../theater';
 import { planRivers } from './rivers';
 import { planSettlements } from './settlements';
 import { planNetwork } from './roads';
@@ -75,6 +75,11 @@ function mainRiverXAt(polyline: Vec[], y: number): number {
   return polyline[polyline.length - 1].x;
 }
 
+const OBJ_BRIDGES = 1;
+const OBJ_OPEN = 1;
+const OBJ_TOTAL = 4;
+const OBJ_SPACING_M = 3000;
+
 export function makeTheater(seed: number, cfg: TheaterConfig): TheaterResult {
   const boundsM = { w: cfg.sizeKm * 1000, h: Math.round(cfg.sizeKm * 750) };
   const rejectCounts: Partial<Record<RejectReason, number>> = {};
@@ -112,10 +117,43 @@ export function makeTheater(seed: number, cfg: TheaterConfig): TheaterResult {
       if (n.crossing) return 'red';
       return n.pos.x < mainRiverXAt(main, n.pos.y) ? 'blue' : 'red';
     });
-    const objectiveNodes = nodes
-      .filter((n) => (n.kind === 'town' && control[n.id] === 'red') || (n.crossing?.riverId === 0 && n.crossing.kind === 'bridge'))
-      .map((n) => n.id)
-      .sort((a, b) => a - b);
+    // v3 (jtbug #793): the objectives are spread over the kinds of ground a
+    // war is fought on. Every red-side town that is not on a crossing still
+    // counts. Of the main-river bridges, towns among them, only OBJ_BRIDGES
+    // (a town first). Then places in open country, at least OBJ_OPEN of them
+    // and as many as bring the theater to OBJ_TOTAL: a red-side village or
+    // road junction, the shallowest behind the river first, on ground no
+    // objective has yet, and at least OBJ_SPACING_M from every other
+    // objective. With every bridge an objective, two fights in three were
+    // the same bridge assault on the same map.
+    const foot = (id: number): number => edges.filter((e) => e.moveClass !== 'rail' && (e.a === id || e.b === id)).length;
+    const groundOf = (n: TheaterNode): string => (n.crossing ? 'crossing' : n.kind === 'town' || n.kind === 'village' ? n.kind : (regions[n.regionId]?.terrainClass ?? 'farmland'));
+    const picked: TheaterNode[] = [
+      ...nodes.filter((n) => n.kind === 'town' && control[n.id] === 'red' && !n.crossing),
+      ...nodes
+        .filter((n) => n.crossing?.riverId === 0 && n.crossing.kind === 'bridge')
+        .sort((a, b) => a.rank - b.rank || a.id - b.id)
+        .slice(0, OBJ_BRIDGES),
+    ];
+    const depth = (n: TheaterNode): number => n.pos.x - mainRiverXAt(main, n.pos.y);
+    // A village or a junction with two roads or more first. On a red bank
+    // that has none left, any dry red node: a rail halt, a road's end.
+    const through = (n: TheaterNode): boolean => (n.kind === 'village' || n.kind === 'junction' || n.kind === 'crossroads') && foot(n.id) >= 2;
+    const open = nodes
+      .filter((n) => control[n.id] === 'red' && !n.crossing && n.kind !== 'town' && n.kind !== 'ford' && foot(n.id) >= 1)
+      .sort((a, b) => Number(through(b)) - Number(through(a)) || depth(a) - depth(b) || a.id - b.id);
+    for (let i = 0; i < OBJ_OPEN || picked.length < OBJ_TOTAL; i++) {
+      const rest = open.filter((n) => !picked.includes(n));
+      const gap = (n: TheaterNode): number => Math.min(...picked.map((p) => Math.hypot(p.pos.x - n.pos.x, p.pos.y - n.pos.y)));
+      const apart = rest.filter((n) => gap(n) >= OBJ_SPACING_M);
+      const have = new Set(picked.map(groundOf));
+      // Nothing far enough apart: the one farthest from the rest, so a small
+      // red bank still fills its count.
+      const next = apart.find((n) => through(n) && !have.has(groundOf(n))) ?? apart[0] ?? [...rest].sort((a, b) => gap(b) - gap(a) || a.id - b.id)[0];
+      if (!next) break;
+      picked.push(next);
+    }
+    const objectiveNodes = picked.map((n) => n.id).sort((a, b) => a - b);
     // Supply sources: the map-edge lifelines — westmost blue, eastmost red,
     // picked from each side's LARGEST connected component of own-controlled
     // nodes. The literal westmost blue node can hang off a red-held crossing

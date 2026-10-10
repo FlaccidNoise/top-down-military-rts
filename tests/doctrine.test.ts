@@ -4,9 +4,10 @@ import { describe, expect, it } from 'vitest';
 import { AI_MEMORY_TICKS, RedCommander } from '../src/sim/ai';
 import { newCampaign } from '../src/campaign/campaign';
 import { WEAPONS } from '../src/sim/data';
+import { COMPANY_TOE, squadHeadcount } from '../src/sim/toe';
 import { EDGE, GameMap } from '../src/sim/map';
 import { SPOT_INTERVAL, Sim } from '../src/sim/sim';
-import { makeStrategicBattle, newFront } from '../src/strategic/bridge';
+import { DE_SLICE, fieldGerman, makeStrategicBattle, newFront } from '../src/strategic/bridge';
 import { makeDefaultSector } from '../src/strategic/sector';
 import { ASSAULT_DANGER_MULT, compliance, dangerScore } from '../src/sim/orders';
 
@@ -1147,6 +1148,355 @@ describe('the commander spends the barrages it holds (#790)', () => {
       spotter.path = null;
     }
     expect(calls).toHaveLength(stance === 'attack' ? 3 : 4);
+  });
+});
+
+// #794. Probed before it: no defending squad left its post in a battle
+// (median drift 3 m), no reserve existed, and a gun laid on the approach
+// watched the enemy walk round it. Nobody on these fields has a round, so the
+// men stay where the cases put them and only the commander's orders move.
+// The squads are led veterans unless a case says otherwise: the ground is
+// flat and seen, and a green squad's refusal to cross it is its own case.
+describe('a defence that moves (#794)', () => {
+  const A = { x: 100, y: 30 }; // the forward post
+  const B = { x: 130, y: 30 }; // one bound back: the approach is from the west
+  const stage = (cfg: { fallback?: boolean; reserve?: boolean; green?: boolean } = {}) => {
+    const sim = new Sim(new GameMap(200, 60), 5);
+    const xp = cfg.green ? 0 : 40;
+    const line = sim.addSquad('red', 'Line', Array.from({ length: 6 }, (_, i) => ({ name: `L${i}`, weapon: 'kar98k' as const, x: 100.5, y: 27.5 + i, xp })));
+    const res = sim.addSquad('red', 'Reserve', Array.from({ length: 6 }, (_, i) => ({ name: `R${i}`, weapon: 'kar98k' as const, x: 150.5, y: 27.5 + i, xp })));
+    if (!cfg.green) for (const sq of [line, res]) sim.soldiers[sq.soldierIds[5]].role = 'leader';
+    const enemy = (x: number, y: number) => sim.soldiers[sim.addSquad('blue', 'E', [{ name: 'E', weapon: 'garand', x, y }]).soldierIds[0]];
+    const said: string[] = [];
+    const commander = new RedCommander({
+      side: 'red',
+      stance: 'defend',
+      approach: { x: 5, y: 30 },
+      posts: { [line.id]: A, [res.id]: { x: 150, y: 30 } },
+      sectorOf: { [line.id]: 0, [res.id]: 0 },
+      ...(cfg.fallback === false ? {} : { fallback: { [line.id]: [B] } }),
+      ...(cfg.reserve ? { reserve: [res.id] } : {}),
+    });
+    const run = (ticks: number): void => {
+      for (let i = 0; i < ticks; i++) {
+        for (const m of sim.soldiers) {
+          m.ammo = {};
+          m.magLeft = 0;
+          m.morale = 1;
+        }
+        commander.update(sim);
+        sim.step();
+        said.push(...sim.takeUnitEvents().filter((e) => e.kind === 'fell-back' || e.kind === 'counterattack').map((e) => `${e.kind}@${Math.round(e.x)}`));
+      }
+    };
+    const at = (sq: { soldierIds: number[] }): number => mean(sq.soldierIds.map((id) => sim.soldiers[id]).filter((m) => m.alive).map((m) => m.x));
+    return { sim, line, res, enemy, commander, run, said, at };
+  };
+
+  it('a flanked squad goes back one bound to the post it was briefed, and holds there', () => {
+    const { enemy, run, said, at, line } = stage();
+    run(200);
+    expect(at(line)).toBeLessThan(105); // nothing behind it: it holds
+    expect(said).toEqual([]);
+    enemy(115.5, 10.5); // two of them BEHIND the post, off to one side of the way back
+    enemy(118.5, 10.5);
+    run(900);
+    expect(said).toEqual(['fell-back@100']);
+    expect(Math.abs(at(line) - B.x)).toBeLessThan(8);
+  });
+
+  it('a squad that will not cross seen ground goes back under its own smoke', () => {
+    const { sim, enemy, run, said, at, line } = stage({ green: true });
+    enemy(75.5, 30.5);
+    line.soldierIds.slice(0, 3).forEach((id) => (sim.soldiers[id].alive = false));
+    run(40);
+    expect(said).toEqual([]); // not ordered back yet: the smoke goes first
+    expect(sim.smoke.length).toBeGreaterThan(0);
+    expect(sim.teams[line.teamIds[0]].smokeLeft).toBe(1);
+    expect(sim.smoke.every((p) => p.x < 100.5 && p.x > 85)).toBe(true); // between the squad and the enemy
+    run(900);
+    expect(said).toEqual(['fell-back@100']);
+    expect(Math.abs(at(line) - B.x)).toBeLessThan(8);
+  });
+
+  it('a squad at half strength with the enemy on its post gives the post up; at full strength it stands', () => {
+    const full = stage();
+    full.enemy(75.5, 30.5); // 25 m in FRONT of the post
+    full.run(600);
+    expect(full.said).toEqual([]);
+
+    const half = stage();
+    half.enemy(75.5, 30.5);
+    half.line.soldierIds.slice(0, 3).forEach((id) => (half.sim.soldiers[id].alive = false));
+    half.run(900);
+    expect(half.said).toEqual(['fell-back@100']);
+    expect(Math.abs(half.at(half.line) - B.x)).toBeLessThan(8);
+  });
+
+  it('a squad briefed nowhere to go stands, and no squad falls back twice inside a minute', () => {
+    const none = stage({ fallback: false });
+    none.enemy(115.5, 10.5);
+    none.enemy(118.5, 10.5);
+    none.run(600);
+    expect(none.said).toEqual([]);
+    expect(none.at(none.line)).toBeLessThan(105);
+  });
+
+  it('the sector reserve goes for a post the attacker has just taken, once, and not for an old loss', () => {
+    const { sim, enemy, run, said, at, line, res } = stage({ reserve: true });
+    run(100);
+    line.soldierIds.forEach((id) => (sim.soldiers[id].alive = false)); // the line squad is gone
+    const e = enemy(101.5, 30.5); // and the enemy stands on its post
+    run(1500);
+    expect(said).toEqual(['counterattack@100']);
+    expect(at(res)).toBeLessThan(125); // it came forward from 150
+    e.x = 60.5;
+    run(600);
+    expect(said).toHaveLength(1);
+
+    // A reserve in no state to go when the post fell does not go for it two minutes on.
+    const late = stage({ reserve: true });
+    late.run(100);
+    late.line.soldierIds.forEach((id) => (late.sim.soldiers[id].alive = false));
+    late.enemy(101.5, 30.5);
+    const unfit = late.res.soldierIds.slice(0, 4).map((id) => late.sim.soldiers[id]);
+    for (const m of unfit) m.captured = true;
+    late.run(125 * 30);
+    for (const m of unfit) m.captured = false;
+    late.run(600);
+    expect(late.said).toEqual([]);
+    expect(late.at(late.res)).toBeGreaterThan(145);
+  });
+
+  it('a reserve whose men will not cross seen ground smokes the post and then goes in', () => {
+    const { sim, enemy, run, said, at, line, res } = stage({ reserve: true, green: true });
+    run(100);
+    res.soldierIds.forEach((id) => (sim.soldiers[id].x = 125.5)); // 25 m from the post: inside a throw
+    run(20);
+    line.soldierIds.forEach((id) => (sim.soldiers[id].alive = false));
+    enemy(101.5, 30.5);
+    run(400);
+    expect(said).toEqual(['counterattack@100']);
+    expect(sim.teams[res.teamIds[0]].smokeLeft).toBe(1);
+    run(1200);
+    expect(at(res)).toBeLessThan(110); // on the post it was sent for
+  });
+
+  it('a squad on an arc with the enemy in range outside it turns the arc onto him, and leaves it alone while it has work', () => {
+    const { sim, enemy, run, line, commander } = stage({ fallback: false });
+    sim.soldiers[line.soldierIds[0]].weapon = 'mg42'; // a long-range squad: it fights from an arc on the approach
+    run(200);
+    const arcOf = (): [number, number] | undefined => sim.teams[line.teamIds[0]].orderState.order?.arc;
+    const west = arcOf()!;
+    expect(sim.teams[line.teamIds[0]].orderState.order?.kind).toBe('defend');
+    expect((west[0] + west[1]) / 2).toBeCloseTo(Math.PI, 1);
+    const north = enemy(100.5, 5.5); // 25 m due north: in range, 90 degrees off the arc
+    run(200);
+    const turned = arcOf()!;
+    expect((turned[0] + turned[1]) / 2).toBeCloseTo(-Math.PI / 2, 1);
+    // one appears in the old arc as well: the gun has work where it is laid, so nothing changes
+    enemy(60.5, 30.5);
+    north.x = 99.5;
+    run(900);
+    expect(arcOf()).toEqual(turned);
+    expect(commander['relaidTick'].size).toBe(1);
+  });
+
+  it('either side defending puts its rifle squads forward of its mortars, sector by sector', () => {
+    for (const def of ['red', 'blue'] as const) {
+      const c = newCampaign(3);
+      const front = newFront(c, makeDefaultSector());
+      const able = front.chits.find((ch) => ch.side === 'blue')!;
+      const garrison = front.chits.find((ch) => ch.name === 'Garnison St-Aubin')!;
+      const e = def === 'red' ? { attackerId: able.id, defenderId: garrison.id, cell: garrison.cell } : { attackerId: garrison.id, defenderId: able.id, cell: able.cell };
+      const staged = makeStrategicBattle(c, front, e, 3);
+      const cfg = (def === 'red' ? staged.commander : staged.blueCommander)['cfg'];
+      const back = (id: number): number => Math.hypot(cfg.posts[id].x - cfg.approach!.x, cfg.posts[id].y - cfg.approach!.y);
+      const squads = staged.sim.squads.filter((sq) => sq.side === def && cfg.posts[sq.id]);
+      const rifles = squads.filter((sq) => sq.soldierIds.length >= 9);
+      const tubes = squads.filter((sq) => sq.soldierIds.some((id) => staged.sim.soldiers[id].weapon.startsWith('mortar')));
+      expect(rifles.length, def).toBeGreaterThan(3);
+      expect(tubes.length, def).toBeGreaterThan(0);
+      let compared = 0;
+      for (const t of tubes) {
+        const mates = rifles.filter((r) => cfg.sectorOf![r.id] === cfg.sectorOf![t.id]);
+        if (mates.length === 0) continue;
+        compared++;
+        expect(Math.min(...mates.map((r) => back(r.id))), `${def} sector ${cfg.sectorOf![t.id]}`).toBeLessThanOrEqual(back(t.id));
+      }
+      expect(compared, def).toBeGreaterThan(0);
+    }
+  });
+
+  it('the briefing: fallbacks lie a bound or more behind the post, a dug-in gun has none, one reserve to a sector at most', () => {
+    for (const [atk, def] of [['blue', 'red'], ['red', 'blue']] as const) {
+      const c = newCampaign(3);
+      const front = newFront(c, makeDefaultSector());
+      const able = front.chits.find((ch) => ch.side === 'blue')!;
+      const garrison = front.chits.find((ch) => ch.name === 'Garnison St-Aubin')!;
+      const e = atk === 'blue' ? { attackerId: able.id, defenderId: garrison.id, cell: garrison.cell } : { attackerId: garrison.id, defenderId: able.id, cell: able.cell };
+      const staged = makeStrategicBattle(c, front, e, 3);
+      const cfg = (def === 'red' ? staged.commander : staged.blueCommander)['cfg'];
+      expect(cfg.stance).toBe('defend');
+      const posts = cfg.posts;
+      const fb = cfg.fallback!;
+      expect(Object.keys(fb).length).toBeGreaterThan(3);
+      const west = cfg.approach!;
+      const back = (p: { x: number; y: number }): number => Math.hypot(p.x - west.x, p.y - west.y);
+      for (const [id, list] of Object.entries(fb)) {
+        expect(list.length).toBeLessThanOrEqual(2);
+        for (const p of list) expect(back(p)).toBeGreaterThanOrEqual(back(posts[Number(id)]) + 15);
+      }
+      for (const emp of staged.sim.emplacements) expect(fb[staged.sim.teams[emp.crewTeamId].squadId]).toBeUndefined();
+      const reserve = cfg.reserve!;
+      const sectors = reserve.map((id) => cfg.sectorOf![id]);
+      expect(new Set(sectors).size).toBe(sectors.length);
+      for (const id of reserve) expect(fb[id]).toBeUndefined();
+    }
+  });
+});
+
+// #794. Red attacking a position held by the blue AI won 0 of 32 probed
+// battles. What it is given, not what its weapons do.
+describe('what an attacking German force is given (#794)', () => {
+  const stageRed = (redStrength?: number, drop = 0) => {
+    const c = newCampaign(2);
+    if (drop > 0) c.companies[0].squads.splice(0, drop);
+    const front = newFront(c, makeDefaultSector());
+    const able = front.chits.find((ch) => ch.side === 'blue')!;
+    const garrison = front.chits.find((ch) => ch.name === 'Garnison St-Aubin')!;
+    if (redStrength !== undefined) garrison.strength = redStrength;
+    front.sector.cells[able.cell].terrain = 'open';
+    return makeStrategicBattle(c, front, { attackerId: garrison.id, defenderId: able.id, cell: able.cell }, 2);
+  };
+
+  it('two assault guns, two barrages, a double load at the tubes, and a commander briefed with a fire plan', () => {
+    const { sim, commander, blueCommander } = stageRed();
+    expect(sim.vehicles.filter((v) => v.side === 'red').map((v) => v.kind)).toEqual(['stug3', 'stug3', 'sdkfz251']);
+    expect(sim.barragesLeft.red).toBe(2);
+    const tubes = sim.emplacements.filter((e) => e.side === 'red' && e.kind === 'mortar81');
+    expect(tubes.length).toBe(2);
+    for (const t of tubes) {
+      const shells = sim.teams[t.crewTeamId].soldierIds.reduce((a, id) => a + (sim.soldiers[id].ammo.shell_81 ?? 0), 0);
+      expect(shells).toBe(48); // twice the crew's 24
+    }
+    expect(commander['cfg'].firePlan).toBe(true);
+    expect(blueCommander['cfg'].firePlan).toBeUndefined();
+
+    // and a blue attack is staged as it was
+    const c = newCampaign(2);
+    const front = newFront(c, makeDefaultSector());
+    const able = front.chits.find((ch) => ch.side === 'blue')!;
+    const garrison = front.chits.find((ch) => ch.name === 'Garnison St-Aubin')!;
+    front.sector.cells[garrison.cell].terrain = 'open';
+    const blueAtk = makeStrategicBattle(c, front, { attackerId: able.id, defenderId: garrison.id, cell: garrison.cell }, 2);
+    expect(blueAtk.sim.vehicles.filter((v) => v.side === 'blue').map((v) => v.kind)).toEqual(['sherman', 'm3_halftrack']);
+    expect(blueAtk.sim.barragesLeft).toEqual({ blue: 2, red: 1 });
+    expect(blueAtk.blueCommander['cfg'].firePlan).toBeUndefined();
+  });
+
+  it('a Kampfgruppe fields its strength, not one company table, up to 260 men on the field', () => {
+    const red = (b: { sim: Sim }): number => b.sim.soldiers.filter((m) => m.side === 'red' && m.inVehicle < 0).length;
+    const blue = (b: { sim: Sim }): number => b.sim.soldiers.filter((m) => m.side === 'blue').length;
+    const full = stageRed(160); // against a whole company: the table's 114 is the field's limit
+    expect(blue(full)).toBeGreaterThan(135);
+    expect(red(full)).toBe(Math.max(114, 260 - 138)); // 138 is the chit's count of the company's fit men
+    const worn = stageRed(160, 5); // the company short five rifle squads: 60 fewer on the field
+    expect(blue(worn)).toBeLessThan(90);
+    expect(red(worn)).toBe(160);
+    expect(red(stageRed(90, 5))).toBe(90);
+  });
+
+  it('the fire plan: tubes on the watched objective with nobody spotted on it, one barrage as the riflemen come up, none without the plan', () => {
+    const POST = { x: 150, y: 30 };
+    const stage = (firePlan: boolean) => {
+      const sim = new Sim(new GameMap(240, 60), 9);
+      const rifle = sim.addSquad('red', 'Rifle', Array.from({ length: 6 }, (_, i) => ({ name: `R${i}`, weapon: 'kar98k' as const, x: 40.5, y: 27.5 + i, xp: 20 })));
+      const tube = sim.addEmplacement('red', 'mortar81', 60, 30, 0, 'deployed');
+      for (const m of sim.soldiers) {
+        m.ammo = m.ammo.shell_81 ? { shell_81: m.ammo.shell_81 } : {};
+        m.magLeft = 0;
+        m.morale = 1;
+      }
+      sim.barragesLeft.red = 2;
+      const barrages: { x: number; y: number; lead: number }[] = [];
+      sim.callBarrage = (side, x, y) => {
+        sim.barragesLeft[side]--;
+        barrages.push({ x, y, lead: Math.min(...rifle.soldierIds.map((id) => Math.hypot(sim.soldiers[id].x - x, sim.soldiers[id].y - y))) });
+        return true;
+      };
+      const commander = new RedCommander({ side: 'red', stance: 'attack', posts: { [rifle.id]: POST }, objectives: [POST], ...(firePlan ? { firePlan: true } : {}) });
+      let aimed: { x: number; y: number } | null = null;
+      for (let i = 0; i < 1800; i++) {
+        commander.update(sim);
+        sim.step();
+        if (!aimed && tube.hasTarget && tube.smokeRoundsLeft === 0) aimed = { x: tube.targetX, y: tube.targetY };
+      }
+      return { aimed, barrages };
+    };
+    const planned = stage(true);
+    expect(planned.aimed).toEqual(POST); // an empty objective in plain view: prepared all the same
+    expect(planned.barrages).toHaveLength(1);
+    expect(planned.barrages[0]).toMatchObject(POST);
+    expect(planned.barrages[0].lead).toBeLessThanOrEqual(150);
+    expect(planned.barrages[0].lead).toBeGreaterThanOrEqual(70);
+    const plain = stage(false);
+    expect(plain.aimed).toBeNull();
+    expect(plain.barrages).toEqual([]);
+  });
+});
+
+// #796. A German force under strength was fielded off the front of the
+// company table: nine Gruppen first, weapons after. Under 99 men it had no
+// mortar, under 82 no tripod MG, and most theater garrisons are under both.
+describe('a force under strength is a slice of the company (#796)', () => {
+  const toe = COMPANY_TOE.de_grenadier_co;
+  const count = (f: { key: string; take: number }[], key: string): number => f.filter((q) => q.key === key).length;
+
+  it('a full company is the table, in the table order; the slice draws on every row once', () => {
+    expect(fieldGerman(109).map((f) => f.key)).toEqual(toe);
+    expect(fieldGerman(109).every((f, i) => f.take === squadHeadcount(toe[i]))).toBe(true);
+    expect([...DE_SLICE].sort((a, b) => a - b)).toEqual(toe.map((_, i) => i));
+  });
+
+  it('every strength a garrison comes in has its share of the weapons, and fields exactly its men', () => {
+    for (let n = 1; n <= 109; n++) expect(fieldGerman(n).reduce((a, f) => a + f.take, 0), `${n}`).toBe(n);
+    const platoon = fieldGerman(36); // the smallest theater garrison
+    expect(count(platoon, 'de_gruppe')).toBe(3);
+    expect(count(platoon, 'de_smg42')).toBe(1);
+    expect(count(platoon, 'de_mortar81')).toBe(1);
+    expect(platoon.find((f) => f.key === 'de_mortar81')!.take).toBeGreaterThanOrEqual(3); // enough to serve the tube
+    const sixty = fieldGerman(60);
+    expect(count(sixty, 'de_gruppe')).toBe(6);
+    expect(count(sixty, 'de_smg42')).toBe(1);
+    expect(count(sixty, 'de_mortar81')).toBe(1);
+    const eighty = fieldGerman(80);
+    expect(count(eighty, 'de_smg42')).toBe(2);
+    expect(count(eighty, 'de_mortar81')).toBe(2);
+    // and what is fielded is in table order whatever was drawn first
+    for (const n of [36, 60, 80, 100]) {
+      const idx = fieldGerman(n).map((f) => toe.indexOf(f.key));
+      expect([...idx].sort((a, b) => a - b), `${n}`).toEqual(idx);
+    }
+  });
+
+  it('a Kampfgruppe past the table adds rifle Gruppen', () => {
+    const big = fieldGerman(130);
+    expect(big.slice(0, toe.length).map((f) => f.key)).toEqual(toe);
+    expect(big.slice(toe.length).map((f) => [f.key, f.take])).toEqual([['de_gruppe', 9], ['de_gruppe', 9], ['de_gruppe', 3]]);
+  });
+
+  it('a 60-man garrison stages with a tube and a tripod gun dug in', () => {
+    const c = newCampaign(4);
+    const front = newFront(c, makeDefaultSector());
+    const able = front.chits.find((ch) => ch.side === 'blue')!;
+    const garrison = front.chits.find((ch) => ch.name === 'Garnison St-Aubin')!;
+    garrison.strength = 60;
+    const { sim } = makeStrategicBattle(c, front, { attackerId: able.id, defenderId: garrison.id, cell: garrison.cell }, 4);
+    expect(sim.soldiers.filter((m) => m.side === 'red').length).toBeGreaterThanOrEqual(60); // its 60, and the PaK's crew
+    const kinds = sim.emplacements.filter((e) => e.side === 'red').map((e) => e.kind);
+    expect(kinds).toContain('mortar81');
+    expect(kinds).toContain('mg42_lafette');
   });
 });
 
