@@ -145,25 +145,67 @@ rows.push({ name: 'smoke screen', cells: [{ file: 'smoke-screen.png', bucket: 0,
 // Pockmarks (marks.ts): twenty misses into one wall. Each target y is offset a
 // little because the 1-in-3 mark gate hashes the impact coords — twenty rounds
 // at identical coordinates would either all mark or none would.
-await page.evaluate(
-  (b) => {
+//
+// This row used to shoot a fixed clip and assert nothing, and for a long time
+// it showed an unmarked wall: the chips were being recorded and then painted
+// over by the wall band (renderer.ts draw order). So it now measures. A mark
+// counts as VISIBLE when knocking the mark layer out changes the pixel at its
+// centre, and the clip is taken round where the marks actually are — a bourg
+// footprint is not a rectangle, and half the rounds find a wall further in.
+const pocks = await page.evaluate(
+  async (b) => {
     const g = window.__game;
     const my = b.y + b.h / 2;
-    g.cam.x = b.x; // wall on the screen centre line, so the clip below lands on it
+    g.cam.x = b.x;
     g.cam.y = my;
     g.cam.scale = 64;
     for (let i = 0; i < 20; i++) {
       const ty = my - 1.4 + i * 0.14;
       g.sim.pendingEvents.push({ fx: b.x - 6, fy: ty, tx: b.x - 1.2, ty, hit: false, kill: false, weapon: 'garand' });
     }
+    const raf = () => new Promise((r) => requestAnimationFrame(r));
+    await raf();
+    await raf();
+    const marks = g.renderer.marks.marks;
+    if (marks.length === 0) return { n: 0, visible: 0 };
+    // centre the camera on the marks so they are all in frame
+    g.cam.x = marks.reduce((a, m) => a + m.x, 0) / marks.length;
+    g.cam.y = marks.reduce((a, m) => a + m.y, 0) / marks.length;
+    g.advanceFx(600); // age the tracers and spall off; the marks are permanent
+    for (let i = 0; i < 50; i++) await raf(); // the roof fade is wall-clock
+    const canvas = document.querySelector('canvas');
+    const ctx = canvas.getContext('2d');
+    const dpr = g.view.dpr;
+    const at = () => {
+      const d = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+      return marks.map((m) => {
+        const [sx, sy] = g.cam.worldToScreen(m.x, m.y, g.view.w, g.view.h);
+        const i = (Math.round(sy * dpr) * canvas.width + Math.round(sx * dpr)) * 4;
+        return (d[i] << 16) | (d[i + 1] << 8) | d[i + 2];
+      });
+    };
+    const withMarks = at();
+    const draw = g.renderer.marks.draw;
+    g.renderer.marks.draw = () => {};
+    await raf();
+    await raf();
+    const without = at();
+    g.renderer.marks.draw = draw;
+    await raf();
+    await raf();
+    return { n: marks.length, visible: withMarks.filter((p, i) => p !== without[i]).length };
   },
   house
 );
-await ageFx(page, 600); // age the tracers and spall off; the marks are permanent
+{
+  const ok = pocks.visible >= 3;
+  if (!ok) warnings++;
+  console.log(`${ok ? 'ok ' : 'WARN'} pockmarks: ${pocks.n} recorded from 20 misses, ${pocks.visible} visible`);
+}
 // Clipped: a 0.15 m chip is ~10 px here and would vanish in a 220 px contact
 // sheet cell, which is the one thing a regression gate cannot afford.
 await page.screenshot({ path: join(OUT, 'pockmarks.png'), clip: { x: 460, y: 220, width: 360, height: 360 } });
-rows.push({ name: 'pockmarks', cells: [{ file: 'pockmarks.png', bucket: 0, age: 0, score: 0 }] });
+rows.push({ name: 'pockmarks', cells: [{ file: 'pockmarks.png', bucket: 0, age: 0, score: pocks.visible }] });
 
 // Building fire (FX5). Its lifetime runs on sim.tick and the game is paused, so
 // the fire survives the wait that kills the blast transient — which is the
