@@ -1769,6 +1769,33 @@ export class Sim {
     return eligible(s); // the module-scope export above — one predicate, no drift
   }
 
+  // Still on his way: walking a path, or waiting on one. PATH_BUDGET_PER_TICK
+  // defers most of a big commit's searches to later ticks, and every "has
+  // this leg finished" test that read `path` alone took a man still waiting
+  // for his search as a man who had arrived — an order issued to the tenth
+  // team in a tick was declared complete on the next (#763).
+  private marching(id: number): boolean {
+    return this.soldiers[id].path !== null || this.pendingPaths.has(id);
+  }
+
+  // Men who stop where they are — the half that holds while the other rushes,
+  // a team that balks mid-move: halted, and not about to be started again by
+  // a search still queued from before.
+  private halt(ids: number[]): void {
+    for (const id of ids) {
+      this.soldiers[id].path = null;
+      this.pendingPaths.delete(id);
+    }
+  }
+
+  // A leg dispatched inside a running order is a continuation of it, not a
+  // new order: a man who left the bound to reach a casualty, carry belts or
+  // take over a gun is not pulled off it by the next leg. pathTo's task drop
+  // is for real orders.
+  private offTask(ids: number[]): number[] {
+    return ids.filter((id) => !this.soldiers[id].task);
+  }
+
   // The order vocabulary's entry point (spec's "interpret + refuse"): runs
   // compliance, stores the legibility state, and kicks off execution.
   // `used` is the ONE tile-reservation set of the whole player commit —
@@ -1798,7 +1825,7 @@ export class Sim {
     if (effective.kind === 'move' && (cautious || this.teamUnderFire(team))) {
       team.orderState = { order: effective, phase: 'bounding_a', reason };
       const [a, b] = this.teamHalves(team);
-      for (const id of b) this.soldiers[id].path = null;
+      this.halt(b);
       this.dispatchLeg(a, effective, used);
     } else if (effective.kind === 'move' || effective.kind === 'fast' || effective.kind === 'sneak' || effective.kind === 'assault') {
       team.orderState = { order: effective, phase: 'executing', reason };
@@ -1913,13 +1940,15 @@ export class Sim {
     const [a, b] = this.teamHalves(team);
     const activeIds = st.phase === 'bounding_a' ? a : b;
     const otherIds = st.phase === 'bounding_a' ? b : a;
-    const activeAlive = activeIds.filter((id) => this.eligible(this.soldiers[id]));
-    if (activeAlive.some((id) => this.soldiers[id].path)) return; // mid-leg
+    if (activeIds.some((id) => this.eligible(this.soldiers[id]) && this.marching(id))) return; // mid-leg
     const centroid = this.centroidOf(team.soldierIds);
-    if (!centroid || Math.hypot(centroid.x - order.x, centroid.y - order.y) < 3) {
+    const done = (): void => {
       st.order = null;
       st.phase = 'idle';
       st.reason = '';
+    };
+    if (!centroid || Math.hypot(centroid.x - order.x, centroid.y - order.y) < 3) {
+      done();
       return;
     }
     const danger = dangerScore(this, team, { x: order.x, y: order.y });
@@ -1928,8 +1957,21 @@ export class Sim {
       st.reason = BALK_REASON;
       return;
     }
-    st.phase = st.phase === 'bounding_a' ? 'bounding_b' : 'bounding_a';
-    this.dispatchLeg(otherIds, order);
+    const moving = (ids: number[]): boolean => ids.some((id) => this.marching(id));
+    this.dispatchLeg(this.offTask(otherIds), order);
+    if (moving(otherIds)) {
+      st.phase = st.phase === 'bounding_a' ? 'bounding_b' : 'bounding_a';
+      return;
+    }
+    // The other half has nowhere to go — on its spots already, or nobody left
+    // in it — so the half that just rushed goes again. When that half cannot
+    // move either, the team is as far forward as this order takes it. The
+    // centroid test above cannot say so for a team whose cover spots sit off
+    // the order point, and such a team alternated every tick for the rest of
+    // the battle (measured: 23,174 flips in one), re-resolving its spots each
+    // time.
+    this.dispatchLeg(this.offTask(activeIds), order);
+    if (!moving(activeIds)) done();
   }
 
   private woundCount(team: Team): number {
@@ -2187,7 +2229,7 @@ export class Sim {
         // a rescue task counts as busy: it holds path=null for a tick on pickup,
         // and auto-dispatching the next leg would silently cancel the rescue.
         // A melee lock is busy too — pathless for seconds, but hardly "arrived".
-        if (s.path || s.task || s.meleeId >= 0) moving++;
+        if (this.marching(s.id) || s.task || s.meleeId >= 0) moving++;
       }
       if (eligible === 0) {
         this.squadWaypoints[sq.id] = [];
@@ -2275,7 +2317,7 @@ export class Sim {
         this.continueBounding(team, order, st);
       } else if ((order.kind === 'move' || order.kind === 'fast' || order.kind === 'sneak') && st.phase === 'executing') {
         const eligibleIds = team.soldierIds.filter((id) => this.eligible(this.soldiers[id]));
-        if (eligibleIds.length > 0 && eligibleIds.every((id) => !this.soldiers[id].path)) {
+        if (eligibleIds.length > 0 && eligibleIds.every((id) => !this.marching(id))) {
           st.order = null;
           st.phase = 'idle';
           st.reason = '';
@@ -2289,15 +2331,15 @@ export class Sim {
           if (verdict === 'balk') {
             st.phase = 'balked';
             st.reason = BALK_REASON;
-            for (const id of eligibleIds) this.soldiers[id].path = null;
+            this.halt(eligibleIds);
           } else if (verdict === 'cautious') {
             if (order.kind === 'fast') st.order = { ...order, kind: 'move' };
             const eff = st.order!;
             st.phase = 'bounding_a';
             st.reason = 'moving cautiously';
             const [a, b] = this.teamHalves(team);
-            for (const id of b) this.soldiers[id].path = null;
-            this.dispatchLeg(a, eff);
+            this.halt(b);
+            this.dispatchLeg(this.offTask(a), eff);
           }
         }
       } else if (order.kind === 'assault' && st.phase === 'executing' && (this.tick + team.id) % ASSAULT_REPATH_TICKS === 0) {

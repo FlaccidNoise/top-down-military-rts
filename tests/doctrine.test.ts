@@ -303,6 +303,45 @@ describe('AI commander doctrine', () => {
   });
 
 
+  it('an order the team is already carrying out is not sent again (#763)', () => {
+    // Every orderTeam call re-rolls compliance, restarts a bound and re-paths
+    // each man, and the re-path drops whatever rescue or hand-over he was on.
+    // The commander used to send its whole order sheet every 5 s eval.
+    const sim = new Sim(new GameMap(140, 60), 100);
+    const post = { x: 120, y: 30 };
+    const mg = sim.addSquad('red', 'MG', [
+      { name: 'G', weapon: 'mg42', x: 40.5, y: 30.5 },
+      { name: 'A1', weapon: 'kar98k', x: 41.5, y: 29.5 },
+      { name: 'A2', weapon: 'kar98k', x: 41.5, y: 31.5 },
+    ]);
+    const rifle = sim.addSquad(
+      'red',
+      'Rifle',
+      Array.from({ length: 6 }, (_, i) => ({ name: `R${i}`, weapon: 'kar98k' as const, x: 40.5, y: 20.5 + i, xp: 20 })),
+    );
+    sim.addSquad('blue', 'Garrison', [
+      { name: 'B1', weapon: 'kar98k', x: 122.5, y: 30.5 },
+      { name: 'B2', weapon: 'kar98k', x: 122.5, y: 31.5 },
+    ]);
+    const commander = new RedCommander({ side: 'red', stance: 'attack', posts: { [mg.id]: post, [rifle.id]: post } });
+
+    let sent = 0;
+    let repeats = 0;
+    const orderTeam = sim.orderTeam.bind(sim);
+    sim.orderTeam = (teamId, order, used) => {
+      const st = sim.teams[teamId].orderState;
+      sent++;
+      if (st.order && st.phase !== 'balked' && st.order.kind === order.kind && Math.hypot(st.order.x - order.x, st.order.y - order.y) <= 5) repeats++;
+      orderTeam(teamId, order, used);
+    };
+    for (let i = 0; i < 3000; i++) {
+      commander.update(sim);
+      sim.step();
+    }
+    expect(sent).toBeGreaterThan(2); // the commander did command
+    expect(repeats).toBe(0);
+  });
+
   it('reserve still commits when a maneuver team bleeds out mid-assault (the executing-assault guard must not skip the loss check)', () => {
     // Regression: the "an executing charge owns its team" continue-guard sits
     // above the reserve-commit check. If it short-circuits the loss check too,

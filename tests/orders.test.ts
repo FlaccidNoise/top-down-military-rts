@@ -182,6 +182,69 @@ describe('order vocabulary: move/fast/sneak executor', () => {
   });
 });
 
+// #763. An order in progress stays in progress: it is not declared finished
+// while its men still wait on a path search, a bounding leg is not a new order
+// to the man who stopped to treat a casualty, and a bound that can get no
+// closer ends instead of alternating forever.
+describe('orders in progress (#763)', () => {
+  it('a commit larger than the per-tick path budget keeps every order until it has been walked', () => {
+    const sim = new Sim(new GameMap(80, 40), 4);
+    for (let q = 0; q < 4; q++) {
+      sim.addSquad(
+        'blue',
+        `s${q}`,
+        Array.from({ length: 4 }, (_, i) => ({ name: `${q}${i}`, weapon: 'garand' as const, x: 5.5 + i, y: 4.5 + q * 8 })),
+      );
+    }
+    for (const t of sim.teams) sim.orderTeam(t.id, { kind: 'move', x: 60, y: 4.5 + t.id * 8 });
+    // 16 men against a budget of 6 searches a tick: most are still queued.
+    expect(sim.soldiers.filter((s) => s.path !== null).length).toBeLessThan(sim.soldiers.length);
+    sim.step();
+    for (const t of sim.teams) expect(t.orderState.order?.kind).toBe('move'); // was null for the queued teams
+    for (let i = 0; i < 30 * 60 && sim.teams.some((t) => t.orderState.order); i++) sim.step();
+    for (const t of sim.teams) {
+      expect(t.orderState.phase).toBe('idle');
+      for (const id of t.soldierIds) expect(Math.abs(sim.soldiers[id].x - 60)).toBeLessThan(6);
+    }
+  });
+
+  it('a bounding team leaves its rescuer on the casualty, and finishes without him', () => {
+    const sim = new Sim(new GameMap(80, 20), 6);
+    sim.addSquad('blue', 'a', [
+      { name: 'A', weapon: 'garand', x: 10.5, y: 10.5, courage: 1 },
+      { name: 'B', weapon: 'garand', x: 10.5, y: 11.5, courage: 1 },
+      { name: 'C', weapon: 'garand', x: 10.5, y: 12.5, courage: 1 },
+      { name: 'D', weapon: 'garand', x: 10.5, y: 13.5, courage: 1 },
+    ]);
+    for (const s of sim.soldiers) for (const m of sim.soldiers) if (m.id !== s.id) s.bonds[m.id] = 1;
+    const d = sim.soldiers[3];
+    sim.soldiers[0].suppression = 0.5; // under fire at issuance: the team bounds
+    sim.orderTeam(0, { kind: 'move', x: 50, y: 11.5 }); // 40 m, several 15 m legs
+    expect(sim.teams[0].orderState.phase).toBe('bounding_a');
+    d.pain = 1; // goes down on the start line
+
+    let interrupted = 0;
+    let flips = 0;
+    let prevPhase = sim.teams[0].orderState.phase;
+    const hadTask = sim.soldiers.map(() => false);
+    for (let i = 0; i < 30 * 90 && (sim.teams[0].orderState.order || !d.stabilized); i++) {
+      sim.step();
+      for (const s of sim.soldiers) {
+        const has = s.task?.kind === 'rescue';
+        if (hadTask[s.id] && !has && !d.stabilized) interrupted++;
+        hadTask[s.id] = has;
+      }
+      const phase = sim.teams[0].orderState.phase;
+      if (phase !== prevPhase && phase.startsWith('bounding') && prevPhase.startsWith('bounding')) flips++;
+      prevPhase = phase;
+    }
+    expect(d.stabilized).toBe(true);
+    expect(interrupted).toBe(0); // each alternation used to re-path the rescuer and drop his task
+    expect(sim.teams[0].orderState.phase).toBe('idle'); // the order ended
+    expect(flips).toBeLessThan(12); // a handful of legs — not one flip a tick
+  });
+});
+
 describe('dangerScore: squad-scoped recent casualty', () => {
   it("a sister team's recent casualty raises this team's danger by exactly the flat term", () => {
     const sim = new Sim(new GameMap(40, 20), 20);
