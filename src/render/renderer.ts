@@ -4,7 +4,7 @@ import { MELEE_STRIKE_RANGE, stanceOf, type BoomEvent, type BreachEvent, type Me
 import { gunOf, tapsOf } from './audio';
 import type { Camera } from './camera';
 import { DecalLayer } from './decals';
-import { bandFor, CRAWL_FRAMES, DUDE_SCALE, getShadowSprite, getSprite, glintSprite, headOffset, kitVariant, SPRITE_MIN_SCALE, SPRITE_SPAN, tier, WALK_FRAMES, weaponClass, type Pose } from './dudes';
+import { bandFor, CRAWL_FRAMES, DUDE_SCALE, getShadowSprite, getSprite, glintSprite, headOffset, kitVariant, restPose, restTurn, SPRITE_MIN_SCALE, SPRITE_SPAN, tier, WALK_FRAMES, weaponClass, type Pose } from './dudes';
 import { emplacementBandFor, emplacementFootprintRadius, emplacementSpan, getEmplacementShadow, getEmplacementSprite } from './emplacements';
 import { ballistic, blastOf, blastScale, blit, FLASH, flashClass, fxDetail, fxScale, hazeBand, hotPass, lightPool, lobHeight, SPIKE_SIDES, throwShownFrom, traceOvershoot, vignette, WIND, type GrenadeThrow, type BlastSpec, type FlashSpec, type FxKind, type Overshoot } from './fx';
 import { SUN, shadowSoftAlpha, sun } from './light';
@@ -59,6 +59,7 @@ interface RState {
   wx: number; // drawn position (a dragged casualty trails behind his rescuer)
   wy: number;
   dfacing: number; // drawn facing, including the dead man's per-id jitter
+  turn: number; // how far off his heading he stands at rest (restTurn), eased so stopping is not a snap. NaN until first drawn
   // Reactions. Each is a moment on the fx clock and a unit vector; the draw
   // turns them into a few pixels of offset that decay. None of it moves the
   // man in the sim — he is drawn off his position, never put there.
@@ -328,6 +329,11 @@ const TEAM = { blue: '#5b9bd5', red: '#d05c50' } as const;
 // Poses drawn without a helmet on the head — nothing for the glint to sit on.
 const BAREHEAD = new Set<Pose>(['dead', 'surrender2']);
 const HULL_SHADOW_OFF = 0.58;
+// Stride cycles per metre at a run, against the walk's 1.4: fewer, because
+// the stride is longer. At the 2.8 m/s the sim runs a man it is still more of
+// them a second than the walk (3.4 against 2.5), without the six frames
+// strobing.
+const RUN_CADENCE = 1.2;
 // A 30-tonne hull blocks more light than a man does: the soft-layer alpha the
 // soldiers use reads as a smudge under something this big.
 const HULL_SHADOW_ALPHA = 0.22;
@@ -337,13 +343,16 @@ const EMPL_SHADOW_OFF = 0.35;
 const SHADOW_OFF: Record<Pose, number> = {
   idle: 0.42,
   walk: 0.42,
+  run: 0.42,
   aim: 0.42,
   reload: 0.42,
   melee: 0.42,
   surrendered: 0.42,
   surrender2: 0.42,
   drag: 0.42,
-  kneel: 0.3,
+  // Half a standing man's throw, where his height is nearer two thirds: the
+  // shadow is the one height cue a plan view has, so the step is overstated.
+  kneel: 0.2,
   aid: 0.3,
   crawl: 0.12,
   prone: 0.12,
@@ -1208,7 +1217,7 @@ export class Renderer {
       ctx.translate(x, y);
       ctx.rotate(sunA);
       ctx.translate(off * lm * cam.scale, 0);
-      ctx.scale(stretch(off > 0.2 ? 1.18 : 1.05), 1);
+      ctx.scale(stretch(off > 0.25 ? 1.18 : 1.05), 1);
       ctx.rotate(-sunA);
       ctx.rotate(st.dfacing);
       ctx.drawImage(getShadowSprite(st.pose, st.frame, weaponClass(s.weapon), band), -pad / 2, -pad / 2, pad, pad);
@@ -2019,6 +2028,7 @@ export class Renderer {
         wx: s.x,
         wy: s.y,
         dfacing: s.side === 'blue' ? 0 : Math.PI,
+        turn: NaN,
         kickAt: -1e9,
         kickTaps: 1,
         kickGap: 0,
@@ -2123,12 +2133,13 @@ export class Renderer {
       frame = Math.floor((st.phase % 1) * CRAWL_FRAMES);
     } else if (stance === 'prone') pose = 'prone';
     else if (moved > 1e-4) {
-      pose = 'walk';
-      st.phase += moved * 1.4;
+      // A man sent fast or into an assault, or running for his life, runs.
+      const kind = this.sim.teams[s.teamId]?.orderState.order?.kind;
+      const running = s.fleeing || kind === 'fast' || kind === 'assault';
+      pose = running ? 'run' : 'walk';
+      st.phase += moved * (running ? RUN_CADENCE : 1.4);
       frame = Math.floor((st.phase % 1) * WALK_FRAMES);
-    } else if (s.reloading > 0 && s.targetId >= 0 && tier(band) >= 2) pose = 'reload';
-    else if (stance === 'crouch') pose = 'kneel';
-    else pose = s.targetId >= 0 ? 'aim' : 'idle';
+    } else [pose, frame] = restPose(stance === 'crouch', s.reloading > 0 && !s.pickingUp, s.targetId >= 0, s.id);
 
     if (s.alive) {
       let desired = st.facing;
@@ -2188,7 +2199,12 @@ export class Renderer {
     }
 
     const spr = getSprite(s.side, s.weapon, pose, frame, band, kitVariant(s.role, s.xp, band));
-    const facing = s.alive ? (dragFacing ?? st.facing) : st.facing + ((s.id * 2654435761) % 100) / 100 - 0.5;
+    // The first frame a man is drawn takes the turn outright: the ease runs
+    // on the wall clock, and a scene shot on its first frame must not depend
+    // on how long that frame took.
+    const turn = restTurn(pose, s.targetId >= 0, s.id);
+    st.turn = Number.isNaN(st.turn) ? turn : st.turn + (turn - st.turn) * Math.min(1, dt * 6);
+    const facing = s.alive ? (dragFacing ?? st.facing + st.turn) : st.facing + ((s.id * 2654435761) % 100) / 100 - 0.5;
     st.pose = pose;
     st.frame = frame;
     st.wx = wx;

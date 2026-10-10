@@ -1,6 +1,7 @@
 import { WEAPONS, type Role, type WeaponKey } from '../sim/data';
 import type { Side } from '../sim/sim';
 import { AO_ALPHA, SUN } from './light';
+import { hash } from './noise';
 import { SpriteCache } from './spritecache';
 import { view } from './view';
 
@@ -12,6 +13,7 @@ import { view } from './view';
 export type Pose =
   | 'idle'
   | 'walk'
+  | 'run'
   | 'crawl'
   | 'aim'
   | 'reload'
@@ -28,6 +30,13 @@ export type Pose =
   | 'surrendered'
   | 'surrender2';
 export const WALK_FRAMES = 6;
+// `idle` and `kneel` use the frame for how the man holds himself, not for
+// time. Idle: three ways of carrying the weapon. Kneel: aimed, reloading, and
+// two ways of resting. Picked per man by restPose.
+export const IDLE_CARRIES = 3;
+export const KNEEL_AIM = 0;
+export const KNEEL_RELOAD = 1;
+export const KNEEL_REST = 2; // and KNEEL_REST + 1
 export const CRAWL_FRAMES = 4; // 0 left knee up, 1 mid, 2 right knee up, 3 mid
 export const MELEE_FRAMES = 4; // 0 guard, 1 windup, 2 thrust, 3 recover
 export const SPRITE_SPAN = 3.6; // meters covered by the (square) sprite canvas
@@ -162,7 +171,7 @@ export function kitVariant(role: Role, xp: number, band: number): number {
 // Poses that actually show a torso and a helmet from above. A corpse or a man
 // with his hands up carries no role marks — and, more to the point, must not
 // multiply the keyspace with variants nobody can see.
-const VARIANT_POSES = new Set<Pose>(['idle', 'walk', 'crawl', 'aim', 'reload', 'kneel', 'prone', 'melee']);
+const VARIANT_POSES = new Set<Pose>(['idle', 'walk', 'run', 'crawl', 'aim', 'reload', 'kneel', 'prone', 'melee']);
 
 function cap(g: Ctx, x0: number, y0: number, x1: number, y1: number, w: number, color: string): void {
   g.strokeStyle = paint(color);
@@ -635,7 +644,7 @@ function contactShadow(g: Ctx): void {
 // Shared standing body: legSwing in [-1,1] (0 = feet hidden under torso).
 // `shouldered` brings the stock to the cheek — the difference between holding
 // a stick and firing a rifle.
-function standing(g: Ctx, k: Kit, w: WeaponKey, gunAngle: number, legSwing: number, lean: number, band: number, shouldered = false): void {
+function standing(g: Ctx, k: Kit, w: WeaponKey, gunAngle: number, legSwing: number, lean: number, band: number, shouldered = false, look = 0): void {
   if (legSwing !== 0) {
     for (const side of [-1, 1] as const) {
       const lx = side * legSwing * 0.34;
@@ -660,8 +669,13 @@ function standing(g: Ctx, k: Kit, w: WeaponKey, gunAngle: number, legSwing: numb
   gun(g, w, gx, gy, gunAngle, band);
   dot(g, gx, gy, 0.055, k.skin);
   dot(g, fx, fy, 0.055, k.skin);
-  helmet(g, k, 0.04 + lean, -bob + (shouldered ? 0.06 : 0), band); // cheek down to the stock
+  helmet(g, k, 0.04 + lean, look - bob + (shouldered ? 0.06 : 0), band); // cheek down to the stock
 }
+
+// How far the muzzle swings off the line of fire in a reload. It was 0.5 rad,
+// which is a read at 48 px/m and nothing at 12: the weapon has to leave the
+// silhouette's axis far enough to show in a sprite ten pixels across.
+const RELOAD_DIP = 0.85;
 
 // Reload: the weapon is out of the fight and it must LOOK out of the fight —
 // canted down, pulled back to the body, support hand up at the receiver, head
@@ -673,7 +687,7 @@ function reload(g: Ctx, k: Kit, w: WeaponKey, band: number): void {
   const gy = 0.16;
   cap(g, 0.02, 0.24, gx, gy, 0.12, k.sleeve);
   cap(g, 0.02, -0.22, 0.2, -0.14, 0.12, k.sleeve); // support hand up at the breech
-  gun(g, w, gx, gy, 0.5, band);
+  gun(g, w, gx, gy, RELOAD_DIP, band);
   dot(g, gx, gy, 0.055, k.skin);
   dot(g, 0.2, -0.14, 0.055, k.skin);
   if (tier(band) >= 3) cap(g, 0.22, -0.16, 0.28, -0.1, 0.05, '#6b6250'); // fresh clip in the working hand
@@ -711,28 +725,66 @@ function crawl(g: Ctx, k: Kit, w: WeaponKey, frame: number, band: number): void 
   helmet(g, k, 0.42, frame === 1 ? 0.02 : frame === 3 ? -0.02 : 0, band);
 }
 
-// Kneeling, between idle and prone: one leg tucked, torso compressed, weapon
-// aimed level (S8).
-function kneel(g: Ctx, k: Kit, w: WeaponKey, band: number): void {
-  boot(g, k, -0.1, 0.16, 0.075, band); // planted boot
-  if (tier(band) >= 2) cap(g, -0.16, 0.18, -0.1, 0.16, 0.045, '#2c261f'); // rear heel up off the ground
-  dot(g, -0.14, -0.12, 0.075, '#3a3128'); // tucked knee
-  cap(g, -0.14, -0.12, 0.05, -0.05, 0.13, k.trousers); // bent leg up to the hip
-  if (tier(band) >= 2) dot(g, 0.12, -0.13, 0.075, k.trousers); // front knee forward of the boot
+// Kneeling. From straight above, a standing man is a pair of shoulders and a
+// helmet: his legs are under him. A kneeling man is the one figure whose legs
+// show while his body stays upright, and that is the whole read: the rear
+// shin lies out behind him on the ground, the front thigh and knee stick out
+// ahead, and the back hunches over them, so the footprint is half as long
+// again as a standing man's and the helmet rides forward of the shoulders.
+// (The old pose kept both knees inside the torso outline. From above it WAS
+// the standing pose with the rifle level.) `mode` is a KNEEL_* frame.
+function kneel(g: Ctx, k: Kit, w: WeaponKey, mode: number, band: number): void {
+  // rear leg: knee down under the right hip, shin and upturned sole trailing.
+  // front leg: thigh out over the planted foot, the knee the highest point.
+  const legs: [number, number, number, number][] = [
+    [-0.1, 0.15, -0.54, 0.22],
+    [0.04, -0.16, 0.38, -0.24],
+  ];
+  // The legs carry the team rim, as a prone body does. Dark trousers on
+  // pasture are the same value as the pasture: without the rim the one thing
+  // that marks the pose is the one thing that cannot be seen.
+  const m = haloMult(band);
+  if (!mono) for (const [x0, y0, x1, y1] of legs) cap(g, x0, y0, x1, y1, 0.14 + 0.1 * m, withAlpha(k.outline, m));
+  // A thigh and a shin lying level face the sky, where a standing leg faces
+  // the horizon: they take the light the torso takes.
+  // Lit, a leg is close to the value of the grass he kneels on, and up close
+  // the rim has faded to a whisper: the dark edge the torso has holds it.
+  const lit = mix(k.trousers, k.uniform, 0.5);
+  if (!mono) for (const [x0, y0, x1, y1] of legs) cap(g, x0, y0, x1, y1, 0.14 + Math.max(0.05, 2 * hair(band)), 'rgba(0,0,0,0.3)');
+  for (const [x0, y0, x1, y1] of legs) cap(g, x0, y0, x1, y1, 0.14, lit);
+  boot(g, k, -0.54, 0.22, 0.085, band);
+  boot(g, k, 0.45, -0.25, 0.065, band); // toe showing past the knee
+  dot(g, 0.38, -0.24, 0.095, mix(k.trousers, k.uniform, 0.85)); // the kneecap, the highest point of the leg
   g.save();
+  g.translate(0.05, 0);
   g.rotate(-0.1); // same right-shoulder bias as the standing firing pose
-  torso(g, k, 0.2, 0.27, band, w);
+  torso(g, k, 0.28, 0.25, band, w); // hunched: the back shows, longer than the shoulders are wide
   g.restore();
-  const gx = 0.1;
-  const gy = 0.04;
   const fore = gunFore(w);
-  const fx = gx + fore;
-  cap(g, 0.02, 0.18, gx, gy, 0.12, k.sleeve);
-  cap(g, 0.02, -0.2, fx, gy, 0.12, k.sleeve);
-  gun(g, w, gx, gy, 0, band);
+  if (mode === KNEEL_RELOAD) {
+    const gx = 0.1;
+    const gy = 0.14;
+    cap(g, 0.06, 0.2, gx, gy, 0.12, k.sleeve);
+    cap(g, 0.08, -0.2, 0.26, -0.06, 0.12, k.sleeve); // support hand up at the breech
+    gun(g, w, gx, gy, RELOAD_DIP, band);
+    dot(g, gx, gy, 0.055, k.skin);
+    dot(g, 0.26, -0.06, 0.055, k.skin);
+    helmet(g, k, 0.15, 0.06, band);
+    return;
+  }
+  // Aimed, the support elbow is on the front knee and the weapon is level.
+  // At rest it comes off the shoulder: low ready, or laid across the thigh.
+  const ga = mode === KNEEL_AIM ? 0 : mode === KNEEL_REST ? -0.4 : 0.55;
+  const gx = mode === KNEEL_AIM ? 0.14 : 0.16;
+  const gy = mode === KNEEL_AIM ? 0.05 : mode === KNEEL_REST ? 0.12 : 0.04;
+  const fx = gx + Math.cos(ga) * fore;
+  const fy = gy + Math.sin(ga) * fore;
+  cap(g, 0.06, 0.19, gx, gy, 0.12, k.sleeve);
+  cap(g, 0.08, -0.2, fx, fy, 0.12, k.sleeve);
+  gun(g, w, gx, gy, ga, band);
   dot(g, gx, gy, 0.055, k.skin);
-  dot(g, fx, gy, 0.055, k.skin);
-  helmet(g, k, 0.06, 0.05, band);
+  dot(g, fx, fy, 0.055, k.skin);
+  helmet(g, k, 0.15, mode === KNEEL_AIM ? 0.05 : mode === KNEEL_REST ? 0.01 : -0.02, band);
 }
 
 function proneBody(g: Ctx, k: Kit, legs: [number, number, number, number][], band: number): void {
@@ -973,9 +1025,12 @@ function drawDude(g: Ctx, side: Side, weapon: WeaponKey, pose: Pose, frame: numb
   const k = KITS[side];
   contactShadow(g);
   switch (pose) {
-    case 'idle':
-      standing(g, k, weapon, -0.55, 0, 0, band);
+    case 'idle': {
+      // port arms, low ready, high port — and the head not always dead ahead
+      const [ga, lean, look] = [[-0.55, 0, 0], [-0.25, 0.02, 0.035], [-0.85, -0.01, -0.035]][frame];
+      standing(g, k, weapon, ga, 0, lean, band, false, look);
       break;
+    }
     case 'aim':
       standing(g, k, weapon, 0, 0, 0.05, band, true);
       break;
@@ -987,11 +1042,18 @@ function drawDude(g: Ctx, side: Side, weapon: WeaponKey, pose: Pose, frame: numb
       standing(g, k, weapon, -0.3 + swing * 0.12, swing, 0.02, band);
       break;
     }
+    case 'run': {
+      // A longer stride, the body thrown forward over it, the weapon up across
+      // the chest and pumping with the arms.
+      const swing = Math.sin((frame / WALK_FRAMES) * Math.PI * 2);
+      standing(g, k, weapon, -0.8 + swing * 0.2, swing * 1.45, 0.11, band);
+      break;
+    }
     case 'crawl':
       crawl(g, k, weapon, frame, band);
       break;
     case 'kneel':
-      kneel(g, k, weapon, band);
+      kneel(g, k, weapon, frame, band);
       break;
     case 'prone':
       prone(g, k, weapon, band);
@@ -1027,6 +1089,25 @@ function drawDude(g: Ctx, side: Side, weapon: WeaponKey, pose: Pose, frame: numb
       surrenderDoffed(g, k, band);
       break;
   }
+}
+
+// What a man who is neither moving nor down is drawn as. Pure, and keyed on
+// his id alone where it varies, so a squad at rest is not twelve copies of one
+// figure and a static scene is still the same picture on every run.
+export function restPose(crouched: boolean, loading: boolean, aiming: boolean, id: number): [Pose, number] {
+  const roll = hash(id, 0, 31);
+  if (crouched) return ['kneel', loading ? KNEEL_RELOAD : aiming ? KNEEL_AIM : KNEEL_REST + (roll < 0.5 ? 0 : 1)];
+  if (loading) return ['reload', 0];
+  if (aiming) return ['aim', 0];
+  return ['idle', Math.min(IDLE_CARRIES - 1, (roll * IDLE_CARRIES) | 0)];
+}
+
+// How far off his heading a man at rest stands, in radians: nobody in a
+// waiting squad faces the same way to the degree. Zero for a man with a
+// target, who faces it.
+export const REST_TURN = 0.7;
+export function restTurn(pose: Pose, aiming: boolean, id: number): number {
+  return (pose === 'idle' || pose === 'kneel') && !aiming ? (hash(id, 0, 32) - 0.5) * REST_TURN : 0;
 }
 
 const DUDE_BUDGET = 48 << 20; // bytes of baked canvas; a band-48 dude is ~117 KB
@@ -1106,8 +1187,9 @@ const HEAD_OFFSET: Record<Pose, [number, number]> = {
   aim: [0.04, 0.06],
   reload: [0.02, 0.03],
   walk: [0.04, 0],
+  run: [0.15, 0],
   crawl: [0.42, 0],
-  kneel: [0.06, 0.05],
+  kneel: [0.15, 0.03],
   prone: [0.42, 0],
   downed: [0.42, 0.05],
   dead: [0.42, 0.12],
