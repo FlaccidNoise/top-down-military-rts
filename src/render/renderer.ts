@@ -154,6 +154,35 @@ interface Firing {
   seen: boolean; // fog answer, re-tested on the fires' throttle
   seenTick: number;
 }
+// A round going home. The mist it knocks out of a man, thrown on down the
+// shot's line, and once, at the moment it lands, the spatter it leaves on the
+// ground past him. Moderate on purpose: a dark puff and a few drops.
+interface Hit {
+  x: number; // where he was hit, world
+  y: number;
+  ux: number; // the round's bearing
+  uy: number;
+  at: number; // ms it lands, fx clock
+  kill: boolean;
+  k: number; // hash key
+  marked: boolean; // spatter stamped
+}
+const HIT_MS = 380;
+const MAX_HITS = MOBILE ? 12 : 24;
+
+// A pool still spreading under a body: stamped into the decal layer one layer
+// at a time (decals.ts pool), then forgotten.
+interface Bleed {
+  x: number;
+  y: number;
+  r: number; // its final radius, m
+  at: number; // ms, fx clock
+  n: number; // layers stamped so far
+  k: number;
+}
+const POOL_LAYERS = 4;
+const POOL_STEP_MS = 800; // 3 s to full size
+
 const HEAT_PER_ROUND = 0.2;
 const GUN_COOL_MS = 2200; // heat's time constant
 const MAX_FIRING = MOBILE ? 16 : 40;
@@ -353,6 +382,9 @@ export class Renderer {
   private marks = new MarkLayer();
   private pall = new PallLayer();
   private firing = new Map<number, Firing>();
+  private hits: Hit[] = [];
+  private bleeds: Bleed[] = [];
+  private hitSeq = 0;
   private barrageMarks: { x: number; y: number; tick: number }[] = [];
   private strafeMarks: { x: number; y: number; tick: number }[] = [];
   private planes: Plane[] = [];
@@ -532,13 +564,19 @@ export class Renderer {
       st.kux = ux;
       st.kuy = uy;
     }
-    // A man who is hit and lives jerks when the round arrives.
+    // A man who is hit and lives jerks when the round arrives, and either way
+    // it knocks a dark puff out of him — if the player can see him. A tracer
+    // is ungated; blood on a man in the fog is the sim telling on him.
     const victim = e.hit && e.targetId !== undefined ? this.sim.soldiers[e.targetId] : undefined;
     if (victim) {
       const st = this.state(victim);
       st.hitAt = now + TRAVEL_MS;
       st.hux = ux;
       st.huy = uy;
+      if (this.sim.soldierVisibleTo(PLAYER_SIDE, victim)) {
+        if (this.hits.length >= MAX_HITS) this.hits.shift();
+        this.hits.push({ x: e.tx, y: e.ty, ux, uy, at: now + TRAVEL_MS, kill: e.kill, k: this.hitSeq++, marked: false });
+      }
     }
     // A main gun carries no weapon key and leaves from the hull's own
     // position. The drawn turret is snapped onto the shot it just fired — the
@@ -627,6 +665,42 @@ export class Renderer {
       if (x >= 0 && y >= 0 && x <= view.w && y <= view.h) return true;
     }
     return false;
+  }
+
+  // The puff at each hit, and its spatter. Off the cool pass, under the grade.
+  private drawHits(ctx: CanvasRenderingContext2D, cam: Camera, now: number, cw: number, ch: number): void {
+    if (this.hits.length === 0) return;
+    const F = fxScale(cam.scale);
+    this.hits = this.hits.filter((h) => now - h.at < HIT_MS);
+    for (const h of this.hits) {
+      const age = now - h.at;
+      if (age < 0) continue; // the round is still in the air
+      if (!h.marked) {
+        h.marked = true;
+        this.decals.spatter(h.x, h.y, h.ux, h.uy, h.kill ? 6 : 3, h.k);
+      }
+      const [x, y] = cam.worldToScreen(h.x, h.y, cw, ch);
+      if (!this.onScreen(x, y, cw, ch, 3 * F)) continue;
+      const t = age / HIT_MS;
+      const big = h.kill ? 1.3 : 1;
+      for (let i = 0; i < 3; i++) {
+        const along = (0.1 + (1 - (1 - t) ** 2) * (0.45 + i * 0.35)) * F;
+        const lat = (hash(h.k, i, 630) - 0.5) * 0.3 * F;
+        blit(ctx, 'blood', x + h.ux * along - h.uy * lat, y + h.uy * along + h.ux * lat, (0.13 + i * 0.05 + t * 0.22) * big * F, 0.8 * (1 - t) ** 1.3);
+      }
+    }
+  }
+
+  // Grow the pools: each takes its next layer when its time comes.
+  private spreadPools(now: number): void {
+    for (let i = this.bleeds.length - 1; i >= 0; i--) {
+      const b = this.bleeds[i];
+      while (b.n < POOL_LAYERS && now - b.at >= b.n * POOL_STEP_MS) {
+        this.decals.pool(b.x, b.y, b.r * (0.4 + (0.6 * b.n) / (POOL_LAYERS - 1)), b.k * 7 + b.n);
+        b.n++;
+      }
+      if (b.n >= POOL_LAYERS) this.bleeds.splice(i, 1);
+    }
   }
 
   // Fog test for an effect anchored to a point rather than to a man.
@@ -778,6 +852,7 @@ export class Renderer {
     ctx.strokeStyle = 'rgba(18,16,12,0.7)';
     ctx.lineWidth = 2;
     ctx.strokeRect(mx0, my0, mx1 - mx0, my1 - my0);
+    this.spreadPools(now);
     this.decals.draw(ctx, cam, cw, ch);
     this.marks.draw(ctx, cam, cw, ch);
     this.roofs.update(this.sim, cam, dt || 1 / 60);
@@ -1953,17 +2028,19 @@ export class Renderer {
       st.smy = wy;
     }
 
-    // permanent blood pool, stamped once into decals the first frame death is observed
+    // The pool under a dead man, started the first frame his death is seen. It
+    // spreads over three seconds (spreadPools) and it starts where he comes to
+    // rest, not where he was hit: the slide above ends on it.
     if (!s.alive && st.wasAlive) {
       st.wasAlive = false;
       const dbl = Math.max(s.bloodLoss, s.wounds.length ? 0.35 : 0.2);
-      this.decals.pool(wx, wy, 0.5 + Math.min(1, dbl) * 0.4);
+      this.bleeds.push({ x: s.x + st.restX + st.fdx * st.fall, y: s.y + st.restY + st.fdy * st.fall, r: 0.55 + Math.min(1, dbl) * 0.45, at: this.frameNow, n: 0, k: s.id });
     }
 
     // dynamic blood pool under the immobile wounded, still alive
     if (s.alive && s.downed && s.bloodLoss > 0.02) {
       const r = (0.25 + Math.min(1, s.bloodLoss) * 0.5) * cam.scale;
-      ctx.fillStyle = 'rgba(92,15,12,0.5)';
+      ctx.fillStyle = 'rgba(104,16,12,0.6)';
       ctx.beginPath();
       ctx.ellipse(x + cam.scale * 0.1, y + cam.scale * 0.08, r, r * 0.8, st.facing, 0, Math.PI * 2);
       ctx.fill();
@@ -2184,6 +2261,7 @@ export class Renderer {
     this.tracers = this.tracers.filter((t) => now - t.at < t.life);
     for (const t of this.tracers) this.drawShotCool(ctx, cam, t, now, cw, ch);
     this.drawGunSmoke(ctx, cam, now, cw, ch);
+    this.drawHits(ctx, cam, now, cw, ch);
 
     this.booms = this.booms.filter((b) => now - b.at < b.spec.hang);
     for (const b of this.booms) this.drawBoom(ctx, cam, b, now, cw, ch, tier);

@@ -126,7 +126,7 @@ for (const [k, ages] of Object.entries(r.legibility))
 // the renderer, or its cost lands in BOTH arms and the delta hides it. The
 // fires, the firing positions and the pall are not plain arrays and are
 // stashed by hand in the loop below.
-const STORES = ['booms', 'tracers', 'moraleFx', 'breaches', 'meleeFx', 'birds'];
+const STORES = ['booms', 'tracers', 'moraleFx', 'breaches', 'meleeFx', 'birds', 'hits'];
 
 async function wholeFrame(view, scale) {
   const { browser, page } = await launch({ device: DEVICE });
@@ -165,10 +165,13 @@ async function wholeFrame(view, scale) {
         const [kind, r] = KINDS[i % KINDS.length];
         R.addBooms([{ x: x + ((i % 4) - 1.5) * 5, y: y + (((i / 4) | 0) - 1) * 5, kind, ...(r === undefined ? {} : { r }) }], T - i * 180);
       }
+      // Real ids on the shots, so the firer's kick, the victim's jerk and the
+      // blood off a hit are all in the load.
+      const men = g.sim.soldiers.filter((s) => s.alive);
       for (let i = 0; i < 60; i++) {
         const a = i * 0.7;
         R.addEvents(
-          [{ fx: x + Math.cos(a) * 8, fy: y + Math.sin(a) * 8, tx: x - Math.cos(a) * 9, ty: y - Math.sin(a) * 9, hit: i % 3 === 0, kill: i % 9 === 0, weapon: i % 3 === 0 ? 'mg42' : 'garand' }],
+          [{ fx: x + Math.cos(a) * 8, fy: y + Math.sin(a) * 8, tx: x - Math.cos(a) * 9, ty: y - Math.sin(a) * 9, hit: i % 3 === 0, kill: i % 9 === 0, weapon: i % 3 === 0 ? 'mg42' : 'garand', shooterId: men[i % men.length].id, targetId: men[(i * 7 + 3) % men.length].id }],
           T - (i % 6) * 40
         );
       }

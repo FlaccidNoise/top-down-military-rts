@@ -27,6 +27,7 @@ export type FxKind =
   | 'shock'
   | 'dirt'
   | 'pall'
+  | 'blood'
   | 'spark'
   | 'leaf'
   | 'chunk0'
@@ -536,6 +537,11 @@ function bake(kind: FxKind, px: number): HTMLCanvasElement {
       break;
     case 'dirt':
       puff(g, px, '70,55,38', 5);
+      break;
+    case 'blood':
+      // The mist off a hit. Dark, and well short of pure red: on this palette
+      // a saturated red is the UI's colour for bad news, and this is paint.
+      puff(g, px, '88,14,12', 7);
       break;
     case 'pall':
       // Paler and warmer than 'smoke' on purpose: sim smoke blocks sight and

@@ -95,15 +95,19 @@ function haloMult(band: number): number {
   return 0.22;
 }
 
+// A dead man keeps his uniform. The kit dulls a little toward dark wet earth
+// (never toward pale grey, S6) so the living still stand out beside him, but
+// at the 45% this used to be both armies' dead were the same brown mannequin:
+// a corpse has to stay olive or feldgrau to read as one of ours or theirs.
 function deadKit(k: Kit): Kit {
-  const earth = '#332c22'; // dark wet-earth tone — dead kits darken toward the ground, not pale grey (S6)
+  const earth = '#332c22';
   return {
     side: k.side,
-    uniform: mix(k.uniform, earth, 0.45),
-    sleeve: mix(k.sleeve, earth, 0.45),
-    trousers: mix(k.trousers, earth, 0.45),
-    helmet: mix(k.helmet, earth, 0.45),
-    skin: mix(k.skin, earth, 0.3),
+    uniform: mix(k.uniform, earth, 0.16),
+    sleeve: mix(k.sleeve, earth, 0.16),
+    trousers: mix(k.trousers, earth, 0.16),
+    helmet: mix(k.helmet, earth, 0.16),
+    skin: mix(k.skin, earth, 0.14),
     outline: k.outline,
   };
 }

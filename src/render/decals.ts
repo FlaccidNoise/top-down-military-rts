@@ -4,8 +4,8 @@ import { hash } from './noise';
 // Persistent battle scarring — mortar scorches, blood smears from dragged
 // casualties. Drawn once into a world-aligned offscreen canvas and blitted
 // each frame between terrain and soldiers. Render-only. Blast scars (scorch,
-// grit) take their variety from `hash` of the position, so the VFX gate
-// reshoots the same crater; the smears still use Math.random.
+// grit) and blood (pool, spatter) take their variety from `hash`, so the VFX
+// gate reshoots the same crater; the smears still use Math.random.
 
 const PPM = 8; // px per meter; soft marks don't need more
 
@@ -142,17 +142,42 @@ export class DecalLayer {
     g.restore();
   }
 
-  // Permanent blood pool stamped once at death — earth-dark red, soft edge.
-  pool(x: number, y: number, r: number): void {
+  // One layer of a blood pool. The renderer stamps a pool as several of these
+  // at growing radii over a few seconds, so it spreads, and the layers add up
+  // to a dark centre with a thin edge. Three offset lobes, not a disc: a pool
+  // follows the ground. The red is deeper and less brown than it was — at the
+  // old value a pool on ploughed earth was the earth.
+  pool(x: number, y: number, r: number, seed: number): void {
     const g = this.g;
-    const grad = g.createRadialGradient(x, y, 0, x, y, r);
-    grad.addColorStop(0, 'rgba(58,10,8,0.55)');
-    grad.addColorStop(0.7, 'rgba(70,14,10,0.4)');
-    grad.addColorStop(1, 'rgba(70,14,10,0)');
-    g.fillStyle = grad;
-    g.beginPath();
-    g.arc(x, y, r, 0, Math.PI * 2);
-    g.fill();
+    for (let i = 0; i < 3; i++) {
+      const a = hash(seed, i, 281) * Math.PI * 2;
+      const d = i === 0 ? 0 : r * (0.25 + hash(seed, i, 282) * 0.3);
+      const lr = r * (i === 0 ? 0.85 : 0.5 + hash(seed, i, 283) * 0.25);
+      const cx = x + Math.cos(a) * d;
+      const cy = y + Math.sin(a) * d;
+      const grad = g.createRadialGradient(cx, cy, 0, cx, cy, lr);
+      grad.addColorStop(0, 'rgba(96,12,10,0.4)');
+      grad.addColorStop(0.75, 'rgba(104,16,12,0.34)');
+      grad.addColorStop(1, 'rgba(104,16,12,0)');
+      g.fillStyle = grad;
+      g.beginPath();
+      g.arc(cx, cy, lr, 0, Math.PI * 2);
+      g.fill();
+    }
+  }
+
+  // Spatter thrown past a man by the round that hit him: a few drops down the
+  // shot's line, thinning with distance. `n` is how many.
+  spatter(x: number, y: number, ux: number, uy: number, n: number, seed: number): void {
+    const g = this.g;
+    g.fillStyle = 'rgba(100,14,12,0.55)';
+    for (let i = 0; i < n; i++) {
+      const along = 0.25 + hash(seed, i, 284) ** 1.5 * 1.3;
+      const lat = (hash(seed, i, 285) - 0.5) * 0.5 * along;
+      g.beginPath();
+      g.arc(x + ux * along - uy * lat, y + uy * along + ux * lat, 0.05 + hash(seed, i, 286) * 0.08 * (1.4 - along), 0, Math.PI * 2);
+      g.fill();
+    }
   }
 
   smear(x: number, y: number, angle: number): void {
