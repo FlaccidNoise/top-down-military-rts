@@ -358,6 +358,29 @@ export function hazeBand(): HTMLCanvasElement {
   return c;
 }
 
+// The vignette: the corners of the frame pulled down a little, so the eye
+// rests in the middle where the fight is. Baked once as a square and stretched
+// to the view. Clear out to VIGNETTE_CLEAR of the half-diagonal — the middle
+// of the picture is not touched at all — then easing to VIGNETTE_ALPHA in the
+// very corners; the middle of a screen edge gets about a third of that.
+export const VIGNETTE_CLEAR = 0.5;
+export const VIGNETTE_ALPHA = 0.3;
+let vignetteCache: HTMLCanvasElement | null = null;
+export function vignette(): HTMLCanvasElement {
+  if (vignetteCache) return vignetteCache;
+  const px = 256;
+  const [c, g] = newCanvas(px);
+  const grad = g.createRadialGradient(px / 2, px / 2, 0, px / 2, px / 2, (px / 2) * Math.SQRT2);
+  grad.addColorStop(0, 'rgba(16,14,10,0)');
+  grad.addColorStop(VIGNETTE_CLEAR, 'rgba(16,14,10,0)');
+  grad.addColorStop(0.78, `rgba(16,14,10,${VIGNETTE_ALPHA * 0.3})`);
+  grad.addColorStop(1, `rgba(16,14,10,${VIGNETTE_ALPHA})`);
+  g.fillStyle = grad;
+  g.fillRect(0, 0, px, px);
+  vignetteCache = c;
+  return c;
+}
+
 // A pool of light, as alpha: what the night grade is cut away by (renderer.ts
 // gradeWorld). Not in the particle atlas — it is never blitted onto the scene,
 // only erased out of the grade's own low-resolution canvas.

@@ -6,7 +6,7 @@ import type { Camera } from './camera';
 import { DecalLayer } from './decals';
 import { bandFor, CRAWL_FRAMES, DUDE_SCALE, getShadowSprite, getSprite, glintSprite, headOffset, kitVariant, SPRITE_MIN_SCALE, SPRITE_SPAN, tier, WALK_FRAMES, weaponClass, type Pose } from './dudes';
 import { emplacementBandFor, emplacementFootprintRadius, emplacementSpan, getEmplacementShadow, getEmplacementSprite } from './emplacements';
-import { ballistic, blastOf, blastScale, blit, FLASH, flashClass, fxDetail, fxScale, hazeBand, hotPass, lightPool, SPIKE_SIDES, traceOvershoot, WIND, type BlastSpec, type FlashSpec, type FxKind, type Overshoot } from './fx';
+import { ballistic, blastOf, blastScale, blit, FLASH, flashClass, fxDetail, fxScale, hazeBand, hotPass, lightPool, SPIKE_SIDES, traceOvershoot, vignette, WIND, type BlastSpec, type FlashSpec, type FxKind, type Overshoot } from './fx';
 import { SUN, shadowSoftAlpha, sun } from './light';
 import { BrassLayer, MarkLayer } from './marks';
 import { PallLayer } from './pall';
@@ -961,6 +961,10 @@ export class Renderer {
     this.drawContacts(ctx, cam, cw, ch);
     this.drawBarrageMarks(ctx, cam, now, cw, ch);
     ctx.restore();
+    // Screen finish: the vignette, the last thing the renderer draws and the
+    // one thing outside the shake — it is the lens, not the world. One blit.
+    // The overlays main.ts draws after this (selection, pings) stay full value.
+    ctx.drawImage(vignette(), 0, 0, cw, ch);
   }
 
   // Ambient world grade (design §3.1/§3.2): source-over, never multiply — a
