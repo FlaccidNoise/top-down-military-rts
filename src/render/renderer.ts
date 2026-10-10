@@ -34,7 +34,7 @@ interface ShotGeom {
   uy: number;
   mx: number;
   my: number;
-  hx: number; // per-shot hash seed (impact coords), stable for the shot's life
+  hx: number; // per-shot hash seed (strike and muzzle coords), stable for the shot's life
   hy: number;
 }
 
@@ -309,6 +309,7 @@ const SPARK_MS = 900; // longest a blast's sparks fly
 const FADE_MS = 150; // faint thread lifetime
 const TRAVEL_MS = 90; // muzzle->target travel time for the bright segment (E3)
 const IMPACT_MS = 250; // impact dust lifetime, starts at TRAVEL_MS (E5)
+const BALL_RGB = '255,196,120'; // a ball round in flight, and the thread it leaves: warm, where a tracer is near white
 const SHOT_MS = TRAVEL_MS + IMPACT_MS; // one round's whole life, muzzle to settled dust
 const CHUNKS: FxKind[] = ['chunk0', 'chunk1', 'chunk2', 'chunk3'];
 
@@ -2317,7 +2318,10 @@ export class Renderer {
     const ux = (x1 - x0) / d;
     const uy = (y1 - y0) / d;
     const reach = muzzleReach(t.weapon) * cam.scale;
-    return { x1, y1, ux, uy, mx: x0 + ux * reach, my: y0 + uy * reach, hx: Math.round(t.tx * 100), hy: Math.round(t.ty * 100) };
+    // The seed takes the muzzle as well as the strike. Off the strike alone,
+    // every man firing at one target in one tick rolled the same round: all
+    // tracers or none, all the same length, all at the same point of flight.
+    return { x1, y1, ux, uy, mx: x0 + ux * reach, my: y0 + uy * reach, hx: Math.round(t.tx * 100) + Math.round(t.fx * 100) * 131, hy: Math.round(t.ty * 100) + Math.round(t.fy * 100) * 137 };
   }
 
   private onScreen(x: number, y: number, cw: number, ch: number, pad: number): boolean {
@@ -2363,7 +2367,7 @@ export class Renderer {
       // One thread per burst, down the round the sim resolved.
       if (i === 0 && age < FADE_MS) {
         const a = 1 - age / FADE_MS;
-        ctx.strokeStyle = `rgba(${fc.tracerCol},${(t.hit ? 0.18 : 0.12) * a})`;
+        ctx.strokeStyle = `rgba(${BALL_RGB},${(t.hit ? 0.16 : 0.1) * a})`;
         ctx.lineWidth = fc.tracerW;
         ctx.beginPath();
         ctx.moveTo(g.mx, g.my);
@@ -2606,15 +2610,20 @@ export class Renderer {
       // that only one shot in five carries is not a firefight. 1-in-5 rounds
       // (1-in-3 on a belt) are tracers and get the body: a wide soft
       // under-glow, a core that brightens toward the head, and a hot point on
-      // the head. The rest are a thin short streak. The odds are rolled per
+      // the head. The rest are ball: a warm streak, thin at the tail and
+      // brighter toward the head, with no glow. The odds are rolled per
       // round, so a belt throws its tracers at an uneven beat.
       if (age < TRAVEL_MS) {
         const tracer = hash(g.hx, g.hy, 77) < fc.tracerOdds;
         const len = Math.hypot(g.x1 - g.mx, g.y1 - g.my);
-        const head = (age / TRAVEL_MS) * len;
+        // Each round leads the clock by up to a third of the flight, and no
+        // two are the same length. A section firing on one man in one tick
+        // was otherwise four identical hairlines abreast, converging on him
+        // like pencil strokes.
+        const head = Math.min(1, age / TRAVEL_MS + hash(g.hx, g.hy, 79) * 0.33) * len;
         // About one frame of flight, held between a floor and a cap in fx
         // metres so a point-blank shot still shows and a long one is not a beam.
-        const seg = Math.min(head, Math.max(2.5 * F, Math.min(8 * F, len * 0.2)) * (tracer ? 1 : 0.5));
+        const seg = Math.min(head, Math.max(2.5 * F, Math.min(8 * F, len * 0.2)) * (tracer ? 1 : 0.3 + hash(g.hx, g.hy, 78) * 0.5));
         const px = (d: number): number => g.mx + g.ux * d;
         const py = (d: number): number => g.my + g.uy * d;
         if (tracer) {
@@ -2636,10 +2645,18 @@ export class Renderer {
           }
           blit(ctx, 'spark', px(head), py(head), core * 1.7, 0.95);
         } else {
-          ctx.strokeStyle = `rgba(${fc.tracerCol},0.34)`;
-          ctx.lineWidth = Math.max(1, core * 0.6);
+          const w = Math.max(1, core * 0.7);
+          const mid = head - seg * 0.4;
+          ctx.strokeStyle = `rgba(${BALL_RGB},0.13)`;
+          ctx.lineWidth = w * 0.6;
           ctx.beginPath();
           ctx.moveTo(px(head - seg), py(head - seg));
+          ctx.lineTo(px(mid), py(mid));
+          ctx.stroke();
+          ctx.strokeStyle = `rgba(${BALL_RGB},0.4)`;
+          ctx.lineWidth = w;
+          ctx.beginPath();
+          ctx.moveTo(px(mid), py(mid));
           ctx.lineTo(px(head), py(head));
           ctx.stroke();
         }
