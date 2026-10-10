@@ -1,6 +1,7 @@
 import type { WeaponKey } from '../sim/data';
 import type { Camera } from './camera';
 import type { BoomEvent, BoomKind, MeleeEvent, ShotEvent, UnitEvent } from '../sim/sim';
+import { ACTIVITY_PER_BOOM, ACTIVITY_PER_SHOT, AIR_OPEN_HZ, airCutoff, arrivalDelay, decayActivity, engineGain, listenDist, rumbleGain, WET_FAR_M } from './audiospace';
 import { blastOf } from './fx';
 import { MOBILE } from './view';
 
@@ -97,12 +98,39 @@ export function tapsOf(gun: Gun): number {
 const MAX_VOICES = MOBILE ? 12 : 28;
 const NEW_PER_BATCH = 12; // loudest-first budget per drained frame
 
+// Where a voice is, as the three things the graph does about it (audiospace.ts
+// has the arithmetic): the corner of the low-pass the air puts on it, how long
+// after its flash it starts, and which reverb send it feeds.
+interface Space {
+  cutoff: number; // Hz
+  delay: number; // s
+  send: 0 | 1 | 2; // none, the near send, the far send
+}
+// A readout, not a world sound: full range, at once, dry.
+const DRY: Space = { cutoff: AIR_OPEN_HZ, delay: 0, send: 0 };
+// Below this the air filter is worth a node. Above it there is nothing to hear.
+const AIR_AUDIBLE_HZ = AIR_OPEN_HZ * 0.8;
+// A bed level is re-targeted only when it has moved this far: a steady field
+// makes no AudioParam calls at all, and nothing queues an event a frame.
+const BED_STEP = 0.003;
+
 export class AudioEngine {
   private ctx: AudioContext | null = null;
   private master!: GainNode;
   private noise!: AudioBuffer;
   private voices = 0;
   muted = false;
+  // Space and bed: built once in unlock(), never per frame. Two sends into
+  // one feedback-delay reverb; a wind bed that is always there; a far rumble
+  // and one engine voice whose gains ambience() steers.
+  private send!: GainNode;
+  private sendFar!: GainNode;
+  private rumble!: GainNode;
+  private engine!: GainNode;
+  private enginePan!: StereoPannerNode;
+  private activity = 0; // how much firing there has been lately (audiospace.ts decayActivity)
+  private bedAt = 0; // ctx time of the last ambience()
+  private bedSet = [0, 0, 0]; // the rumble, engine and pan targets last sent
 
   // Must be called from a user-gesture handler (WebAudio autoplay policy).
   // Idempotent: creates the graph once, resumes a suspended context after.
@@ -125,8 +153,149 @@ export class AudioEngine {
       this.master.connect(comp);
       comp.connect(this.ctx.destination);
       this.noise = this.makeNoise(this.ctx, 1);
+      this.buildSpace(this.ctx);
     }
     if (this.ctx.state === 'suspended') void this.ctx.resume();
+  }
+
+  // The reverb and the bed. Every node here is made once and lives as long as
+  // the context: nothing below is ever created from the frame loop.
+  private buildSpace(ctx: AudioContext): void {
+    // Reverb from two feedback delays, not a convolver: an impulse response
+    // is an asset and a convolver is the dearest node WebAudio has. Two
+    // incommensurate taps with a low-pass in the longer loop are enough for
+    // "this happened outdoors, in a valley" — a slap and a darker tail.
+    this.send = ctx.createGain();
+    this.send.gain.value = 0.16;
+    this.sendFar = ctx.createGain();
+    this.sendFar.gain.value = 0.42;
+    const wet = ctx.createGain();
+    wet.gain.value = 0.6;
+    wet.connect(this.master);
+    for (const [time, feedback, damp] of [
+      [0.083, 0.34, 3200],
+      [0.137, 0.42, 1800],
+    ]) {
+      const delay = ctx.createDelay(0.5);
+      delay.delayTime.value = time;
+      const lp = ctx.createBiquadFilter();
+      lp.type = 'lowpass';
+      lp.frequency.value = damp;
+      const fb = ctx.createGain();
+      fb.gain.value = feedback; // under 1: the loop always dies away
+      this.send.connect(delay);
+      this.sendFar.connect(delay);
+      delay.connect(lp);
+      lp.connect(fb);
+      fb.connect(delay);
+      lp.connect(wet);
+    }
+    // The bed plays one long noise buffer on a loop: at one second the loop
+    // itself is audible once the top is filtered off.
+    const bed = this.makeNoise(ctx, 5);
+    const loop = (rate: number, hz: number, into: AudioNode): void => {
+      const src = ctx.createBufferSource();
+      src.buffer = bed;
+      src.loop = true;
+      src.playbackRate.value = rate;
+      const lp = ctx.createBiquadFilter();
+      lp.type = 'lowpass';
+      lp.frequency.value = hz;
+      lp.Q.value = 0.4;
+      src.connect(lp);
+      lp.connect(into);
+      src.start();
+    };
+    // Wind: quiet, always there, breathing on a slow oscillator.
+    const wind = ctx.createGain();
+    wind.gain.value = 0.018;
+    wind.connect(this.master);
+    loop(1, 420, wind);
+    const gust = ctx.createOscillator();
+    gust.frequency.value = 0.09;
+    const gustDepth = ctx.createGain();
+    gustDepth.gain.value = 0.008;
+    gust.connect(gustDepth);
+    gustDepth.connect(wind.gain);
+    gust.start();
+    // The far rumble: the same noise an octave and more down, silent until
+    // ambience() hears firing.
+    this.rumble = ctx.createGain();
+    this.rumble.gain.value = 0;
+    this.rumble.connect(this.master);
+    loop(0.4, 80, this.rumble);
+    // One engine for every hull in view: two detuned saws through a low-pass
+    // that a 9 Hz oscillator opens and shuts, which is the idle's chug.
+    this.engine = ctx.createGain();
+    this.engine.gain.value = 0;
+    this.enginePan = ctx.createStereoPanner();
+    this.engine.connect(this.enginePan);
+    this.enginePan.connect(this.master);
+    const block = ctx.createBiquadFilter();
+    block.type = 'lowpass';
+    block.frequency.value = 170;
+    block.connect(this.engine);
+    for (const hz of [43, 64.5]) {
+      const osc = ctx.createOscillator();
+      osc.type = 'sawtooth';
+      osc.frequency.value = hz;
+      osc.connect(block);
+      osc.start();
+    }
+    const chug = ctx.createOscillator();
+    chug.frequency.value = 9;
+    const chugDepth = ctx.createGain();
+    chugDepth.gain.value = 45;
+    chug.connect(chugDepth);
+    chugDepth.connect(block.frequency);
+    chug.start();
+  }
+
+  // Once a frame. Steers the bed: the far rumble by how much firing there has
+  // been in the last few seconds, the engine by the live hulls in view (the
+  // caller passes only the ones the player can see). `quiet` is a paused
+  // battle, or no battle at all: wind only. It makes no nodes, and no
+  // AudioParam call either unless a level has actually moved.
+  ambience(hulls: readonly { x: number; y: number }[], cam: Camera, cw: number, ch: number, quiet: boolean): void {
+    const ctx = this.ctx;
+    if (!ctx || ctx.state !== 'running') return;
+    const now = ctx.currentTime;
+    if (!(now >= 0)) return; // the one input below that goes to a param unexamined
+    this.activity = decayActivity(this.activity, now - this.bedAt);
+    this.bedAt = now;
+    let sum = 0;
+    let panned = 0;
+    if (!quiet) {
+      for (const h of hulls) {
+        const placed = this.place(h.x, h.y, cam, cw, ch);
+        if (!placed) continue;
+        sum += placed[0];
+        panned += placed[0] * placed[1];
+      }
+    }
+    const want = [quiet ? 0 : rumbleGain(this.activity), quiet ? 0 : engineGain(sum), sum > 0 ? panned / sum : 0];
+    const params = [this.rumble.gain, this.engine.gain, this.enginePan.pan];
+    const tau = [0.4, 0.25, 0.25];
+    for (let i = 0; i < 3; i++) {
+      // NaN fails the first test, so it is never sent
+      if (!(Math.abs(want[i] - this.bedSet[i]) >= BED_STEP) || !(Math.abs(want[i]) <= 1)) continue;
+      this.bedSet[i] = want[i];
+      params[i].setTargetAtTime(want[i], now, tau[i]);
+    }
+  }
+
+  // The two sounds the interface makes for itself: a tick when a unit is
+  // picked, and two rising notes when an order goes out. Dry and centred,
+  // like the unit-event readouts below.
+  uiSelect(): void {
+    if (!this.live()) return;
+    this.tone(1320, 0.05, 0.05, 0, 990, 'triangle');
+  }
+
+  uiOrder(): void {
+    if (!this.live()) return;
+    this.tone(620, 0.07, 0.07, 0, undefined, 'triangle');
+    this.tone(930, 0.1, 0.06, 0, undefined, 'triangle', { cutoff: AIR_OPEN_HZ, delay: 0.07, send: 0 });
   }
 
   toggleMute(): boolean {
@@ -148,9 +317,10 @@ export class AudioEngine {
 
   // Screen-space placement: [gain multiplier, stereo pan]. gain falls off with
   // distance from viewport centre; culls only when far off-screen (nd > 2.6).
-  // Returns [gain, pan, nd] — nd is the normalized distance from viewport centre
-  // (0 = dead centre, 1 ≈ screen corner), reused by the near-miss crack gate.
-  private place(x: number, y: number, cam: Camera, cw: number, ch: number): [number, number, number] | null {
+  // Returns [gain, pan, nd, space] — nd is the normalized distance from viewport
+  // centre (0 = dead centre, 1 ≈ screen corner), reused by the near-miss crack
+  // gate; space is what the air between the event and the camera does to it.
+  private place(x: number, y: number, cam: Camera, cw: number, ch: number): [number, number, number, Space] | null {
     // A zero-area viewport is real: `view` starts {w:0,h:0} and a frame can run
     // before the first resize measures the canvas. Then `half` is 0, nd is 0/0
     // = NaN, and — this is the bug that crashed the game — `nd > 2.6` is FALSE
@@ -167,11 +337,34 @@ export class AudioEngine {
     const gain = Math.max(0.08, 1 - nd * 0.62);
     const pan = Math.max(-1, Math.min(1, (sx - cw / 2) / (cw / 2)));
     if (!Number.isFinite(gain) || !Number.isFinite(pan)) return null;
-    return [gain, pan, nd];
+    // Metres along the ground from where the player is looking, and the
+    // camera's height over that point. A zero or NaN scale gives a NaN height,
+    // which every function in audiospace.ts turns into its safe value.
+    const dm = Math.hypot(x - cam.x, y - cam.y);
+    const d = listenDist(dm, ch / 2 / cam.scale);
+    return [gain, pan, nd, { cutoff: airCutoff(d), delay: arrivalDelay(dm), send: d > WET_FAR_M ? 2 : 1 }];
+  }
+
+  // Out of a voice's last node: through the air (a low-pass, when there is
+  // enough of it to hear) to the master and to its reverb send. Returns the
+  // air filter if it made one, for the voice to disconnect with the rest.
+  private route(ctx: AudioContext, from: AudioNode, sp: Space): BiquadFilterNode | null {
+    let tail = from;
+    let air: BiquadFilterNode | null = null;
+    if (sp.cutoff < AIR_AUDIBLE_HZ) {
+      air = ctx.createBiquadFilter();
+      air.type = 'lowpass';
+      air.frequency.value = sp.cutoff;
+      from.connect(air);
+      tail = air;
+    }
+    tail.connect(this.master);
+    if (sp.send !== 0) tail.connect(sp.send === 2 ? this.sendFar : this.send);
+    return air;
   }
 
   // One filtered noise burst — the workhorse for guns, explosions, cracks, melee.
-  private burst(freq: number, q: number, decay: number, gain: number, pan: number, type: BiquadFilterType = 'bandpass'): void {
+  private burst(freq: number, q: number, decay: number, gain: number, pan: number, type: BiquadFilterType = 'bandpass', sp: Space = DRY): void {
     const ctx = this.ctx;
     if (!ctx || this.voices >= MAX_VOICES) return;
     const src = ctx.createBufferSource();
@@ -182,7 +375,7 @@ export class AudioEngine {
     filt.frequency.value = freq;
     filt.Q.value = q;
     const g = ctx.createGain();
-    const now = ctx.currentTime;
+    const now = ctx.currentTime + sp.delay;
     g.gain.setValueAtTime(gain, now);
     g.gain.exponentialRampToValueAtTime(0.0008, now + decay);
     const p = ctx.createStereoPanner();
@@ -190,7 +383,7 @@ export class AudioEngine {
     src.connect(filt);
     filt.connect(g);
     g.connect(p);
-    p.connect(this.master);
+    const air = this.route(ctx, p, sp);
     this.voices++;
     src.onended = () => {
       this.voices--;
@@ -198,18 +391,19 @@ export class AudioEngine {
       filt.disconnect();
       g.disconnect();
       p.disconnect();
+      air?.disconnect();
     };
     src.start(now);
     src.stop(now + decay + 0.02);
   }
 
   // Oscillator tone — low body thumps, explosion sub, UI blips. Optional pitch glide.
-  private tone(freq: number, decay: number, gain: number, pan: number, freqEnd?: number, type: OscillatorType = 'sine'): void {
+  private tone(freq: number, decay: number, gain: number, pan: number, freqEnd?: number, type: OscillatorType = 'sine', sp: Space = DRY): void {
     const ctx = this.ctx;
     if (!ctx || this.voices >= MAX_VOICES) return;
     const osc = ctx.createOscillator();
     osc.type = type;
-    const now = ctx.currentTime;
+    const now = ctx.currentTime + sp.delay;
     osc.frequency.setValueAtTime(freq, now);
     if (freqEnd !== undefined) osc.frequency.exponentialRampToValueAtTime(Math.max(20, freqEnd), now + decay);
     const g = ctx.createGain();
@@ -219,13 +413,14 @@ export class AudioEngine {
     p.pan.value = pan;
     osc.connect(g);
     g.connect(p);
-    p.connect(this.master);
+    const air = this.route(ctx, p, sp);
     this.voices++;
     osc.onended = () => {
       this.voices--;
       osc.disconnect();
       g.disconnect();
       p.disconnect();
+      air?.disconnect();
     };
     osc.start(now);
     osc.stop(now + decay + 0.02);
@@ -235,7 +430,7 @@ export class AudioEngine {
   // against MAX_VOICES, fed by however many short sources the weapon needs
   // (burst taps, bolt clack, body thump). `near` gates the mechanical detail
   // that only carries when the camera is on top of the shooter.
-  private gunshot(w: Gun, level: number, pan: number, near: boolean): void {
+  private gunshot(w: Gun, level: number, pan: number, near: boolean, sp: Space): void {
     const ctx = this.ctx;
     if (!ctx || this.voices >= MAX_VOICES) return;
     // Belt and braces behind place()'s cull: sound is cosmetic and must never
@@ -246,7 +441,7 @@ export class AudioEngine {
     const p = ctx.createStereoPanner();
     p.pan.value = pan;
     out.connect(p);
-    p.connect(this.master);
+    const air = this.route(ctx, p, sp);
     this.voices++;
     let open = 0;
     const close = (): void => {
@@ -254,9 +449,10 @@ export class AudioEngine {
         this.voices--;
         out.disconnect();
         p.disconnect();
+        air?.disconnect();
       }
     };
-    const now = ctx.currentTime;
+    const now = ctx.currentTime + sp.delay;
     const tap = (at: number, freq: number, q: number, decay: number, gain: number): void => {
       const src = ctx.createBufferSource();
       src.buffer = this.noise;
@@ -314,7 +510,8 @@ export class AudioEngine {
   // Near-miss cracks only for incoming rounds landing near the viewport centre.
   addShots(shots: ShotEvent[], cam: Camera, cw: number, ch: number): void {
     if (!this.live() || shots.length === 0) return;
-    const scored: { g: number; pan: number; gun: Gun; near: boolean; miss: boolean; nd: number }[] = [];
+    this.activity += shots.length * ACTIVITY_PER_SHOT;
+    const scored: { g: number; pan: number; gun: Gun; near: boolean; miss: boolean; nd: number; sp: Space }[] = [];
     for (const s of shots) {
       const placed = this.place(s.fx, s.fy, cam, cw, ch);
       if (!placed) continue;
@@ -322,36 +519,38 @@ export class AudioEngine {
       // near-miss crack gates on the impact point (where the round snaps past),
       // not the muzzle; 9 = far off-screen (place culled it), so no crack
       const impact = this.place(s.tx, s.ty, cam, cw, ch);
-      scored.push({ g: placed[0], pan: placed[1], gun, near: placed[2] < 0.6, miss: !s.hit, nd: impact ? impact[2] : 9 });
+      scored.push({ g: placed[0], pan: placed[1], gun, near: placed[2] < 0.6, miss: !s.hit, nd: impact ? impact[2] : 9, sp: placed[3] });
     }
     scored.sort((a, b) => b.g - a.g);
     for (let i = 0; i < Math.min(scored.length, NEW_PER_BATCH); i++) {
       const s = scored[i];
-      this.gunshot(s.gun, s.g, s.pan, s.near);
-      // whip-crack for a round snapping past where the player is looking
+      this.gunshot(s.gun, s.g, s.pan, s.near, s.sp);
+      // whip-crack for a round snapping past where the player is looking:
+      // close by definition, so it is neither dulled nor late
       if (s.miss && s.nd < 0.4) this.burst(3000, 6, 0.03, 0.5 * s.g, s.pan, 'bandpass');
     }
   }
 
   addBooms(booms: BoomEvent[], cam: Camera, cw: number, ch: number): void {
     if (!this.live()) return;
+    this.activity += booms.length * ACTIVITY_PER_BOOM;
     for (const b of booms) {
       const placed = this.place(b.x, b.y, cam, cw, ch);
       if (!placed) continue;
-      const [g, pan] = placed;
+      const [g, pan, , sp] = placed;
       // The same size the renderer draws the blast at: a round bigger than
       // its kind's reference is louder and rings longer, never a new sound.
       const { kind, k } = blastOf(b);
       const v = BOOM[kind];
       const long = Math.sqrt(k);
       const loud = g * (0.7 + 0.3 * k);
-      this.burst(v.body, 0.5, v.bodyDecay * long, v.bodyGain * loud, pan, 'lowpass'); // debris/blast body
-      this.tone(v.sub, v.subDecay * long, v.subGain * loud, pan, v.sub * 0.53, 'sine'); // sub thump, pitch drops
-      this.burst(v.crack, 1, 0.08, v.crackGain * loud, pan, 'bandpass'); // sharp crack front
-      if (v.ring) this.tone(v.ring, 0.18, 0.22 * loud, pan, v.ring * 0.66, 'triangle'); // the plate it hit
+      this.burst(v.body, 0.5, v.bodyDecay * long, v.bodyGain * loud, pan, 'lowpass', sp); // debris/blast body
+      this.tone(v.sub, v.subDecay * long, v.subGain * loud, pan, v.sub * 0.53, 'sine', sp); // sub thump, pitch drops
+      this.burst(v.crack, 1, 0.08, v.crackGain * loud, pan, 'bandpass', sp); // sharp crack front
+      if (v.ring) this.tone(v.ring, 0.18, 0.22 * loud, pan, v.ring * 0.66, 'triangle', sp); // the plate it hit
       // A fourth long voice per blast is what a phone's 12-voice cap cannot
       // spare in a barrage.
-      if (v.roll && !MOBILE) this.burst(90, 0.5, 1.2 * long, 0.55 * loud, pan, 'lowpass');
+      if (v.roll && !MOBILE) this.burst(90, 0.5, 1.2 * long, 0.55 * loud, pan, 'lowpass', sp);
     }
   }
 
@@ -363,9 +562,9 @@ export class AudioEngine {
     for (const b of list) {
       const placed = this.place(b.horiz ? b.x + 0.5 : b.x, b.horiz ? b.y : b.y + 0.5, cam, cw, ch);
       if (!placed) continue;
-      const [g, pan] = placed;
-      this.burst(420, 0.7, 0.35, 0.7 * g, pan, 'lowpass'); // masonry rush
-      this.burst(2600, 2, 0.12, 0.22 * g, pan, 'bandpass'); // chips on the cobbles
+      const [g, pan, , sp] = placed;
+      this.burst(420, 0.7, 0.35, 0.7 * g, pan, 'lowpass', sp); // masonry rush
+      this.burst(2600, 2, 0.12, 0.22 * g, pan, 'bandpass', sp); // chips on the cobbles
     }
   }
 
@@ -374,12 +573,12 @@ export class AudioEngine {
     for (const m of events) {
       const placed = this.place(m.x, m.y, cam, cw, ch);
       if (!placed) continue;
-      const [g, pan] = placed;
+      const [g, pan, , sp] = placed;
       if (m.hit) {
-        this.burst(m.kill ? 240 : 380, 1.2, m.kill ? 0.14 : 0.09, 0.9 * g, pan, 'bandpass'); // wet thud, lower on a kill
-        this.tone(m.kill ? 70 : 90, 0.1, 0.5 * g, pan, undefined, 'triangle');
+        this.burst(m.kill ? 240 : 380, 1.2, m.kill ? 0.14 : 0.09, 0.9 * g, pan, 'bandpass', sp); // wet thud, lower on a kill
+        this.tone(m.kill ? 70 : 90, 0.1, 0.5 * g, pan, undefined, 'triangle', sp);
       } else {
-        this.burst(2200, 3, 0.05, 0.3 * g, pan, 'bandpass'); // blade swish
+        this.burst(2200, 3, 0.05, 0.3 * g, pan, 'bandpass', sp); // blade swish
       }
     }
   }

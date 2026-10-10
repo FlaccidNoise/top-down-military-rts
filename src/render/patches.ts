@@ -319,6 +319,12 @@ export class PatchIndex {
     return -1;
   }
 
+  // The parcel a tile belongs to, as a number: -1 for none. Two tiles are in
+  // the same parcel exactly when this agrees.
+  patchIdAt(x: number, y: number): number {
+    return x < 0 || y < 0 || x >= this.w || y >= this.h ? -1 : this.id[y * this.w + x];
+  }
+
   patchAt(x: number, y: number): Patch | null {
     if (x < 0 || y < 0 || x >= this.w || y >= this.h) return null;
     const i = this.id[y * this.w + x];
