@@ -256,6 +256,32 @@ export class Commander2 {
       return blocked ? null : march.nominalMin;
     };
 
+    // The first place a march to `dest` meets the enemy: a defended node on
+    // the path, or an enemy standing on one of its roads. Null when the way
+    // is open as far as intel knows.
+    const firstFight = (f: Force, dest: number): { site: NetPos; defEff: number } | null => {
+      const march = planMove(front, f, dest);
+      if (!march) return null;
+      const nodes = pathNodes(t, march.pos, march.path);
+      const defendersNear = (site: NetPos): number =>
+        intel
+          .contacts()
+          .filter((c) => graphGap(t, site, c.pos) <= CONTACT_M)
+          .reduce((a, c) => a + c.strength, 0);
+      for (let i = 0; i < march.path.length; i++) {
+        const own = i === 0 && march.pos.kind === 'edge' ? march.pos : null;
+        const onRoad = intel
+          .contacts()
+          .filter((c) => c.pos.kind === 'edge' && c.pos.edgeId === march.path[i] && (!own || (c.pos.s - own.s) * own.dir >= 0))
+          .sort((p, q) => p.forceId - q.forceId)[0];
+        if (onRoad) return { site: onRoad.pos, defEff: defendersNear(onRoad.pos) };
+        const node: NetPos = { kind: 'node', nodeId: nodes[i] };
+        const at = defendersNear(node);
+        if (at > 0) return { site: node, defEff: at };
+      }
+      return null;
+    };
+
     for (const f of own) {
       if (f.role === 'garrison' || f.engagedIn !== null || f.queuedAt !== null) continue;
 
@@ -305,8 +331,13 @@ export class Commander2 {
       const here = f.pos.kind === 'node' && f.pos.nodeId === target;
       if (here) continue; // holding the objective
 
-      const defEff = this.defendersAt(front, intel, target);
-      if (defEff > 0) {
+      // The decision is taken on the FIRST fight the march would have, which
+      // is not always at the objective: an 'advance' on an open objective
+      // used to walk through a defended town on the way with no decision at
+      // all (64 of 369 battles in the 16 pin wars opened that way).
+      const fight = firstFight(f, target);
+      const defEff = fight?.defEff ?? 0;
+      if (fight) {
         attackConsidered = true;
         if (f.repulsedAtMin !== null && front.clockMin - f.repulsedAtMin < REORG_MIN) continue;
         // The attack decision weighs the AXIS'S MASS — concentration is the
@@ -320,7 +351,7 @@ export class Commander2 {
         const ownEff = Math.max(axisEff, effStrength(f));
         // Trivial doctrine: never attack INTO a trivial defender.
         if (defEff >= ownEff * TRIVIAL_RATIO) continue;
-        const { battleClass } = battleSiteOf(t, { kind: 'node', nodeId: target });
+        const { battleClass } = battleSiteOf(t, fight.site);
         let mult = COARSE_DEF_MULT[battleClass];
         if (battleClass === 'bridge-assault' || battleClass === 'ford-assault') mult *= CROSSING_ASSAULT_MULT;
         if (lightAt(front.clockMin) < 0.25) mult *= 1.0; // nightMult 1.0 until OQ7 lands a value

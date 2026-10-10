@@ -8,7 +8,7 @@ import { lightAt } from '../../sim/solar';
 import type { Campaign } from '../../campaign/campaign';
 import { applyCoarseBlueLosses, coarseOutcome, TRIVIAL_RATIO } from '../bridge';
 import type { BattleRecord } from '../../campaign/campaign';
-import { battleSiteOf, COARSE_DEF_MULT, CROSSING_ASSAULT_MULT, type BattleClass } from '../theater';
+import { battleSiteOf, COARSE_DEF_MULT, CROSSING_ASSAULT_MULT, type BattleClass, type NetPos, type TheaterEdge } from '../theater';
 import {
   edgeById,
   incidentFoot,
@@ -137,6 +137,36 @@ export function battleSides(front: FrontV2, battle: CoarseBattle): BattleSides {
   };
 }
 
+// Where a force set back from `fromNode` down edge `e` stands: PARKED at
+// RETREAT_SETBACK_M, or at the far end of a shorter road.
+function setbackOn(e: TheaterEdge, fromNode: number): NetPos {
+  const dir: 1 | -1 = e.a === fromNode ? 1 : -1;
+  return { kind: 'edge', edgeId: e.id, s: dir === 1 ? Math.min(e.lengthM, RETREAT_SETBACK_M) : Math.max(0, e.lengthM - RETREAT_SETBACK_M), dir };
+}
+
+// A retreat that ends inside contact range of an enemy is not a retreat: the
+// two re-contact the same minute. Measured over the 16 pin wars: 6 beaten
+// forces were in a new battle the minute they fell back, 5 of them standing
+// on the exact metre an earlier loser of the other side was parked on.
+function clearOfEnemies(front: FrontV2, f: Force, pos: NetPos): boolean {
+  return front.forces.every((g) => g.side === f.side || g.strength <= 0 || graphGap(front.theater, pos, g.pos) > CONTACT_M);
+}
+
+// A beaten crossing assault is thrown back down its approach. When that
+// landing is not clear (a short road, an enemy on it) the force falls back
+// through the node behind it instead, by the same graph retreat as any loser.
+export function throwBack(front: FrontV2, f: Force, approach: TheaterEdge, siteNode: number): void {
+  const landing = setbackOn(approach, siteNode);
+  if (clearOfEnemies(front, f, landing)) {
+    f.pos = landing;
+    standForce(front, f);
+    pushEvent(front, { min: front.clockMin, kind: 'retreat', text: `${f.name} thrown back from the crossing`, forceIds: [f.id] });
+    return;
+  }
+  f.pos = { kind: 'node', nodeId: otherEnd(approach, siteNode) };
+  retreatForce(front, f, approach.id);
+}
+
 // §3.6 graph retreat, replacing the east-first DIRS bias: candidate incident
 // edges minus the enemy approach axis minus edges with an enemy inside
 // THREAT_M of their far node; score far-node control, then threat distance,
@@ -169,15 +199,15 @@ export function retreatForce(
     .map((e) => {
       const far = otherEnd(e, nodeId);
       const control = front.controlByNode[far] === f.side ? 0 : front.controlByNode[far] === null ? 1 : 2;
-      return { e, far, control, threat: -nearEnemy(far), len: e.lengthM };
+      return { e, far, control, threat: -nearEnemy(far), len: e.lengthM, landing: setbackOn(e, nodeId) };
     })
+    // The far node being clear is not enough: an enemy thrown back earlier
+    // can be parked on this very road, at this very setback.
+    .filter((c) => clearOfEnemies(front, f, c.landing))
     .sort((p, q) => p.control - q.control || p.threat - q.threat || p.len - q.len || p.e.id - q.e.id);
 
   if (candidates.length > 0) {
-    const { e } = candidates[0];
-    const dir: 1 | -1 = e.a === nodeId ? 1 : -1;
-    const s = dir === 1 ? Math.min(e.lengthM, RETREAT_SETBACK_M) : Math.max(0, e.lengthM - RETREAT_SETBACK_M);
-    f.pos = { kind: 'edge', edgeId: e.id, s, dir };
+    f.pos = candidates[0].landing;
     standForce(front, f);
     pushEvent(front, { min: front.clockMin, kind: 'retreat', text: `${f.name} falls back`, forceIds: [f.id] });
     return;
@@ -294,11 +324,7 @@ export function resolveBattleV2(
     if (beatenAssault && battle.approachEdgeId !== null) {
       const e = edgeById(t, battle.approachEdgeId);
       const siteNode = battle.site.kind === 'node' ? battle.site.nodeId : (l.pos.kind === 'edge' && l.pos.dir === 1 ? e.b : e.a);
-      const dir: 1 | -1 = e.a === siteNode ? 1 : -1;
-      const s = dir === 1 ? Math.min(e.lengthM, RETREAT_SETBACK_M) : Math.max(0, e.lengthM - RETREAT_SETBACK_M);
-      l.pos = { kind: 'edge', edgeId: e.id, s, dir };
-      standForce(front, l);
-      pushEvent(front, { min: front.clockMin, kind: 'retreat', text: `${l.name} thrown back from the crossing`, forceIds: [l.id] });
+      throwBack(front, l, e, siteNode);
     } else {
       retreatForce(front, l, battle.approachEdgeId);
     }

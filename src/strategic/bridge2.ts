@@ -13,8 +13,8 @@ import { applyBattleResults } from '../campaign/campaign';
 import { makeStrategicBattle } from './bridge';
 import type { Chit, Front } from './front';
 import { battleSiteOf, BATTLE_CLASS_TO_MAPKIND, type BattleClass } from './theater';
-import { pushEvent, standForce, type CoarseBattle, type FrontV2 } from './theater/force';
-import { forceById, retreatForce, RETREAT_SETBACK_M } from './theater/war';
+import { pushEvent, type CoarseBattle, type FrontV2 } from './theater/force';
+import { forceById, retreatForce, throwBack } from './theater/war';
 import { edgeById } from './theater/force';
 import { syncStrengthsV2 } from './theater/sync';
 import { SUPPLY_AMMO_MULT, supplyTierOf } from './theater/supply';
@@ -158,12 +158,7 @@ export function applyTheaterOutcome(
     loser.repulsedAtMin = front.clockMin;
     const beatenAssault = !attackerWon && (battleClass === 'bridge-assault' || battleClass === 'ford-assault');
     if (beatenAssault && battle.approachEdgeId !== null && battle.site.kind === 'node') {
-      const e = edgeById(front.theater, battle.approachEdgeId);
-      const dir: 1 | -1 = e.a === battle.site.nodeId ? 1 : -1;
-      const s = dir === 1 ? Math.min(e.lengthM, RETREAT_SETBACK_M) : Math.max(0, e.lengthM - RETREAT_SETBACK_M);
-      loser.pos = { kind: 'edge', edgeId: e.id, s, dir };
-      standForce(front, loser);
-      pushEvent(front, { min: front.clockMin, kind: 'retreat', text: `${loser.name} thrown back from the crossing`, forceIds: [loser.id] });
+      throwBack(front, loser, edgeById(front.theater, battle.approachEdgeId), battle.site.nodeId);
     } else {
       retreatForce(front, loser, battle.approachEdgeId);
     }
