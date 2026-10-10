@@ -2,7 +2,7 @@ import { TERRAIN, type TerrainKey } from '../sim/data';
 import { BREACH_WIDE, EDGE, type GameMap } from '../sim/map';
 import type { Building } from '../sim/mapgen';
 import type { Camera } from './camera';
-import { AO_ALPHA, SUN, SUN_PIN_BAND, shadowAlpha, shadowOffset, shadowOffsetLegible, shadowSoftAlpha, sun, sunStepFor } from './light';
+import { AO_ALPHA, SUN, SUN_PIN_BAND, capsulePath, shadowAlpha, shadowOffset, shadowOffsetLegible, shadowSoftAlpha, sun, sunStepFor } from './light';
 import { MOBILE } from './view';
 
 // Terrain is rendered lazily into 16x16-tile chunk canvases at the nearest
@@ -68,7 +68,8 @@ export function chunkSpan(t0: number, t1: number, n: number): [number, number] {
 }
 
 import { cornerCuts, cutOnH, cutOnV, HARD, reliefShade, smoothElev, type ReliefLight } from './ground';
-import { hash, vec } from './noise';
+import { buildHedgerows, hedgeLobes, type Hedgerows } from './hedgerow';
+import { hash, soft, vec } from './noise';
 import { stamp, stampRect } from './stamps';
 import { SPRITE as CANOPY_SPRITE, canopySprite, drawLog } from './canopy';
 import { PatchIndex, type BuildingBox, type Patch } from './patches';
@@ -304,121 +305,112 @@ function bakeRelief(sm: Float32Array, w: number, h: number, light: ReliefLight):
   return c;
 }
 
-// Path for a hedge tile's continuous mass: a stroke segment toward each
-// hedge-tagged neighbor (round line caps turn a zero-length segment into a
-// dot), so adjacent hedge tiles fuse into one capsule instead of four gappy
-// pompoms. `odx/ody` offsets the whole path (used to draw the shadow/AO
-// passes without rebuilding the neighbor logic).
-function hedgePath(g: Ctx, x: number, y: number, n: boolean, s: boolean, w: boolean, e: boolean, odx: number, ody: number): void {
-  const cx = x + 0.5 + odx;
-  const cy = y + 0.5 + ody;
-  g.beginPath();
-  if (!n && !s && !w && !e) {
-    g.moveTo(cx, cy);
-    g.lineTo(cx, cy);
-    return;
-  }
-  if (n) {
-    g.moveTo(cx, cy);
-    g.lineTo(x + 0.5 + odx, y + ody);
-  }
-  if (s) {
-    g.moveTo(cx, cy);
-    g.lineTo(x + 0.5 + odx, y + 1 + ody);
-  }
-  if (w) {
-    g.moveTo(cx, cy);
-    g.lineTo(x + odx, y + 0.5 + ody);
-  }
-  if (e) {
-    g.moveTo(cx, cy);
-    g.lineTo(x + 1 + odx, y + 0.5 + ody);
-  }
-}
+// Hedge tones, dark to light. The mass is opaque, so it can be filled a tone
+// at a time: a handful of fills for the chunk instead of one per lobe.
+const HEDGE_TONES = [0.8, 0.88, 0.96, 1.04, 1.12].map((f) => shade(HEDGE_GREEN, f));
 
-// Hedge capsule strokes for a tile range, one visual layer at a time across
-// ALL hedge tiles (AO → cast shadow → green mass → sun rim → foliage dabs).
-// Width/shade vary via the smooth 8m/28m noise fields, not per-tile hash, so
-// adjacent tiles never show a width or value step at the boundary.
-function drawHedgeRun(g: Ctx, map: GameMap, tx0: number, ty0: number, tx1: number, ty1: number, d: Detail): void {
-  const isHedge = (tx: number, ty: number) => map.inBounds(tx, ty) && map.terrainKeyAt(tx, ty) === 'hedge';
-  const tiles: { x: number; y: number; n: boolean; s: boolean; w: boolean; e: boolean; width: number }[] = [];
-  for (let y = ty0; y < ty1; y++) {
-    for (let x = tx0; x < tx1; x++) {
-      if (!isHedge(x, y)) continue;
-      tiles.push({ x, y, n: isHedge(x, y - 1), s: isHedge(x, y + 1), w: isHedge(x - 1, y), e: isHedge(x + 1, y), width: 0.58 + coarse(x, y) * 0.3 });
-    }
-  }
-  if (tiles.length === 0) return;
+// The hedgerows (see hedgerow.ts for where the lobes come from), one visual
+// layer at a time across every lobe in range: AO → cast shadow → earth bank →
+// rim → mass → shaded and lit flanks → flecks → twigs. Each translucent layer
+// is ONE union fill. The lobes overlap by design, and filling them one by one
+// would darken every overlap into a string of beads.
+function drawHedgerows(g: Ctx, hr: Hedgerows, tx0: number, ty0: number, tx1: number, ty1: number, d: Detail): void {
+  // One tile wider than the bake range: a link is owned by its north/west end,
+  // and the lobes of one that starts just outside the range still reach in.
+  const L = hedgeLobes(hr, tx0 - 1, ty0 - 1, tx1 + 1, ty1 + 1, d === 0 ? 0 : 2);
+  if (L.length === 0) return;
+  const TAU = Math.PI * 2;
   const [sdx, sdy] = shadowOffsetLegible(0.4);
-  const oLen = Math.hypot(sdx, sdy);
-  const pass = (widthOf: (t: (typeof tiles)[0]) => number, styleOf: (t: (typeof tiles)[0]) => string, odx: number, ody: number) => {
-    for (const t of tiles) {
-      g.lineWidth = widthOf(t);
-      g.strokeStyle = styleOf(t);
-      hedgePath(g, t.x, t.y, t.n, t.s, t.w, t.e, odx, ody);
-      g.stroke();
+  const discs = (k: number, ox: number, oy: number): void => {
+    g.beginPath();
+    for (let i = 0; i < L.length; i += 3) {
+      g.moveTo(L[i] + ox + L[i + 2] * k, L[i + 1] + oy);
+      g.arc(L[i] + ox, L[i + 1] + oy, L[i + 2] * k, 0, TAU);
     }
+    g.fill();
+  };
+  // Every lobe SWEPT from its foot along the sun, as the canopies are: the
+  // up-sun edge stays anchored under the hedge at any rake.
+  const swept = (k: number, reach: number): void => {
+    g.beginPath();
+    for (let i = 0; i < L.length; i += 3) capsulePath(g, L[i], L[i + 1], L[i] + sdx * reach, L[i + 1] + sdy * reach, L[i + 2] * k);
+    g.fill();
   };
   // base AO: subtle all-around ground darkening at the hedge's foot
-  pass((t) => t.width * 1.3, () => `rgba(8,10,7,${AO_ALPHA * 0.6})`, 0, 0);
-  // Soft two-layer cast shadow, SWEPT: stroked at half throw and widened by
-  // the throw, so the down-sun edge lands exactly where the translated stroke
-  // used to and the up-sun edge stays anchored under the hedge — at the dawn
-  // rake the old full-offset stroke floated as a parallel sausage a metre off
-  // its own hedge. (Alpha rides the sun's own ramp.)
-  pass((t) => t.width * 1.15 + oLen * 1.6, () => `rgba(10,14,8,${shadowSoftAlpha()})`, sdx * 0.8, sdy * 0.8);
-  pass((t) => t.width * 1.1 + oLen, () => `rgba(10,14,8,${shadowAlpha()})`, sdx * 0.5, sdy * 0.5);
+  g.fillStyle = `rgba(8,10,7,${AO_ALPHA * 0.6})`;
+  discs(1.3, 0, 0);
+  g.fillStyle = `rgba(10,14,8,${shadowSoftAlpha()})`;
+  swept(1.15, 1.6);
+  g.fillStyle = `rgba(10,14,8,${shadowAlpha()})`;
+  swept(1.1, 1);
   // earth bank under the foliage: a bocage hedge grows out of a raised bank,
   // and without it the run reads as a green sausage lying on the lawn
-  pass((t) => t.width * 1.25, () => 'rgba(72,58,38,0.35)', 0.06, 0.08);
-  pass((t) => 0.05, () => 'rgba(14,18,10,0.4)', 0.06 + sdx * 0.5, 0.08 + sdy * 0.5);
-  // hedge mass — yellower, denser green than woods
-  pass((t) => t.width, (t) => shade(HEDGE_GREEN, 0.82 + macro(t.x, t.y) * 0.3), 0, 0);
-  // NW rim catching the sun
-  pass((t) => t.width * 0.3, (t) => `rgba(190,215,150,${0.1 + coarse(t.x, t.y) * 0.12})`, -sdx * 0.3, -sdy * 0.3);
-  // foliage dabs: the per-tile lumpiness the old hash width/shade jitter gave,
-  // without the boundary steps — small blobs never cross a tile seam visibly
-  const dabs = d === 0 ? 0 : d === 1 ? 3 : 6;
-  for (const t of tiles) {
-    const vertical = (t.n || t.s) && !(t.w || t.e);
-    for (let i = 0; i < dabs; i++) {
-      const k = t.x * 8 + i;
-      let dx = t.x + 0.28 + hash(k, t.y, 54) * 0.44;
-      let dy = t.y + 0.28 + hash(k, t.y, 55) * 0.44;
-      // two dabs ride the silhouette so the run's outline goes ragged instead
-      // of staying a smooth capsule; they stay near the mass tone, because a
-      // dark blob half-off the hedge reads as a floating speck on the grass
-      const rim = i < 2;
-      if (rim) {
-        const s = i === 0 ? 1 : -1;
-        const u = 0.2 + hash(k, t.y, 58) * 0.6;
-        dx = vertical ? t.x + 0.5 + s * t.width * 0.5 : t.x + u;
-        dy = vertical ? t.y + u : t.y + 0.5 + s * t.width * 0.5;
-      }
-      const light = hash(k, t.y, 56) > 0.5;
-      g.fillStyle = shade(HEDGE_GREEN, rim ? (light ? 1.05 : 0.78) : light ? 1.22 : 0.64);
-      g.beginPath();
-      g.arc(dx, dy, 0.06 + hash(k, t.y, 57) * 0.08, 0, Math.PI * 2);
-      g.fill();
+  g.fillStyle = 'rgba(72,58,38,0.35)';
+  discs(1.25, 0.06, 0.08);
+  // One silhouette pass gives the whole run a dark rim for a single fill. At
+  // far zoom it is most of what separates a hedge from the pasture round it.
+  g.fillStyle = 'rgba(0,0,0,0.22)';
+  discs(1.07, 0, 0);
+  // hedge mass — yellower, denser green than woods. Tone drifts along the run
+  // on the macro field, with a per-lobe roll so neighbouring lobes separate.
+  for (let t = 0; t < HEDGE_TONES.length; t++) {
+    g.fillStyle = HEDGE_TONES[t];
+    g.beginPath();
+    for (let i = 0; i < L.length; i += 3) {
+      const tone = macro(L[i], L[i + 1]) * 0.6 + hash(i, Math.round(L[i] * 16), 606) * 0.4;
+      if (Math.min(HEDGE_TONES.length - 1, (tone * HEDGE_TONES.length) | 0) !== t) continue;
+      g.moveTo(L[i] + L[i + 2], L[i + 1]);
+      g.arc(L[i], L[i + 1], L[i + 2], 0, TAU);
     }
+    g.fill();
   }
+  // The flank away from the sun in shade, the flank toward it lit, and a small
+  // hot spot on each lobe: what makes a row of discs read as a row of bushes.
+  g.fillStyle = 'rgba(14,22,12,0.22)';
+  discs(0.82, SUN.dx * 0.07, SUN.dy * 0.07);
+  g.fillStyle = 'rgba(190,214,148,0.16)';
+  discs(0.7, -SUN.dx * 0.08, -SUN.dy * 0.08);
+  if (d === 0) return;
+  // Leaf masses catching the light and the gaps between them. On some lobes
+  // only: one on every lobe is a row of identical beads.
+  const flecks = (style: string, salt: number, r0: number, r1: number): void => {
+    g.fillStyle = style;
+    g.beginPath();
+    for (let i = 0; i < L.length; i += 3) {
+      for (let k = 0; k < d; k++) {
+        if (hash(i, k, salt) < 0.4) continue;
+        const a = hash(i, k, salt + 1) * TAU;
+        const rr = Math.sqrt(hash(i, k, salt + 2)) * L[i + 2] * 0.75;
+        const fx = L[i] + Math.cos(a) * rr - SUN.dx * 0.05;
+        const fy = L[i + 1] + Math.sin(a) * rr - SUN.dy * 0.05;
+        const fr = r0 + hash(i, k, salt + 3) * (r1 - r0);
+        g.moveTo(fx + fr, fy);
+        g.arc(fx, fy, fr, 0, TAU);
+      }
+    }
+    g.fill();
+  };
+  flecks('rgba(206,224,158,0.2)', 611, 0.05, 0.11);
+  flecks('rgba(12,20,10,0.3)', 615, 0.025, 0.055);
   if (d < 2) return;
   // bare twigs where a run stops — the cut end of a hedgerow is sticks, not foliage
   g.strokeStyle = 'rgba(58,50,34,0.5)';
   g.lineWidth = 0.035;
-  for (const t of tiles) {
-    if (Number(t.n) + Number(t.s) + Number(t.w) + Number(t.e) > 1) continue;
-    for (let i = 0; i < 3; i++) {
-      const k = t.x * 4 + i;
-      const a = hash(k, t.y, 59) * Math.PI * 2;
-      const sx = t.x + 0.35 + hash(k, t.y, 60) * 0.3;
-      const sy = t.y + 0.35 + hash(k, t.y, 61) * 0.3;
-      const l = 0.2 + hash(k, t.y, 62) * 0.2;
-      g.beginPath();
-      g.moveTo(sx, sy);
-      g.lineTo(sx + Math.cos(a) * l, sy + Math.sin(a) * l);
-      g.stroke();
+  for (let y = Math.max(0, ty0); y < Math.min(hr.h, ty1); y++) {
+    for (let x = Math.max(0, tx0); x < Math.min(hr.w, tx1); x++) {
+      const deg = hr.deg[y * hr.w + x];
+      if (deg < 0 || deg > 1) continue;
+      for (let i = 0; i < 3; i++) {
+        const k = x * 4 + i;
+        const a = hash(k, y, 59) * Math.PI * 2;
+        const sx = x + 0.35 + hash(k, y, 60) * 0.3;
+        const sy = y + 0.35 + hash(k, y, 61) * 0.3;
+        const l = 0.2 + hash(k, y, 62) * 0.2;
+        g.beginPath();
+        g.moveTo(sx, sy);
+        g.lineTo(sx + Math.cos(a) * l, sy + Math.sin(a) * l);
+        g.stroke();
+      }
     }
   }
 }
@@ -1797,23 +1789,6 @@ function softenGround(g: Ctx, map: GameMap, patches: PatchIndex, tx0: number, ty
 export const SURROUND_M = 160; // metres of it on every side
 const SURROUND_Q = 4; // metres per baked pixel
 export const SURROUND_FAR: [number, number, number] = [22, 21, 16]; // what it fades to, and what the renderer fills the rest of the view with
-// Value noise with smoothstep weights. `macro` is bilinear, which is right
-// for a tone drift across textured ground; stretched bare over a hundred
-// metres of out-of-focus country its lattice shows as creases.
-function soft(x: number, y: number, cell: number, salt: number): number {
-  const gx = x / cell;
-  const gy = y / cell;
-  const ix = Math.floor(gx);
-  const iy = Math.floor(gy);
-  const fx = gx - ix;
-  const fy = gy - iy;
-  const ux = fx * fx * (3 - 2 * fx);
-  const uy = fy * fy * (3 - 2 * fy);
-  const a = hash(ix, iy, salt) * (1 - ux) + hash(ix + 1, iy, salt) * ux;
-  const b = hash(ix, iy + 1, salt) * (1 - ux) + hash(ix + 1, iy + 1, salt) * ux;
-  return a * (1 - uy) + b * uy;
-}
-
 function bakeSurround(w: number, h: number): HTMLCanvasElement {
   const cw = Math.ceil((w + SURROUND_M * 2) / SURROUND_Q);
   const chh = Math.ceil((h + SURROUND_M * 2) / SURROUND_Q);
@@ -2053,6 +2028,7 @@ export class TerrainLayer {
   private hasStairs: boolean;
   private bakeBudget = 0;
   private patches: PatchIndex;
+  private hedges: Hedgerows;
   private yards: Yard[];
   // props bucketed by chunk key on their DRAWN extent (a telegraph wire spans
   // 6 m past its pole), so a chunk bake pays only for the clutter it shows and
@@ -2094,6 +2070,7 @@ export class TerrainLayer {
     this.hasStairs = map.stairs.some((s) => s !== 0);
     this.chunksW = Math.ceil(map.w / CHUNK);
     this.patches = new PatchIndex(map);
+    this.hedges = buildHedgerows((x, y) => map.terrainKeyAt(x, y) === 'hedge', map.w, map.h);
     this.rail = railIndex(map);
     const churchTiles = new Uint8Array(map.w * map.h);
     for (const b of buildings) {
@@ -2236,7 +2213,7 @@ export class TerrainLayer {
     drawRugs(g, this.map, this.roleAt, tx0, ty0, tx1, ty1, d);
     drawFurniture(g, this.map, this.roleAt, this.acrossAt, tx0, ty0, tx1, ty1, band);
     drawYardStructures(g, this.map, this.patches, this.yards, tx0, ty0, tx1, ty1, d);
-    drawHedgeRun(g, this.map, tx0, ty0, tx1, ty1, d);
+    drawHedgerows(g, this.hedges, tx0, ty0, tx1, ty1, d);
     if (d >= 1) {
       // Fallen trunks, deep inside a stand only, ~1 per 50 woods tiles. Drawn
       // before the canopies so a tree overlaps the log rather than the log
