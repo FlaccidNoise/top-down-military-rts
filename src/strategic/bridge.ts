@@ -7,7 +7,7 @@ import { mulberry32, type Rng } from '../sim/rng';
 import { roadSpot, wireBonds } from '../sim/scenario';
 import { EYE_STAND, Sim, sightBetween, type BreachEvent, type MemberInit, type Side } from '../sim/sim';
 import { lightAt } from '../sim/solar';
-import { COMPANY_TOE, squadHeadcount } from '../sim/toe';
+import { COMPANY_TOE, companyHeadcount, squadHeadcount } from '../sim/toe';
 import { cellIndex, cellXY, type SectorMap } from './sector';
 import { Front, type Chit, type Engagement } from './front';
 
@@ -134,10 +134,24 @@ function stockpileAmmo(sim: Sim, e: { kind: EmplacementKey; crewTeamId: number }
 // Fields on ground a hull can fight over — woods and river cells stay
 // infantry fights.
 const ARMOR_KINDS = new Set<MapKind>(['road', 'open', 'bridge', 'bourg']);
+// A German attack comes with its assault gun section, two StuG III, where an
+// American one has a single supporting tank (#794: red attacking won 0 of 32
+// probed battles against an AI-held position).
 const ATTACKER_ARMOR: Record<Side, VehicleKey[]> = {
   blue: ['sherman', 'm3_halftrack'],
-  red: ['stug3', 'sdkfz251'],
+  red: ['stug3', 'stug3', 'sdkfz251'],
 };
+// What an attacking German force is given besides (#794), none of it a weapon
+// stat. Barrages on par with the American attacker's two. A fire plan: its
+// tubes are dumped the same double load a prepared defence has, and its
+// commander is briefed to prepare the objective itself (ai.ts, firePlan).
+// And all of its men: the Kampfgruppe used to be cut to one company's table
+// (114) whatever strength it brought, so a 160-strong one attacked as 114. It
+// now fields its strength, the men past the table as more rifle Gruppen, up
+// to FIELD_BUDGET men on the field in all (a full company a side is 257, the
+// scale the frame budget is measured at).
+const ATTACK_BARRAGES = 2;
+const FIELD_BUDGET = 260;
 const DEFENDER_AT: Record<Side, EmplacementKey> = { blue: 'at57', red: 'pak40' };
 const ARMOR_SALT = 0x41726d72; // 'Armr': salts the private staging stream (see makeStrategicBattle)
 // Tiles round a deployed emplacement a hull may not take. 3 clears the pit,
@@ -374,9 +388,10 @@ export function makeStrategicBattle(
   } else {
     // --- Red attacker: field from TO&E de_grenadier_co at west spawn ---
     const atkFielded: { key: SquadKey; take: number }[] = [];
-    let atkRemaining = attacker.strength;
-    for (const key of COMPANY_TOE.de_grenadier_co) {
-      if (atkRemaining <= 0) break;
+    const toe: SquadKey[] = COMPANY_TOE.de_grenadier_co;
+    let atkRemaining = Math.min(attacker.strength, Math.max(companyHeadcount(toe), FIELD_BUDGET - defender.strength));
+    for (let i = 0; atkRemaining > 0; i++) {
+      const key = toe[i] ?? 'de_gruppe'; // past the company's table: more rifle Gruppen
       const take = Math.min(squadHeadcount(key), atkRemaining);
       atkFielded.push({ key, take });
       atkRemaining -= take;
@@ -389,6 +404,7 @@ export function makeStrategicBattle(
       if (empKind) {
         // In battery at the deployment line; no post (see blue attacker branch).
         const e2 = sim.addEmplacement('red', empKind, anchor.x, anchor.y, 0, 'deployed', roster);
+        stockpileAmmo(sim, e2); // the fire plan's dump (ATTACK_BARRAGES)
         const squad = sim.squads[sim.teams[e2.crewTeamId].squadId];
         squad.name = `${i + 1}. ${SQUADS[key].name}`;
         return;
@@ -642,6 +658,8 @@ export function makeStrategicBattle(
     sim.rng = shared;
   }
 
+  sim.barragesLeft[attackerSide] = Math.max(sim.barragesLeft[attackerSide], ATTACK_BARRAGES);
+
   const { x, y } = cellXY(front.sector, e.cell);
   const stance = attackerSide === 'red' ? 'attack' : 'defend';
   // The debrief is the player's (BLUE) after-action report even when red
@@ -669,7 +687,7 @@ export function makeStrategicBattle(
       side: 'red',
       stance,
       posts: commanderPosts,
-      ...(stance === 'attack' ? { objectives: attackObjectives } : { approach: { x: west.x, y: west.y }, ...brief }),
+      ...(stance === 'attack' ? { objectives: attackObjectives, firePlan: true } : { approach: { x: west.x, y: west.y }, ...brief }),
     }),
     blueCommander,
     name: `${defender.name} at (${x}, ${y})`,

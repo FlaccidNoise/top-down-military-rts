@@ -36,6 +36,13 @@ export interface CommanderConfig {
   // squads share ONE post out of the map's three (measured, seeds 1-3) — the
   // attack culminated at its first objective with nowhere left it knew about.
   objectives?: { x: number; y: number }[];
+  // Attack stance: the attack has a fire plan (#794). Its tubes prepare the
+  // objective it is working whether or not a defender has been spotted on it,
+  // as long as the objective itself is under a friendly's eyes, and one
+  // barrage is laid on the first objective as the riflemen come up. The
+  // objective is briefing, never an intel read: this is fire on a map
+  // reference, which is what a preparation is.
+  firePlan?: boolean;
   // Defend stance, static briefing like posts (#794). `fallback`: where a
   // squad goes when its post is lost or flanked, one bound at a time, nearest
   // first; a squad with no entry stands (a dug-in gun). `reserve`: the squads
@@ -187,6 +194,11 @@ const AIR_SAFETY = 70;
 // it never fired in the doctrine suite's campaign battle, and a fight the
 // garrison won in 8,200 ticks became one it lost.
 const BARRAGE_GAP_TICKS = 90 * 30;
+// The fire plan's barrage (CommanderConfig.firePlan) goes down on the first
+// objective when the lead rifle team is inside FAR of it, and not with any
+// man of its own inside NEAR: the rounds fall for a minute.
+const PLAN_BARRAGE_FAR = 150;
+const PLAN_BARRAGE_NEAR = 70;
 // Fire discipline releases against a massed attack (balance 2026-07): ambush
 // is sited for infiltrators and patrols; once the commander's own intel shows
 // this many enemies AT ONCE, the garrison is looking at a company in the open
@@ -228,6 +240,7 @@ const RELAY_TICKS = 20 * 30;
 export class RedCommander {
   private lastEval = -EVAL_TICKS;
   private lastBarrageTick = -BARRAGE_GAP_TICKS;
+  private planBarrageFired = false;
   private postNow = new Map<number, { x: number; y: number }>(); // squadId -> the post it holds, once it has left the briefed one
   private fallbacksTaken = new Map<number, number>(); // squadId -> how far down its fallback list it is
   private fellBackTick = new Map<number, number>();
@@ -1100,6 +1113,8 @@ export class RedCommander {
     if (post && !this.isTaken(post)) {
       const on = this.spottedPositions(sim).filter((p) => Math.hypot(p.x - post.x, p.y - post.y) <= PREP_HE_RADIUS);
       target = this.densest(on, DEFEND_HE_RADIUS, PREP_HE_MIN);
+      // With a fire plan and nobody to shoot at yet, the objective itself.
+      if (!target && this.cfg.firePlan) target = { x: post.x, y: post.y, n: 0 };
     }
     this.fireMission(sim, target, PREP_HE_LIFT, PREP_SMOKE_RESERVE);
     this.maybeAirstrike(sim, target);
@@ -1197,6 +1212,16 @@ export class RedCommander {
   // See BARRAGE_GAP_TICKS.
   private maybeBarrage(sim: Sim): void {
     if (sim.barragesLeft[this.cfg.side] <= 0 || sim.tick - this.lastBarrageTick < BARRAGE_GAP_TICKS) return;
+    if (this.cfg.firePlan && !this.planBarrageFired && !this.culminated) {
+      const post = this.maneuverPost(sim);
+      const lead = post && !this.isTaken(post) ? this.leadDistance(sim, post) : undefined;
+      if (post && lead !== undefined && lead <= PLAN_BARRAGE_FAR && !this.ownWithin(sim, post.x, post.y, PLAN_BARRAGE_NEAR)) {
+        sim.callBarrage(this.cfg.side, post.x, post.y);
+        this.planBarrageFired = true;
+        this.lastBarrageTick = sim.tick;
+        return;
+      }
+    }
     const safety = this.cfg.stance === 'attack' ? PREP_HE_LIFT : 0;
     const seen = this.spottedPositions(sim);
     for (const b of seen) {

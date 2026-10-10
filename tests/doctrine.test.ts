@@ -1341,6 +1341,96 @@ describe('a defence that moves (#794)', () => {
   });
 });
 
+// #794. Red attacking a position held by the blue AI won 0 of 32 probed
+// battles. What it is given, not what its weapons do.
+describe('what an attacking German force is given (#794)', () => {
+  const stageRed = (redStrength?: number, drop = 0) => {
+    const c = newCampaign(2);
+    if (drop > 0) c.companies[0].squads.splice(0, drop);
+    const front = newFront(c, makeDefaultSector());
+    const able = front.chits.find((ch) => ch.side === 'blue')!;
+    const garrison = front.chits.find((ch) => ch.name === 'Garnison St-Aubin')!;
+    if (redStrength !== undefined) garrison.strength = redStrength;
+    front.sector.cells[able.cell].terrain = 'open';
+    return makeStrategicBattle(c, front, { attackerId: garrison.id, defenderId: able.id, cell: able.cell }, 2);
+  };
+
+  it('two assault guns, two barrages, a double load at the tubes, and a commander briefed with a fire plan', () => {
+    const { sim, commander, blueCommander } = stageRed();
+    expect(sim.vehicles.filter((v) => v.side === 'red').map((v) => v.kind)).toEqual(['stug3', 'stug3', 'sdkfz251']);
+    expect(sim.barragesLeft.red).toBe(2);
+    const tubes = sim.emplacements.filter((e) => e.side === 'red' && e.kind === 'mortar81');
+    expect(tubes.length).toBe(2);
+    for (const t of tubes) {
+      const shells = sim.teams[t.crewTeamId].soldierIds.reduce((a, id) => a + (sim.soldiers[id].ammo.shell_81 ?? 0), 0);
+      expect(shells).toBe(48); // twice the crew's 24
+    }
+    expect(commander['cfg'].firePlan).toBe(true);
+    expect(blueCommander['cfg'].firePlan).toBeUndefined();
+
+    // and a blue attack is staged as it was
+    const c = newCampaign(2);
+    const front = newFront(c, makeDefaultSector());
+    const able = front.chits.find((ch) => ch.side === 'blue')!;
+    const garrison = front.chits.find((ch) => ch.name === 'Garnison St-Aubin')!;
+    front.sector.cells[garrison.cell].terrain = 'open';
+    const blueAtk = makeStrategicBattle(c, front, { attackerId: able.id, defenderId: garrison.id, cell: garrison.cell }, 2);
+    expect(blueAtk.sim.vehicles.filter((v) => v.side === 'blue').map((v) => v.kind)).toEqual(['sherman', 'm3_halftrack']);
+    expect(blueAtk.sim.barragesLeft).toEqual({ blue: 2, red: 1 });
+    expect(blueAtk.blueCommander['cfg'].firePlan).toBeUndefined();
+  });
+
+  it('a Kampfgruppe fields its strength, not one company table, up to 260 men on the field', () => {
+    const red = (b: { sim: Sim }): number => b.sim.soldiers.filter((m) => m.side === 'red' && m.inVehicle < 0).length;
+    const blue = (b: { sim: Sim }): number => b.sim.soldiers.filter((m) => m.side === 'blue').length;
+    const full = stageRed(160); // against a whole company: the table's 114 is the field's limit
+    expect(blue(full)).toBeGreaterThan(135);
+    expect(red(full)).toBe(Math.max(114, 260 - 138)); // 138 is the chit's count of the company's fit men
+    const worn = stageRed(160, 5); // the company short five rifle squads: 60 fewer on the field
+    expect(blue(worn)).toBeLessThan(90);
+    expect(red(worn)).toBe(160);
+    expect(red(stageRed(90, 5))).toBe(90);
+  });
+
+  it('the fire plan: tubes on the watched objective with nobody spotted on it, one barrage as the riflemen come up, none without the plan', () => {
+    const POST = { x: 150, y: 30 };
+    const stage = (firePlan: boolean) => {
+      const sim = new Sim(new GameMap(240, 60), 9);
+      const rifle = sim.addSquad('red', 'Rifle', Array.from({ length: 6 }, (_, i) => ({ name: `R${i}`, weapon: 'kar98k' as const, x: 40.5, y: 27.5 + i, xp: 20 })));
+      const tube = sim.addEmplacement('red', 'mortar81', 60, 30, 0, 'deployed');
+      for (const m of sim.soldiers) {
+        m.ammo = m.ammo.shell_81 ? { shell_81: m.ammo.shell_81 } : {};
+        m.magLeft = 0;
+        m.morale = 1;
+      }
+      sim.barragesLeft.red = 2;
+      const barrages: { x: number; y: number; lead: number }[] = [];
+      sim.callBarrage = (side, x, y) => {
+        sim.barragesLeft[side]--;
+        barrages.push({ x, y, lead: Math.min(...rifle.soldierIds.map((id) => Math.hypot(sim.soldiers[id].x - x, sim.soldiers[id].y - y))) });
+        return true;
+      };
+      const commander = new RedCommander({ side: 'red', stance: 'attack', posts: { [rifle.id]: POST }, objectives: [POST], ...(firePlan ? { firePlan: true } : {}) });
+      let aimed: { x: number; y: number } | null = null;
+      for (let i = 0; i < 1800; i++) {
+        commander.update(sim);
+        sim.step();
+        if (!aimed && tube.hasTarget && tube.smokeRoundsLeft === 0) aimed = { x: tube.targetX, y: tube.targetY };
+      }
+      return { aimed, barrages };
+    };
+    const planned = stage(true);
+    expect(planned.aimed).toEqual(POST); // an empty objective in plain view: prepared all the same
+    expect(planned.barrages).toHaveLength(1);
+    expect(planned.barrages[0]).toMatchObject(POST);
+    expect(planned.barrages[0].lead).toBeLessThanOrEqual(150);
+    expect(planned.barrages[0].lead).toBeGreaterThanOrEqual(70);
+    const plain = stage(false);
+    expect(plain.aimed).toBeNull();
+    expect(plain.barrages).toEqual([]);
+  });
+});
+
 // Night A/B (day/night design §7.4): same seed, same AI-driven strategic
 // battle, startMin 14:00 vs 02:00. Direction-only assertions, and the
 // direction asserted is the one the mechanics actually own: night caps the
