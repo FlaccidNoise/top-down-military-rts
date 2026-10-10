@@ -28,6 +28,7 @@ export type FxKind =
   | 'dirt'
   | 'pall'
   | 'blood'
+  | 'brass'
   | 'spark'
   | 'leaf'
   | 'chunk0'
@@ -537,6 +538,15 @@ function bake(kind: FxKind, px: number): HTMLCanvasElement {
       break;
     case 'dirt':
       puff(g, px, '70,55,38', 5);
+      break;
+    case 'brass':
+      // A spent case, lying along +x: dark outline, brass body, one highlight.
+      g.fillStyle = '#3a2f18';
+      g.fillRect(h * 0.16, h * 0.68, h * 1.68, h * 0.64);
+      g.fillStyle = '#b3924a';
+      g.fillRect(h * 0.24, h * 0.76, h * 1.52, h * 0.48);
+      g.fillStyle = 'rgba(238,218,156,0.75)';
+      g.fillRect(h * 0.36, h * 0.8, h * 1, h * 0.14);
       break;
     case 'blood':
       // The mist off a hit. Dark, and well short of pure red: on this palette

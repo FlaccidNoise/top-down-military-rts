@@ -3,6 +3,7 @@ import type { Side } from '../sim/sim';
 import { bolts, type Ctx, type Detail, detailFor, hair, plate, roundRectPath, TAU, teamRing, weld } from './bakekit';
 import { AO_ALPHA } from './light';
 import { SpriteCache } from './spritecache';
+import { hullDpr } from './view';
 
 // Parametric crewed weapons, drawn facing +X in metre units and baked per
 // (kind, side, state, zoom band) — the same scheme as vehicles.ts.
@@ -16,8 +17,10 @@ export type EmplacementState = 'packed' | 'deployed';
 
 const BANDS = [6, 12, 24, 48];
 
+// Device px/m, or CSS px/m on a phone — the vehicles' rule (view.ts hullDpr).
 export function emplacementBandFor(scale: number): number {
-  return BANDS.find((b) => b >= scale) ?? 48;
+  const px = scale * hullDpr();
+  return BANDS.find((b) => b >= px) ?? 48;
 }
 
 // Sprite canvas size in metres, per kind. An MG on a tripod fits in three and

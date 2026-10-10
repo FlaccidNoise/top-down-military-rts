@@ -8,7 +8,7 @@ import { bandFor, CRAWL_FRAMES, DUDE_SCALE, getShadowSprite, getSprite, glintSpr
 import { emplacementBandFor, emplacementFootprintRadius, emplacementSpan, getEmplacementShadow, getEmplacementSprite } from './emplacements';
 import { ballistic, blastOf, blastScale, blit, FLASH, flashClass, fxDetail, fxScale, hazeBand, hotPass, lightPool, SPIKE_SIDES, traceOvershoot, WIND, type BlastSpec, type FlashSpec, type FxKind, type Overshoot } from './fx';
 import { SUN, shadowSoftAlpha, sun } from './light';
-import { MarkLayer } from './marks';
+import { BrassLayer, MarkLayer } from './marks';
 import { PallLayer } from './pall';
 import { craterSpots } from './props';
 import { RoofLayer } from './roofs';
@@ -380,6 +380,8 @@ export class Renderer {
   private moraleSeq = 0;
   private decals: DecalLayer;
   private marks = new MarkLayer();
+  private brass = new BrassLayer();
+  private shotSeq = 0;
   private pall = new PallLayer();
   private firing = new Map<number, Firing>();
   private hits: Hit[] = [];
@@ -554,7 +556,16 @@ export class Renderer {
   // weapon heats, the firer kicks, the man it hit jerks, a tank's turret snaps
   // onto the round it just fired. (ux, uy) is the bearing.
   private noteShot(e: ShotEvent, shooter: Soldier | undefined, ux: number, uy: number, taps: number, gap: number, now: number, muzzleSeen: () => boolean): void {
-    this.noteFiring(e, ux, uy, taps, now, muzzleSeen);
+    const seen = this.noteFiring(e, ux, uy, taps, now, muzzleSeen);
+    // An automatic weapon drops a case per round, out to its right.
+    if (seen && taps > 1) {
+      for (let i = 0; i < taps; i++) {
+        const k = this.shotSeq++;
+        const out = 0.45 + hash(k, 0, 641) * 0.55;
+        const back = hash(k, 0, 642) * 0.6 - 0.1;
+        this.brass.add(e.fx - uy * out - ux * back, e.fy + ux * out - uy * back);
+      }
+    }
     // The firer kicks, once per round of his burst.
     if (shooter) {
       const st = this.state(shooter);
@@ -594,8 +605,9 @@ export class Renderer {
     }
   }
 
-  // Heat the weapon this shot came from (see Firing).
-  private noteFiring(e: ShotEvent, ux: number, uy: number, taps: number, now: number, seen: () => boolean): void {
+  // Heat the weapon this shot came from (see Firing). Returns whether the
+  // player can see it.
+  private noteFiring(e: ShotEvent, ux: number, uy: number, taps: number, now: number, seen: () => boolean): boolean {
     // Soldier ids are >= 0, so a position key goes below zero.
     const key = e.shooterId ?? -1 - (Math.round(e.fx * 2) * 4099 + Math.round(e.fy * 2));
     let f = this.firing.get(key);
@@ -626,6 +638,7 @@ export class Renderer {
     f.y = e.fy + uy * reach;
     f.ux = ux;
     f.uy = uy;
+    return f.seen;
   }
 
   // The wisp a working weapon trails. Three puffs on staggered two-second
@@ -855,6 +868,7 @@ export class Renderer {
     this.spreadPools(now);
     this.decals.draw(ctx, cam, cw, ch);
     this.marks.draw(ctx, cam, cw, ch);
+    this.brass.draw(ctx, cam, cw, ch);
     this.roofs.update(this.sim, cam, dt || 1 / 60);
     this.roofs.drawShadows(ctx, cam, cw, ch);
     this.roofs.drawWalls(ctx, cam, cw, ch);
@@ -932,7 +946,10 @@ export class Renderer {
     // Ambient grade (N7): one source-over lerp toward the hour's tint, the
     // last world-space draw — everything the sun lights sits under it. Sized
     // past the viewport so the shake translate never exposes an ungraded edge.
-    this.gradeWorld(ctx, cam, now, cw, ch);
+    // This frame's lights: holes in the night grade, and a halo in the hot
+    // batch by day or night.
+    const lights = this.gatherLights(cam, now, cw, ch);
+    this.gradeWorld(ctx, lights, cw, ch);
     // The frame's ONE additive batch, hoisted ABOVE the grade: 'lighter' adds
     // a fixed increment, so the same flash over a graded-dark floor gains
     // contrast for free — night punch nobody has to tune (§3.3). The cost,
@@ -964,10 +981,9 @@ export class Renderer {
   // shadow changes and the one-sun rule holds. With no light in view this is
   // the single fillRect it always was, which is what a static night scene
   // (and every night crop of the art sweep) still gets.
-  private gradeWorld(ctx: CanvasRenderingContext2D, cam: Camera, now: number, cw: number, ch: number): void {
+  private gradeWorld(ctx: CanvasRenderingContext2D, n: number, cw: number, ch: number): void {
     const [r, g, b, a] = sun().ambient;
     if (a <= 0) return;
-    const n = this.gatherLights(cam, now, cw, ch);
     ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${a})`;
     if (n === 0) {
       ctx.fillRect(-GRADE_PAD, -GRADE_PAD, cw + GRADE_PAD * 2, ch + GRADE_PAD * 2);
@@ -1064,6 +1080,16 @@ export class Renderer {
     if (this.tracers.length === 0 && this.booms.length === 0 && this.lit.length === 0) return;
     const tier = fxDetail(cam.scale);
     hotPass(ctx, () => {
+      // Glow: one soft warm halo per light, under everything else in the
+      // batch. Restrained on purpose — it is the air round a flash catching
+      // some of it, not bloom — and a little stronger as the grade comes
+      // down, where there is dark for it to show against. Not on a phone.
+      if (!MOBILE) {
+        const L = this.lights;
+        const a = 0.07 + 0.09 * sun().ambient[3];
+        const n = Math.min(L.length, MAX_LIGHTS * 4); // past the cap the list is unsorted leftovers
+        for (let i = 0; i < n; i += 4) blit(ctx, 'fire', L[i], L[i + 1], L[i + 2] * 0.55, L[i + 3] * a);
+      }
       for (const t of this.tracers) this.drawShotHot(ctx, cam, t, now, cw, ch, tier);
       for (const b of this.booms) this.drawBoomHot(ctx, cam, b, now, cw, ch, tier);
       this.drawFiresHot(ctx, cam, now, cw, ch, tier);

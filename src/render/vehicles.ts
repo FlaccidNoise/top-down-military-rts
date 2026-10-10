@@ -5,14 +5,18 @@ import { DUDE_SCALE, kitTones, tier } from './dudes';
 import { AO_ALPHA } from './light';
 import { hash } from './noise';
 import { SpriteCache } from './spritecache';
+import { hullDpr } from './view';
 
 // Parametric vector tank, drawn facing +X in meter units, baked per
 // (kind, side, state, zoom band) — same scheme as dudes.ts.
 
 export const VEHICLE_SPAN = 8; // meters covered by the sprite canvas
 const BANDS = [6, 12, 24, 48];
+// Device px/m, like the men (dudes.ts bandFor) — except on a phone, where a
+// hull stays on CSS px/m (view.ts hullDpr).
 export function vehicleBandFor(scale: number): number {
-  return BANDS.find((b) => b >= scale) ?? 48;
+  const px = scale * hullDpr();
+  return BANDS.find((b) => b >= px) ?? 48;
 }
 
 type State = 'ok' | 'dead';
