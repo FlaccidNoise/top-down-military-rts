@@ -200,34 +200,51 @@ describe('a retreat lands clear of every enemy (jtbug #762)', () => {
   };
   const gapTo = (fr: FrontV2, a: Force, b: Force): number => graphGap(fr.theater, a.pos, b.pos);
 
-  it('the graph retreat skips a road with an enemy parked at the setback', () => {
+  it('the graph retreat stands short of an enemy parked at the setback, on the road it would have taken', () => {
     const fr = front(LONG);
     const loser = mk(fr, 'blue', 2, 'Able', 50, 0);
     const parked = mk(fr, 'red', 1, 'Rest', 10);
     parked.pos = { kind: 'edge', edgeId: 1, s: 5000 - RETREAT_SETBACK_M, dir: -1 }; // thrown back here earlier
     fr.controlByNode[1] = 'blue'; // friendly ground: the retreat's first choice, and 3.5 km clear of the remnant
     retreatForce(fr, loser, 2);
-    expect(loser.pos).toMatchObject({ kind: 'edge', edgeId: 3 });
+    // Before: it landed on the remnant's own metre and fought again the same minute.
+    expect(loser.pos).toMatchObject({ kind: 'edge', edgeId: 1 });
     expect(gapTo(fr, loser, parked)).toBeGreaterThan(CONTACT_M);
+    expect(gapTo(fr, loser, parked)).toBeLessThan(RETREAT_SETBACK_M); // pulled in, not sent elsewhere
   });
 
-  it('a crossing setback that would land on an enemy falls back through the node behind', () => {
+  // A beaten assault on the bridge, with `remnants` enemy forces parked down its approach road.
+  const beatenAtTheBridge = (remnantsAt: number[]): { fr: FrontV2; a: Force; w: Force; parked: Force[] } => {
     const fr = front(LONG);
     const a = mk(fr, 'blue', 0, 'Able', 100, 0);
     a.pos = { kind: 'edge', edgeId: 0, s: 2900, dir: 1 };
     a.path = [0];
     const w = mk(fr, 'red', 1, 'Brückenwache', 90);
-    const parked = mk(fr, 'red', 1, 'Rest', 10);
-    parked.pos = { kind: 'edge', edgeId: 0, s: 3000 - RETREAT_SETBACK_M, dir: -1 };
-    parked.engagedIn = 99; // not a party to this fight
+    const parked = remnantsAt.map((fromBridge) => {
+      const r = mk(fr, 'red', 1, 'Rest', 10);
+      r.pos = { kind: 'edge', edgeId: 0, s: 3000 - fromBridge, dir: -1 };
+      r.engagedIn = 99; // not a party to this fight
+      return r;
+    });
     const b = openBattle(fr, { attackerId: a.id, defenderId: w.id, site: { kind: 'node', nodeId: 1 }, gapM: 100 });
     b.forced = 'defender';
     fr.clockMin = b.endMin;
     resolveBattleV2(fr, newCampaign(7), b);
+    return { fr, a, w, parked };
+  };
+
+  it('a crossing setback that would land on an enemy stands short of him', () => {
+    const { fr, a, w, parked } = beatenAtTheBridge([RETREAT_SETBACK_M]);
     expect(a.strength).toBeGreaterThan(0);
-    expect(a.pos).toMatchObject({ kind: 'edge', edgeId: 4 }); // out through node 0, not parked on the remnant
-    expect(gapTo(fr, a, parked)).toBeGreaterThan(CONTACT_M);
-    expect(gapTo(fr, a, w)).toBeGreaterThan(CONTACT_M);
+    expect(a.pos).toMatchObject({ kind: 'edge', edgeId: 0 });
+    for (const foe of [w, ...parked]) expect(gapTo(fr, a, foe)).toBeGreaterThan(CONTACT_M);
+  });
+
+  it('with the whole approach held it falls back through the node behind', () => {
+    const { fr, a, w, parked } = beatenAtTheBridge([RETREAT_SETBACK_M, RETREAT_SETBACK_M - 400, RETREAT_SETBACK_M - 800]);
+    expect(a.strength).toBeGreaterThan(0);
+    expect(a.pos).toMatchObject({ kind: 'edge', edgeId: 4 }); // out through node 0
+    for (const foe of [w, ...parked]) expect(gapTo(fr, a, foe)).toBeGreaterThan(CONTACT_M);
   });
 });
 

@@ -10,12 +10,11 @@
 // and paste its `PIN seed N {status, day, logLen}` lines into PINNED below,
 // recording the commit here. Never hand-edit a tuple.
 //
-// Recorded 2026-10-09 at the jtbug #762 first-fight commit (the attack
-// decision is taken on the first fight of a march; a retreat lands clear of
-// every enemy), on top of 66a3cc7, warsweep-v2 seeds 1..16, recon omniscient,
-// DEFAULT_PRESET, no doctrine override. Gates green: 0 hung, 4/16 blue wins,
-// red retook objectives on 15/16 seeds. AI blue is destroyed before the
-// deadline on 1 seed (5 at 31cc59b, 1 on main at 8a90968).
+// Recorded 2026-10-10 at the jtbug #762 setback commit (a blocked retreat
+// landing is pulled in short of the enemy on it, not dropped), on top of
+// merge 04d10db, warsweep-v2 seeds 1..16, recon omniscient, DEFAULT_PRESET,
+// no doctrine override. Gates green: 0 hung, 3/16 blue wins, red retook
+// objectives on 15/16 seeds.
 import { beforeAll, describe, expect, it } from 'vitest';
 import { DEFAULT_PRESET } from '../src/campaign/presets';
 import { makeHeadlessWorld, runHeadlessWar } from '../src/strategic/headless';
@@ -42,9 +41,9 @@ const runWar = (seed: number): Tuple => {
 
 const PINNED: Tuple[] = [
   { status: 'lost', day: 15, logLen: 9 },
-  { status: 'won', day: 6, logLen: 21 },
-  { status: 'lost', day: 4, logLen: 14 },
-  { status: 'won', day: 14, logLen: 22 },
+  { status: 'won', day: 6, logLen: 22 },
+  { status: 'lost', day: 15, logLen: 28 },
+  { status: 'lost', day: 15, logLen: 22 },
   { status: 'lost', day: 15, logLen: 20 },
   { status: 'lost', day: 15, logLen: 11 },
   { status: 'lost', day: 15, logLen: 9 },
@@ -52,8 +51,8 @@ const PINNED: Tuple[] = [
   { status: 'lost', day: 15, logLen: 29 },
   { status: 'lost', day: 15, logLen: 22 },
   { status: 'won', day: 10, logLen: 29 },
-  { status: 'lost', day: 15, logLen: 28 },
-  { status: 'lost', day: 15, logLen: 28 },
+  { status: 'lost', day: 15, logLen: 18 },
+  { status: 'lost', day: 15, logLen: 30 },
   { status: 'won', day: 8, logLen: 8 },
   { status: 'lost', day: 15, logLen: 41 },
   { status: 'lost', day: 15, logLen: 24 },

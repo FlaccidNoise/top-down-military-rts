@@ -137,11 +137,26 @@ export function battleSides(front: FrontV2, battle: CoarseBattle): BattleSides {
   };
 }
 
-// Where a force set back from `fromNode` down edge `e` stands: PARKED at
-// RETREAT_SETBACK_M, or at the far end of a shorter road.
-function setbackOn(e: TheaterEdge, fromNode: number): NetPos {
+// Where a force set back `m` metres from `fromNode` down edge `e` stands:
+// PARKED there, or at the far end of a shorter road.
+function setbackOn(e: TheaterEdge, fromNode: number, m = RETREAT_SETBACK_M): NetPos {
   const dir: 1 | -1 = e.a === fromNode ? 1 : -1;
-  return { kind: 'edge', edgeId: e.id, s: dir === 1 ? Math.min(e.lengthM, RETREAT_SETBACK_M) : Math.max(0, e.lengthM - RETREAT_SETBACK_M), dir };
+  return { kind: 'edge', edgeId: e.id, s: dir === 1 ? Math.min(e.lengthM, m) : Math.max(0, e.lengthM - m), dir };
+}
+
+// The setback on a road, pulled in when an enemy stands on the full one: a
+// remnant thrown back down this road earlier is parked at exactly
+// RETREAT_SETBACK_M. Each try is more than contact range short of the last,
+// so one of them stands clear of that remnant. Null when none is clear.
+// Dropping the whole road instead left a force with one road out nowhere to
+// go, and it was overrun where it could have stood 400 m short.
+const SETBACK_STEP_M = CONTACT_M + 100;
+function clearLanding(front: FrontV2, f: Force, e: TheaterEdge, fromNode: number): NetPos | null {
+  for (let m = RETREAT_SETBACK_M; m > CONTACT_M; m -= SETBACK_STEP_M) {
+    const pos = setbackOn(e, fromNode, m);
+    if (clearOfEnemies(front, f, pos)) return pos;
+  }
+  return null;
 }
 
 // A retreat that ends inside contact range of an enemy is not a retreat: the
@@ -156,8 +171,8 @@ function clearOfEnemies(front: FrontV2, f: Force, pos: NetPos): boolean {
 // landing is not clear (a short road, an enemy on it) the force falls back
 // through the node behind it instead, by the same graph retreat as any loser.
 export function throwBack(front: FrontV2, f: Force, approach: TheaterEdge, siteNode: number): void {
-  const landing = setbackOn(approach, siteNode);
-  if (clearOfEnemies(front, f, landing)) {
+  const landing = clearLanding(front, f, approach, siteNode);
+  if (landing) {
     f.pos = landing;
     standForce(front, f);
     pushEvent(front, { min: front.clockMin, kind: 'retreat', text: `${f.name} thrown back from the crossing`, forceIds: [f.id] });
@@ -199,11 +214,11 @@ export function retreatForce(
     .map((e) => {
       const far = otherEnd(e, nodeId);
       const control = front.controlByNode[far] === f.side ? 0 : front.controlByNode[far] === null ? 1 : 2;
-      return { e, far, control, threat: -nearEnemy(far), len: e.lengthM, landing: setbackOn(e, nodeId) };
+      return { e, far, control, threat: -nearEnemy(far), len: e.lengthM, landing: clearLanding(front, f, e, nodeId) };
     })
     // The far node being clear is not enough: an enemy thrown back earlier
     // can be parked on this very road, at this very setback.
-    .filter((c) => clearOfEnemies(front, f, c.landing))
+    .filter((c): c is typeof c & { landing: NetPos } => c.landing !== null)
     .sort((p, q) => p.control - q.control || p.threat - q.threat || p.len - q.len || p.e.id - q.e.id);
 
   if (candidates.length > 0) {
