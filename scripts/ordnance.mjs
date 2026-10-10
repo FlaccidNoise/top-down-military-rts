@@ -120,9 +120,11 @@ if (veh) {
     }, veh);
     check(moved > 3, `a right-click drives it (${moved.toFixed(1)} m travelled)`);
   }
-  // The hull stays selected. The next section's first act is a click on the
-  // mortar, which selects its crew and drops the hull — the way a player moves
-  // on. (Escape is not that way: with a hull selected it opens the pause menu.)
+  // Escape steps down the cancel ladder, and a selected hull is its last rung:
+  // it lets go of the hull and does not open the pause menu.
+  await page.keyboard.press('Escape');
+  const esc = await page.evaluate(() => ({ vehicle: window.__game.getSelection().vehicle, menu: getComputedStyle(document.getElementById('pausemenu')).display !== 'none' }));
+  check(esc.vehicle === -1 && !esc.menu, `Escape with a hull selected deselects it and opens no menu (vehicle ${esc.vehicle}, menu open ${esc.menu})`);
 }
 
 // ── 2-3. Mortar HE mission and smoke mission ────────────────────────────────

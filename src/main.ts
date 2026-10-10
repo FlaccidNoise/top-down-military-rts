@@ -1735,7 +1735,7 @@ function stratOrderMove(sx: number, sy: number): void {
     S().stratView.flash("Can't hold open water — ford across to the far bank");
 }
 
-/** Esc's cancel ladder: targetMode → inspect → armedOrder → team → selection. */
+/** Esc's cancel ladder: targetMode → inspect → armedOrder → selection modes → team → selection (squads or a vehicle). */
 function escapeLadder(): boolean {
   if (mode === 'strategic') {
     const v2 = S().v2;
@@ -1754,6 +1754,7 @@ function escapeLadder(): boolean {
   if (boxMode || addMode) { boxMode = false; addMode = false; boxRect = null; return true; }
   if (selectedTeam >= 0) { selectedTeam = -1; return true; }
   if (selectedSquads.length > 0) { selectSquad(-1); return true; }
+  if (selectedVehicle >= 0) { selectVehicle(-1); return true; }
   return false;
 }
 
