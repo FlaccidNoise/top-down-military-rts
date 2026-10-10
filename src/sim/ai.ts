@@ -80,6 +80,10 @@ const BOF_LEG = 20;
 // kind the commander wants, toward a point this close to the one it wants,
 // is left to get on with it.
 const SAME_ORDER_RADIUS = 5;
+// Armour: a hull this close to the objective it was sent to has arrived, and
+// two hulls sent to one objective stand this far apart instead of on one tile.
+const HULL_ARRIVED_RADIUS = 25;
+const HULL_SPACING = 10;
 // Objective progression: a post with a live man of the commander's own side
 // within this radius is held, and a maneuver team this close to its own post
 // is standing on the objective.
@@ -162,6 +166,7 @@ export class RedCommander {
   private breachSeen = 0; // how much of sim.breachLog this commander has already reacted to
   private asked = new Map<number, OrderKind>(); // teamId -> the kind last sent it, which a cautious team may be executing as a plain 'move'
   private flankLeg = new Map<number, { post: { x: number; y: number }; x: number; y: number }>(); // maneuver teamId -> the flank bound it is on
+  private hullPost = new Map<number, { x: number; y: number }>(); // vehicleId -> the objective it was last sent to
 
   constructor(private cfg: CommanderConfig) {}
 
@@ -255,13 +260,16 @@ export class RedCommander {
   // and maneuver rather than leaving maneuver empty.
   private assignGroups(sim: Sim): void {
     const redTeams = sim.teams.filter((t) => sim.squads[t.squadId].side === this.cfg.side && this.cfg.posts[t.squadId]);
-    const isBaseOfFire = (team: Team) =>
-      team.soldierIds.some((id) => {
-        const w: WeaponDef = WEAPONS[sim.soldiers[id].weapon];
-        return !!w.heat || !!w.arc || w.pen !== undefined;
-      });
+    const carries = (team: Team, is: (w: WeaponDef) => boolean): boolean => team.soldierIds.some((id) => is(WEAPONS[sim.soldiers[id].weapon]));
+    // A base of fire keeps heads down on the objective: a belt gun or a tube.
+    // A rocket launcher does neither. Counted as one, three bazooka teams made
+    // up three of blue's five "base of fire" teams and claimed suppression on
+    // posts they could do nothing to (#763). Tank hunters follow with the
+    // reserve instead of leading a rifle bound two men strong.
+    const isBaseOfFire = (team: Team) => carries(team, (w) => !!w.heat || !!w.arc);
+    const isTankHunter = (team: Team) => !isBaseOfFire(team) && carries(team, (w) => w.pen !== undefined);
     this.baseTeamIds = redTeams.filter(isBaseOfFire).map((t) => t.id);
-    const rifle = redTeams.filter((t) => !isBaseOfFire(t));
+    const rifle = redTeams.filter((t) => !isBaseOfFire(t) && !isTankHunter(t));
     const pool = rifle.length > 0 ? rifle : redTeams;
     // Half the pool maneuvers, half stays reserve. A flat two teams was a
     // company-sized attack fought by a dozen men — every other rifle team sat
@@ -269,7 +277,7 @@ export class RedCommander {
     // small force bounding by pairs.
     const maneuverCount = Math.max(2, Math.ceil(pool.length / 2));
     this.maneuverTeamIds = pool.slice(0, maneuverCount).map((t) => t.id);
-    this.reserveTeamIds = pool.slice(maneuverCount).map((t) => t.id);
+    this.reserveTeamIds = [...pool.slice(maneuverCount), ...(rifle.length > 0 ? redTeams.filter(isTankHunter) : [])].map((t) => t.id);
     for (const id of this.maneuverTeamIds) {
       this.startStrength.set(id, sim.teams[id].soldierIds.filter((sid) => sim.soldiers[sid].alive).length);
     }
@@ -816,18 +824,42 @@ export class RedCommander {
     }
   }
 
-  // Armor: attack stance pushes idle tanks at the first objective; defend
-  // stance holds them back as a mobile reserve near their spawn.
+  // Armour, attack stance: hulls go where the maneuver element is going and
+  // are sent on when it rolls forward (#763). They used to be sent to the
+  // first post in the briefing, once: they reached it in about 20 s, ahead of
+  // every rifleman, and stood there for the rest of the battle while the
+  // attack worked objectives 100 m further on. Defend stance issues nothing —
+  // a hull holds where it was staged. No cooperation doctrine here: the hull
+  // still drives straight to the objective.
   private updateVehicles(sim: Sim): void {
-    for (const v of sim.vehicles) {
-      if (!v.alive || v.side !== this.cfg.side || v.path) continue;
-      if (this.cfg.stance === 'attack' && !this.culminated) {
-        const firstPost = Object.values(this.cfg.posts)[0];
-        if (firstPost && Math.hypot(v.x - firstPost.x, v.y - firstPost.y) > 25) {
-          sim.orderVehicleMove(v.id, firstPost.x, firstPost.y);
-        }
-      }
+    if (this.cfg.stance !== 'attack' || this.culminated) return;
+    const post = this.maneuverPost(sim);
+    if (!post) return;
+    const hulls = sim.vehicles.filter((v) => v.side === this.cfg.side);
+    hulls.forEach((v, slot) => {
+      if (!v.alive) return;
+      const sent = this.hullPost.get(v.id);
+      const same = sent !== undefined && Math.hypot(sent.x - post.x, sent.y - post.y) < 1;
+      if (same && (v.path || Math.hypot(v.x - post.x, v.y - post.y) <= HULL_ARRIVED_RADIUS)) return;
+      this.hullPost.set(v.id, post);
+      sim.orderVehicleMove(v.id, post.x, post.y + (slot - (hulls.length - 1) / 2) * HULL_SPACING);
+    });
+  }
+
+  // The objective most of the living maneuver element is working this eval
+  // (teamPost, as postFor left it), ties to the earliest team.
+  private maneuverPost(sim: Sim): { x: number; y: number } | undefined {
+    const tally: { p: { x: number; y: number }; n: number }[] = [];
+    for (const id of this.maneuverTeamIds) {
+      const p = this.teamPost.get(id);
+      if (!p || !sim.teams[id].soldierIds.some((sid) => sim.soldiers[sid].alive)) continue;
+      const t = tally.find((o) => Math.hypot(o.p.x - p.x, o.p.y - p.y) < 1);
+      if (t) t.n++;
+      else tally.push({ p, n: 1 });
     }
+    let best: { p: { x: number; y: number }; n: number } | undefined;
+    for (const t of tally) if (!best || t.n > best.n) best = t;
+    return best?.p;
   }
 
   // One barrage on the densest cluster among its side's spotted contacts, once

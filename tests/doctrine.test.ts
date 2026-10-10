@@ -342,6 +342,69 @@ describe('AI commander doctrine', () => {
     expect(repeats).toBe(0);
   });
 
+  it('a rocket team is not a base of fire: it waits with the reserve (#763)', () => {
+    const sim = new Sim(new GameMap(140, 60), 106);
+    const post = { x: 120, y: 30 };
+    const mg = sim.addSquad('red', 'MG', [
+      { name: 'G', weapon: 'mg42', x: 40.5, y: 30.5 },
+      { name: 'A1', weapon: 'kar98k', x: 41.5, y: 29.5 },
+    ]);
+    const rifles = [0, 1, 2].map((q) =>
+      sim.addSquad(
+        'red',
+        `Rifle${q}`,
+        Array.from({ length: 4 }, (_, i) => ({ name: `R${q}${i}`, weapon: 'kar98k' as const, x: 40.5 + q * 2, y: 20.5 + i })),
+      ),
+    );
+    const rocket = sim.addSquad('red', 'Schreck', [
+      { name: 'S', weapon: 'schreck', x: 38.5, y: 36.5 },
+      { name: 'L', weapon: 'kar98k', x: 38.5, y: 37.5 },
+    ]);
+    sim.addSquad('blue', 'Garrison', [{ name: 'B1', weapon: 'kar98k', x: 122.5, y: 30.5 }]);
+    const posts = Object.fromEntries([mg, ...rifles, rocket].map((q) => [q.id, post]));
+    const commander = new RedCommander({ side: 'red', stance: 'attack', posts });
+    sim.tick = SPOT_INTERVAL;
+    commander.update(sim);
+    expect(commander['baseTeamIds']).toEqual([mg.teamIds[0]]);
+    expect(commander['reserveTeamIds']).toContain(rocket.teamIds[0]);
+    expect(sim.teams[mg.teamIds[0]].orderState.order).not.toBeNull(); // the gun was put to work
+    expect(sim.teams[rocket.teamIds[0]].orderState.order).toBeNull(); // the launcher was not sent to "suppress"
+  });
+
+  it('armour follows the maneuver element onto its next objective instead of parking on the first (#763)', () => {
+    const sim = new Sim(new GameMap(220, 60), 107);
+    const first = { x: 70, y: 30 };
+    const second = { x: 170, y: 30 };
+    const rifles = [0, 1].map((q) =>
+      sim.addSquad(
+        'red',
+        `Rifle${q}`,
+        Array.from({ length: 4 }, (_, i) => ({ name: `R${q}${i}`, weapon: 'kar98k' as const, x: 20.5, y: 22.5 + q * 10 + i })),
+      ),
+    );
+    const hulls = [sim.addVehicle('red', 'stug3', 8.5, 26.5, 0), sim.addVehicle('red', 'sdkfz251', 8.5, 34.5, 0)];
+    sim.addSquad('blue', 'Garrison', [
+      { name: 'B1', weapon: 'garand', x: 172.5, y: 29.5 },
+      { name: 'B2', weapon: 'garand', x: 172.5, y: 31.5 },
+    ]);
+    const commander = new RedCommander({
+      side: 'red',
+      stance: 'attack',
+      posts: Object.fromEntries(rifles.map((q) => [q.id, first])),
+      objectives: [first, second],
+    });
+    let onFirst = false;
+    for (let i = 0; i < 6000 && !hulls.every((v) => v.x > first.x + 40); i++) {
+      commander.update(sim);
+      sim.step();
+      if (hulls.every((v) => Math.hypot(v.x - first.x, v.y - first.y) <= 25)) onFirst = true;
+    }
+    expect(onFirst).toBe(true); // they went to the first objective
+    expect(commander['takenPosts'].length).toBeGreaterThan(0); // which the riflemen then took
+    for (const v of hulls) expect(v.x).toBeGreaterThan(first.x + 40); // and they were sent on
+    expect(Math.hypot(hulls[0].x - hulls[1].x, hulls[0].y - hulls[1].y)).toBeGreaterThan(3); // not parked on one tile
+  });
+
   it('reserve still commits when a maneuver team bleeds out mid-assault (the executing-assault guard must not skip the loss check)', () => {
     // Regression: the "an executing charge owns its team" continue-guard sits
     // above the reserve-commit check. If it short-circuits the loss check too,
