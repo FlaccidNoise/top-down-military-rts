@@ -1,7 +1,8 @@
 import { capacities, consciousness, PARTS } from '../sim/body';
 import { WEAPONS } from '../sim/data';
 import type { Sim, Soldier } from '../sim/sim';
-import { reserveAmmo, STATE_COLOR } from './hud';
+import { STATE_COLOR } from './hud';
+import { reserveAmmo } from './roster';
 import { barRow, downedCond, pct, rescuePhase, xpStars } from './tooltip';
 
 export type Severity = 'ok' | 'grazed' | 'wounded' | 'serious' | 'destroyed';

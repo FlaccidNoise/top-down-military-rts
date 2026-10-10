@@ -28,7 +28,7 @@ describe('filterManual', () => {
   });
 
   // Three of the six titles appear in no entry ("Starting an Operation", "The
-  // Theater Map", "Touch Controls"). Without this rule the player types a label
+  // Theater Map", "Deployment"). Without this rule the player types a label
   // the rail is showing them and the manual answers that nothing matches.
   it('returns the whole chapter when the term matches its title', () => {
     for (const c of MANUAL) {
@@ -49,10 +49,10 @@ describe('filterManual', () => {
   });
 
   it('searches the key bindings, not only the prose', () => {
-    const hits = allEntries(filterManual('wasd'));
-    expect(hits.length, 'no entry binds WASD — the fixture the test reads is gone').toBeGreaterThan(0);
+    const hits = allEntries(filterManual('mouse wheel'));
+    expect(hits.length, 'no entry binds the mouse wheel — the fixture the test reads is gone').toBeGreaterThan(0);
     for (const e of hits) {
-      expect(`${e.heading} ${e.body}`.toLowerCase(), e.heading).not.toContain('wasd');
+      expect(`${e.heading} ${e.body}`.toLowerCase(), e.heading).not.toContain('mouse wheel');
       expect(e.keys).toBeTruthy();
     }
   });

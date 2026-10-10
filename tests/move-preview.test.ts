@@ -305,16 +305,16 @@ describe('floors: the preview resolves on the storey the order lands on (M4b)', 
     expectParity(sim, pv);
   });
 
-  it('an upstairs order where the building has no upstairs refuses the men, and says NO FOOTING', () => {
+  it('an upstairs order where the building has no upstairs refuses the men, and says so', () => {
     const sim = houseSim();
     // Deep in the single-storey wing: no tile within the resolver's reach
     // carries a second storey, so there is nowhere to put anybody.
     const pv = previewMoveSpots(sim, state({ selectedSquads: [0], cursor: { x: 25.5, y: 13.5 }, orderFloor: 1 }))!;
     expect(pv.placed).toBe(0);
     expect(pv.refused).toBe(6);
-    expect(formatContextChip({ danger: null, covered: 0, placed: 0, refused: 6, eta: null, verdict: null, level: pv.level }).lines).toEqual([
-      'FLOOR 2',
-      'NO FOOTING',
+    expect(formatContextChip({ covered: 0, placed: 0, refused: 6, eta: null, verdict: null, level: pv.level }).lines).toEqual([
+      'Floor 2',
+      'No footing',
     ]);
   });
 
@@ -323,8 +323,8 @@ describe('floors: the preview resolves on the storey the order lands on (M4b)', 
     const pv = previewMoveSpots(sim, state({ selectedSquads: [0], cursor: { x: 13.5, y: 13.5 } }))!;
     expect(pv.teams[0].level).toBe(0);
     expect(pv.level).toBeNull();
-    expect(formatContextChip({ danger: null, covered: 0, placed: 6, refused: 0, eta: null, verdict: null, level: pv.level }).lines).toEqual([
-      '0/6 COVERED',
+    expect(formatContextChip({ covered: 0, placed: 6, refused: 0, eta: null, verdict: null, level: pv.level }).lines).toEqual([
+      '0 of 6 in cover',
     ]);
   });
 });

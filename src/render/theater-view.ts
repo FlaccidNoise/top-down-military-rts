@@ -443,6 +443,12 @@ export class TheaterView {
     return best;
   }
 
+  /** Where a force's counter was last drawn, in screen px. null = it is not on the map. */
+  counterOf(forceId: number): ReturnType<typeof counterRect> | null {
+    const c = this.counters.find((k) => k.id === forceId);
+    return c ? counterRect(c) : null;
+  }
+
   forceXY(f: Force): { x: number; y: number } {
     if (f.pos.kind === 'node') return this.theater.nodes[f.pos.nodeId].pos;
     return pointAlong(this.theater.edges[f.pos.edgeId], f.pos.s);

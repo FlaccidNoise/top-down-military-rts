@@ -1,11 +1,15 @@
 import { EMPLACEMENTS, VEHICLES, WEAPONS, type EmplacementDef, type VehicleDef, type WeaponDef } from '../sim/data';
 import { crewNear, friendlyHasLos, loadsReady, type Emplacement } from '../sim/emplacement';
-import { BALK_HINT, canArm, ORDER_AFFORDANCE, type ArmTarget, type OrderAffordance } from './order-data';
+import { balkHint, canArm, ORDER_AFFORDANCE, type ArmTarget, type OrderAffordance } from './order-data';
 import type { OrderKind } from '../sim/orders';
 import { canBreachByHand, type Sim, type Soldier, type Squad, type Vehicle } from '../sim/sim';
-import { objectiveStripText, type ObjectiveData } from './objective-strip';
+import { battleGoal, goalText, type SideStrength } from './battle-goal';
 import { formatBinding, loadKeymap, type Keymap } from './keymap';
 import { MOBILE } from '../render/view';
+import { patchChildren } from './patch';
+import { manAmmo, manStatus, shortNames, squadAmmoLow, type ManStatus } from './roster';
+import { placeBubble, visibleRect } from './coach';
+import type { BattleSpeed } from './battle-speed';
 
 export const STATE_COLOR = { steady: '#7fbf6a', shaken: '#e0c060', pinned: '#e08a3c', broken: '#d05c50' } as const;
 
@@ -15,6 +19,9 @@ export function floorName(level: number): string {
 }
 export const TEAM = { blue: '#5b9bd5', red: '#d05c50' } as const;
 const ORDER_KINDS: OrderKind[] = ['move', 'fast', 'sneak', 'fire', 'smoke', 'defend', 'ambush', 'assault'];
+// The order bar shows the four a first battle is won with. The rest sit behind More.
+const PRIMARY_ORDERS: OrderKind[] = ['move', 'fire', 'smoke', 'assault'];
+const MORE_ORDERS: OrderKind[] = ORDER_KINDS.filter((k) => !PRIMARY_ORDERS.includes(k));
 
 export interface HudCallbacks {
   selectSquad(id: number): void;
@@ -24,6 +31,7 @@ export interface HudCallbacks {
   callBarrage(): void;
   callAirstrike(): void;
   togglePause(): void;
+  cycleSpeed(): void;
   armOrder(kind: OrderKind): void;
   deployEmplacement(): void;
   packEmplacement(): void;
@@ -45,6 +53,8 @@ export interface HudCallbacks {
   /** F's floor-focus cycle, which a phone has no key for. */
   cycleFloor(): void;
   openMenu(): void;
+  /** The controls card: every binding in one table, behind the ? control. */
+  openControls(): void;
 }
 
 export interface HudState {
@@ -58,7 +68,15 @@ export interface HudState {
   armedOrder: OrderKind | null;
   title: string;
   keymap: Keymap;
-  objective: ObjectiveData | null;
+  /** The quiet-minute line (goal and enemy bearing), or null while the player is giving orders. */
+  prompt: string | null;
+  speed: BattleSpeed;
+  /** Deployment: squads are placed, not ordered, so the order bar stands down. */
+  deploy: boolean;
+  /** The order chip a tutorial step is pointing at. It pulses until it is armed. */
+  glow?: OrderKind | null;
+  /** This battle has nothing to call in (the drill): the two support buttons are not shown. */
+  noSupport?: boolean;
   floorFocus?: number; // -1/undefined = all floors; 0..maxStories-1 = focus active
   boxMode?: boolean; // touch: drag draws a selection box instead of panning
   addMode?: boolean; // touch: sticky shift (add to selection / force squad order)
@@ -90,8 +108,6 @@ const CTX_ACTIONS: Record<string, keyof HudCallbacks> = {
   unhitch: 'unhitchVehicle',
 };
 
-const BARS_LEGEND = '<div class="bars-key"><i class="sw sup"></i>suppression<i class="sw mor"></i>morale</div>';
-
 function primarySquad(st: HudState): number {
   return st.selectedSquads.length > 0 ? st.selectedSquads[st.selectedSquads.length - 1] : st.selectedSquad;
 }
@@ -108,8 +124,10 @@ export class Hud {
   private ml: HTMLDivElement; // #modeline — moved to body so it works in both modes
   private idleTicks = 0;
   private idleShown = false;
-  private lastIdleMode: 'battle' | 'strategic' = 'battle';
   private tb: HTMLDivElement | null = null; // #touchbar — mobile only
+  private orderBar!: HTMLDivElement; // #orderbar — both platforms
+  private moreOpen = false; // the order bar's second row
+  private overOpen = false; // the touch bar's overflow row
   private lpFired = false; // a long-press opened the affordance card; swallow its click
 
   constructor(cb: HudCallbacks) {
@@ -121,20 +139,17 @@ export class Hud {
     this.root.innerHTML = `
       <div id="topbar">
         <div class="panel" id="tb-title"></div>
-        <div class="panel" id="tb-strength"></div>
+        <div class="panel" id="obj-strip"></div>
         <div id="tb-actions">
           <button class="hbtn" data-act="barrage" title="${fb(b.barrage)}"></button>
           <button class="hbtn" data-act="air" title="${fb(b.airstrike)}"></button>
+          <button class="hbtn" data-act="speed" aria-label="Battle speed"></button>
           <button class="hbtn" data-act="pause" title="${fb(b.pause)}"></button>
+          <button class="hbtn" data-act="help" title="Controls" aria-label="Controls">?</button>
         </div>
       </div>
-      <div id="obj-strip"></div>
       <div id="squads"></div>
-      <div id="banner"></div>
-      <div id="hint">
-        <span class="hg">scroll zoom · WASD pan · drag box-select · ⇧click add · right-click move · right-drag formation · F floor view · ⎇right-click floors</span>
-        <span class="hg">${fb(b.squad1)}-${fb(b.squad9)} squad · ${fb(b.order1)}-${fb(b.order8)} order kind, right-click issues · ${fb(b.barrage)} barrage · ${fb(b.airstrike)} airstrike · ${fb(b.pause)} pause · ${fb(b.cancel)} widen/cancel · ${fb(b.menu)} menu</span>
-      </div>`;
+      <div id="banner"></div>`;
     document.body.appendChild(this.root);
 
     this.ml = document.createElement('div');
@@ -152,7 +167,9 @@ export class Hud {
       const act = (e.target as HTMLElement).closest('button')?.dataset.act;
       if (act === 'barrage') cb.callBarrage();
       else if (act === 'air') cb.callAirstrike();
+      else if (act === 'speed') cb.cycleSpeed();
       else if (act === 'pause') cb.togglePause();
+      else if (act === 'help') cb.openControls();
     });
     this.q('#squads').addEventListener('click', (e) => {
       const t = e.target as HTMLElement;
@@ -161,8 +178,6 @@ export class Hud {
         cb.panToSoldier(Number(row.dataset.soldier));
         return cb.inspectSoldier(Number(row.dataset.soldier));
       }
-      const ord = t.closest<HTMLElement>('[data-order]');
-      if (ord) return cb.armOrder(ord.dataset.order as OrderKind);
       const ctx = t.closest<HTMLButtonElement>('[data-ctx]');
       if (ctx && !ctx.disabled) return (cb[CTX_ACTIONS[ctx.dataset.ctx!]] as () => void)();
       const veh = t.closest<HTMLElement>('[data-vehicle]');
@@ -175,68 +190,49 @@ export class Hud {
       e.preventDefault();
       (e.target as HTMLElement).click();
     });
-    this.q('#squads').addEventListener('mouseover', (e) => {
-      const btn = (e.target as HTMLElement).closest<HTMLElement>('[data-order]');
-      if (btn && !(btn as HTMLButtonElement).disabled) this.showAffordance(btn);
-    });
-    this.q('#squads').addEventListener('mouseout', (e) => {
-      const btn = (e.target as HTMLElement).closest<HTMLElement>('[data-order]');
-      if (btn) this.hideAffordance();
-    });
-    this.q('#squads').addEventListener('mouseleave', () => this.hideAffordance());
     if (MOBILE) this.buildTouchbar(cb);
+    this.buildOrderBar(cb);
   }
 
-  // The phone's whole control surface: row 1 arms an order kind (the same
-  // ORDER_KINDS / canArm / data-order contract the desktop `.orderbar` uses,
-  // so arming still flows through cb.armOrder), row 2 carries the modifiers
-  // and globals that only exist as keys on desktop. Row 1 is only rendered
-  // when a squad is selected — a phone cannot spare 44px of height to show
-  // eight chips that would do nothing if tapped.
-  private buildTouchbar(cb: HudCallbacks): void {
+  // The one order bar, on both platforms and outside the roster: the four
+  // orders a new player needs, the other four behind More. Arming still goes
+  // through cb.armOrder, so the armed-order state machine and its keys are
+  // untouched. It shows only with a squad selected: chips that would do
+  // nothing if pressed are noise.
+  private buildOrderBar(cb: HudCallbacks): void {
     const bar = document.createElement('div');
-    bar.id = 'touchbar';
-    bar.innerHTML =
-      '<div class="tb-orders"></div>' +
-      '<div class="tb-acts">' +
-      '<button class="hbtn" data-tb="roster">☰ Roster</button>' +
-      '<button class="hbtn" data-tb="select">▭ Select</button>' +
-      '<button class="hbtn" data-tb="add">＋ Add</button>' +
-      '<button class="hbtn" data-tb="all">All</button>' +
-      '<button class="hbtn" data-tb="floor">⬒ Floors</button>' +
-      '<button class="hbtn" data-tb="cancel">✕ Cancel</button>' +
-      '<button class="hbtn" data-tb="barrage"></button>' +
-      '<button class="hbtn" data-tb="air"></button>' +
-      '<button class="hbtn" data-tb="pause"></button>' +
-      '<button class="hbtn" data-tb="menu">⚙</button>' +
-      '</div>';
-    this.root.appendChild(bar);
-    this.tb = bar;
+    bar.id = 'orderbar';
+    bar.style.display = 'none';
+    bar.innerHTML = '<div class="ob-row ob-more"></div><div class="ob-row ob-main"></div>';
+    if (this.tb) this.tb.prepend(bar);
+    else this.root.appendChild(bar);
+    this.orderBar = bar;
 
     bar.addEventListener('click', (e) => {
       if (this.lpFired) { this.lpFired = false; return; }
       const t = e.target as HTMLElement;
-      const ord = t.closest<HTMLButtonElement>('[data-order]');
-      if (ord) { if (!ord.disabled) cb.armOrder(ord.dataset.order as OrderKind); return; }
-      const btn = t.closest<HTMLButtonElement>('[data-tb]');
-      if (!btn || btn.disabled) return;
-      switch (btn.dataset.tb) {
-        case 'roster': this.toggleRoster(); break;
-        case 'select': cb.toggleBoxMode(); break;
-        case 'add': cb.toggleAddMode(); break;
-        case 'all': cb.selectAll(); break;
-        case 'floor': cb.cycleFloor(); break;
-        case 'cancel': cb.cancel(); break;
-        case 'barrage': cb.callBarrage(); break;
-        case 'air': cb.callAirstrike(); break;
-        case 'pause': cb.togglePause(); break;
-        case 'menu': cb.openMenu(); break;
+      if (t.closest('[data-ob="more"]')) {
+        this.moreOpen = !this.moreOpen;
+        this.sig = '';
+        return;
       }
+      const ord = t.closest<HTMLButtonElement>('[data-order]');
+      if (ord && !ord.disabled) cb.armOrder(ord.dataset.order as OrderKind);
     });
-
+    if (!MOBILE) {
+      bar.addEventListener('mouseover', (e) => {
+        const btn = (e.target as HTMLElement).closest<HTMLButtonElement>('[data-order]');
+        if (btn && !btn.disabled) this.showAffordance(btn);
+      });
+      bar.addEventListener('mouseout', (e) => {
+        if ((e.target as HTMLElement).closest('[data-order]')) this.hideAffordance();
+      });
+      bar.addEventListener('mouseleave', () => this.hideAffordance());
+      return;
+    }
     // Long-press an order chip for the affordance card — the mobile stand-in
-    // for the hover the desktop path uses. A finger that wanders is scrolling
-    // the chip row, not asking a question, so any move cancels it.
+    // for the hover the desktop path uses. A finger that wanders off the chip
+    // is not asking a question, so any move cancels it.
     let lpTimer = 0;
     let lpAt = { x: 0, y: 0 };
     const cancelLp = (): void => { if (lpTimer) clearTimeout(lpTimer); lpTimer = 0; };
@@ -259,7 +255,61 @@ export class Hud {
     bar.addEventListener('pointercancel', cancelLp);
   }
 
-  /** Bottom-sheet roster: the ☰ chip is the only way in or out on a phone. */
+  // The phone's control row. Nothing scrolls: Roster and All are always there,
+  // Play/Pause, speed and the menu are pinned at the right, and the modifiers
+  // and support calls a desktop reads off the keyboard sit one tap away behind
+  // ⋯ (jtbug #783: a control in a scrolling row is a control off screen).
+  private buildTouchbar(cb: HudCallbacks): void {
+    const bar = document.createElement('div');
+    bar.id = 'touchbar';
+    bar.innerHTML =
+      '<div class="tb-over">' +
+      '<button class="hbtn" data-tb="help">? Controls</button>' +
+      '<button class="hbtn" data-tb="select">▭ Select</button>' +
+      '<button class="hbtn" data-tb="add">＋ Add</button>' +
+      '<button class="hbtn" data-tb="floor">⬒ Floors</button>' +
+      '<button class="hbtn" data-tb="cancel">✕ Cancel</button>' +
+      '<button class="hbtn" data-tb="barrage"></button>' +
+      '<button class="hbtn" data-tb="air"></button>' +
+      '</div>' +
+      '<div class="tb-acts">' +
+      '<button class="hbtn" data-tb="roster">☰ Roster</button>' +
+      '<button class="hbtn" data-tb="all">All</button>' +
+      '<button class="hbtn" data-tb="more" aria-label="More controls">⋯</button>' +
+      '<div class="tb-pin">' +
+      '<button class="hbtn" data-tb="speed" aria-label="Battle speed"></button>' +
+      '<button class="hbtn" data-tb="pause"></button>' +
+      '<button class="hbtn" data-tb="menu" aria-label="Menu">⚙</button>' +
+      '</div>' +
+      '</div>';
+    this.root.appendChild(bar);
+    this.tb = bar;
+
+    bar.addEventListener('click', (e) => {
+      const btn = (e.target as HTMLElement).closest<HTMLButtonElement>('[data-tb]');
+      if (!btn || btn.disabled) return;
+      switch (btn.dataset.tb) {
+        case 'roster': this.toggleRoster(); break;
+        case 'select': cb.toggleBoxMode(); break;
+        case 'add': cb.toggleAddMode(); break;
+        case 'all': cb.selectAll(); break;
+        case 'floor': cb.cycleFloor(); break;
+        case 'cancel': cb.cancel(); break;
+        case 'barrage': cb.callBarrage(); break;
+        case 'air': cb.callAirstrike(); break;
+        case 'speed': cb.cycleSpeed(); break;
+        case 'pause': cb.togglePause(); break;
+        case 'menu': cb.openMenu(); break;
+        case 'help': cb.openControls(); break;
+        case 'more': this.overOpen = !this.overOpen; break;
+      }
+      // One pick and the overflow folds away: it sits over the map.
+      if (btn.closest('.tb-over')) this.overOpen = false;
+      this.sig = '';
+    });
+  }
+
+  /** The phone roster, a sheet in portrait and a column in landscape: the ☰ chip is the only way in or out. */
   toggleRoster(): void {
     this.q('#squads').classList.toggle('open');
     this.sig = ''; // chip active-state is part of the touchbar render
@@ -284,11 +334,15 @@ export class Hud {
     const issue = MOBILE ? 'press and hold the ground to issue' : 'right-click to issue';
     this.tipEl.innerHTML = `<div class="at-name">${a.name}</div><div class="at-when">${a.when}</div><div class="at-compliance">${a.complianceNote}</div><div class="at-hotkey">${MOBILE ? '' : `${a.hotkey} · `}${issue}</div>`;
     this.tipEl.style.display = 'block';
-    const r = btn.getBoundingClientRect();
-    // The card is a fixed 190px wide and anchors to the chip's left edge; on a
-    // 390px screen a chip scrolled to the right would hang off the viewport.
-    this.tipEl.style.left = `${Math.max(6, Math.min(r.left, innerWidth - 198))}px`;
-    this.tipEl.style.top = `${r.top - this.tipEl.offsetHeight - 6}px`;
+    // Beside the chips' own panel, never on it: the card used to print over
+    // the chips it described. Same placement rule as the tutorial bubble.
+    const anchor = visibleRect(btn);
+    const panel = btn.closest('#touchbar') ?? btn.closest('#orderbar');
+    if (!anchor) return this.hideAffordanceNow();
+    const root = document.documentElement;
+    const p = placeBubble(anchor, (panel && visibleRect(panel)) ?? anchor, this.tipEl.offsetWidth, this.tipEl.offsetHeight, { left: 0, top: 0, right: root.clientWidth, bottom: root.clientHeight });
+    this.tipEl.style.left = `${Math.round(p.left)}px`;
+    this.tipEl.style.top = `${Math.round(p.top)}px`;
     if (MOBILE) {
       if (this.tipTimer) clearTimeout(this.tipTimer);
       this.tipTimer = setTimeout(() => { this.tipEl.style.display = 'none'; }, 2600);
@@ -313,13 +367,13 @@ export class Hud {
   update(sim: Sim, st: HudState): void {
     this.lastSim = sim;
     this.lastSt = st;
-    const sig = `${(sim.tick / 5) | 0}|${primarySquad(st)}|${st.selectedTeam}|${st.selectedVehicle}|${st.paused}|${st.targetMode}|${st.armedOrder}|${sim.winner}|${st.title}|${st.selectedSquads.join(',')}|${this.km.version}|${st.floorFocus ?? -1}|${st.aiControl}|${st.boxMode ?? false}|${st.addMode ?? false}|${this.tb ? this.rosterOpen : false}`;
+    const sig = `${(sim.tick / 5) | 0}|${st.prompt}|${primarySquad(st)}|${st.selectedTeam}|${st.selectedVehicle}|${st.paused}|${st.targetMode}|${st.armedOrder}|${st.glow ?? ''}|${st.noSupport ?? false}|${sim.winner}|${st.title}|${st.speed}|${st.selectedSquads.join(',')}|${this.km.version}|${st.floorFocus ?? -1}|${st.aiControl}|${st.boxMode ?? false}|${st.addMode ?? false}|${this.tb ? this.rosterOpen : false}`;
     if (sig === this.sig) return;
     this.sig = sig;
     this.renderTop(sim, st);
-    this.renderObjectiveStrip(sim, st);
+    this.renderGoal(sim);
     this.renderSquads(sim, st);
-    this.renderHint();
+    this.renderOrderBar(sim, st);
     if (this.tb) this.renderTouchbar(sim, st);
 
     const cancelKey = formatBinding(this.km.bindings.cancel);
@@ -333,6 +387,11 @@ export class Hud {
       if (st.targetMode === 'empfire') this.ml.textContent = `MORTAR FIRE — click target · ${cancelKey} cancels`;
       if (st.targetMode === 'empsmoke') this.ml.textContent = `MORTAR SMOKE — click target · 4 rounds · ${cancelKey} cancels`;
       if (st.targetMode === 'breach') this.ml.textContent = `BREACH — click a wall · one aimed round opens it · ${cancelKey} cancels`;
+    } else if (st.prompt) {
+      this.ml.style.display = 'block';
+      this.ml.classList.remove('idle-hint');
+      this.idleShown = false;
+      this.ml.textContent = st.prompt;
     } else if (!this.idleShown) {
       this.ml.style.display = 'none';
     }
@@ -340,13 +399,17 @@ export class Hud {
     const banner = this.q('#banner');
     banner.style.display = sim.winner ? 'block' : 'none';
     if (sim.winner) {
+      // Centred on the map the player can see, not on the canvas: the roster
+      // owns the left of a desktop screen.
+      const roster = this.q('#squads').getBoundingClientRect();
+      banner.style.left = `${!this.tb && roster.width > 0 ? Math.round(roster.right) : 0}px`;
       banner.style.color = TEAM[sim.winner];
       banner.innerHTML = `${sim.winner === 'blue' ? 'US VICTORY' : 'GERMAN VICTORY'}<small>debrief incoming…</small>`;
     }
   }
 
-  /** Called every frame from main.ts in both modes. active = something selected / targetMode / paused. */
-  updateIdle(mode: 'battle' | 'strategic', active: boolean): void {
+  /** Called every strategic frame. active = something selected, or the clock is stopped. */
+  updateIdle(active: boolean): void {
     if (active) {
       this.idleTicks = 0;
       if (this.idleShown) {
@@ -358,61 +421,57 @@ export class Hud {
     }
     this.idleTicks++;
     if (this.idleTicks > 300 && !this.idleShown) {
-      this.lastIdleMode = mode;
-      this.ml.textContent = this.idleText(mode);
+      // Naming keys to a player holding a phone is worse than saying nothing.
+      this.ml.textContent = MOBILE
+        ? 'tap a chit · press and hold a cell to move · ▶ starts the clock'
+        : 'click a chit · right-click to move · 1/2/3 speed · Esc menu';
       this.ml.classList.add('idle-hint');
       this.ml.style.display = 'block';
       this.idleShown = true;
-    } else if (this.idleShown && this.lastIdleMode !== mode) {
-      this.lastIdleMode = mode;
-      this.ml.textContent = this.idleText(mode);
     }
   }
 
-  // Naming keys to a player holding a phone is worse than saying nothing.
-  private idleText(mode: 'battle' | 'strategic'): string {
-    if (MOBILE) {
-      return mode === 'battle'
-        ? 'tap a soldier to select · drag to pan · pinch to zoom · press and hold to order'
-        : 'tap a chit · press and hold a cell to move · ▶ starts the clock';
+  private renderOrderBar(sim: Sim, st: HudState): void {
+    const bar = this.orderBar;
+    const primary = primarySquad(st);
+    const show = primary >= 0 && st.selectedVehicle < 0 && !st.deploy;
+    bar.style.display = show ? '' : 'none';
+    if (!show) {
+      this.moreOpen = false;
+      return;
     }
-    const fb = formatBinding;
-    const b = this.km.bindings;
-    return mode === 'battle'
-      ? `select a squad [${fb(b.squad1)}-${fb(b.squad9)}] · drag to pan · scroll to zoom · ${fb(b.barrage)} barrage`
-      : 'click a chit · right-click to move · 1/2/3 speed · Esc menu';
-  }
-
-  private renderHint(): void {
-    const fb = formatBinding;
-    const b = this.km.bindings;
-    this.q('#hint').innerHTML =
-      `<span class="hg">scroll zoom · ${fb(b.panUp)}${fb(b.panLeft)}${fb(b.panDown)}${fb(b.panRight)} pan · drag box-select · ⇧click add · right-click move · right-drag formation · F floor view · ⎇right-click floors</span>` +
-      `<span class="hg">${fb(b.squad1)}-${fb(b.squad9)} squad · ${fb(b.order1)}-${fb(b.order8)} order kind, right-click issues · ${fb(b.barrage)} barrage · ${fb(b.airstrike)} airstrike · ${fb(b.pause)} pause · ${fb(b.cancel)} widen/cancel · ${fb(b.menu)} menu</span>`;
+    const target: ArmTarget = emplacementOf(sim, primary) ? 'crew' : 'squad';
+    // An armed order is always on screen: one of the four behind More, armed
+    // by its key, opens the row.
+    const open = this.moreOpen || (st.armedOrder !== null && MORE_ORDERS.includes(st.armedOrder));
+    patchChildren(
+      bar.querySelector('.ob-main')!,
+      orderChips(PRIMARY_ORDERS, st, this.km, target) +
+        `<button class="hbtn ob-toggle${open ? ' active' : ''}" data-ob="more" aria-expanded="${open}">More</button>`,
+    );
+    patchChildren(bar.querySelector('.ob-more')!, open ? orderChips(MORE_ORDERS, st, this.km, target) : '');
   }
 
   private renderTouchbar(sim: Sim, st: HudState): void {
     const bar = this.tb!;
-    const primary = primarySquad(st);
-    const hasSquad = primary >= 0 && st.selectedVehicle < 0;
-    const orders = bar.querySelector<HTMLElement>('.tb-orders')!;
-    orders.style.display = hasSquad ? '' : 'none';
-    orders.innerHTML = hasSquad ? orderChips(st, this.km, emplacementOf(sim, primary) ? 'crew' : 'squad') : '';
-
     const tb = (name: string) => bar.querySelector<HTMLButtonElement>(`[data-tb="${name}"]`)!;
     const barrage = tb('barrage');
+    const air = tb('air');
     barrage.innerHTML = `☄ ×${sim.barragesLeft.blue}`;
+    barrage.hidden = air.hidden = !!st.noSupport;
     barrage.disabled = sim.barragesLeft.blue <= 0;
     barrage.classList.toggle('active', st.targetMode === 'barrage');
-    const air = tb('air');
     air.innerHTML = `✈ ×${sim.airstrikesLeft.blue}`;
     air.disabled = sim.airstrikesLeft.blue <= 0;
     air.classList.toggle('active', st.targetMode === 'air');
     tb('pause').textContent = st.paused ? '▶ Play' : '⏸ Pause';
     tb('pause').classList.toggle('active', st.paused);
+    tb('speed').textContent = `${st.speed}×`;
+    tb('speed').classList.toggle('active', st.speed > 1);
     tb('select').classList.toggle('active', !!st.boxMode);
     tb('add').classList.toggle('active', !!st.addMode);
     tb('roster').classList.toggle('active', this.rosterOpen);
+    bar.querySelector('.tb-over')!.classList.toggle('open', this.overOpen);
     // The floor chip is F's only home on a phone. A map with nothing taller
     // than a shed has no floors to cycle, so it does not appear at all.
     const floor = tb('floor');
@@ -420,54 +479,43 @@ export class Hud {
     floor.style.display = sim.map.maxStories >= 2 ? '' : 'none';
     floor.textContent = focus < 0 ? '⬒ Floors' : `⬒ ${floorName(focus)}`;
     floor.classList.toggle('active', focus >= 0);
+    // Folded away, the overflow still says when something inside it is live.
+    tb('more').classList.toggle('active', this.overOpen || !!st.boxMode || !!st.addMode || focus >= 0 || st.targetMode === 'barrage' || st.targetMode === 'air');
   }
 
-  private renderObjectiveStrip(sim: Sim, st: HudState): void {
+  // The goal strip: what wins the battle, and how far off it is. Fed from the
+  // sim alone, so every battle shows it whichever campaign staged it.
+  private renderGoal(sim: Sim): void {
     const el = this.q('#obj-strip');
-    if (!st.objective) {
+    const g = battleGoal(sim);
+    if (!g) {
       el.style.display = 'none';
       return;
     }
-    let blue = 0;
-    let red = 0;
-    for (const s of sim.soldiers) {
-      if (!s.alive || s.downed) continue;
-      if (s.side === 'blue') blue++;
-      else if (sim.soldierVisibleTo('blue', s)) red++;
-    }
-    const bFloor = Math.max(2, Math.round(sim.startStrength.blue * 0.25));
-    const rFloor = Math.max(2, Math.round(sim.startStrength.red * 0.25));
-    const r = objectiveStripText(st.objective, blue, red, bFloor, rFloor);
-    if (!r) {
-      el.style.display = 'none';
-      return;
-    }
+    // Fill is the share of starting strength still fighting; the tick is the
+    // line the side breaks at. Team colours, and the player's own bar warns
+    // when it nears its line.
+    const bar = (s: SideStrength, color: string): string =>
+      `<span class="obj-bar"><i style="width:${Math.round((s.now / s.start) * 100)}%;background:${color}"></i>` +
+      `<b style="left:${Math.round((s.breakAt / s.start) * 100)}%"></b></span>`;
+    const own = g.own.state === 'steady' || g.own.state === 'shaken' ? TEAM.blue : STATE_COLOR[g.own.state];
+    // Under fog the enemy is a coarse read, never a count (battle-goal.ts).
+    const e = g.enemy;
+    const enemy = e.exact
+      ? `GE ${e.strength.now} <em>\u2192 ${e.strength.breakAt}</em>${bar(e.strength, TEAM.red)}`
+      : `GE <span class="obj-segs">${'<i class="on"></i>'.repeat(e.lit)}${'<i></i>'.repeat(e.of - e.lit)}</span><em>${e.word}</em>`;
     el.style.display = '';
+    el.setAttribute('aria-label', goalText(g));
     el.innerHTML =
-      `<div class="obj-left"><span class="obj-kind">${r.label}</span></div>` +
-      `<div class="obj-center">${r.condition}</div>` +
-      `<div class="obj-right">` +
-        `<span class="obj-bar-label us">US ${r.friendlyBar.value}</span>` +
-        `<span class="obj-bar"><i style="width:${Math.round((r.friendlyBar.value / Math.max(r.friendlyBar.max, 1)) * 100)}%;background:var(--state-${r.friendlyBar.state})"></i></span>` +
-        `<span class="obj-bar-label ge">GE ${sim.fowDisabled ? '' : '~'}${r.enemyBar.value}</span>` +
-        `<span class="obj-bar"><i style="width:${Math.round((r.enemyBar.value / Math.max(r.enemyBar.max, 1)) * 100)}%;background:var(--state-${r.enemyBar.state})"></i></span>` +
-      `</div>`;
+      `<span class="obj-kind">${g.label}</span>` +
+      `<span class="obj-side ge">${enemy}</span>` +
+      `<span class="obj-side us" title="You break at ${g.own.breakAt}">US ${g.own.now}${bar(g.own, own)}</span>`;
   }
 
   private renderTop(sim: Sim, st: HudState): void {
     const secs = Math.floor(sim.tick / 30);
     const clock = `T+${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`;
-    let us = 0;
-    let ge = 0; // fog of war: only the enemies we currently see
-    for (const s of sim.soldiers) {
-      if (!s.alive || s.downed) continue;
-      if (s.side === 'blue') us++;
-      else if (sim.soldierVisibleTo('blue', s)) ge++;
-    }
-    this.q('#tb-title').innerHTML = `<b>${st.title}</b> · ${clock}${st.paused ? ' <span class="paused">⏸ PAUSED</span>' : ''}${st.aiControl ? ' <span class="paused">AI CONTROL</span>' : ''}${st.floorFocus !== undefined && st.floorFocus >= 0 ? ` <span class="paused">⬒ ${floorName(st.floorFocus)} only</span>` : ''}`;
-    this.q('#tb-strength').innerHTML =
-      `<span class="us">US ${us}</span><div class="ratio"><i style="flex:${us};background:#5b9bd5"></i><i style="flex:${ge};background:#d05c50"></i></div><span class="ge">GE ${sim.fowDisabled ? '' : '~'}${ge}</span>`;
-
+    this.q('#tb-title').innerHTML = `<b>${st.title}</b><span class="tb-clock">· ${clock}${st.paused ? ' <span class="paused">⏸ PAUSED</span>' : ''}${st.aiControl ? ' <span class="paused">AI CONTROL</span>' : ''}${st.floorFocus !== undefined && st.floorFocus >= 0 ? ` <span class="paused">⬒ ${floorName(st.floorFocus)} only</span>` : ''}</span>`;
     const btn = (act: string) => this.q(`[data-act="${act}"]`) as HTMLButtonElement;
     const f = formatBinding;
     btn('barrage').title = f(this.km.bindings.barrage);
@@ -478,10 +526,14 @@ export class Hud {
     barrage.disabled = sim.barragesLeft.blue <= 0;
     barrage.classList.toggle('active', st.targetMode === 'barrage');
     const air = btn('air');
+    barrage.hidden = air.hidden = !!st.noSupport;
     air.innerHTML = `✈ Airstrike ×${sim.airstrikesLeft.blue} <span class="hk-top">${f(this.km.bindings.airstrike)}</span>`;
     air.disabled = sim.airstrikesLeft.blue <= 0;
     air.classList.toggle('active', st.targetMode === 'air');
-    btn('pause').innerHTML = `${st.paused ? '▶ Resume' : '⏸ Pause'} <span class="hk-top">${f(this.km.bindings.pause)}</span>`;
+    btn('pause').innerHTML = `${st.paused ? '▶ Play' : '⏸ Pause'} <span class="hk-top">${f(this.km.bindings.pause)}</span>`;
+    btn('speed').title = f(this.km.bindings.battleSpeed);
+    btn('speed').innerHTML = `${st.speed}× <span class="hk-top">${f(this.km.bindings.battleSpeed)}</span>`;
+    btn('speed').classList.toggle('active', st.speed > 1);
   }
 
   private renderSquads(sim: Sim, st: HudState): void {
@@ -490,14 +542,15 @@ export class Hud {
       if (v.side !== 'blue') continue;
       const crew = v.crewIds.map((id) => sim.soldiers[id]);
       const aliveCrew = crew.filter((c) => c.alive).length;
-      const burnChip = v.alive && v.burning ? ' <span style="color:#d05c50">BURNING</span>' : '';
+      const burnChip = v.alive && v.burning ? '<span class="sam-chip low">BURNING</span>' : '';
       const ammoLine = v.alive ? `<span class="veh-ammo">AP ${v.ammo.ap} · HE ${v.ammo.he}</span>` : '';
-      const extra = (burnChip || ammoLine) ? `<div class="veh-extra">${burnChip}${burnChip && ammoLine ? ' · ' : ''}${ammoLine}</div>` : '';
       const sel = v.id === st.selectedVehicle;
+      // One line like every other card. The rounds left open with the card.
+      const extra = sel && ammoLine ? `<div class="veh-extra">${ammoLine}</div>` : '';
       const rows = sel && v.alive ? vehicleContext(sim, v) : '';
       cards.push(
         `<div class="card panel${sel ? ' sel' : ''}" data-vehicle="${v.id}" tabindex="0" role="button">` +
-          `<div class="card-head"><b>${VEHICLES[v.kind].name}</b><span class="n">${v.alive ? `crew ${aliveCrew}/${crew.length}` : 'DESTROYED'}</span></div>${extra}${rows}</div>`,
+          `<div class="card-head"><b>${VEHICLES[v.kind].name}</b>${burnChip}<span class="n">${v.alive ? `${aliveCrew}/${crew.length}` : 'DESTROYED'}</span></div>${extra}${rows}</div>`,
       );
     }
     // Rifle squads (2 teams) vs. crewed weapons/scout squads (1 team, the
@@ -505,43 +558,36 @@ export class Hud {
     // team count so the 18-squad roster fits under a "WEAPONS" divider
     // instead of one long undifferentiated list.
     const infantry = infantrySquads(sim);
+    const names = new Map(shortNames(infantry.map((q) => q.name)).map((n, i) => [infantry[i].id, n]));
     const rifleSquads = infantry.filter((q) => q.teamIds.length > 1);
     const weaponSquads = infantry.filter((q) => q.teamIds.length === 1);
-    for (const q of rifleSquads) cards.push(squadCard(sim, q, st, this.km));
+    for (const q of rifleSquads) cards.push(squadCard(sim, q, names.get(q.id)!, st, this.km));
     if (weaponSquads.length) cards.push('<div class="wpn-divider">WEAPONS</div>');
-    for (const q of weaponSquads) cards.push(squadCard(sim, q, st, this.km));
+    for (const q of weaponSquads) cards.push(squadCard(sim, q, names.get(q.id)!, st, this.km));
 
     const panel = this.q('#squads');
-    // innerHTML rebuild destroys keyboard focus (sig rebuilds run every 5 ticks
-    // while unpaused) — re-focus the same entity's element afterwards.
-    const focused =
-      document.activeElement instanceof HTMLElement && panel.contains(document.activeElement)
-        ? document.activeElement.closest<HTMLElement>('[data-squad],[data-vehicle],[data-soldier]')
-        : null;
-    const focusSel = focused
-      ? ['data-squad', 'data-vehicle', 'data-soldier']
-          .filter((a) => focused.hasAttribute(a))
-          .map((a) => `[${a}="${focused.getAttribute(a)}"]`)
-          .join('')
-      : '';
-    panel.innerHTML = cards.join('');
-    if (focusSel) panel.querySelector<HTMLElement>(focusSel)?.focus();
+    // In place, never innerHTML: this runs every 5 ticks while the battle
+    // does, and a card replaced under a pressed mouse button eats the click.
+    patchChildren(panel, cards.join(''));
 
-    // Auto-scroll only on an actual selection change, not on every sig
-    // rebuild (which also fires every 5 ticks while unpaused) — otherwise
-    // this would fight a player manually scrolling the roster.
+    // Auto-scroll only on an actual selection change, not on every refresh
+    // (every 5 ticks while unpaused) — otherwise this would fight a player
+    // manually scrolling the roster.
     const selKey = `${primarySquad(st)}|${st.selectedVehicle}`;
     if (selKey !== this.lastSel) {
       this.lastSel = selKey;
       panel.querySelector('.card.sel')?.scrollIntoView({ block: 'nearest' });
       // A phone sheet that stays open after a selection buries the ground the
       // next order has to be given on. Selecting is the end of the roster's job.
-      if (this.tb) panel.classList.remove('open');
+      // In landscape the roster is a column beside the map and stays.
+      if (this.tb && !window.matchMedia('(orientation: landscape)').matches) panel.classList.remove('open');
     }
   }
 }
 
-function squadCard(sim: Sim, sq: Squad, st: HudState, km: Keymap): string {
+// One line per squad: its name, a word only when ammunition is short, the men
+// alive and a dot per man. The selected squad opens to its men.
+function squadCard(sim: Sim, sq: Squad, name: string, st: HudState, km: Keymap): string {
   const men = sq.soldierIds.map((id) => sim.soldiers[id]);
   const isPrimary = sq.id === primarySquad(st);
   const sel = st.selectedSquads.includes(sq.id) || (st.selectedSquads.length === 0 && sq.id === st.selectedSquad);
@@ -552,35 +598,29 @@ function squadCard(sim: Sim, sq: Squad, st: HudState, km: Keymap): string {
       return `<i title="${m.name} — ${label}" style="${m.alive && m.downed ? `border:1px solid ${c}` : `background:${c}`}"></i>`;
     })
     .join('');
-  // squad-aggregate ammo
-  let squadAmmo = '';
-  {
-    let total = 0, max = 0;
-    for (const m of men) { total += Object.values(m.ammo).reduce((a, n) => a + (n ?? 0), 0); max += m.ammoStart; }
-    if (max > 0) squadAmmo = `<span class="sam-chip">Ammo ${total}/${max}</span>`;
-  }
-  const showLegend = isPrimary && men.some((m) => m.alive && !m.downed);
+  const ammo = squadAmmoLow(men) ? '<span class="sam-chip low">AMMO LOW</span>' : '';
   const emp = isPrimary ? emplacementOf(sim, sq.id) : null;
-  const target: ArmTarget = isPrimary ? (emp ? 'crew' : 'squad') : 'squad';
   // balk chip
   let balkChip = '';
   if (isPrimary) {
     for (const tid of sq.teamIds) {
       const os = sim.teams[tid].orderState;
       if (os.phase === 'balked' && os.order) {
-        balkChip = `<div class="balk-chip">${BALK_HINT[os.order.kind]}</div>`;
+        balkChip = `<div class="balk-chip">${balkHint(os.order.kind, os.reason)}</div>`;
         break;
       }
     }
   }
   const empStateRow = emp ? emplacementStateRow(sim, emp) : '';
-  const focus = isPrimary && st.selectedTeam >= 0 ? `<div class="focus">Team: ${sim.teams[st.selectedTeam]?.name ?? ''} <i>(esc widens)</i></div>` : '';
+  // A phone has no Esc: the two-finger tap and the Cancel chip widen there.
+  const widen = MOBILE ? '' : ` <i>(${formatBinding(km.bindings.cancel)} widens)</i>`;
+  const focus = isPrimary && st.selectedTeam >= 0 ? `<div class="focus">Team: ${sim.teams[st.selectedTeam]?.name ?? ''}${widen}</div>` : '';
   const rows = isPrimary
-    ? focus + balkChip + orderBar(st, km, target) + empStateRow + (emp ? emplacementContext(sim, emp) : squadContext(men)) + (showLegend ? BARS_LEGEND : '') + men.map((m) => soldierRow(m)).join('')
+    ? focus + balkChip + empStateRow + (emp ? emplacementContext(sim, emp) : squadContext(men)) + men.map((m) => soldierRow(sim, m)).join('')
     : '';
   return (
-    `<div class="card panel${sel ? ' sel' : ''}" data-squad="${sq.id}" tabindex="0" role="button">` +
-    `<div class="card-head"><b>${sq.name}</b>${squadAmmo}<span class="n">${men.filter((m) => m.alive).length}/${men.length}</span><div class="dots">${dots}</div></div>${rows}</div>`
+    `<div class="card panel${sel ? ' sel' : ''}" data-squad="${sq.id}" tabindex="0" role="button" title="${sq.name}">` +
+    `<div class="card-head"><b>${name}</b>${ammo}<span class="n">${men.filter((m) => m.alive).length}/${men.length}</span><div class="dots">${dots}</div></div>${rows}</div>`
   );
 }
 
@@ -593,39 +633,36 @@ function squadContext(men: Soldier[]): string {
   return armed ? `<div class="ctxrow"><button class="hbtn" data-ctx="breach">Breach</button></div>` : '';
 }
 
-export const reserveAmmo = (s: Soldier): number => Object.values(s.ammo).reduce((a, n) => a + (n ?? 0), 0);
+const STATUS_COLOR: Record<Exclude<ManStatus, ''>, string> = { KIA: '#6a6a5a', DOWN: '#d05c50', BROKEN: STATE_COLOR.broken, PINNED: STATE_COLOR.pinned, SHAKEN: STATE_COLOR.shaken };
 
-function soldierRow(m: Soldier): string {
-  if (!m.alive) return `<div class="srow kia"><span class="chip" style="background:#4a4a3e" title="KIA"></span><span class="nm">${m.name}</span></div>`;
-  const wpn = `<span class="wp">${WEAPONS[m.weapon].name}</span>`;
-  const ammo = `<span class="am" title="mag/belt left + reserve units">${m.magLeft}+${reserveAmmo(m)}</span>`;
+// A man: his state colour, name, weapon, and a word only for what is wrong
+// with him. Morale and suppression as numbers live in the hover card and the
+// health panel a click on the row opens.
+function soldierRow(sim: Sim, m: Soldier): string {
+  const status = manStatus(m);
+  if (status === 'KIA') return `<div class="srow kia"><span class="chip" style="background:#4a4a3e"></span><span class="nm">${m.name}</span><span class="st">KIA</span></div>`;
+  const ammo = manAmmo(sim, m);
   const cross = m.wounds.length ? `<span class="flag${m.stabilized || m.bleedRate <= 0 ? ' stab' : ''}">✚</span>` : '';
-  if (m.downed) {
-    return `<div class="srow urgent" data-soldier="${m.id}" tabindex="0" role="button" title="click to inspect ${m.name}"><span class="chip" style="background:#d05c50" title="DOWN"></span><span class="nm">${m.name}</span>${wpn}${cross}<span class="down">DOWN</span></div>`;
-  }
-  const supPct = Math.round(m.suppression * 100);
-  const morPct = Math.round(m.morale * 100);
   return (
-    `<div class="srow" data-soldier="${m.id}" tabindex="0" role="button" title="click to inspect ${m.name}"><span class="chip" style="background:${STATE_COLOR[m.mental]}" title="${m.mental.toUpperCase()}"></span>` +
-    `<span class="nm">${m.name}</span>${wpn}${ammo}${cross}` +
-    `<span class="bars"><span class="bar" title="Suppression ${supPct}%"><i style="width:${supPct}%;background:#e0a83c"></i></span>` +
-    `<span class="bar" title="Morale ${morPct}%"><i style="width:${morPct}%;background:#7fbf6a"></i></span></span></div>`
+    `<div class="srow${status === 'DOWN' ? ' urgent' : ''}" data-soldier="${m.id}" tabindex="0" role="button" title="click to inspect ${m.name}">` +
+    `<span class="chip" style="background:${status === 'DOWN' ? '#d05c50' : STATE_COLOR[m.mental]}"></span>` +
+    `<span class="nm">${m.name}</span><span class="wp">${WEAPONS[m.weapon].name}</span>` +
+    (ammo ? `<span class="am low">${ammo}</span>` : '') +
+    cross +
+    (status ? `<span class="st${status === 'DOWN' ? ' down' : ''}" style="color:${STATUS_COLOR[status]}">${status}</span>` : '') +
+    `</div>`
   );
 }
 
-function orderChips(st: HudState, km: Keymap, target: ArmTarget): string {
-  return ORDER_KINDS.map((k, i) => {
-    const bindingKey = `order${i + 1}` as keyof typeof km.bindings;
+function orderChips(kinds: OrderKind[], st: HudState, km: Keymap, target: ArmTarget): string {
+  return kinds.map((k) => {
+    const bindingKey = `order${ORDER_KINDS.indexOf(k) + 1}` as keyof typeof km.bindings;
     const title = formatBinding(km.bindings[bindingKey]);
     const a = ORDER_AFFORDANCE[k];
     const dis = !canArm(k, target) ? ' disabled' : '';
-    const armed = st.armedOrder === k ? ' armed' : '';
+    const armed = st.armedOrder === k ? ' armed' : st.glow === k ? ' glow' : '';
     return `<button class="hbtn ord${armed}${dis}" data-order="${k}" title="${title}"${dis}>${k}<span class="hk">${a.hotkey}</span></button>`;
   }).join('');
-}
-
-function orderBar(st: HudState, km: Keymap, target: ArmTarget): string {
-  return `<div class="orderbar">${orderChips(st, km, target)}</div>`;
 }
 
 function emplacementStateRow(sim: Sim, e: Emplacement): string {

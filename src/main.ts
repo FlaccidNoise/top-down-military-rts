@@ -1,13 +1,12 @@
-import { cellXY } from './strategic/sector';
 import { advanceDays, fillReplacements, newCampaign, squadMembers, type BattleRecord, type Campaign } from './campaign/campaign';
 import { AudioEngine } from './render/audio';
-import { Barks } from './render/barks';
+import { Barks, barksOn, setBarksOn } from './render/barks';
 import { Camera } from './render/camera';
 import type { GrenadeThrow } from './render/fx';
 import { Renderer } from './render/renderer';
 import { setSun } from './render/light';
 import { StrategicView, TERRAIN_LABELS } from './render/strategic';
-import { bootCamera as bootCameraFor, capInset, FRAME_M_DESKTOP, FRAME_M_MOBILE, type Inset } from './render/framing';
+import { bootCamera as bootCameraFor } from './render/framing';
 import { MOBILE, view, viewSize } from './render/view';
 import type { RedCommander } from './sim/ai';
 import { WEAPONS } from './sim/data';
@@ -19,24 +18,29 @@ import { StrategicCommander, RED_DEFENDER, BLUE_ATTACKER } from './strategic/com
 import { operationStatus, REINFORCE_CYCLE_DAYS, REINFORCE_PER_COMPANY, type Chit, type Engagement, type Front } from './strategic/front';
 import { saveGame } from './strategic/save';
 import { makeDefaultSector } from './strategic/sector';
-import { emplacementOf, Hud, infantrySquads, type HudState } from './ui/hud';
+import { emplacementOf, Hud, infantrySquads } from './ui/hud';
+import { drawEnemyPointer, enemyPointer, QUIET_PROMPT_S, quietPrompt } from './ui/battle-goal';
+import { debriefHtml, drillEndHtml } from './ui/debrief';
+import { frameSteps, nextSpeed, type BattleSpeed } from './ui/battle-speed';
 import { StratHud } from './ui/strat-hud';
 import { drawOverlays, EventPings, type TeamPulse } from './ui/overlays';
 import { computeShot, pickAt, Tooltip } from './ui/tooltip';
 import { HealthPanel } from './ui/health-panel';
 import { actionForEvent, loadKeymap, type Keymap } from './ui/keymap';
 import { PauseMenu } from './ui/menu';
-import { coach } from './ui/coach';
+import { Coach } from './ui/coach';
 import { showFloorMenu } from './ui/floormenu';
 import { MainMenu, type SaveProbe } from './ui/mainmenu';
 import { ManualScreen } from './ui/manual';
-import { Tutorial } from './ui/tutorial';
+import { drawMarkRing, Tutorial, type Circle, type Step, type WorldMark } from './ui/tutorial';
+import { enemiesInSight, hasRefused, houseIsQuiet, makeDrill, type Drill } from './drill';
 import { TheaterView } from './render/theater-view';
 import { TheaterHud } from './ui/theater-hud';
 import { contactBrief } from './ui/contact-brief';
 import { fmtEta, type MarchPreview, type ViewInset } from './render/theater-view';
 import { CustomizeScreen } from './ui/customize';
-import { DEFAULT_PRESET, presetSpec } from './campaign/presets';
+import { DEFAULT_PRESET, FIRST_PRESET, presetSpec } from './campaign/presets';
+import { goalLine } from './ui/goal-line';
 import { SPEC_TAG, specStream, type CampaignConfig, type TheaterConfig } from './campaign/spec';
 import { makeTheater, TheaterGenError } from './strategic/theatergen';
 import { DispositionError, makeDisposition } from './strategic/theatergen/disposition';
@@ -110,9 +114,8 @@ const rotateEl = document.createElement('div');
 rotateEl.id = 'rotate';
 rotateEl.innerHTML =
   '<div class="rot-glyph">⟳</div>' +
-  '<h2>TURN THE PHONE</h2>' +
-  '<p>The battlefield is 320 m wide. In portrait you see about a third of the frontage a company needs to manoeuvre across.</p>' +
-  '<button id="rotate-anyway">Play in portrait anyway</button>';
+  '<h2>Turn your phone for a wider view.</h2>' +
+  '<button id="rotate-anyway">Stay in portrait</button>';
 document.body.appendChild(rotateEl);
 try {
   if (localStorage.getItem(ROTATE_KEY) === '1') rotateEl.classList.add('dismissed');
@@ -213,8 +216,18 @@ let opEnded = false;
 
 // battle state
 let sim: Sim;
-let commander: RedCommander;
-let blueCommander: RedCommander | undefined;
+// Whoever gives a side its orders each tick. The drill's garrison has nobody:
+// its whole plan is the one order it was staged with.
+type BattleAi = Pick<RedCommander, 'update'>;
+const NO_COMMANDER: BattleAi = { update: () => {} };
+let commander: BattleAi;
+let blueCommander: BattleAi | undefined;
+// The drill (src/drill.ts), while it is the battle on screen. null in every
+// campaign battle. `shooter` is the squad the player gave Fire to, `asked` the
+// refusals already reported, so one refused order is one recovery step.
+let drill: (Drill & { shooter: number; asked: WeakSet<object> }) | null = null;
+// The step on screen holds the battle: Play is not the player's to press yet.
+let heldByStep = false;
 let aiControl = false;
 let renderer: Renderer;
 let barks = new Barks();
@@ -249,9 +262,17 @@ let deployMsg = '';
 let deployMsgUntil = 0;
 const deployOverride = new URLSearchParams(location.search).get('deploy'); // ?deploy=atk,defLine — OQ19 tuning
 let winnerAt = -1; // ms timestamp when winner appeared
+let lastOrderTick = 0; // sim tick of the player's last order — the quiet-minute prompt counts from it
+let battleSpeed: BattleSpeed = 1;
 let debriefShown = false;
 let needsBootFrame = false; // re-run bootCamera once the battle HUD is laid out
-const mouse = { x: 0, y: 0, onCanvas: false };
+const mouse = { x: 0, y: 0, onCanvas: false, alt: false };
+// The terrain card is one line; the numbers behind it are asked for: Alt on a
+// keyboard, and on touch a hold kept this long past the point it arms.
+const DETAIL_HOLD_MS = 1500;
+const trackAlt = (e: KeyboardEvent | MouseEvent): void => { mouse.alt = e.altKey; };
+window.addEventListener('keydown', trackAlt);
+window.addEventListener('keyup', trackAlt);
 const pings = new EventPings();
 // Touch-only sticky modes. A phone has no shift key and no second mouse
 // button, so the two modifiers the desktop path reads off the keyboard become
@@ -270,17 +291,15 @@ function selectSquad(id: number): void {
   if (renderer) renderer.selectedVehicle = -1;
   armedOrder = null;
   if (id >= 0) lastTeamId = sim.squads[id].teamIds[0];
-  if (id >= 0 && mode === 'battle') {
-    const t = document.getElementById(MOBILE ? 'touchbar' : 'squads');
-    if (t)
-      coach.maybeShow(
-        MOBILE ? 'touch-order' : 'first-squad-select',
-        t,
-        MOBILE
-          ? 'Squad selected — press and hold the ground to send them. Tap an order chip first to change how.'
-          : 'Select a squad, then right-click to move. Shift+1-8 arms an order.',
-      );
-  }
+  noteSelection();
+}
+
+// Deployment has its own step on screen: a squad picked there is reported
+// when the fight starts, not before.
+function noteSelection(): void {
+  if (selectedSquads.length === 0 || deployPhase) return;
+  tutorial?.notify('squad-selected');
+  if (drill && drill.shooter >= 0 && getPrimary() !== drill.shooter) tutorial?.notify('squad-switched');
 }
 
 function toggleSquadSelection(id: number): void {
@@ -292,21 +311,13 @@ function toggleSquadSelection(id: number): void {
   selectedVehicle = -1;
   if (renderer) renderer.selectedVehicle = -1;
   armedOrder = null;
+  noteSelection();
 }
 
-/** Arm an order kind (toggle) and fire first-order-arm coachmark once. */
+/** Arm an order kind (toggle). */
 function doArmOrder(kind: OrderKind): void {
   armedOrder = armedOrder === kind ? null : kind;
-  if (armedOrder) {
-    const btn = document.querySelector(`[data-order="${armedOrder}"]`) as HTMLElement | null;
-    const t = btn ?? document.getElementById(MOBILE ? 'touchbar' : 'squads');
-    if (t)
-      coach.maybeShow(
-        'first-order-arm',
-        t,
-        MOBILE ? 'Order armed — press and hold the ground to issue it.' : 'Order armed — right-click to issue.',
-      );
-  }
+  if (armedOrder === 'fire') tutorial?.notify('fire-armed');
 }
 
 function selectVehicle(id: number): void {
@@ -339,7 +350,7 @@ const urlHourMin = ((): number | null => {
   return null;
 })();
 const hud = new Hud({
-  selectSquad,
+  selectSquad: pickSquad,
   selectVehicle,
   panToSoldier: (id) => {
     const s = sim.soldiers[id];
@@ -359,6 +370,7 @@ const hud = new Hud({
     if (mode === 'strategic') stratPaused = !stratPaused;
     else paused = !paused;
   },
+  cycleSpeed: () => { battleSpeed = nextSpeed(battleSpeed); },
   armOrder: (kind) => {
     doArmOrder(kind);
   },
@@ -398,20 +410,30 @@ const hud = new Hud({
     selectedVehicle = -1;
     if (renderer) renderer.selectedVehicle = -1;
     armedOrder = null;
+    noteSelection();
   },
   cancel: () => { escapeLadder(); },
   cycleFloor: () => { cycleFloorFocus(); },
   openMenu: () => { openPauseMenu(); },
+  openControls: () => { openPauseMenu('controls'); },
 });
 // Two stacked fixed bottom layers (touch bar + roster sheet) have to agree on
 // one height, and the bar's own height changes when the order-chip row comes
 // and goes. Publish the measured value rather than hard-coding it twice.
 const touchbarEl = document.getElementById('touchbar');
-if (touchbarEl && typeof ResizeObserver === 'function') {
-  const publishBarHeight = (): void =>
-    document.documentElement.style.setProperty('--touchbar-h', `${Math.round(touchbarEl.getBoundingClientRect().height)}px`);
-  new ResizeObserver(publishBarHeight).observe(touchbarEl);
-  publishBarHeight();
+const topbarEl = document.getElementById('topbar');
+if (touchbarEl && topbarEl && typeof ResizeObserver === 'function') {
+  // The landscape roster column hangs between the two bars, so it needs the
+  // top bar's bottom edge as well.
+  const publishBars = (): void => {
+    const css = document.documentElement.style;
+    css.setProperty('--touchbar-h', `${Math.round(touchbarEl.getBoundingClientRect().height)}px`);
+    css.setProperty('--topbar-b', `${Math.round(topbarEl.getBoundingClientRect().bottom)}px`);
+  };
+  const watch = new ResizeObserver(publishBars);
+  watch.observe(touchbarEl);
+  watch.observe(topbarEl);
+  publishBars();
 }
 const stratHud = new StratHud({
   togglePause: () => { stratPaused = !stratPaused; },
@@ -422,9 +444,8 @@ const theaterHud = new TheaterHud({
     const v2 = S().v2;
     if (v2 && requisitionDue(v2.front) && !v2.pending) return v2.view.flash('Pick a requisition first');
     stratPaused = !stratPaused;
-    tutorial?.notify('speed-changed');
   },
-  setSpeed: (i) => { speedIdx = i; tutorial?.notify('speed-changed'); },
+  setSpeed: (i) => { speedIdx = i; },
   openMenu: () => { openPauseMenu(); },
   fitAll: () => { S().v2?.view.fitAll(view.w, view.h); },
   focusNode: (n) => {
@@ -467,12 +488,24 @@ const menu = new PauseMenu({
   },
   onKeymapChanged: (km: Keymap) => { hud.setKeymap(km); },
   onFieldManual: () => { manual.open(); },
+  muted: () => audio.muted,
+  onMuteToggle: () => { audio.toggleMute(); },
   // Gated on campPinned (declared above) rather than on `tutorial` itself,
   // which is constructed below: the arrows only READ it and run long after
   // module init, but the presence test has to be answerable right here. On the
   // pinned art path there is no tutorial, so the control does not render.
   tutorialEnabled: campPinned ? undefined : () => (tutorial ? !tutorial.isSkipped : false),
   onTutorialToggle: campPinned ? undefined : (on) => tutorial?.setEnabled(on),
+  barksOn: () => barksOn(),
+  onBarksToggle: (on) => setBarksOn(on),
+  // The drill belongs to no campaign, so there is nothing to lose by leaving it.
+  inTraining: () => drill !== null,
+  onLeaveTraining: () => {
+    pauseBeforeMenu = null;
+    drill = null;
+    tutorial?.endDrill();
+    openMainMenu();
+  },
 });
 menu.setKeymap(loadKeymap(localStorage));
 
@@ -481,20 +514,230 @@ menu.setKeymap(loadKeymap(localStorage));
  * nothing left to cancel all come through here, and each stops the clock it
  * found running — the theater's, or the battle's.
  */
-function openPauseMenu(): void {
+function openPauseMenu(view: 'menu' | 'controls' = 'menu'): void {
   if (menu.isOpen) { menu.close(); return; }
   pauseBeforeMenu = mode === 'strategic' ? stratPaused : paused;
   if (mode === 'strategic') stratPaused = true;
   else paused = true;
   menu.setKeymap(loadKeymap(localStorage));
-  menu.open();
+  menu.open(view);
 }
 
 // The tutorial driver teaches over the live game. It does not exist at all on
 // the pinned art path: ?camp= must render byte-identical frames forever.
 const tutorial = campPinned
   ? null
-  : new Tutorial(coach, MOBILE, (chapterId) => manual.open(chapterId), typeof localStorage !== 'undefined' ? localStorage : undefined);
+  : new Tutorial(new Coach(), MOBILE, {
+      storage: typeof localStorage !== 'undefined' ? localStorage : undefined,
+      world: tutorialMark,
+      stage: stageRect,
+      goal: () => {
+        const v2 = mode === 'strategic' && !opEnded ? S().v2 : null;
+        const text = v2 && goalLine(v2.goals);
+        return text ? { text, over: stageRect() } : null;
+      },
+      onStep: onTutorialStep,
+    });
+
+// The map as the player sees it: the screen less the opaque HUD around it.
+function stageRect(): { left: number; top: number; right: number; bottom: number } {
+  if (mode === 'strategic') {
+    const inset = theaterInset();
+    return { left: inset.left, top: inset.top, right: view.w - inset.right, bottom: view.h - inset.bottom };
+  }
+  const inset = viewportInset();
+  const bar = document.getElementById('topbar')?.getBoundingClientRect();
+  return { left: inset.left, top: Math.max(inset.top, bar ? bar.bottom : 0), right: view.w, bottom: view.h - inset.bottom };
+}
+
+// The step on screen changed. A step that holds the battle stops it until the
+// player has done the step, and the battle goes on by itself afterwards: the
+// player was never asked to press Play. A step that rings a place brings the
+// place into view, which on a phone is most of the time.
+function onTutorialStep(step: Step | null): void {
+  if (step?.holds) {
+    paused = true;
+    heldByStep = true;
+  } else if (heldByStep) {
+    paused = false;
+    heldByStep = false;
+  }
+  if (step?.mark && mode === 'battle') revealMark(step.mark, step.anchor !== undefined);
+  // On the theater a mark off the map is brought in by showing all of it.
+  if (step?.mark && mode === 'strategic') {
+    const c = theaterMark(step.mark);
+    if (c && !onStage(c, stageRect())) S().v2?.view.fitAll(view.w, view.h);
+  }
+}
+
+const MARK_MARGIN_PX = 24;
+// A bubble that points at a chip in the order bar sits in this band above it.
+const CHIP_BUBBLE_BAND_PX = 84;
+
+// Pan the least that puts the mark's ring inside the map. The zoom is the
+// player's and stays. `underBubble`: the step's bubble points at the order
+// bar, so the ring is also kept out of the band that bubble takes. The ring is
+// what the player presses next, and nothing may sit on it.
+function revealMark(mark: WorldMark, underBubble: boolean): void {
+  const c = tutorialMark(mark);
+  if (!c) return;
+  const st = stageRect();
+  if (underBubble) st.bottom -= CHIP_BUBBLE_BAND_PX;
+  const pad = Math.min(c.r + MARK_MARGIN_PX, (st.right - st.left) / 2, (st.bottom - st.top) / 2);
+  const dx = c.x < st.left + pad ? c.x - (st.left + pad) : c.x > st.right - pad ? c.x - (st.right - pad) : 0;
+  const dy = c.y < st.top + pad ? c.y - (st.top + pad) : c.y > st.bottom - pad ? c.y - (st.bottom - pad) : 0;
+  cam.x += dx / cam.scale;
+  cam.y += dy / cam.scale;
+}
+
+const worldCircle = (x: number, y: number, radiusM: number): Circle => {
+  const [sx, sy] = cam.worldToScreen(x, y, view.w, view.h);
+  return { x: sx, y: sy, r: Math.max(22, radiusM * cam.scale) };
+};
+
+// The squad the drill's "another squad" step rings: a rifle squad that did not
+// do the shooting, still on its feet.
+function drillOther(d: Drill & { shooter: number }): number {
+  return d.rifles.find((q) => q !== d.shooter && squadCircle(q) !== null) ?? d.lead;
+}
+
+// Where a tutorial step's world mark is on screen.
+function tutorialMark(mark: WorldMark): Circle | null {
+  if (mode === 'strategic') return theaterMark(mark);
+  if (mode !== 'battle') return null;
+  switch (mark) {
+    case 'lead':
+      return drill && squadCircle(drill.lead);
+    case 'other':
+      return drill && squadCircle(drillOther(drill));
+    case 'hedge':
+      return drill && worldCircle(drill.hedge.x, drill.hedge.y, drill.hedge.r);
+    case 'house':
+      return drill && worldCircle(drill.house.x, drill.house.y, drill.house.r);
+    // A defender the player can see, else the house they are in.
+    case 'enemy': {
+      if (!drill) return null;
+      const [seen] = enemiesInSight(sim);
+      return seen ? worldCircle(seen.x, seen.y, 2.5) : worldCircle(drill.house.x, drill.house.y, drill.house.r);
+    }
+    case 'company':
+    case 'town':
+      return null; // theater marks: theaterMark
+    // The squad the player has picked. Before any pick, the one nearest the
+    // middle of the map on screen: the ring must be somewhere they can see.
+    case 'squad': {
+      if (getPrimary() >= 0) return squadCircle(getPrimary());
+      const st = stageRect();
+      const cx = (st.left + st.right) / 2;
+      const cy = (st.top + st.bottom) / 2;
+      let best: Circle | null = null;
+      for (const q of infantrySquads(sim)) {
+        const c = squadCircle(q.id);
+        if (c && (!best || Math.hypot(c.x - cx, c.y - cy) < Math.hypot(best.x - cx, best.y - cy))) best = c;
+      }
+      return best;
+    }
+  }
+}
+
+const onStage = (c: Circle, st: { left: number; top: number; right: number; bottom: number }): boolean =>
+  c.x - c.r >= st.left && c.x + c.r <= st.right && c.y - c.r >= st.top && c.y + c.r <= st.bottom;
+
+// Where the march step's ring goes: the objectives the selected company can be
+// ordered onto, the weakest garrison first and the nearest first among equals.
+// The first battle a new player fights is the one this ring walks them into:
+// on the first preset the nearest objective lost 1 first battle in 12 and left
+// 1 undecided, the weakest lost none (scripts/firstcontact.mjs --pick). Garrison
+// strength is what the player is shown, the objective strip's own numbers:
+// last-seen reports under fog. Asked of previewMove, so the ring is never on a
+// town the order would refuse. Cached per company and theater minute.
+let marchTargetsKey = '';
+let marchTargetsCached: number[] = [];
+function marchTargets(v2: SessionV2): number[] {
+  const key = `${v2.selectedForce}:${v2.front.clockMin}`;
+  if (key === marchTargetsKey) return marchTargetsCached;
+  marchTargetsKey = key;
+  const fog = v2.campaignCfg.recon === 'contacts';
+  const garrison = (n: number): number =>
+    fog
+      ? (v2.front.intel?.blue ?? []).filter((c) => c.pos.kind === 'node' && c.pos.nodeId === n).reduce((a, c) => a + c.strength, 0)
+      : v2.front.forces.filter((f) => f.side === 'red' && f.strength > 0 && f.pos.kind === 'node' && f.pos.nodeId === n).reduce((a, f) => a + f.strength, 0);
+  marchTargetsCached = v2.front.theater.objectiveNodes
+    .filter((n) => v2.front.controlByNode[n] !== 'blue')
+    .flatMap((n) => {
+      const p = previewMove(v2.front, v2.selectedForce, n, { nightTempo: v2.campaignCfg.nightTempo });
+      return p.ok ? [{ n, red: garrison(n), eta: p.etaMin }] : [];
+    })
+    .sort((a, b) => a.red - b.red || a.eta - b.eta)
+    .map((t) => t.n);
+  return marchTargetsCached;
+}
+
+// The theater's two marks. 'company' is one of the player's counters as it is
+// drawn: the strongest that is whole on the map. 'town' is where the selected
+// company should march (marchTargets). Each prefers a place the player can
+// see now.
+function theaterMark(mark: WorldMark): Circle | null {
+  const v2 = S().v2;
+  if (!v2) return null;
+  const st = stageRect();
+  const pick = (cs: Circle[]): Circle | null => cs.find((c) => onStage(c, st)) ?? cs[0] ?? null;
+  if (mark === 'company') {
+    return pick(
+      v2.front.forces
+        .filter((f) => f.side === 'blue' && f.strength > 0 && f.engagedIn === null)
+        .sort((a, b) => b.strength - a.strength)
+        .flatMap((f) => {
+          const r = v2.view.counterOf(f.id);
+          return r ? [{ x: (r.x0 + r.x1) / 2, y: (r.y0 + r.y1) / 2, r: Math.hypot(r.x1 - r.x0, r.y1 - r.y0) / 2 + 4 }] : [];
+        }),
+    );
+  }
+  if (mark === 'town') {
+    if (v2.selectedForce < 0) return null;
+    // The best town, wherever it is: a ring off the map is brought in by
+    // showing the whole theater (onTutorialStep), not by ringing a worse town.
+    const [n] = marchTargets(v2);
+    if (n === undefined) return null;
+    const at = v2.front.theater.nodes[n].pos;
+    const [x, y] = v2.view.toScreen(at.x, at.y, view.w, view.h);
+    // The ring takes in the counters standing on the town: who holds it and how
+    // strong is the other half of what the player is being pointed at, and the
+    // bubble keeps off whatever the ring holds.
+    let r = 22;
+    for (const f of v2.front.forces) {
+      if (f.strength <= 0 || f.pos.kind !== 'node' || f.pos.nodeId !== n) continue;
+      const c = v2.view.counterOf(f.id);
+      if (c) r = Math.max(r, ...[c.x0, c.x1].flatMap((cx) => [c.y0, c.y1].map((cy) => Math.hypot(cx - x, cy - y) + 3)));
+    }
+    return { x, y, r: Math.min(r, 64) };
+  }
+  return null;
+}
+
+// A squad picked by name (the roster, a number key) may be off screen: the
+// battle opens on part of the company, not all of it. Bring it into view.
+function pickSquad(id: number): void {
+  selectSquad(id);
+  const c = squadCircle(id);
+  if (!c) return;
+  const st = stageRect();
+  if (c.x >= st.left && c.x <= st.right && c.y >= st.top && c.y <= st.bottom) return;
+  cam.x += (c.x - (st.left + st.right) / 2) / cam.scale;
+  cam.y += (c.y - (st.top + st.bottom) / 2) / cam.scale;
+}
+
+function squadCircle(id: number): Circle | null {
+  const squad = sim.squads[id];
+  if (!squad) return null;
+  const men = squad.soldierIds.map((sid) => sim.soldiers[sid]).filter((s) => s.alive && s.inVehicle < 0);
+  if (men.length === 0) return null;
+  const wx = men.reduce((a, s) => a + s.x, 0) / men.length;
+  const wy = men.reduce((a, s) => a + s.y, 0) / men.length;
+  const spread = Math.max(...men.map((s) => Math.hypot(s.x - wx, s.y - wy)));
+  const [x, y] = cam.worldToScreen(wx, wy, view.w, view.h);
+  return { x, y, r: Math.max(22, (spread + 1.5) * cam.scale) };
+}
 
 function probeSave(): SaveProbe {
   if (campPinned) return { status: 'none' };
@@ -523,7 +766,13 @@ const mainMenu = new MainMenu({
   // Read live, never cached: the pause menu can flip the same switch.
   tutorialEnabled: tutorial ? () => !tutorial.isSkipped : undefined,
   onTutorialToggle: tutorial ? (on) => tutorial.setEnabled(on) : undefined,
-  onNewOperation: () => {
+  barksOn: () => barksOn(),
+  onBarksToggle: (on) => setBarksOn(on),
+  firstRun: () => tutorial !== null && !tutorial.isSkipped && !tutorial.drilled && probeSave().status === 'none',
+  onPlay: () => startDrill(campSeed()),
+  onTraining: () => startDrill(campSeed()),
+  onNewCampaign: () => startFirstCampaign(),
+  onCustom: () => {
     mainMenu.close();
     customize.open();
   },
@@ -591,10 +840,6 @@ function showContactModal(e: Engagement): void {
       ${defending ? '' : '<button id="standdown">Stand down</button>'}
     </div>`;
   debriefEl.style.display = 'flex';
-  {
-    const fight = document.getElementById('fight');
-    coach.maybeShow('first-engagement', fight ?? debriefEl, 'Staging — review the force comparison, then Attack or Stand down.');
-  }
   document.getElementById('fight')!.onclick = () => startEngagementBattle(e);
   if (forced) {
     document.getElementById('autoresolve')!.onclick = () => {
@@ -620,19 +865,23 @@ function showContactModal(e: Engagement): void {
 // blue spawns on a west-attack map.
 function viewportInset(): { left: number; top: number; bottom: number } {
   // Zero-area rects mean the element is hidden — during strategic mode the
-  // battle HUD is still in the DOM but collapsed, and a hidden #hint would
-  // otherwise read as an 800px bottom inset and collapse the viewport to
-  // nothing. Only elements that actually occupy space may inset the view.
+  // battle HUD is still in the DOM but collapsed, and a hidden bottom layer
+  // would otherwise read as an 800px bottom inset and collapse the viewport
+  // to nothing. Only elements that actually occupy space may inset the view.
   const box = (id: string) => {
     const r = document.getElementById(id)?.getBoundingClientRect();
     return r && r.width > 0 && r.height > 0 ? r : null;
   };
-  const squads = box('squads');
+  // The roster is a column on a desktop and on a phone in landscape, and a
+  // sheet across the bottom on a phone in portrait.
+  const roster = box('squads');
+  const squads = roster && roster.width < view.w * 0.6 ? roster : null;
   const strip = box('obj-strip');
-  // Both bottom-edge layers, whichever exists: #hint on desktop, #touchbar on
-  // a phone. They are mutually exclusive today, but taking the max means the
-  // camera never frames blue behind whichever one is actually on screen.
-  const bottoms = ['hint', 'touchbar'].map((id) => box(id)).filter((r) => r !== null);
+  // Both bottom-edge layers, whichever exists: the order bar on desktop (only
+  // with a squad selected), #touchbar on a phone, which holds its own order
+  // rows. Taking the max means the map the player is told about never runs
+  // under whichever one is actually on screen.
+  const bottoms = [box('orderbar'), box('touchbar'), squads ? null : roster].filter((r) => r !== null);
   return {
     left: squads ? squads.right : 0,
     top: strip ? strip.bottom : 0,
@@ -663,23 +912,10 @@ function theaterInset(): ViewInset {
   return out;
 }
 
-// bootCameraFor scales off the clear region's WIDTH, which is the right axis
-// on a portrait phone and the wrong one the moment it turns: 844x390 landscape
-// solves 70m across 844px at 12 px/m, and 70m of ground 22m tall showed 24 of
-// 138 men. FRAME_M_MOBILE is really "meters across the short axis" — in
-// portrait that is already the width (so this returns it unchanged), in
-// landscape it is the clear height, so convert.
 const MOBILE_CAP_FRAC = 0.35;
-function mobileFrameM(cw: number, ch: number, raw: Inset): number {
-  const vw = Math.max(1, cw - capInset(raw.left, cw, MOBILE_CAP_FRAC));
-  const vh = Math.max(1, ch - capInset(raw.top, ch, MOBILE_CAP_FRAC) - capInset(raw.bottom, ch, MOBILE_CAP_FRAC));
-  return vh < vw ? (FRAME_M_MOBILE * vw) / vh : FRAME_M_MOBILE;
-}
 
 function bootCamera(s: Sim, cw: number, ch: number): { x: number; y: number; scale: number } {
-  const raw = viewportInset();
-  return bootCameraFor(s.map, s.soldiers.filter((sd) => sd.side === 'blue'), cw, ch, raw, {
-    frameM: MOBILE ? mobileFrameM(cw, ch, raw) : FRAME_M_DESKTOP,
+  return bootCameraFor(s.map, s.soldiers.filter((sd) => sd.side === 'blue'), cw, ch, viewportInset(), {
     // Desktop insets are borders and must keep insetting at every window
     // width; only the phone's full-width sheets are drawers worth ignoring.
     capFrac: MOBILE ? MOBILE_CAP_FRAC : undefined,
@@ -688,7 +924,9 @@ function bootCamera(s: Sim, cw: number, ch: number): { x: number; y: number; sca
   });
 }
 
-function bootBattle(staged: { sim: Sim; commander: RedCommander; blueCommander: RedCommander; companyIndex: number }, title: string): void {
+function bootBattle(staged: { sim: Sim; commander: BattleAi; blueCommander: BattleAi; companyIndex: number }, title: string): void {
+  drill = null;
+  heldByStep = false;
   sim = staged.sim;
   sim.fowDisabled = fowOff;
   commander = staged.commander;
@@ -728,6 +966,8 @@ function bootBattle(staged: { sim: Sim; commander: RedCommander; blueCommander: 
   addMode = false;
   pings.reset();
   tooltip.clear();
+  lastOrderTick = 0;
+  battleSpeed = 1;
 }
 
 function startEngagementBattle(e: Engagement): void {
@@ -735,6 +975,77 @@ function startEngagementBattle(e: Engagement): void {
   const seed = urlSeed !== null && Number.isFinite(Number(urlSeed)) ? Number(urlSeed) : S().front.clockMin * 7919 + e.cell;
   const battle = makeStrategicBattle(S().campaign, S().front, e, seed);
   bootBattle(battle, `Day ${S().front.day} ${S().front.hhmm} — ${battle.name}`);
+}
+
+// The drill: one small fixed battle, staged from src/drill.ts. It is not part
+// of any campaign, so nothing here reads or writes the session.
+const urlDrill = new URLSearchParams(location.search).get('drill'); // ?drill=N boots straight into the drill on seed N (gates, screenshots)
+
+function startDrill(seed: number): void {
+  const d = makeDrill(seed);
+  bootBattle({ sim: d.sim, commander: NO_COMMANDER, blueCommander: NO_COMMANDER, companyIndex: -1 }, 'Training: take the farmhouse');
+  drill = { ...d, shooter: -1, asked: new WeakSet() };
+  deployPhase = false;
+  mainMenu.close();
+  tutorial?.startDrill();
+  // 'drill-start' waits for the battle HUD to exist: see needsBootFrame.
+}
+
+// The drill's conditions, asked once a frame and only while a step would act
+// on the answer. Each is the sim's own state (src/drill.ts), never a clock.
+function pollDrill(d: NonNullable<typeof drill>): void {
+  if (!tutorial || sim.winner) return;
+  // A step that waits on an order needs somebody to give it to.
+  if (tutorial.step && selectedSquads.length === 0 && !tutorial.awaits('squad-selected') && !tutorial.awaits('squad-switched')) selectSquad(d.shooter >= 0 && tutorial.step.id !== 'drill-assault' ? d.shooter : d.lead);
+  if (tutorial.awaits('fire-armed') && armedOrder === 'fire') tutorial.notify('fire-armed');
+  if (tutorial.wants('enemy-seen') && enemiesInSight(sim).length > 0) tutorial.notify('enemy-seen');
+  if (tutorial.wants('house-quiet') && houseIsQuiet(d, drillOther(d))) tutorial.notify('house-quiet');
+  if (tutorial.wants('team-balked')) {
+    for (const q of d.rifles) {
+      if (!hasRefused(sim, q)) continue;
+      const refused = sim.squads[q].teamIds.map((t) => sim.teams[t].orderState.order).find((o) => o !== null);
+      if (!refused || d.asked.has(refused)) continue;
+      d.asked.add(refused);
+      tutorial.notify('team-balked');
+      break;
+    }
+  }
+}
+
+// A campaign with nothing to set up: the preset a first battle is reliably
+// winnable on (FIRST_PRESET, measured by scripts/firstcontact.mjs).
+const urlWar = new URLSearchParams(location.search).get('war'); // ?war=N pins that campaign's seed, so a gate run can be replayed
+function startFirstCampaign(): void {
+  const seed = urlWar !== null && Number.isFinite(Number(urlWar)) && urlWar !== '' ? Number(urlWar) : campSeed();
+  startCampaignV2({ kind: 'fresh', seed, theaterCfg: FIRST_PRESET.theater, campaignCfg: FIRST_PRESET.campaign });
+}
+
+function showDrillEnd(): void {
+  debriefShown = true;
+  const won = sim.winner === 'blue';
+  const hasCampaign = probeSave().status === 'ok';
+  debriefEl.innerHTML = drillEndHtml(won, hasCampaign ? 'Back to the menu' : 'Start the campaign');
+  debriefEl.style.display = 'flex';
+  const leave = (): void => {
+    debriefEl.style.display = 'none';
+    drill = null;
+    tutorial?.endDrill();
+  };
+  document.getElementById('next')!.onclick = () => {
+    leave();
+    if (hasCampaign) openMainMenu();
+    else startFirstCampaign();
+  };
+  document.getElementById('db-again')!.onclick = () => {
+    leave();
+    startDrill(campSeed());
+  };
+}
+
+function openMainMenu(): void {
+  mode = 'menu';
+  mainMenu.setSaveProbe(probeSave());
+  mainMenu.open();
 }
 
 // V2: a pending theater contact becomes a fought battle.
@@ -801,11 +1112,11 @@ function deployBearing(): number {
 function deployPlace(wx: number, wy: number): void {
   const zone = deployZone();
   if (wx < zone.x0 || wx > zone.x1) {
-    deployFlash(`Outside your deployment zone (x ${zone.x0}–${Math.round(zone.x1)})`);
+    deployFlash('Stay inside the green zone');
     return;
   }
   if (selectedSquads.length === 0) {
-    deployFlash('Select a squad first — tap it, then right-click the ground');
+    deployFlash(MOBILE ? 'Tap a squad first' : 'Click a squad first');
     return;
   }
   const squadIds: number[] = [];
@@ -813,7 +1124,7 @@ function deployPlace(wx: number, wy: number): void {
     const squad = sim.squads[id];
     if (!squad) continue;
     if (emplacementOf(sim, id)) {
-      deployFlash(`${squad.name}: guns deploy where they stand`);
+      deployFlash(`${squad.name}: guns stay where they are`);
       continue;
     }
     squadIds.push(id);
@@ -938,10 +1249,6 @@ function showContactModalV2(c: Contact): void {
   document.getElementById('fight')!.onclick = () => {
     close();
     startTheaterBattle(c);
-  };  document.getElementById('fight')!.onclick = () => {
-    debriefEl.style.display = 'none';
-    tutorial?.notify('contact-closed');
-    startTheaterBattle(c);
   };
   if (trivial) {
     document.getElementById('autoresolve')!.onclick = () => {
@@ -992,18 +1299,22 @@ function debriefRows(): string {
     .join('');
 }
 
+// The result first, the roster on request: a company's full table is 150 rows.
 function renderDebrief(record: BattleRecord, redLosses: number, groundLine: string, onNext: () => void): void {
-  const enemyLosses = redLosses > 0 ? `~${redLosses} enemy losses` : 'no enemy losses';
-  debriefEl.innerHTML = `<div class="db-scroll"><div class="db">
-    <h1 class="${record.won ? 'win' : 'loss'}">${record.won ? 'VICTORY' : 'DEFEAT'}</h1>
-    <p class="sub">${record.kia.length} KIA · ${record.wounded.length} wounded · ${enemyLosses}</p>
-    <p class="fallen">${record.kia.length > 0 ? 'Fallen: ' + record.kia.join(', ') : 'No one died today.'}</p>
-    <p class="sub">${groundLine}</p>
-    ${debriefRows()}
-    </div></div>
-    <div class="db-actions"><button id="next" class="primary">Return to the front</button></div>`;
+  debriefEl.innerHTML = debriefHtml(
+    { won: record.won, outcome: groundLine, kia: record.kia, wounded: record.wounded.length, enemyLosses: redLosses },
+    [{ id: 'next', label: 'Return to the front', primary: true }, { id: 'db-show-roster', label: 'Show roster' }],
+  );
   debriefEl.style.display = 'flex';
   document.getElementById('next')!.onclick = onNext;
+  const toggle = document.getElementById('db-show-roster')!;
+  toggle.onclick = () => {
+    const mount = document.getElementById('db-roster')!;
+    const open = mount.innerHTML === '';
+    mount.innerHTML = open ? debriefRows() : '';
+    toggle.textContent = open ? 'Hide roster' : 'Show roster';
+    if (open) mount.scrollIntoView({ block: 'start' });
+  };
 }
 
 function showDebrief(): void {
@@ -1225,18 +1536,16 @@ function showOperationEnd(status: 'won' | 'lost'): void {
     ${verdict}
     <p class="sub">${grade ? `${S().campaign.log.length} battles fought.` : `${S().campaign.log.length} battles fought over ${day} days · ${kia} men killed.`}</p>
     </div></div>
-    <div class="db-actions"><button id="next" class="primary">New operation</button><button id="same">Same theater again</button></div>`;
+    <div class="db-actions"><button id="next" class="primary">Main menu</button><button id="same">Same theater again</button></div>`;
   debriefEl.style.display = 'flex';
   document.getElementById('next')!.onclick = () => {
     debriefEl.style.display = 'none';
-    mode = 'menu';
-    mainMenu.setSaveProbe(probeSave());
-    mainMenu.open();
+    openMainMenu();
   };
   document.getElementById('same')!.onclick = () => {
     debriefEl.style.display = 'none';
     const v2 = S().v2;
-    if (v2) startCampaignV2({ kind: 'fresh', seed: v2.seed });
+    if (v2) startCampaignV2({ kind: 'fresh', seed: v2.seed, theaterCfg: v2.theaterCfg, campaignCfg: v2.campaignCfg });
     else startCampaign(null, S().campaign.seed);
   };
 }
@@ -1293,10 +1602,24 @@ function commitBox(additive: boolean): void {
   selectedTeam = -1;
   dragStart = null;
   boxRect = null;
+  noteSelection();
+}
+
+// Every order to a squad comes through here once, whichever gesture gave it:
+// the acknowledge sound, the quiet-minute clock and the tutorial all hang on it.
+function noteOrder(kind: OrderKind): void {
+  audio.uiOrder();
+  lastOrderTick = sim.tick;
+  tutorial?.notify('order-issued');
+  if (kind === 'fire') {
+    if (drill) drill.shooter = getPrimary();
+    tutorial?.notify('fire-ordered');
+  } else if (kind === 'assault') tutorial?.notify('assault-ordered');
 }
 
 function tapSelect(sx: number, sy: number, additive: boolean): void {
   const [wx, wy] = cam.screenToWorld(sx, sy, view.w, view.h);
+  if (targetMode) lastOrderTick = sim.tick;
   if (targetMode === 'barrage' && !aiControl) {
     if (sim.callBarrage('blue', wx, wy)) {
       setTargetMode('');
@@ -1417,7 +1740,6 @@ function issueShortClick(wx: number, wy: number, squadForce: boolean, l?: number
   const offs = formation ? squadClumpOffsets(K) : null;
   const used = new Set<number>();
   const primary = getPrimary();
-  if (K > 0) audio.uiOrder();
   for (let i = 0; i < K; i++) {
     const id = selectedSquads[i];
     const order: TeamOrder = { kind, x: wx + (offs?.[i][0] ?? 0), y: wy + (offs?.[i][1] ?? 0), l };
@@ -1431,6 +1753,7 @@ function issueShortClick(wx: number, wy: number, squadForce: boolean, l?: number
       sim.orderSquad(id, order, used);
     }
   }
+  if (K > 0) noteOrder(kind);
 }
 
 function commitOrder(sx: number, sy: number, opts: { squadForce: boolean; floors: boolean }): void {
@@ -1477,6 +1800,7 @@ function commitOrder(sx: number, sy: number, opts: { squadForce: boolean; floors
   if (selectedVehicle >= 0) {
     audio.uiOrder();
     sim.orderVehicleMove(selectedVehicle, wx, wy);
+    lastOrderTick = sim.tick;
     rmbAnchor = null;
     return;
   }
@@ -1506,6 +1830,7 @@ function commitOrder(sx: number, sy: number, opts: { squadForce: boolean; floors
       const order: TeamOrder = { kind, x: ax, y: ay, facing, width: seg };
       sim.orderSquad(id, order, used);
     }
+    noteOrder(kind);
     if (useArmed) armedOrder = null;
   }
 
@@ -1523,10 +1848,6 @@ function stratTapSelect(sx: number, sy: number): void {
   const cell = S().stratView.cellAtScreen(sx, sy, view.w, view.h);
   const chit = cell >= 0 ? S().front.chitAt(cell, 'blue') : undefined;
   selectedChit = chit ? chit.id : -1;
-  if (chit) {
-    const t = document.getElementById('strat-hud');
-    if (t) coach.maybeShow('first-strat-chit', t, 'Chit selected — right-click a cell to move. ✕ on a waypoint cancels it.');
-  }
 }
 
 // The march the player is pointing at: the cursor on desktop, the held finger
@@ -1578,7 +1899,7 @@ function stratOrderMove(sx: number, sy: number): void {
     S().stratView.flash("Can't hold open water — ford across to the far bank");
 }
 
-/** Esc's cancel ladder: targetMode → inspect → armedOrder → team → selection. */
+/** Esc's cancel ladder: targetMode → inspect → armedOrder → selection modes → team → selection (squads or a vehicle). */
 function escapeLadder(): boolean {
   if (mode === 'strategic') {
     const v2 = S().v2;
@@ -1597,6 +1918,7 @@ function escapeLadder(): boolean {
   if (boxMode || addMode) { boxMode = false; addMode = false; boxRect = null; return true; }
   if (selectedTeam >= 0) { selectedTeam = -1; return true; }
   if (selectedSquads.length > 0) { selectSquad(-1); return true; }
+  if (selectedVehicle >= 0) { selectVehicle(-1); return true; }
   return false;
 }
 
@@ -1614,6 +1936,7 @@ window.addEventListener('mousemove', (e) => {
   mouse.x = e.clientX;
   mouse.y = e.clientY;
   mouse.onCanvas = e.target === canvas;
+  trackAlt(e);
   if (stratDrag && e.buttons & 1 && mode === 'strategic') {
     const v2 = S().v2;
     if (!stratDrag.panning && Math.hypot(e.clientX - stratDrag.x, e.clientY - stratDrag.y) > STRAT_DRAG_SLOP) stratDrag.panning = true;
@@ -1881,7 +2204,7 @@ window.addEventListener('keydown', (e) => {
   
   // Global actions
   if (action === 'pause') {
-    if (mode === 'strategic') { stratPaused = !stratPaused; tutorial?.notify('speed-changed'); }
+    if (mode === 'strategic') stratPaused = !stratPaused;
     else paused = !paused;
     return;
   }
@@ -1895,11 +2218,11 @@ window.addEventListener('keydown', (e) => {
     if (action === 'speed1') speedIdx = 0;
     if (action === 'speed2') speedIdx = 1;
     if (action === 'speed3') speedIdx = 2;
-    if (action.startsWith('speed')) tutorial?.notify('speed-changed');
     return;
   }
   
   // Battle mode
+  if (action === 'battleSpeed') { battleSpeed = nextSpeed(battleSpeed); return; }
   if (action === 'aiControl') { aiControl = !aiControl; if (aiControl) { armedOrder = null; setTargetMode(''); } return; }
   if (action === 'floorFocus') { cycleFloorFocus(); return; }
   if (action === 'barrage' && !aiControl && sim.barragesLeft.blue > 0) setTargetMode(targetMode === 'barrage' ? '' : 'barrage');
@@ -1908,7 +2231,7 @@ window.addEventListener('keydown', (e) => {
   if (action.startsWith('squad')) {
     const n = Number(action.slice(5)) - 1;
     const list = infantrySquads(sim);
-    if (n >= 0 && n < list.length) selectSquad(list[n].id);
+    if (n >= 0 && n < list.length) pickSquad(list[n].id);
   }
   
   if (action.startsWith('order')) {
@@ -2025,6 +2348,12 @@ function cycleFloorFocus(): void {
   },
   startEngagementBattle,
   showDebrief,
+  // The map clear of the HUD, in CSS px: a gate script clicks only what a player could.
+  stage: stageRect,
+  // The tutorial as the player sees it, and the drill it is teaching: scripts/drill.mjs
+  // finds its targets here, the way a player finds them from the ring.
+  tutorialView: () => (tutorial ? { step: tutorial.step?.id ?? null, ring: tutorial.ring(), occupied: tutorial.occupied() } : null),
+  getDrill: () => (drill ? { lead: drill.lead, rifles: drill.rifles, shooter: drill.shooter, hedge: drill.hedge, house: drill.house } : null),
   setFow: (on: boolean) => {
     sim.fowDisabled = !on;
   },
@@ -2059,11 +2388,14 @@ let heldAt = -1e9;
 function frame(now: number): void {
   const dtReal = Math.min(now - last, 250);
   last = now;
+  tutorial?.frame(menu.isOpen || manual.isOpen);
   const held = mode === 'battle' && now < holdUntil;
   if (!(mode === 'battle' ? paused : stratPaused) && !held) fxNow += dtReal;
   if (mode === 'battle') easeCamera(dtReal);
   hud.root.style.display = mode === 'battle' ? '' : 'none';
-  document.documentElement.classList.toggle('in-battle', mode === 'battle'); // gates the portrait guidance (ui.css)
+  // Gates the portrait guidance (ui.css). Not the drill: its map is a third as
+  // wide as a campaign battle's and plays whole in portrait.
+  document.documentElement.classList.toggle('in-battle', mode === 'battle' && drill === null);
   stratHud.root.style.display = mode === 'strategic' && !S().v2 ? '' : 'none';
   theaterHud.root.style.display = mode === 'strategic' && S().v2 ? '' : 'none';
   // Off the battle map there are no engines and no guns to rumble: wind only.
@@ -2074,7 +2406,7 @@ function frame(now: number): void {
   }
   if (mode === 'strategic' && S().v2) {
     const v2 = S().v2!;
-    hud.updateIdle('strategic', v2.selectedForce >= 0 || stratPaused);
+    hud.updateIdle(v2.selectedForce >= 0 || stratPaused);
     // A requisition waits behind a contact and behind nothing else: the
     // clock holds until it is answered, and a loaded save shows it again.
     const reqDue = requisitionDue(v2.front) && !v2.pending && !opEnded;
@@ -2084,12 +2416,17 @@ function frame(now: number): void {
       while (stratAcc >= 1 && !v2.pending && !requisitionDue(v2.front)) {
         stratAcc -= 1;
         stepTheaterMinuteV2(v2);
+        // The clock moved: the one thing the Play step was waiting to see.
+        tutorial?.notify('clock-advanced');
         if (v2.pending) showContactModalV2(v2.pending);
       }
       const st = warStatus(v2.front, v2.goals);
       if (st.state === 'decided') showOperationEnd(st.winner === 'blue' ? 'won' : 'lost');
     }
     theaterHud.update(v2.front, v2.goals, v2.selectedForce, stratPaused, speedIdx, v2.campaignCfg.supply, v2.campaignCfg.recon === 'contacts', v2.campaignCfg.nightTempo, resultTarget(v2.front, S().campaign, v2.campaignCfg.warDays));
+    // One thing talks at a time: while a tutorial step is on screen the
+    // theater's own "what next" line is quiet (ui.css, .coached).
+    theaterHud.root.classList.toggle('coached', tutorial?.isShowing ?? false);
     v2.view.inset = theaterInset();
     if (v2.needsFrame) {
       v2.needsFrame = false;
@@ -2109,9 +2446,11 @@ function frame(now: number): void {
     v2.view.clampPan(view.w, view.h);
     v2.view.preview = theaterPreview(v2);
     v2.view.draw(ctx, v2.front, v2.selectedForce, stratPaused, SPEEDS[speedIdx], view.w, view.h);
+    const ring = tutorial?.ring();
+    if (ring) drawMarkRing(ctx, ring, now);
     if (touchHold) drawHoldRing(ctx, touchHold, now);
   } else if (mode === 'strategic') {
-    hud.updateIdle('strategic', selectedChit >= 0 || stratPaused);
+    hud.updateIdle(selectedChit >= 0 || stratPaused);
     if (!stratPaused && !pendingEngagement && !opEnded) {
       stratAcc += (dtReal / 1000) * SPEEDS[speedIdx];
       while (stratAcc >= 1 && !pendingEngagement) {
@@ -2159,23 +2498,20 @@ function frame(now: number): void {
     S().stratView.draw(ctx, S().front, selectedChit, stratPaused, SPEEDS[speedIdx], view.w, view.h);
     if (touchHold) drawHoldRing(ctx, touchHold, now);
   } else {
-    if (!held) acc += dtReal;
     if (!paused && !held) {
       // Catch-up guard. dtReal is capped at 250ms, which is up to 7 sim steps
       // in one frame — on a phone that already missed its budget that
       // guarantees it misses the next one worse, and the UI locks. Let the
-      // sim run slow instead: 3 steps, then drop the debt. Mobile-gated, so
-      // desktop determinism and the perf tests are untouched.
-      let steps = 0;
-      const maxSteps = MOBILE ? 3 : Infinity;
-      while (acc >= DT_MS && steps < maxSteps) {
+      // sim run slow instead: frameSteps caps the count and drops the debt.
+      // Battle speed multiplies the steps and touches nothing else. A hold
+      // (above) is wall time with no steps at all, whatever the speed.
+      const f = frameSteps(acc, dtReal, battleSpeed, MOBILE, DT_MS);
+      for (let i = 0; i < f.steps; i++) {
         commander.update(sim);
         if (aiControl) blueCommander?.update(sim);
         sim.step();
-        acc -= DT_MS;
-        steps++;
       }
-      if (acc >= DT_MS) acc = 0;
+      acc = f.acc;
     } else {
       acc = 0;
     }
@@ -2254,6 +2590,7 @@ function frame(now: number): void {
       deployPhase = false;
       deployMsg = '';
       tutorial?.notify('deploy-commit');
+      noteSelection();
     }
     renderer.draw(ctx, cam, selectedSquads, fxNow, floorFocus);
     barks.draw(ctx, cam, sim, fxNow, view.w, view.h);
@@ -2278,8 +2615,8 @@ function frame(now: number): void {
       const bubble = document.querySelector('.coach')?.getBoundingClientRect();
       const right = bubble && bubble.height > 0 && bubble.top < by + 46 ? bubble.left - 8 : view.w;
       const text = MOBILE
-        ? 'DEPLOYMENT — tap a squad, press and hold to reposition inside your zone · Resume to begin'
-        : 'DEPLOYMENT — select squads, right-click to reposition inside your zone · Resume to begin';
+        ? 'DEPLOYMENT · hold to place · Play to begin'
+        : 'DEPLOYMENT · right-click to place squads · Play to begin';
       ctx.font = '12px ui-monospace, monospace';
       ctx.textAlign = 'center';
       // A phone cannot hold the sentence on one line — wrap at word breaks
@@ -2307,6 +2644,7 @@ function frame(now: number): void {
         ctx.fillText(deployMsg, bx, by + 19 + lines.length * 18);
       }
     }
+    const stage = stageRect();
     drawOverlays(ctx, cam, sim, {
       shot,
       selectedSquad: primary,
@@ -2321,31 +2659,24 @@ function frame(now: number): void {
       orderFloor: floorMenu ? floorMenu.level : null,
       floorFocus,
       deploy: deployPhase ? { ...deployZone(), bearing: deployBearing() } : null,
+      clear: stage,
+      avoid: tutorial?.occupied(),
     }, pings);
+    // The battle opens on the player's men: the pointer says which way the enemy is.
+    // Quiet while a tutorial step is on screen: its ring is the thing to look at.
+    const foe = sim.winner || tutorial?.isShowing ? null : enemyPointer(sim, stage, (x, y) => cam.worldToScreen(x, y, view.w, view.h));
+    if (foe) drawEnemyPointer(ctx, foe);
+    if (drill) pollDrill(drill);
+    const ring = tutorial?.ring();
+    if (ring) drawMarkRing(ctx, ring, now);
     if (touchHold) drawHoldRing(ctx, touchHold, now);
-    tooltip.update(sim, pick, shot, mouse.x, mouse.y, pick?.kind === 'terrain' && (primary >= 0 || selectedVehicle >= 0));
+    // One thing talks at a time: a tutorial step on screen outranks the hover card.
+    tooltip.update(sim, tutorial?.isShowing ? null : pick, shot, mouse.x, mouse.y, pick?.kind === 'terrain' && (primary >= 0 || selectedVehicle >= 0), MOBILE ? touchHold !== null && now - touchHold.t0 > DETAIL_HOLD_MS : mouse.alt);
     const km = loadKeymap(localStorage);
-    let objective: HudState['objective'] = null;
-    if (pendingEngagement) {
-      const attacker = S().front.chits.find((c) => c.id === pendingEngagement!.attackerId);
-      const defender = S().front.chits.find((c) => c.id === pendingEngagement!.defenderId);
-      if (attacker && defender) {
-        const cell = S().front.sector.cells[pendingEngagement!.cell];
-        const xy = cellXY(S().front.sector, pendingEngagement!.cell);
-        const cellLabel = `${String.fromCharCode(65 + (xy.x % 26))}${xy.y + 1}`;
-        objective = {
-          kind: attacker.side === 'blue' ? 'attack' : 'defend',
-          cellLabel,
-          isObjective: cell.objective,
-          attackerName: attacker.name,
-          defenderName: defender.name,
-          attackerStrength: attacker.strength,
-          defenderStrength: defender.strength,
-        };
-      }
-    }
-    hud.update(sim, { selectedSquad: primary, selectedSquads, selectedTeam, selectedVehicle, paused, aiControl, targetMode, armedOrder, title: battleTitle, keymap: km, objective, floorFocus, boxMode, addMode });
-    hud.updateIdle('battle', targetMode !== '' || selectedSquads.length > 0 || selectedVehicle >= 0 || selectedTeam >= 0 || paused);
+    // A player who has given no order for a minute of battle is told the goal
+    // and where the enemy is. Sim time, so a pause neither starts nor ends it.
+    const quiet = !deployPhase && !sim.winner && !aiControl && (sim.tick - lastOrderTick) * DT >= QUIET_PROMPT_S;
+    hud.update(sim, { selectedSquad: primary, selectedSquads, selectedTeam, selectedVehicle, paused, aiControl, targetMode, armedOrder, title: battleTitle, keymap: km, prompt: quiet && !tutorial?.isShowing ? quietPrompt(sim) : null, glow: tutorial?.step?.chip ?? null, noSupport: drill !== null, speed: battleSpeed, deploy: deployPhase, floorFocus, boxMode, addMode });
     // A new battle re-indexes sim.soldiers, so an id held across one closes the panel.
     if (inspectedSoldier >= 0 && !sim.soldiers[inspectedSoldier]) inspectedSoldier = -1;
     healthPanel.update(sim, inspectedSoldier);
@@ -2361,19 +2692,20 @@ function frame(now: number): void {
       cam.y = b.y;
       cam.scale = b.scale;
       zoomGoal = 0;
-      // Same frame, same reason: the touch bar the coachmark points at only
-      // exists once the HUD has rendered once.
-      if (MOBILE) {
-        const t = document.getElementById('touchbar');
-        if (t) coach.maybeShow('touch-basics', t, 'Drag to pan · pinch to zoom · press and hold to give an order');
-      }
       // Same frame, same reason: the deploy bubble points at the battle HUD's
       // pause control, which the update above has only just built.
       if (deployPhase) tutorial?.notify('deploy-start');
+      if (drill) tutorial?.notify('drill-start');
     }
 
-    if (sim.winner && winnerAt < 0) winnerAt = now;
-    if (winnerAt >= 0 && !debriefShown && now - winnerAt > 4000) showDebrief();
+    if (sim.winner && winnerAt < 0) {
+      winnerAt = now;
+      tutorial?.notify('battle-won');
+    }
+    if (winnerAt >= 0 && !debriefShown && now - winnerAt > 4000) {
+      if (drill) showDrillEnd();
+      else showDebrief();
+    }
   }
   requestAnimationFrame(frame);
 }
@@ -2382,7 +2714,9 @@ function frame(now: number): void {
 // ?menu=1 forces the menu even then. Bare boot lands on the menu — the save,
 // if any, sits behind Continue instead of auto-loading.
 const menuForced = new URLSearchParams(location.search).get('menu') === '1';
-if (campPinned && !menuForced) {
+if (urlDrill !== null && !campPinned) {
+  startDrill(Number.isFinite(Number(urlDrill)) && urlDrill !== '' ? Number(urlDrill) : campSeed());
+} else if (campPinned && !menuForced) {
   startCampaign(null);
 } else {
   mainMenu.setSaveProbe(probeSave());

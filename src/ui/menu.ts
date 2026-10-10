@@ -1,6 +1,8 @@
 import type { Keymap } from './keymap';
 import { CONTEXT, DEFAULTS, formatBinding, LABEL, rebind, saveKeymap } from './keymap';
-import { coach } from './coach';
+import { MOBILE } from '../render/view';
+import { controlRows } from './manual-data';
+import { esc } from './mainmenu';
 
 export class PauseMenu {
   private el: HTMLDivElement;
@@ -11,6 +13,12 @@ export class PauseMenu {
     onFieldManual(): void;
     tutorialEnabled?(): boolean;
     onTutorialToggle?(on: boolean): void;
+    muted(): boolean;
+    onMuteToggle(): void;
+    barksOn(): boolean;
+    onBarksToggle(on: boolean): void;
+    inTraining(): boolean;
+    onLeaveTraining(): void;
   };
   private km: Keymap = { bindings: { ...DEFAULTS }, version: 0 };
   private captureActive = false;
@@ -23,6 +31,15 @@ export class PauseMenu {
     onFieldManual(): void;
     tutorialEnabled?(): boolean;
     onTutorialToggle?(on: boolean): void;
+    /** Sound. A phone has no M key, so the menu is its only switch. */
+    muted(): boolean;
+    onMuteToggle(): void;
+    /** Barks: the words over a man at key moments (src/render/barks.ts owns the setting). */
+    barksOn(): boolean;
+    onBarksToggle(on: boolean): void;
+    /** The drill is the battle on screen: the menu then offers the way out of it. */
+    inTraining(): boolean;
+    onLeaveTraining(): void;
   }) {
     this.cb = cb;
     this.el = document.createElement('div');
@@ -38,9 +55,11 @@ export class PauseMenu {
     if (this._open) this.render();
   }
 
-  open(): void {
+  /** `view` picks the screen it opens on: the menu, or straight to the controls card. */
+  open(view: 'menu' | 'controls' = 'menu'): void {
     this._open = true;
-    this.render();
+    if (view === 'controls') this.renderControls();
+    else this.render();
     this.el.style.display = 'flex';
   }
 
@@ -59,6 +78,7 @@ export class PauseMenu {
   private render(): void {
     this.el.innerHTML = this.mainView();
     this.el.querySelector('#pm-resume')?.addEventListener('click', () => this.close());
+    this.el.querySelector('#pm-controls')?.addEventListener('click', () => this.renderControls());
     this.el.querySelector('#pm-keybindings')?.addEventListener('click', () => this.showKeybindings());
     // Opens the manual OVER this menu. close() resumes the game, so it must not
     // run here — the player reads while the battle stays stopped.
@@ -67,6 +87,18 @@ export class PauseMenu {
       this.cb.onTutorialToggle?.(!this.cb.tutorialEnabled!());
       this.render(); // the label IS the state
     });
+    this.el.querySelector('#pm-sound')?.addEventListener('click', () => {
+      this.cb.onMuteToggle();
+      this.render();
+    });
+    this.el.querySelector('#pm-barks')?.addEventListener('click', () => {
+      this.cb.onBarksToggle(!this.cb.barksOn());
+      this.render();
+    });
+    this.el.querySelector('#pm-leave')?.addEventListener('click', () => {
+      this.close();
+      this.cb.onLeaveTraining();
+    });
   }
 
   private mainView(): string {
@@ -74,12 +106,40 @@ export class PauseMenu {
       <h1>PAUSED</h1>
       <div class="db-actions">
         <button id="pm-resume" class="primary">Resume</button>
-        <button id="pm-keybindings">Keybindings</button>
+        <button id="pm-controls">Controls</button>
+        ${MOBILE ? '' : '<button id="pm-keybindings">Keybindings</button>'}
         <button id="pm-manual">Field Manual</button>
+        <button id="pm-sound" aria-pressed="${!this.cb.muted()}">Sound: ${this.cb.muted() ? 'OFF' : 'ON'}</button>
         ${this.cb.tutorialEnabled ? `<button id="pm-tutorial" aria-pressed="${this.cb.tutorialEnabled()}">Tutorial: ${this.cb.tutorialEnabled() ? 'ON' : 'OFF'}</button>` : ''}
+        <button id="pm-barks" aria-pressed="${this.cb.barksOn()}">Barks: ${this.cb.barksOn() ? 'ON' : 'OFF'}</button>
+        ${this.cb.inTraining() ? '<button id="pm-leave">Leave training</button>' : ''}
       </div>
-      ${this.cb.tutorialEnabled && !this.cb.tutorialEnabled() ? '<p class="pm-note">Turn the tutorial on from the main menu to replay it from the briefing.</p>' : ''}
+      ${this.cb.tutorialEnabled && !this.cb.tutorialEnabled() ? '<p class="pm-note">Training is on the main menu.</p>' : ''}
     </div></div>`;
+  }
+
+  // The controls card: every binding, one table, read from the manual's own
+  // Controls chapter with the player's bindings. The player's platform leads.
+  private renderControls(): void {
+    const rows = controlRows(this.km.bindings);
+    const mine = MOBILE ? 'touch' : 'desktop';
+    const other = MOBILE ? 'desktop' : 'touch';
+    const body = rows.length
+      ? rows.map((r) => `<tr><th>${esc(r.action)}</th><td>${esc(r[mine])}</td><td class="pm-other">${esc(r[other])}</td></tr>`).join('')
+      : '<tr><td>No controls are listed.</td></tr>';
+    this.el.innerHTML = `<div class="db-scroll"><div class="db"><div class="pm-panel">
+      <h1>CONTROLS</h1>
+      <table class="pm-controls">
+        <tr><th></th><th>${MOBILE ? 'Touch' : 'Keyboard and mouse'}</th><th class="pm-other">${MOBILE ? 'Keyboard and mouse' : 'Touch'}</th></tr>
+        ${body}
+      </table>
+    </div></div></div>
+    <div class="db-actions">
+      <button id="pm-resume" class="primary">Resume</button>
+      <button id="pm-back">Menu</button>
+    </div>`;
+    this.el.querySelector('#pm-resume')?.addEventListener('click', () => this.close());
+    this.el.querySelector('#pm-back')?.addEventListener('click', () => this.render());
   }
 
   private showKeybindings(): void {
@@ -107,7 +167,6 @@ export class PauseMenu {
       <h1>KEYBINDINGS</h1>
       ${rows}
       <div class="db-actions">
-        <button id="pm-coach-reset">Reset coachmarks</button>
         <button id="pm-reset">Reset to defaults</button>
         <button id="pm-back" class="primary">Back</button>
       </div>
@@ -120,11 +179,6 @@ export class PauseMenu {
       this.km.version++;
       saveKeymap(this.km, localStorage);
       this.cb.onKeymapChanged(this.km);
-      this.renderKeybindings();
-    });
-
-    this.el.querySelector('#pm-coach-reset')?.addEventListener('click', () => {
-      coach.dismissAll();
       this.renderKeybindings();
     });
 

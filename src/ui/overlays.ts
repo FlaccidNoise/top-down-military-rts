@@ -26,6 +26,45 @@ export interface OverlayState {
   // ghost dots promise the tiles the warp will use. bearing = the enemy
   // direction the deployment faces. null/undefined = battle.
   deploy?: { x0: number; x1: number; bearing: number } | null
+  // The map clear of the HUD, in CSS px. Chips that follow a unit are kept
+  // inside it, so one is never cut off by the screen edge or under the roster.
+  clear?: { left: number; top: number; right: number; bottom: number }
+  // Screen rectangles the ticker must stay out of: the tutorial's bubble and
+  // the ring it points at, while a step is showing.
+  avoid?: readonly ScreenRect[]
+}
+
+export interface ScreenRect {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+}
+
+/**
+ * Where the ticker's column goes: its top-left corner in px. It hangs from the
+ * top of `x` (the right edge of the map) unless that puts it on one of
+ * `avoid`. Then it drops to the first free place under one of them: every gap
+ * the column fits in starts at `top` or under something, so those are all the
+ * places a column has. A short screen may have none, and then the column moves
+ * left, beside whatever is in its way, and at last to the map's left edge
+ * (`left`). With nowhere free at all it stays where it started: a covered line
+ * beats a lost one.
+ */
+export function dockFeed(x: number, w: number, h: number, top: number, bottom: number, left: number, avoid: readonly ScreenRect[]): { x: number; y: number } {
+  const GAP = 6;
+  const place = (cx: number): number | null => {
+    const inWay = avoid.filter((r) => r.right + GAP > cx && r.left - GAP < cx + w);
+    const free = (y: number): boolean => y + h <= bottom && inWay.every((r) => y >= r.bottom + GAP || y + h <= r.top - GAP);
+    if (free(top)) return top;
+    return inWay.map((r) => r.bottom + GAP).sort((a, b) => a - b).find(free) ?? null;
+  };
+  const columns = [x, ...avoid.map((r) => r.left - GAP - w).sort((a, b) => b - a), left].filter((cx) => cx >= left && cx <= x);
+  for (const cx of columns) {
+    const y = place(cx);
+    if (y !== null) return { x: cx, y };
+  }
+  return { x, y: top };
 }
 
 function teamCentroid(sim: Sim, soldierIds: number[]): { x: number; y: number } | null {
@@ -494,15 +533,13 @@ export function drawOverlays(ctx: CanvasRenderingContext2D, cam: Camera, sim: Si
   // Order context chip: the preview's one-glance summary — how many of the men
   // actually land in cover, how many have no footing at all, ETA from the
   // slowest eligible soldier's own moveSpeed, and (armed only, where the
-  // raycast cost is paid) worst-case danger with the compliance verdict the
-  // team will run. Static (no tick-driven animation): pause- and
+  // raycast cost is paid) the compliance verdict the team will run, as the
+  // chip's colour. Static (no tick-driven animation): pause- and
   // reduced-motion-safe by construction.
   if (preview && st.cursor) {
-    let danger: number | null = null;
     let verdict: ChipVerdict | null = null;
     let eta: number | null = null;
     for (const t of preview.teams) {
-      if (t.danger !== null) danger = Math.max(danger ?? 0, t.danger);
       if (t.verdict !== null) verdict = verdict === null ? t.verdict : worseVerdict(verdict, t.verdict);
       const team = sim.teams[t.teamId];
       const centroid = teamCentroid(sim, team.soldierIds);
@@ -515,9 +552,9 @@ export function drawOverlays(ctx: CanvasRenderingContext2D, cam: Camera, sim: Si
         eta = eta === null ? secs : Math.max(eta, secs);
       }
     }
-    const fmt = formatContextChip({ danger, covered: preview.covered, placed: preview.placed, refused: preview.refused, eta, verdict, level: preview.level });
+    const fmt = formatContextChip({ covered: preview.covered, placed: preview.placed, refused: preview.refused, eta, verdict, level: preview.level });
     const [sx, sy] = cam.worldToScreen(st.cursor.x, st.cursor.y, cw, ch);
-    contextChip(ctx, sx, sy, cw, ch, fmt.lines, fmt.color);
+    if (fmt.lines.length > 0) contextChip(ctx, sx, sy, cw, ch, fmt.lines, fmt.color, fmt.floorLine);
   }
 
   // Formation drag preview: anchor-to-cursor line + squad segment centers.
@@ -551,7 +588,9 @@ export function drawOverlays(ctx: CanvasRenderingContext2D, cam: Camera, sim: Si
 
   // Selected team(s) show their OrderState above their soldiers: kind +
   // refusal reason. A balked team's chip pulses so a refusal is never missed.
-  for (const tid of focusTeams(sim, st)) {
+  // Not in deployment: nothing has been ordered yet, and the dug-in stance a
+  // placement writes would label every squad DEFEND over the banner.
+  for (const tid of st.deploy ? [] : focusTeams(sim, st)) {
     const team = sim.teams[tid];
     if (!team) continue;
     const os = team.orderState;
@@ -563,7 +602,7 @@ export function drawOverlays(ctx: CanvasRenderingContext2D, cam: Camera, sim: Si
     const text = os.reason ? `${label} — ${os.reason}` : label;
     const balked = os.phase === 'balked';
     if (balked) ctx.globalAlpha = 0.4 + 0.6 * Math.abs(Math.sin(sim.tick / 12));
-    chip(ctx, sx, sy - cam.scale * 1.1 - 10, text, balked ? '#ff8a5c' : '#ffe9a0');
+    chip(ctx, sx, sy - cam.scale * 1.1 - 10, text, balked ? '#ff8a5c' : '#ffe9a0', st.clear);
     if (balked) ctx.globalAlpha = 1;
   }
 
@@ -585,50 +624,48 @@ export function drawOverlays(ctx: CanvasRenderingContext2D, cam: Camera, sim: Si
     // blocked shots tell the player why, not just that — from the structured reason, never prose
     const blockedLabel =
       st.shot.reason === 'out-of-range' ? 'OUT OF RANGE' : st.shot.reason === 'no-los' ? 'NO LOS' : st.shot.reason === 'concealed' ? 'CONCEALED' : st.shot.reason === 'floor-blocked' ? 'FLOOR' : 'NO SHOT';
-    chip(ctx, (x0 + x1) / 2, (y0 + y1) / 2, st.shot.ok ? `${Math.round(st.shot.acc * 100)}%` : blockedLabel, st.shot.ok ? '#ffe9a0' : '#a0a090');
+    chip(ctx, (x0 + x1) / 2, (y0 + y1) / 2, st.shot.ok ? `${Math.round(st.shot.acc * 100)}%` : blockedLabel, st.shot.ok ? '#ffe9a0' : '#a0a090', st.clear);
   }
 
-  pings.draw(ctx, sim, cam, cw, ch);
+  pings.draw(ctx, sim, cam, cw, ch, st.clear, st.avoid);
 }
 
 export type ChipVerdict = 'comply' | 'cautious' | 'balk';
 
-const VERDICT_LABEL: Record<ChipVerdict, string> = { comply: 'COMPLY', cautious: 'CAUTIOUS', balk: 'BALK' };
-const VERDICT_COLOR: Record<ChipVerdict, string> = { comply: '#7fbf6a', cautious: '#e0c060', balk: '#d05c50' };
+const CHIP_GOOD = '#7fbf6a';
+const CHIP_WARN = '#e0c060';
+const CHIP_BAD = '#d05c50';
 const CHIP_MUTED = '#b8b4a4';
 
 export interface ChipInput {
-  danger: number | null; // null = unarmed hover: no raycasts were spent, so no RISK line
   covered: number; // men the resolver put in directional cover
   placed: number; // men it found a tile for
   refused: number; // men it could not place at all
   eta: number | null;
-  verdict: ChipVerdict | null;
+  verdict: ChipVerdict | null; // null = unarmed hover: no raycasts were spent on the danger ladder
   level?: number | null; // target floor; null = a ground order with no floor pick, so say nothing
 }
 
 // Pure formatting for the order context chip, exported for tests — canvas
-// drawing (contextChip) consumes this and stays untested. The cover line
-// counts resolved spots instead of sampling inCover at the cursor: the cursor
-// is one point the men never stand on, and the count is the number the player
-// is actually buying (design §3.4).
-export function formatContextChip(o: ChipInput): { lines: string[]; color: string } {
+// drawing (contextChip) consumes this and stays untested. One plain line, and
+// the colour is the verdict: green they go and most land in cover, amber they
+// go carefully or end up in the open, red they will not go or have nowhere to
+// stand. The cover count is of resolved spots, not the tile under the cursor:
+// the cursor is one point the men never stand on, and the count is the number
+// the player is actually buying (design §3.4).
+export function formatContextChip(o: ChipInput): { lines: string[]; color: string; floorLine: boolean } {
   const lines: string[] = [];
   // Floor first: it says WHERE the dots are, and an upstairs dot is drawn on
   // the same pixels a ground-floor one would be.
-  if (o.level != null) lines.push(o.level === 0 ? 'GROUND' : `FLOOR ${o.level + 1}`);
-  if (o.danger !== null) lines.push(`RISK ${o.danger < 0.2 ? 'LOW' : o.danger < 0.5 ? 'MED' : 'HIGH'} ${o.danger.toFixed(2)}`);
-  if (o.placed > 0) {
-    let env = `${o.covered}/${o.placed} COVERED`;
-    if (o.eta !== null) env += ` · ~${Math.max(1, Math.round(o.eta))}s`;
-    lines.push(env);
-  }
-  if (o.verdict) lines.push(VERDICT_LABEL[o.verdict]);
-  // Last line carries the chip color, and a refusal outranks the verdict: men
-  // with nowhere to stand never step off whatever the compliance ladder says.
-  if (o.refused > 0) lines.push(o.placed === 0 ? 'NO FOOTING' : `${o.refused} NO FOOTING`);
-  const color = o.refused > 0 ? VERDICT_COLOR.balk : o.verdict ? VERDICT_COLOR[o.verdict] : o.covered === o.placed ? VERDICT_COLOR.comply : CHIP_MUTED;
-  return { lines, color };
+  const floorLine = o.level != null;
+  if (o.level != null) lines.push(o.level === 0 ? 'Ground floor' : `Floor ${o.level + 1}`);
+  if (o.verdict === 'balk') lines.push("Won't go");
+  else if (o.placed > 0) lines.push(`${o.covered} of ${o.placed} in cover${o.eta !== null ? ` · ${Math.max(1, Math.round(o.eta))} s` : ''}`);
+  // A refusal outranks the verdict: men with nowhere to stand never step off
+  // whatever the compliance ladder says.
+  if (o.refused > 0) lines.push(o.placed === 0 ? 'No footing' : `${o.refused} with no footing`);
+  const color = o.verdict === 'balk' || o.refused > 0 ? CHIP_BAD : o.verdict === 'cautious' || o.covered * 2 < o.placed ? CHIP_WARN : CHIP_GOOD;
+  return { lines, color, floorLine };
 }
 
 function contextChip(
@@ -639,6 +676,7 @@ function contextChip(
   ch: number,
   lines: string[],
   color: string,
+  floorLine: boolean,
 ): void {
   ctx.font = '11px ui-monospace, Menlo, monospace';
   const lh = 14;
@@ -673,15 +711,19 @@ function contextChip(
   ctx.textAlign = 'left';
   ctx.textBaseline = 'middle';
   lines.forEach((line, i) => {
-    ctx.fillStyle = i === lines.length - 1 ? color : CHIP_MUTED; // last line carries the state color, the rest stay muted
+    ctx.fillStyle = floorLine && i === 0 ? CHIP_MUTED : color; // the floor is a place, not a verdict
     ctx.fillText(line, x + 6, y + 4 + lh * i + lh / 2);
   });
   ctx.textBaseline = 'alphabetic';
 }
 
-function chip(ctx: CanvasRenderingContext2D, x: number, y: number, text: string, color: string): void {
+function chip(ctx: CanvasRenderingContext2D, x: number, y: number, text: string, color: string, clear?: OverlayState['clear']): void {
   ctx.font = '11px ui-monospace, Menlo, monospace';
   const w = ctx.measureText(text).width + 10;
+  if (clear) {
+    x = Math.max(clear.left + w / 2 + 4, Math.min(clear.right - w / 2 - 4, x));
+    y = Math.max(clear.top + 12, Math.min(clear.bottom - 12, y));
+  }
   ctx.fillStyle = 'rgba(18,22,15,0.85)';
   ctx.fillRect(x - w / 2, y - 8, w, 16);
   ctx.strokeStyle = 'rgba(74,82,64,0.9)';
@@ -874,6 +916,9 @@ export class EventPings {
     this.push(side, subject, status, color, tick, true);
   }
 
+  /** Where the feed was last drawn, in CSS px. null = nothing on show. */
+  feed: ScreenRect | null = null;
+
   // The feed as the player is being told it, oldest first.
   labels(): string[] {
     return this.pings.map((p) => `${p.name} — ${p.status}`);
@@ -904,15 +949,20 @@ export class EventPings {
     this.pings.push({ side, name, status, color, tick, drama });
   }
 
-  draw(ctx: CanvasRenderingContext2D, sim: Sim, cam: Camera, cw: number, ch: number): void {
+  draw(ctx: CanvasRenderingContext2D, sim: Sim, cam: Camera, cw: number, ch: number, clear?: ScreenRect, avoid: readonly ScreenRect[] = []): void {
     this.pings = this.pings.filter((p) => sim.tick - p.tick < PING_TICKS);
     // A 190px feed hard-anchored at cw-202 is a third of a phone screen and
     // five rows of it reach the roster sheet. Narrow it and show fewer.
     const rw = Math.min(ROW_W, cw - 24);
     const rows = cw < 500 ? 3 : MAX_VISIBLE;
     const visible = this.pings.slice(-rows).reverse(); // newest at top
-    const x = cw - rw - 12;
-    let y = 60; // keep clear of the top bar
+    // Clear of the top bar, and of the tutorial while it is talking. The room
+    // is taken for every row the feed can hold, so a line arriving does not
+    // push the column onto the bubble.
+    const at = dockFeed(cw - rw - 12, rw, rows * (ROW_H + ROW_GAP), 60, clear ? clear.bottom : ch, (clear ? clear.left : 0) + 12, avoid);
+    const x = at.x;
+    let y = at.y;
+    this.feed = visible.length > 0 ? { left: x, top: y, right: x + rw, bottom: y + visible.length * (ROW_H + ROW_GAP) - ROW_GAP } : null;
     ctx.font = '11px ui-monospace, Menlo, monospace';
     ctx.textBaseline = 'middle';
     ctx.textAlign = 'left';

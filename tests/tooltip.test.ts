@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { EDGE, FLOOR_H, GameMap } from '../src/sim/map';
 import { Sim } from '../src/sim/sim';
 import { computeShot, pickAt, type Pick } from '../src/ui/tooltip';
-import { formatCoverBreakdown, formatCoverBreakdownForFloor } from '../src/ui/tooltip-format';
-import { TERRAIN } from '../src/sim/data';
+import { coverWord, formatCoverBreakdown, formatCoverBreakdownForFloor, GOOD_COVER, SOME_COVER } from '../src/ui/tooltip-format';
+import { TERRAIN, type TerrainDef, type TerrainKey } from '../src/sim/data';
 import { Camera } from '../src/render/camera';
 
 const soldierPick = (sim: Sim, id: number): Pick => ({ kind: 'soldier', s: sim.soldiers[id] });
@@ -27,6 +27,41 @@ describe('computeShot blocked-shot reason', () => {
     const shot = computeShot(sim, 0, -1, soldierPick(sim, 1));
     expect(shot?.ok).toBe(false);
     expect(shot?.reason).toBe('no-los');
+  });
+});
+
+// The terrain tip is one line. Its word comes from the terrain's own cover
+// numbers, so a retune of a hedge moves the word with it.
+describe('coverWord', () => {
+  const word = (k: TerrainKey): string => coverWord(k, TERRAIN[k]);
+
+  it('reads a hedgerow, woods and open ground the way a player would', () => {
+    expect(word('hedge')).toBe('good cover');
+    expect(word('woods')).toBe('good cover');
+    expect(word('grass')).toBe('no cover');
+    expect(word('road')).toBe('no cover');
+    expect(word('bank')).toBe('some cover');
+  });
+
+  it('says what a building, a river and a counter are for', () => {
+    expect(word('floor')).toBe('cover at the windows');
+    expect(word('water')).toBe('impassable');
+    expect(word('furn_heavy')).toBe('good cover behind it');
+  });
+
+  it('has a phrase for every terrain, with no number in it', () => {
+    for (const k of Object.keys(TERRAIN) as TerrainKey[]) {
+      expect(word(k).length, k).toBeGreaterThan(0);
+      expect(word(k), k).not.toMatch(/\d/);
+    }
+  });
+
+  it('follows the numbers: the best of standing on it and standing behind it', () => {
+    const t = (cover: number, coverBehind?: number): TerrainDef => ({ ...TERRAIN.grass, cover, coverBehind });
+    expect(coverWord('grass', t(GOOD_COVER))).toBe('good cover');
+    expect(coverWord('grass', t(GOOD_COVER - 0.01))).toBe('some cover');
+    expect(coverWord('grass', t(SOME_COVER - 0.01))).toBe('no cover');
+    expect(coverWord('grass', t(0, GOOD_COVER))).toBe('good cover');
   });
 });
 

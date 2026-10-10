@@ -1,7 +1,7 @@
 // @ts-expect-error no @types/node in this project; node:fs still resolves fine at runtime under vitest
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { renderContinueBlock, renderStorageBanner, type SaveProbe } from '../src/ui/mainmenu';
+import { renderActions, renderContinueBlock, renderStorageBanner, type MenuView, type SaveProbe } from '../src/ui/mainmenu';
 
 describe('renderContinueBlock — five states from literal SaveProbes', () => {
   it('none: Continue is disabled-with-a-reason, never hidden', () => {
@@ -51,6 +51,47 @@ describe('renderContinueBlock — five states from literal SaveProbes', () => {
     expect(html).toContain('id="mm-continue"');
     expect(html).not.toContain('disabled');
     expect(html).toContain('Day 4 · 06:15 · Argentan Sector · 132 fit');
+  });
+});
+
+describe('renderActions: what the menu offers', () => {
+  const NONE: SaveProbe = { status: 'none' };
+  const SAVED: SaveProbe = { status: 'ok', day: 4, clock: '0615', theaterName: 'Argentan Sector', menFit: 132 };
+  const later: MenuView = { firstRun: false, tutorial: true, confirmNew: false, barks: true };
+  const ids = (html: string): string[] => [...html.matchAll(/<button id="([^"]+)"/g)].map((m) => m[1]);
+  const words = (html: string): number => html.replace(/<[^>]*>/g, ' ').split(/\s+/).filter((w) => /[\p{L}\p{N}]/u.test(w)).length;
+
+  it('first run: one primary button, Play, and two quiet ones', () => {
+    const html = renderActions(NONE, { firstRun: true, tutorial: true, confirmNew: false, barks: true });
+    expect(ids(html)).toEqual(['mm-play', 'mm-custom', 'mm-manual']);
+    expect(html.match(/class="primary/g)).toHaveLength(1);
+    expect(html).toContain('<button id="mm-play" class="primary mm-big">Play</button>');
+    expect(words(html)).toBeLessThanOrEqual(5);
+  });
+
+  it('later runs: a new campaign, Training, the setup screen, the manual and the tutorial switch', () => {
+    const html = renderActions(NONE, later);
+    expect(ids(html)).toEqual(['mm-new', 'mm-training', 'mm-custom', 'mm-manual', 'mm-tutorial', 'mm-barks']);
+    expect(html).toContain('Barks: ON');
+    expect(renderActions(NONE, { ...later, barks: false })).toContain('<button id="mm-barks" aria-pressed="false">Barks: OFF</button>');
+    expect(html).toContain('>Custom operation<');
+    expect(html).toContain('Tutorial: ON');
+    expect(renderActions(NONE, { ...later, tutorial: false })).toContain('Tutorial: OFF');
+  });
+
+  it('leaves the lead to Continue when there is a campaign to continue', () => {
+    expect(renderActions(NONE, later)).toContain('<button id="mm-new" class="primary">New campaign</button>');
+    expect(renderActions(SAVED, later)).toContain('<button id="mm-new">New campaign</button>');
+  });
+
+  it('asks before a new campaign replaces a saved one', () => {
+    const html = renderActions(SAVED, { ...later, confirmNew: true });
+    expect(html).toContain('Replace the saved campaign');
+    expect(html).not.toContain('>New campaign<');
+  });
+
+  it('has no tutorial switch where no tutorial exists', () => {
+    expect(ids(renderActions(NONE, { ...later, tutorial: null }))).not.toContain('mm-tutorial');
   });
 });
 

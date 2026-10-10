@@ -26,5 +26,8 @@ mapgen territory or the owner asks for full.
 
 ## Where things are
 
-- `scripts/` — browser gates (playwright/CDP) and probes; `scripts/tutorial.mjs` is the strategic/UX gate; `scripts/stratsweep.mjs` is the theater map's art gate (fixed seed, staged states, three devices, `--diff <baseline dir>`)
+- `scripts/` — browser gates (playwright/CDP) and probes; `scripts/tutorial.mjs` is the onboarding gate (a fresh profile from the landing screen through the drill to the first campaign debrief, desktop and phone); `scripts/drill.mjs` plays the drill on any seeds and devices; `scripts/stratsweep.mjs` is the theater map's art gate (fixed seed, staged states, three devices, `--diff <baseline dir>`)
+- `scripts/lib/play.mjs` — real mouse and CDP touch input for those gates. Targets come from live state (`window.__game.tutorialView`, `.stage`), never fixed pixels
+- Headless sweeps (`npx vite-node scripts/<name>.mjs -- <flags>`): `drillsweep.mjs` (is the drill winnable by its steps and safe to idle in), `firstcontact.mjs` (which preset gives a winnable first battle: the measurement behind `FIRST_PRESET`)
+- `src/drill.ts` — the training battle. `src/ui/tutorial.ts` — the step driver for the drill and the campaign
 - `docs/` — plans, specs, and decision records (`docs/decisions/INDEX.md` indexes the decisions)
