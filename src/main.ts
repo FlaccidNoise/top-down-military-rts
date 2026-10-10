@@ -1123,7 +1123,7 @@ function startCampaignV2(
         campaignCfg: camp,
         front,
         goals,
-        red: new Commander2('red', RED_V2, goals, camp.warDays, { nightTempo: camp.nightTempo }),
+        red: new Commander2('red', RED_V2, goals, camp.warDays, { nightTempo: camp.nightTempo, fog: camp.recon === 'contacts' }),
         // OQ6 (A): identical fog and detection — red reads ghosts when the
         // campaign runs contacts, exactly as the player's map does.
         redIntel: camp.recon === 'contacts' ? new ContactIntel(front, 'red') : new OmniscientIntel(front, 'red'),

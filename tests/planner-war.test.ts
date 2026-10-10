@@ -130,26 +130,49 @@ describe('the planner neither dithers nor grinds (jtbug #762)', () => {
   // The destroyed bound is the jtbug #786 target (at most 2 of 16). It was 1
   // while red was inert: a red that sorties and counterattacks finishes a
   // company that attacks at bad odds and stays within reach.
-  it('single-digit mid-march reversals in every war; blue destroyed on at most two seeds', () => {
-    const reversals: number[] = [];
+  //
+  // A march, once ordered, is finished: only the withdraw arm turns a force
+  // round. So every mid-road turn-round must come with a withdraw order, in
+  // either intel mode. With full knowledge they are also few. Under fog they
+  // are not held to a count: a company that marches blind and finds a garrison
+  // inside threat range turns back, and that is the fog working, not dither.
+  const turnRounds = (recon: 'omniscient' | 'contacts'): { most: number; unexplained: number; destroyed: number; per: number[] } => {
+    const per: number[] = [];
+    let unexplained = 0;
     let destroyed = 0;
     for (let seed = 1; seed <= 16; seed++) {
-      const w = makeHeadlessWorld(seed, CFG, CAMP);
+      const w = makeHeadlessWorld(seed, CFG, { ...CAMP, recon });
       const last = new Map<number, { edgeId: number; dir: number; free: boolean } | null>();
       let n = 0;
       const run = runHeadlessWar(w, 60 * 24 * 45, () => {
+        const withdrawn = new Set([...(w.lastRedReport?.orders ?? []), ...(w.lastBlueReport?.orders ?? [])].filter((o) => o.why === 'withdraw').map((o) => o.forceId));
         for (const f of w.front.forces) {
           const p = last.get(f.id);
           const marching = f.pos.kind === 'edge' && f.path.length > 0;
-          if (p && p.free && marching && f.pos.kind === 'edge' && p.edgeId === f.pos.edgeId && p.dir !== f.pos.dir) n++;
+          if (p && p.free && marching && f.pos.kind === 'edge' && p.edgeId === f.pos.edgeId && p.dir !== f.pos.dir) {
+            n++;
+            if (!withdrawn.has(f.id)) unexplained++;
+          }
           last.set(f.id, marching && f.pos.kind === 'edge' ? { edgeId: f.pos.edgeId, dir: f.pos.dir, free: f.engagedIn === null } : null);
         }
       });
-      reversals.push(n);
+      per.push(n);
       if (run.status.state === 'decided' && run.status.winner === 'red' && run.day <= CAMP.warDays) destroyed++;
     }
-    expect(Math.max(...reversals), `reversals per seed: ${reversals}`).toBeLessThan(10);
-    expect(destroyed).toBeLessThanOrEqual(2);
+    return { most: Math.max(...per), unexplained, destroyed, per };
+  };
+
+  it('with full knowledge: single-digit mid-march turn-rounds in every war, all of them withdrawals; blue destroyed on at most two seeds', () => {
+    const r = turnRounds('omniscient');
+    expect(r.most, `turn-rounds per seed: ${r.per}`).toBeLessThan(10);
+    expect(r.unexplained).toBe(0);
+    expect(r.destroyed).toBeLessThanOrEqual(2);
+  }, 30_000);
+
+  it('under fog: every mid-march turn-round is a withdrawal; blue destroyed on at most two seeds', () => {
+    const r = turnRounds('contacts');
+    expect(r.unexplained, `turn-rounds per seed: ${r.per}`).toBe(0);
+    expect(r.destroyed).toBeLessThanOrEqual(2);
   }, 30_000);
 });
 

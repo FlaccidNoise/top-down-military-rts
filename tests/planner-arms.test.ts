@@ -177,6 +177,17 @@ describe('supply cut and relief', () => {
     expect(whys(evalOnce(fr, 'red'))).toEqual([`${raider.id}:probe>2`]);
   });
 
+  it('under fog a probe goes as a screen; with full knowledge at a march', () => {
+    for (const fog of [false, true]) {
+      const fr = backRoad();
+      const raider = put(fr, 'red', 'line', { kind: 'node', nodeId: 3 }, 100);
+      put(fr, 'red', 'reserve', { kind: 'node', nodeId: 4 }, 100);
+      const red = new Commander2('red', RED_V2, makeWarGoals(fr.theater, CAMP), CAMP.warDays, { fog });
+      expect(whys(red.evaluate(fr, new OmniscientIntel(fr, 'red'))!)).toEqual([`${raider.id}:probe>2`]);
+      expect(raider.posture).toBe(fog ? 'screen' : 'march');
+    }
+  });
+
   it('never marches on the enemy depot', () => {
     const fr = world(theater(3), ['blue', 'red', 'red', 'red', 'red']);
     put(fr, 'red', 'line', { kind: 'node', nodeId: 1 }, 100);

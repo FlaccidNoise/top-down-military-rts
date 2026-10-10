@@ -86,6 +86,12 @@ const holds = (c: EnemyContact): number => c.strength * (c.dug ? DIG_DEF_MULT : 
 // Orders that cannot wait go at a forced march. A sortie is one: the post is
 // open until the garrison is back.
 const URGENT = new Set(['withdraw', 'relieve', 'commit-reserve', 'sortie']);
+// Side marches onto ground intel believes is open. Under fog that belief is
+// six hours old at best, so they go as a screen: it sees twice as far, and it
+// falls back from a garrison it did not know of instead of being routed by
+// it. The axis advance stays at a full march: screened too, AI blue ran out
+// of days (2 of 16 fog wars won, against 5 with it at a march).
+const BLIND = new Set(['probe', 'cut']);
 
 export type StallCode = 'no-forces' | 'no-reachable-objective' | 'no-viable-attack' | 'goals-met-holding';
 export interface PlannerReport {
@@ -140,7 +146,7 @@ export class Commander2 {
     public readonly doctrine: DoctrineV2,
     private readonly goals: WarGoals,
     private readonly deadlineDay: number,
-    private readonly opts: { nightTempo?: boolean } = {},
+    private readonly opts: { nightTempo?: boolean; fog?: boolean } = {},
   ) {}
 
   // Estimated effective enemy strength within contact range of a node.
@@ -315,7 +321,7 @@ export class Commander2 {
       const r = orderMove(front, f.id, dest);
       if (r.ok) {
         orders.push({ forceId: f.id, dest, why });
-        setPosture(front, f.id, URGENT.has(why) ? 'forced' : 'march');
+        setPosture(front, f.id, URGENT.has(why) ? 'forced' : this.opts.fog && BLIND.has(why) ? 'screen' : 'march');
       }
       return r.ok;
     };
