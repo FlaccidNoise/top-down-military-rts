@@ -78,7 +78,7 @@ export function makeHeadlessWorld(
     for (const f of d.forces) addForce(front, f);
   }
   const goals = makeWarGoals(front.theater, campaignCfg);
-  const kernel = { nightTempo: campaignCfg.nightTempo };
+  const kernel = { nightTempo: campaignCfg.nightTempo, fog: campaignCfg.recon === 'contacts' };
   const red = new Commander2('red', doctrines?.red ?? RED_V2, goals, campaignCfg.warDays, kernel);
   const blue = new Commander2('blue', doctrines?.blue ?? BLUE_V2, goals, campaignCfg.warDays, kernel);
   for (const [cmd, side] of [

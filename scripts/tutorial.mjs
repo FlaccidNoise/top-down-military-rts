@@ -656,12 +656,19 @@ async function desktopLeg() {
         fix: 'The #next handler sets mode = strategic and clears v2.battle (src/main.ts showDebrief); TheaterHud.update redraws the log on the next frame.',
       },
     );
-    check(after.owner === 'blue', `${ground.name} is ours now (controlByNode = ${after.owner}, ${after.held} nodes held)`);
-    check(
-      after.captures.length > 0 && after.log.some((t) => after.captures.some((c) => t.includes(c))),
-      `the event log shows the capture (${after.captures.join(' / ') || `the war logged no capture for ${ground.name}`}; log reads: ${after.log.slice(0, 2).join(' / ')})`,
-    );
-    await shot(page, 'ch9-captured', `chapter 9: back on the theater — ${ground.name} taken, the capture in the event log`);
+    if (contact.site) {
+      check(after.owner === 'blue', `${ground.name} is ours now (controlByNode = ${after.owner}, ${after.held} nodes held)`);
+      check(
+        after.captures.length > 0 && after.log.some((t) => after.captures.some((c) => t.includes(c))),
+        `the event log shows the capture (${after.captures.join(' / ') || `the war logged no capture for ${ground.name}`}; log reads: ${after.log.slice(0, 2).join(' / ')})`,
+      );
+    } else {
+      // The company met a red mobile group ON THE ROAD (red marches since
+      // jtbug #786). A fight on a road takes no ground: the win shows as the
+      // result in the log, and the objective is still ahead.
+      check(after.log.some((t) => t.includes('Attack succeeds')), `a fight won on the road shows in the event log (log reads: ${after.log.slice(0, 2).join(' / ')})`);
+    }
+    await shot(page, 'ch9-captured', `chapter 9: back on the theater — ${contact.site ? `${ground.name} taken, the capture` : 'the road fight won, the result'} in the event log`);
 
     // The tutorial's own record of the run.
     const state = await page.evaluate(async () => {
@@ -718,6 +725,9 @@ async function stagedModalRun(which) {
       if (!blue || !red) return { ok: false, why: 'no idle blue company or no live red force' };
       red.pos = { ...blue.pos };
       red.path = [];
+      // Moved off its post: not dug in here, or its earthworks would deny the walkover.
+      red.posture = 'march';
+      red.dugMin = 0;
       red.strength = Math.max(1, Math.floor(blue.strength / (TRIVIAL_RATIO + 1)));
       const here = blue.pos.nodeId;
       const nextDoor = v2.front.theater.edges.find((e) => e.a === here || e.b === here);
@@ -747,11 +757,11 @@ async function stagedModalRun(which) {
       check(modal.fight === 'Defend' && !modal.standdown, `a defender is offered Defend and no Stand down (button "${modal.fight}", standdown=${modal.standdown})`);
       await shot(page, 'ch10a-defender', 'staged: red chose the fight — the defender cannot stand down');
     } else {
-      const want = `Auto-resolve is available at ${staged.ratio}:1.`;
-      check(modal.auto, 'a trivial mismatch offers Auto-resolve');
-      check(modal.odds.includes(want), `the odds line carries "${want}" with the ratio out of TRIVIAL_RATIO (got "${modal.odds}")`);
+      const want = 'A walkover: auto-resolve offered.';
+      check(modal.auto, 'a walkover offers Auto-resolve');
+      check(modal.odds.includes(want), `the odds line carries "${want}" (got "${modal.odds}")`);
       check(modal.forced === null, 'no defender line on a fight the player chose');
-      await shot(page, 'ch10b-autoresolve', `staged: ${staged.ratioNow.toFixed(1)}:1 — Auto-resolve offered and the 5:1 rule stated`);
+      await shot(page, 'ch10b-autoresolve', `staged: ${staged.ratioNow.toFixed(1)}:1 — a walkover, Auto-resolve offered`);
     }
   } finally {
     await browser.close();

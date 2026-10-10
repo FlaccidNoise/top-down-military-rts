@@ -45,7 +45,7 @@ import { DEPLOY_ATK_DEPTH, DEPLOY_DEF_LINE, DEPLOY_DEF_DEFAULT } from './strateg
 import { ContactIntel, OmniscientIntel, type IntelView } from './strategic/intel';
 import { Commander2, RED_V2 } from './strategic/planner';
 import { addForce, pushEvent, type CoarseBattle, type FrontV2, type MoveReject } from './strategic/theater/force';
-import { firstContactOnMarch, orderHalt, orderMove, previewMove } from './strategic/theater/step';
+import { firstContactOnMarch, orderHalt, orderMove, previewMove, setPosture } from './strategic/theater/step';
 import { battleCatchUpMin, openBattle, retreatForce, stepWar } from './strategic/theater/war';
 import { syncStrengthsV2 } from './strategic/theater/sync';
 import type { Contact } from './strategic/theater/contact';
@@ -146,6 +146,7 @@ interface SessionV2 {
   // Centre the map here on the next frame, once the HUD has laid out the
   // panel that made the request (the contact card changes the clear rectangle).
   centerNext: { x: number; y: number } | null;
+  shownForce: number; // the selection the camera last made room for
 }
 interface Session {
   campaign: Campaign;
@@ -436,6 +437,12 @@ const theaterHud = new TheaterHud({
     if (!v2) return;
     const r = orderHalt(v2.front, v2.selectedForce);
     v2.view.flash(r.ok ? `${v2.front.forces.find((f) => f.id === v2.selectedForce)!.name} halts` : MOVE_REJECT_TEXT[r.reason]);
+  },
+  posture: (p) => {
+    const v2 = S().v2;
+    if (!v2) return;
+    const r = setPosture(v2.front, v2.selectedForce, p);
+    if (!r.ok) v2.view.flash(MOVE_REJECT_TEXT[r.reason]);
   },
 });
 const tooltip = new Tooltip(hud.root);
@@ -871,7 +878,7 @@ function showContactModalV2(c: Contact): void {
   const v2 = S().v2!;
   const atk = v2.front.forces.find((f) => f.id === c.attackerId)!;
   const def = v2.front.forces.find((f) => f.id === c.defenderId)!;
-  const b = contactBrief(v2.front, c, { supply: v2.campaignCfg.supply, fog: v2.campaignCfg.recon === 'contacts' });
+  const b = contactBrief(v2.front, c, { supply: v2.campaignCfg.supply, fog: v2.campaignCfg.recon === 'contacts', nightTempo: v2.campaignCfg.nightTempo });
   const { playerAttacks, trivial } = b;
   const col = (s: (typeof b.sides)[number]): string =>
     `<div class="fc-col ${s.side === 'blue' ? 'us' : 'ge'}"><h4>${s.name}</h4><p class="fc-str">${s.men}</p><p class="fc-state">${s.state}</p></div>`;
@@ -1119,7 +1126,7 @@ function startCampaignV2(
         campaignCfg: camp,
         front,
         goals,
-        red: new Commander2('red', RED_V2, goals, camp.warDays, { nightTempo: camp.nightTempo }),
+        red: new Commander2('red', RED_V2, goals, camp.warDays, { nightTempo: camp.nightTempo, fog: camp.recon === 'contacts' }),
         // OQ6 (A): identical fog and detection — red reads ghosts when the
         // campaign runs contacts, exactly as the player's map does.
         redIntel: camp.recon === 'contacts' ? new ContactIntel(front, 'red') : new OmniscientIntel(front, 'red'),
@@ -1129,6 +1136,7 @@ function startCampaignV2(
         selectedForce: -1,
         needsFrame: true,
         centerNext: null,
+        shownForce: -1,
       },
     };
     // §4.8: a reloaded red keeps its axes — restore the persisted plan.
@@ -2040,6 +2048,13 @@ function frame(now: number): void {
     if (v2.centerNext) {
       v2.view.centerOn(v2.centerNext, view.w, view.h);
       v2.centerNext = null;
+    }
+    // A new selection opens the force card. Keep the company it describes
+    // clear of it. Once, so the player's own pan is not fought afterwards.
+    if (v2.selectedForce !== v2.shownForce) {
+      v2.shownForce = v2.selectedForce;
+      const sel = v2.front.forces.find((f) => f.id === v2.selectedForce);
+      if (sel) v2.view.keepInView(v2.view.forceXY(sel), view.w, view.h);
     }
     v2.view.clampPan(view.w, view.h);
     v2.view.preview = theaterPreview(v2);

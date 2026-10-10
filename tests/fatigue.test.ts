@@ -85,11 +85,11 @@ describe('combat lumps', () => {
 
 describe('the three effect seams', () => {
   it('pace: a spent force marches at 65%; the ramp multiplies only under nightTempo', () => {
-    expect(paceMult(0, NOON, {})).toBe(1);
-    expect(paceMult(1, NOON, {})).toBeCloseTo(1 - FATIGUE_SPEED_SLOPE, 9);
-    expect(paceMult(0, MIDNIGHT, {})).toBe(1); // toggle off: darkness costs nothing
-    expect(paceMult(0, MIDNIGHT, { nightTempo: true })).toBeCloseTo(0.7, 9);
-    expect(paceMult(0, NOON, { nightTempo: true })).toBe(1); // full daylight: ramp is 1
+    expect(paceMult({ fatigue: 0, posture: 'march' }, NOON, {})).toBe(1);
+    expect(paceMult({ fatigue: 1, posture: 'march' }, NOON, {})).toBeCloseTo(1 - FATIGUE_SPEED_SLOPE, 9);
+    expect(paceMult({ fatigue: 0, posture: 'march' }, MIDNIGHT, {})).toBe(1); // toggle off: darkness costs nothing
+    expect(paceMult({ fatigue: 0, posture: 'march' }, MIDNIGHT, { nightTempo: true })).toBeCloseTo(0.7, 9);
+    expect(paceMult({ fatigue: 0, posture: 'march' }, NOON, { nightTempo: true })).toBe(1); // full daylight: ramp is 1
   });
 
   it('combatMult: fatigue slope, and the JOINT 0.4 floor under supply x fatigue', () => {

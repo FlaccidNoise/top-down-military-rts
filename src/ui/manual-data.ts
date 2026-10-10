@@ -293,7 +293,7 @@ export const MANUAL: ManualChapter[] = [
         heading: 'The contact choice',
         body:
           'A contact stops the clock and asks what you want. Attack fights it out. ' +
-          `Auto-resolve appears only when the odds reach ${TRIVIAL_RATIO}:1 or worse, because the outcome is not in doubt. ` +
+          `Auto-resolve appears only on a walkover: ${TRIVIAL_RATIO}:1 in fighting strength. Men out of supply, worn out or caught at rest count for less, and a dug-in defender for more. ` +
           'Stand down withdraws — but only when you are the attacker. A defender cannot refuse a fight the enemy chose.',
       },
       {
