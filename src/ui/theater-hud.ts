@@ -60,6 +60,9 @@ const KEY: [Swatch, string][] = [
   [{ css: 'k-road' }, 'Highway, road, track'],
   [{ css: 'k-rail' }, 'Railway: no traffic'],
   [{ css: 'k-cross' }, 'Bridge or ford'],
+  [{ css: 'k-depot' }, 'Supply depot'],
+  [{ css: 'k-cut' }, 'Your supply is cut here'],
+  [{ counter: { side: 'red', role: 'garrison', strength: 40, frac: 0.6, supply: 'out', tag: 'ISOLATED' } }, 'Enemy cut off from supply'],
 ];
 
 export class TheaterHud {
@@ -187,7 +190,7 @@ export class TheaterHud {
       const s = KEY[Number(c.dataset.key)][0];
       if (!('counter' in s)) return;
       const w = COUNTER_W + 10;
-      const h = COUNTER_H + 10;
+      const h = COUNTER_H + 10 + (s.counter.tag ? 8 : 0);
       c.width = w * dpr;
       c.height = h * dpr;
       c.style.width = `${w}px`;
@@ -198,7 +201,7 @@ export class TheaterHud {
       const role: ForceRole = 'line';
       drawCounter(g, {
         id: 0, side: 'blue', letter: null, role, strength: 0, frac: 1, supply: null, fatigue: 0, selected: false, engaged: false,
-        conf: 1, ghost: false, ax: 0, ay: 0, drop: 0, x: 5, y: 6, ...s.counter,
+        conf: 1, ghost: false, tag: null, ax: 0, ay: 0, drop: 0, x: 5, y: s.counter.tag ? 14 : 6, ...s.counter,
       });
     });
   }

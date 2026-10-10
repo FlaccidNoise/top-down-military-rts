@@ -33,6 +33,8 @@ export interface CounterSpec {
   // dashed, fading with the report's age.
   conf: number;
   ghost: boolean;
+  // One word over the counter. Today: ISOLATED, an enemy the trace does not reach.
+  tag: string | null;
   ax: number; // the true position on screen
   ay: number;
   drop: number; // clearance below the anchor (an objective ring needs more)
@@ -220,5 +222,19 @@ export function drawCounter(ctx: CanvasRenderingContext2D, c: PlacedCounter): vo
   };
   if (c.supply === 'low' || c.supply === 'out') pip(x + 1, PIP[c.supply === 'low' ? 'warn' : 'bad']);
   if (c.fatigue >= 0.33) pip(x + COUNTER_W - 1, PIP[c.fatigue >= 0.66 ? 'bad' : 'warn']);
+
+  if (c.tag) {
+    ctx.font = 'bold 8px ui-monospace, monospace';
+    const tw = ctx.measureText(c.tag).width + 6;
+    const tx = x + COUNTER_W / 2 - tw / 2;
+    ctx.fillStyle = 'rgba(14, 12, 8, 0.92)';
+    ctx.fillRect(tx, y - 12, tw, 11);
+    ctx.strokeStyle = PIP.warn;
+    ctx.lineWidth = 1;
+    ctx.strokeRect(tx, y - 12, tw, 11);
+    ctx.fillStyle = PIP.warn;
+    ctx.textAlign = 'center';
+    ctx.fillText(c.tag, x + COUNTER_W / 2, y - 3.5);
+  }
   ctx.restore();
 }

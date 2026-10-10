@@ -15,6 +15,7 @@ import type { ReconMode } from '../campaign/spec';
 import type { Side } from '../sim/sim';
 import { MOBILE } from './view';
 import { buildFrontLayer, controlKey, washRectM, type FrontLayer } from './theater-front';
+import { supplyCuts } from './theater-supply';
 import { counterRect, drawCounter, drawLeader, layoutCounters, type CounterSpec, type PlacedCounter } from './theater-counters';
 
 // Terrain separates by VALUE, not hue (the Muted-Normandy rule): a luma ladder
@@ -120,6 +121,36 @@ function splitAt(pts: readonly Vec[], p: Vec): [Vec[], Vec[]] {
   return [[...pts.slice(0, best.i + 1), best.q], [best.q, ...pts.slice(best.i + 1)]];
 }
 
+// A supply depot: a crate, in its side's colour.
+function depot(ctx: CanvasRenderingContext2D, x: number, y: number, color: string): void {
+  ctx.fillStyle = 'rgba(14, 12, 8, 0.92)';
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.rect(x - 6, y - 6, 12, 12);
+  ctx.fill();
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(x - 6, y - 6);
+  ctx.lineTo(x + 6, y + 6);
+  ctx.moveTo(x + 6, y - 6);
+  ctx.lineTo(x - 6, y + 6);
+  ctx.stroke();
+}
+
+// Supply is cut HERE: a barred circle.
+function cutMark(ctx: CanvasRenderingContext2D, x: number, y: number): void {
+  for (const [style, lw] of [['rgba(12, 10, 6, 0.9)', 5.5], ['#e2543c', 3]] as const) {
+    ctx.strokeStyle = style;
+    ctx.lineWidth = lw;
+    ctx.beginPath();
+    ctx.arc(x, y, 10, 0, Math.PI * 2);
+    ctx.moveTo(x - 7, y + 7);
+    ctx.lineTo(x + 7, y - 7);
+    ctx.stroke();
+  }
+}
+
 // The mark for a fight: an eight-point burst. Used where a previewed march
 // will meet the enemy and, larger and alive, where a battle is being fought.
 function burst(ctx: CanvasRenderingContext2D, x: number, y: number, r: number, spin = 0): void {
@@ -143,6 +174,8 @@ type Fx =
   | { kind: 'capture'; at: Vec; side: Side; t0: number }
   | { kind: 'retreat'; from: Vec; to: Vec; side: Side; t0: number };
 const FX_MS = { capture: 1800, retreat: 6000 } as const;
+// Under fog, a report at least this confident is of a force in sight now.
+const FRESH_CONF = 0.9;
 const WASH_FADE_MS = 900;
 // Full dark puts this much night over the ground. Towns, names and counters
 // are drawn after it and stay at full strength.
@@ -499,27 +532,20 @@ export class TheaterView {
       }
     }
 
-    // Supply cut lines (S50): a live enemy force standing ON a road cuts the
-    // trace under it — hatch the edge so the interdiction reads at a glance.
-    // Drawn from the player's (blue) perspective; the FOW lane gates this on
-    // contact visibility when recon: 'contacts' ships.
-    if (this.supplyOn) {
-      // Under fog the hatch derives from KNOWN contacts, never truth — a cut
-      // you have not seen is a cut you have not seen.
-      const interdictors: { pos: Force['pos'] }[] =
-        this.recon === 'contacts'
-          ? (front.intel?.blue ?? [])
-          : front.forces.filter((f) => f.side === 'red' && f.strength > 0);
-      for (const f of interdictors) {
-        if (f.pos.kind !== 'edge') continue;
-        const e = this.theater.edges[f.pos.edgeId];
-        ctx.strokeStyle = 'rgba(181, 83, 60, 0.85)';
-        ctx.lineWidth = 3;
-        ctx.setLineDash([3, 5]);
-        trace(e.polyline);
-        ctx.stroke();
-        ctx.setLineDash([]);
-      }
+    // Supply (S50), made visible. A cut is marked WHERE it happens: the enemy
+    // on the road (the road hatched under him) or the enemy-held town that the
+    // trace to a cut-off company stops at. Under fog a cut made by an enemy
+    // the player has not seen is not drawn: a cut you have not seen is a cut
+    // you have not seen.
+    const cuts = this.supplyOn ? this.knownCuts(front) : [];
+    for (const c of cuts) {
+      if (c.kind !== 'edge') continue;
+      ctx.strokeStyle = 'rgba(226, 84, 60, 0.9)';
+      ctx.lineWidth = 3;
+      ctx.setLineDash([3, 5]);
+      trace(this.theater.edges[c.edgeId].polyline);
+      ctx.stroke();
+      ctx.setLineDash([]);
     }
 
     // The front: where the two washes meet. Over the roads, under the towns.
@@ -604,6 +630,22 @@ export class TheaterView {
           : { sx, sy: sy - r - 5, text: n.name, rank: n.rank, id: n.id, px: n.rank === 0 ? 12 : 10, r });
       }
     }
+    // Depots: where each side's supply starts. A crate beside the place.
+    if (this.supplyOn) {
+      for (const side of ['blue', 'red'] as const) {
+        for (const n of this.theater.sources[side]) {
+          const p = this.theater.nodes[n].pos;
+          const [sx, sy] = this.toScreen(p.x, p.y, w, h);
+          depot(ctx, sx - 17, sy - 3, OWNER_RIM[side]);
+        }
+      }
+      for (const c of cuts) {
+        const p = c.kind === 'node' ? this.theater.nodes[c.nodeId].pos : pointAlong(this.theater.edges[c.edgeId], c.s);
+        const [sx, sy] = this.toScreen(p.x, p.y, w, h);
+        cutMark(ctx, sx, sy - (c.kind === 'node' ? 0 : 14));
+      }
+    }
+
     const placed: { x0: number; y0: number; x1: number; y1: number }[] = this.counters.map(counterRect);
     ctx.textAlign = 'center';
     // A halo, not a drop shadow: a name has to read over rooftops and forest
@@ -850,6 +892,15 @@ export class TheaterView {
     ctx.fillText(text, bx + 6, by + 14.5);
   }
 
+  // The cuts the player may know of: all of them with full intel; under fog
+  // an enemy-held town (control is on the map) or an enemy he has a report of.
+  private knownCuts(front: FrontV2): ReturnType<typeof supplyCuts> {
+    const all = supplyCuts(front);
+    if (this.recon !== 'contacts') return all;
+    const seen = front.intel?.blue ?? [];
+    return all.filter((c) => c.kind === 'node' || seen.some((k) => k.pos.kind === 'edge' && k.pos.edgeId === c.edgeId));
+  }
+
   // One spec per force the player may see. Own forces are truth. Under fog
   // (S53) the enemy is drawn from the CONTACT map: a last-seen report, hollow
   // and fading, never the live force. A contact names the force, so its role
@@ -869,8 +920,11 @@ export class TheaterView {
       out.push({
         id: f.id, side: f.side, letter: f.side === 'blue' ? f.name.charAt(0).toUpperCase() : null, role: f.role,
         strength: f.strength, frac: f.strength / Math.max(1, f.establishment),
-        supply: this.supplyOn && f.side === 'blue' ? supplyTierOf(f.untracedMin) : null,
+        supply: this.supplyOn ? supplyTierOf(f.untracedMin) : null,
         fatigue: f.side === 'blue' ? f.fatigue : 0,
+        // An enemy the trace does not reach. The lever the supply rules
+        // offer: cut a garrison off, then fight it on short ammunition.
+        tag: this.supplyOn && f.side === 'red' && f.untracedMin > 0 ? 'ISOLATED' : null,
         selected: f.id === selectedForce, engaged: f.engagedIn !== null, conf: 1, ghost: false, ...at(f.pos),
       });
     }
@@ -878,9 +932,13 @@ export class TheaterView {
       for (const c of front.intel?.blue ?? []) {
         const f = front.forces.find((x) => x.id === c.forceId);
         if (!f) continue;
+        const conf = contactConf(c, front.clockMin);
         out.push({
           id: c.forceId, side: 'red', letter: null, role: f.role, strength: c.strength, frac: c.strength / Math.max(1, f.establishment),
-          supply: null, fatigue: 0, selected: false, engaged: false, conf: contactConf(c, front.clockMin), ghost: true, ...at(c.pos),
+          // A report this fresh saw the force itself: its supply state is known.
+          supply: this.supplyOn && conf > FRESH_CONF ? supplyTierOf(f.untracedMin) : null,
+          tag: this.supplyOn && conf > FRESH_CONF && f.untracedMin > 0 ? 'ISOLATED' : null,
+          fatigue: 0, selected: false, engaged: false, conf, ghost: true, ...at(c.pos),
         });
       }
     }

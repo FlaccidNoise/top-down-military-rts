@@ -1540,6 +1540,9 @@ html.mobile #theater-hud .hbtn { min-height: 44px; }
 #theater-hud .k-fight { width: 16px; height: 16px; margin: 0 14px; background: #f0963c; clip-path: polygon(50% 0, 62% 30%, 92% 10%, 72% 40%, 100% 50%, 72% 60%, 92% 90%, 62% 70%, 50% 100%, 38% 70%, 8% 90%, 28% 60%, 0 50%, 28% 40%, 8% 10%, 38% 30%); }
 #theater-hud .k-road { height: 0; margin: 7px 0; border-top: 3px solid #cbbb94; box-shadow: 0 5px 0 -1px #ab9d82, 0 9px 0 -1.2px #8b8269; }
 #theater-hud .k-rail { height: 0; margin: 9px 0; border-top: 2.4px dashed #7b7364; }
+#theater-hud .k-depot { width: 13px; height: 13px; margin: 0 15px; border: 1.5px solid #7fa6ee; background: linear-gradient(45deg, transparent 44%, #7fa6ee 44%, #7fa6ee 56%, transparent 56%), linear-gradient(-45deg, transparent 44%, #7fa6ee 44%, #7fa6ee 56%, transparent 56%), rgba(14, 12, 8, 0.92); }
+#theater-hud .k-cut { width: 18px; height: 18px; margin: 0 13px; border: 3px solid #e2543c; border-radius: 50%; background: linear-gradient(-45deg, transparent 42%, #e2543c 42%, #e2543c 58%, transparent 58%); }
+#theater-hud canvas.k-sw { height: auto; }
 #theater-hud .k-cross { width: 11px; height: 11px; margin: 0 16px; background: #d6c9a4; border: 1px solid rgba(20, 17, 11, 0.85); transform: rotate(45deg); }
 
 #theater-hud .th-force { margin-top: auto; padding: 8px 12px; }

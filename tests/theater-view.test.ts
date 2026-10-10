@@ -4,7 +4,8 @@ import { describe, expect, it } from 'vitest';
 import { DEFAULT_PRESET } from '../src/campaign/presets';
 import { makeHeadlessWorld, runHeadlessWar, stepWorldMinute } from '../src/strategic/headless';
 import { minutesToReinforcementV2 } from '../src/strategic/front';
-import { pushEvent } from '../src/strategic/theater/force';
+import { otherEnd, pushEvent, route, type Force, type FrontV2 } from '../src/strategic/theater/force';
+import { supplyCuts } from '../src/render/theater-supply';
 import { fmtEta, THEATER_ZOOM_MAX, TheaterView } from '../src/render/theater-view';
 import { COUNTER_W, counterRect, layoutCounters, type CounterSpec, type PlacedCounter } from '../src/render/theater-counters';
 
@@ -29,7 +30,7 @@ describe('counters', () => {
 
   const spec = (id: number, side: 'blue' | 'red', ax: number, ay: number, selected = false): CounterSpec => ({
     id, side, letter: side === 'blue' ? 'A' : null, role: 'line', strength: 100, frac: 1, supply: null, fatigue: 0,
-    selected, engaged: false, conf: 1, ghost: false, ax, ay, drop: 12,
+    selected, engaged: false, conf: 1, ghost: false, tag: null, ax, ay, drop: 12,
   });
   const overlap = (a: PlacedCounter, b: PlacedCounter): boolean => {
     const p = counterRect(a), q = counterRect(b);
@@ -150,6 +151,54 @@ describe('the frame, and what just happened', () => {
     pushEvent(fresh.front, { min: fresh.front.clockMin, kind: 'arrival', text: 'Able arrives', forceIds: [] });
     frame();
     expect(inner.flashText).toBe('');
+  });
+});
+
+describe('where supply is cut', () => {
+  // Able stands on the nearest objective, which he holds, deep in red ground.
+  const forward = (objective = 0): { fr: FrontV2; able: Force; path: number[]; nodes: number[] } => {
+    const fr = makeHeadlessWorld(19440606, DEFAULT_PRESET.theater, DEFAULT_PRESET.campaign).front;
+    const able = fr.forces.find((f) => f.side === 'blue')!;
+    const from = fr.theater.sources.blue
+      .map((s) => ({ s, r: route(fr.theater, s, fr.theater.objectiveNodes[objective])! }))
+      .sort((a, b) => a.r.minutes - b.r.minutes)[0];
+    const nodes = [from.s];
+    for (const eid of from.r.edges) nodes.push(otherEnd(fr.theater.edges[eid], nodes[nodes.length - 1]));
+    able.pos = { kind: 'node', nodeId: fr.theater.objectiveNodes[objective] };
+    return { fr, able, path: from.r.edges, nodes };
+  };
+
+  it('nothing is marked while every company is in supply', () => {
+    const fr = makeHeadlessWorld(19440606, DEFAULT_PRESET.theater, DEFAULT_PRESET.campaign).front;
+    expect(supplyCuts(fr)).toEqual([]);
+  });
+
+  it('an enemy-held town on the road from the depot is the cut: the first one the trace stops at', () => {
+    const { fr, nodes } = forward();
+    const firstRed = nodes.find((n) => fr.controlByNode[n] === 'red')!;
+    expect(supplyCuts(fr)).toEqual([{ kind: 'node', nodeId: firstRed }]);
+  });
+
+  it('with the road in our hands, the enemy column standing on it is the cut', () => {
+    // On an objective with one road in from our ground (the first one tried has a way round).
+    let found = false;
+    for (let i = 0; i < theater.objectiveNodes.length && !found; i++) {
+      const { fr, path, nodes } = forward(i);
+      for (const n of nodes) fr.controlByNode[n] = 'blue';
+      for (const f of fr.forces) if (f.side === 'red' && f.pos.kind === 'node' && nodes.includes(f.pos.nodeId)) f.strength = 0;
+      expect(supplyCuts(fr)).toEqual([]); // the road is open: no cut
+      const column = fr.forces.find((f) => f.side === 'red' && f.role === 'line')!;
+      for (const eid of path) {
+        const road = fr.theater.edges[eid];
+        column.pos = { kind: 'edge', edgeId: road.id, s: road.lengthM / 2, dir: 1 };
+        const cuts = supplyCuts(fr);
+        if (cuts.length === 0) continue;
+        expect(cuts).toEqual([column.pos]);
+        found = true;
+        break;
+      }
+    }
+    expect(found, 'no objective on this seed has a single road in').toBe(true);
   });
 });
 

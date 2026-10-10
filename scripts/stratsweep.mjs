@@ -112,6 +112,35 @@ const STATES = {
     await frame(); // taken in at render time 1000
     window.__game.freezeFx(1450);
   },
+  // Supply made visible: the depots, a company cut off by an enemy column
+  // standing on its road (the cut is marked on him), and an enemy garrison
+  // the trace no longer reaches (ISOLATED).
+  supply: async () => {
+    const { route } = await import('/src/strategic/theater/force.ts');
+    const { SUPPLY_LOW_MIN, SUPPLY_OUT_MIN } = await import('/src/strategic/theater/supply.ts');
+    const v2 = window.__game.getV2();
+    const fr = v2.front;
+    const t = fr.theater;
+    const able = fr.forces.find((f) => f.side === 'blue');
+    // Able has taken the nearest objective and stands there.
+    const town = t.objectiveNodes
+      .map((n) => ({ n, r: route(t, able.pos.nodeId, n) }))
+      .filter((x) => x.r && x.r.edges.length >= 2)
+      .sort((a, b) => a.r.minutes - b.r.minutes)[0];
+    const road = t.edges[town.r.edges[town.r.edges.length - 1]];
+    const holder = fr.forces.find((f) => f.side === 'red' && f.pos.kind === 'node' && f.pos.nodeId === town.n);
+    if (holder) holder.strength = 0;
+    able.pos = { kind: 'node', nodeId: town.n };
+    fr.controlByNode[town.n] = 'blue';
+    able.untracedMin = SUPPLY_OUT_MIN;
+    // A mobile group has walked onto the road behind him.
+    const column = fr.forces.find((f) => f.side === 'red' && f.role === 'line');
+    column.pos = { kind: 'edge', edgeId: road.id, s: road.lengthM / 2, dir: 1 };
+    // And a garrison further on is cut off in its turn.
+    const cutOff = fr.forces.find((f) => f.side === 'red' && f.role === 'garrison' && f.strength > 0);
+    cutOff.untracedMin = SUPPLY_LOW_MIN;
+    v2.selectedForce = able.id;
+  },
   // Three counters on one town, with every pip lit: the fan-out and the
   // counter's vocabulary. Positions and states are written directly.
   stack: async () => {
