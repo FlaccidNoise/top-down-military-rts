@@ -240,7 +240,13 @@ let lastOrderTick = 0; // sim tick of the player's last order — the quiet-minu
 let battleSpeed: BattleSpeed = 1;
 let debriefShown = false;
 let needsBootFrame = false; // re-run bootCamera once the battle HUD is laid out
-const mouse = { x: 0, y: 0, onCanvas: false };
+const mouse = { x: 0, y: 0, onCanvas: false, alt: false };
+// The terrain card is one line; the numbers behind it are asked for: Alt on a
+// keyboard, and on touch a hold kept this long past the point it arms.
+const DETAIL_HOLD_MS = 1500;
+const trackAlt = (e: KeyboardEvent | MouseEvent): void => { mouse.alt = e.altKey; };
+window.addEventListener('keydown', trackAlt);
+window.addEventListener('keyup', trackAlt);
 const pings = new EventPings();
 // Touch-only sticky modes. A phone has no shift key and no second mouse
 // button, so the two modifiers the desktop path reads off the keyboard become
@@ -1499,6 +1505,7 @@ window.addEventListener('mousemove', (e) => {
   mouse.x = e.clientX;
   mouse.y = e.clientY;
   mouse.onCanvas = e.target === canvas;
+  trackAlt(e);
   if (mode !== 'battle') return;
   if (dragStart && e.buttons & 1) updateBox(e.clientX, e.clientY);
 });
@@ -2133,7 +2140,7 @@ function frame(now: number): void {
     if (ring) drawMarkRing(ctx, ring, now);
     if (touchHold) drawHoldRing(ctx, touchHold, now);
     // One thing talks at a time: a tutorial step on screen outranks the hover card.
-    tooltip.update(sim, tutorial?.isShowing ? null : pick, shot, mouse.x, mouse.y, pick?.kind === 'terrain' && (primary >= 0 || selectedVehicle >= 0));
+    tooltip.update(sim, tutorial?.isShowing ? null : pick, shot, mouse.x, mouse.y, pick?.kind === 'terrain' && (primary >= 0 || selectedVehicle >= 0), MOBILE ? touchHold !== null && now - touchHold.t0 > DETAIL_HOLD_MS : mouse.alt);
     const km = loadKeymap(localStorage);
     // A player who has given no order for a minute of battle is told the goal
     // and where the enemy is. Sim time, so a pause neither starts nor ends it.

@@ -497,15 +497,13 @@ export function drawOverlays(ctx: CanvasRenderingContext2D, cam: Camera, sim: Si
   // Order context chip: the preview's one-glance summary — how many of the men
   // actually land in cover, how many have no footing at all, ETA from the
   // slowest eligible soldier's own moveSpeed, and (armed only, where the
-  // raycast cost is paid) worst-case danger with the compliance verdict the
-  // team will run. Static (no tick-driven animation): pause- and
+  // raycast cost is paid) the compliance verdict the team will run, as the
+  // chip's colour. Static (no tick-driven animation): pause- and
   // reduced-motion-safe by construction.
   if (preview && st.cursor) {
-    let danger: number | null = null;
     let verdict: ChipVerdict | null = null;
     let eta: number | null = null;
     for (const t of preview.teams) {
-      if (t.danger !== null) danger = Math.max(danger ?? 0, t.danger);
       if (t.verdict !== null) verdict = verdict === null ? t.verdict : worseVerdict(verdict, t.verdict);
       const team = sim.teams[t.teamId];
       const centroid = teamCentroid(sim, team.soldierIds);
@@ -518,9 +516,9 @@ export function drawOverlays(ctx: CanvasRenderingContext2D, cam: Camera, sim: Si
         eta = eta === null ? secs : Math.max(eta, secs);
       }
     }
-    const fmt = formatContextChip({ danger, covered: preview.covered, placed: preview.placed, refused: preview.refused, eta, verdict, level: preview.level });
+    const fmt = formatContextChip({ covered: preview.covered, placed: preview.placed, refused: preview.refused, eta, verdict, level: preview.level });
     const [sx, sy] = cam.worldToScreen(st.cursor.x, st.cursor.y, cw, ch);
-    contextChip(ctx, sx, sy, cw, ch, fmt.lines, fmt.color);
+    if (fmt.lines.length > 0) contextChip(ctx, sx, sy, cw, ch, fmt.lines, fmt.color, fmt.floorLine);
   }
 
   // Formation drag preview: anchor-to-cursor line + squad segment centers.
@@ -598,42 +596,40 @@ export function drawOverlays(ctx: CanvasRenderingContext2D, cam: Camera, sim: Si
 
 export type ChipVerdict = 'comply' | 'cautious' | 'balk';
 
-const VERDICT_LABEL: Record<ChipVerdict, string> = { comply: 'COMPLY', cautious: 'CAUTIOUS', balk: 'BALK' };
-const VERDICT_COLOR: Record<ChipVerdict, string> = { comply: '#7fbf6a', cautious: '#e0c060', balk: '#d05c50' };
+const CHIP_GOOD = '#7fbf6a';
+const CHIP_WARN = '#e0c060';
+const CHIP_BAD = '#d05c50';
 const CHIP_MUTED = '#b8b4a4';
 
 export interface ChipInput {
-  danger: number | null; // null = unarmed hover: no raycasts were spent, so no RISK line
   covered: number; // men the resolver put in directional cover
   placed: number; // men it found a tile for
   refused: number; // men it could not place at all
   eta: number | null;
-  verdict: ChipVerdict | null;
+  verdict: ChipVerdict | null; // null = unarmed hover: no raycasts were spent on the danger ladder
   level?: number | null; // target floor; null = a ground order with no floor pick, so say nothing
 }
 
 // Pure formatting for the order context chip, exported for tests — canvas
-// drawing (contextChip) consumes this and stays untested. The cover line
-// counts resolved spots instead of sampling inCover at the cursor: the cursor
-// is one point the men never stand on, and the count is the number the player
-// is actually buying (design §3.4).
-export function formatContextChip(o: ChipInput): { lines: string[]; color: string } {
+// drawing (contextChip) consumes this and stays untested. One plain line, and
+// the colour is the verdict: green they go and most land in cover, amber they
+// go carefully or end up in the open, red they will not go or have nowhere to
+// stand. The cover count is of resolved spots, not the tile under the cursor:
+// the cursor is one point the men never stand on, and the count is the number
+// the player is actually buying (design §3.4).
+export function formatContextChip(o: ChipInput): { lines: string[]; color: string; floorLine: boolean } {
   const lines: string[] = [];
   // Floor first: it says WHERE the dots are, and an upstairs dot is drawn on
   // the same pixels a ground-floor one would be.
-  if (o.level != null) lines.push(o.level === 0 ? 'GROUND' : `FLOOR ${o.level + 1}`);
-  if (o.danger !== null) lines.push(`RISK ${o.danger < 0.2 ? 'LOW' : o.danger < 0.5 ? 'MED' : 'HIGH'} ${o.danger.toFixed(2)}`);
-  if (o.placed > 0) {
-    let env = `${o.covered}/${o.placed} COVERED`;
-    if (o.eta !== null) env += ` · ~${Math.max(1, Math.round(o.eta))}s`;
-    lines.push(env);
-  }
-  if (o.verdict) lines.push(VERDICT_LABEL[o.verdict]);
-  // Last line carries the chip color, and a refusal outranks the verdict: men
-  // with nowhere to stand never step off whatever the compliance ladder says.
-  if (o.refused > 0) lines.push(o.placed === 0 ? 'NO FOOTING' : `${o.refused} NO FOOTING`);
-  const color = o.refused > 0 ? VERDICT_COLOR.balk : o.verdict ? VERDICT_COLOR[o.verdict] : o.covered === o.placed ? VERDICT_COLOR.comply : CHIP_MUTED;
-  return { lines, color };
+  const floorLine = o.level != null;
+  if (o.level != null) lines.push(o.level === 0 ? 'Ground floor' : `Floor ${o.level + 1}`);
+  if (o.verdict === 'balk') lines.push("Won't go");
+  else if (o.placed > 0) lines.push(`${o.covered} of ${o.placed} in cover${o.eta !== null ? ` · ${Math.max(1, Math.round(o.eta))} s` : ''}`);
+  // A refusal outranks the verdict: men with nowhere to stand never step off
+  // whatever the compliance ladder says.
+  if (o.refused > 0) lines.push(o.placed === 0 ? 'No footing' : `${o.refused} with no footing`);
+  const color = o.verdict === 'balk' || o.refused > 0 ? CHIP_BAD : o.verdict === 'cautious' || o.covered * 2 < o.placed ? CHIP_WARN : CHIP_GOOD;
+  return { lines, color, floorLine };
 }
 
 function contextChip(
@@ -644,6 +640,7 @@ function contextChip(
   ch: number,
   lines: string[],
   color: string,
+  floorLine: boolean,
 ): void {
   ctx.font = '11px ui-monospace, Menlo, monospace';
   const lh = 14;
@@ -678,7 +675,7 @@ function contextChip(
   ctx.textAlign = 'left';
   ctx.textBaseline = 'middle';
   lines.forEach((line, i) => {
-    ctx.fillStyle = i === lines.length - 1 ? color : CHIP_MUTED; // last line carries the state color, the rest stay muted
+    ctx.fillStyle = floorLine && i === 0 ? CHIP_MUTED : color; // the floor is a place, not a verdict
     ctx.fillText(line, x + 6, y + 4 + lh * i + lh / 2);
   });
   ctx.textBaseline = 'alphabetic';

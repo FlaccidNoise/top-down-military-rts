@@ -234,6 +234,9 @@ button.hbtn.active { background: var(--chip-active-bg); border-color: var(--ambe
   display: none;
   z-index: 6;
 }
+/* Ground is one line ("Hedgerow · good cover"); the full card is on request. */
+#tip.tt-line { width: auto; padding: 4px 10px; white-space: nowrap; color: var(--muted); }
+#tip.tt-line b { color: var(--paper); letter-spacing: 0.5px; }
 .tt-head { display: flex; justify-content: space-between; align-items: baseline; gap: var(--sp-2); }
 .tt-head b { letter-spacing: 0.5px; }
 .tt-head.blue b { color: var(--blue); }
