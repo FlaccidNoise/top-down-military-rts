@@ -8,7 +8,7 @@ import { lightAt } from '../../sim/solar';
 import type { Campaign } from '../../campaign/campaign';
 import { applyCoarseBlueLosses, coarseOutcome, TRIVIAL_RATIO } from '../bridge';
 import type { BattleRecord } from '../../campaign/campaign';
-import { battleSiteOf, COARSE_DEF_MULT, CROSSING_ASSAULT_MULT, type BattleClass, type NetPos, type TheaterEdge } from '../theater';
+import { battleSiteOf, COARSE_DEF_MULT, CROSSING_ASSAULT_MULT, type BattleClass, type NetPos, type Theater, type TheaterEdge } from '../theater';
 import {
   edgeById,
   incidentFoot,
@@ -23,7 +23,7 @@ import {
 } from './force';
 import { CONTACT_M, detectContacts, graphGap, haltAtContact, type Contact } from './contact';
 import { stepMovement } from './step';
-import { effStrength } from './combat';
+import { defStrength, effStrength } from './combat';
 import { updateSupplyMinute } from './supply';
 import { updateIntelMinute } from '../intel';
 
@@ -51,11 +51,42 @@ export function forceById(front: FrontV2, id: number): Force {
   return f;
 }
 
-function trivialForced(atk: Force, def: Force): 'attacker' | 'defender' | null {
-  if (atk.strength <= 0 || def.strength <= 0) return null;
-  if (atk.strength >= def.strength * TRIVIAL_RATIO) return 'attacker';
-  if (def.strength >= atk.strength * TRIVIAL_RATIO) return 'defender';
+// The defender's ground: the battle class of a site and what it multiplies
+// the defence by. ONE chain for the resolver, the walkover test, the planner
+// and the contact card, so none of them can weigh a crossing differently.
+export function siteDefence(t: Theater, site: NetPos, approachEdgeId: number | null | undefined): { battleClass: BattleClass; siteKey: number; mult: number } {
+  const { battleClass, siteKey } = battleSiteOf(t, site, approachEdgeId ?? undefined);
+  const crossing = battleClass === 'bridge-assault' || battleClass === 'ford-assault';
+  return { battleClass, siteKey, mult: COARSE_DEF_MULT[battleClass] * (crossing ? CROSSING_ASSAULT_MULT : 1) };
+}
+
+// A walkover (jtbug #786, resolves #137): one side has TRIVIAL_RATIO times
+// the other's EFFECTIVE strength. Supply, fatigue and posture count on both
+// sides, so a starved garrison is a walkover that a fresh one is not. It read
+// raw headcount before, blind to the one lever the supply rules give. This is
+// the auto-resolve offer and the forced winner.
+//   atkEff   the attackers' effective strength
+//   defEff   the defenders' effective strength
+//   defHeld  the same with digging in counted (defStrength)
+// Earthworks can DENY the attacker a walkover. They never GRANT the defender
+// one: a dug-in company is hard to shift, it is not sure to rout whoever
+// comes.
+//
+// Ground is NOT in the test, and that is measured, not overlooked. With the
+// terrain multiplier denying a walkover (a fresh garrison in a town or behind
+// a bridge), AI blue won 2 of 16 pin wars, or 3 with towns only: the remnant
+// garrisons it used to walk over became fights it loses one time in five,
+// and losing a coarse fight is a rout. The floor for this lane is 4 of 16.
+export function walkover(atkEff: number, defEff: number, defHeld: number): 'attacker' | 'defender' | null {
+  if (atkEff <= 0 || defEff <= 0) return null;
+  if (atkEff >= defHeld * TRIVIAL_RATIO) return 'attacker';
+  if (defEff >= atkEff * TRIVIAL_RATIO) return 'defender';
   return null;
+}
+
+// The walkover test for a contact between two forces, before a battle exists.
+export function contactWalkover(atk: Force, def: Force): 'attacker' | 'defender' | null {
+  return walkover(effStrength(atk), effStrength(def), defStrength(def));
 }
 
 // §3.4: durationMin = min(240, 45 + 1.4 x min(atk, def)); trivial collapses
@@ -70,7 +101,7 @@ export function openBattle(front: FrontV2, c: Contact): CoarseBattle {
   const atk = forceById(front, c.attackerId);
   const def = forceById(front, c.defenderId);
   haltAtContact(front, c);
-  const forced = trivialForced(atk, def);
+  const forced = contactWalkover(atk, def);
   const battle: CoarseBattle = {
     id: front.nextBattleId++,
     site: c.site,
@@ -99,18 +130,11 @@ export function joinBattle(front: FrontV2, battle: CoarseBattle, f: Force): void
   standForce(front, f);
   battle.joined.push(f.id);
   const sides = battleSides(front, battle);
-  battle.forced = trivialForcedStr(sides.atkStrength, sides.defStrength);
+  battle.forced = walkover(sides.atkEff, sides.defenders.reduce((a, d) => a + effStrength(d), 0), sides.defEff);
   battle.endMin = Math.max(
     front.clockMin + 15,
     battle.startMin + battleDuration(sides.atkStrength, sides.defStrength, battle.forced !== null),
   );
-}
-
-function trivialForcedStr(atk: number, def: number): 'attacker' | 'defender' | null {
-  if (atk <= 0 || def <= 0) return null;
-  if (atk >= def * TRIVIAL_RATIO) return 'attacker';
-  if (def >= atk * TRIVIAL_RATIO) return 'defender';
-  return null;
 }
 
 interface BattleSides {
@@ -133,7 +157,7 @@ export function battleSides(front: FrontV2, battle: CoarseBattle): BattleSides {
     atkStrength: attackers.reduce((a, f) => a + f.strength, 0),
     defStrength: defenders.reduce((a, f) => a + f.strength, 0),
     atkEff: attackers.reduce((a, f) => a + effStrength(f), 0),
-    defEff: defenders.reduce((a, f) => a + effStrength(f), 0),
+    defEff: defenders.reduce((a, f) => a + defStrength(f), 0),
   };
 }
 
@@ -199,15 +223,29 @@ export function retreatForce(
   opts: { trapped?: 'overrun' | 'stay' } = {},
 ): void {
   const t = front.theater;
-  // The retreat pivots on the node BEHIND the force: its own node, or the
-  // near end of its edge (opposite its direction of travel).
-  const nodeId = f.pos.kind === 'node' ? f.pos.nodeId : (f.pos.dir === 1 ? edgeById(t, f.pos.edgeId).a : edgeById(t, f.pos.edgeId).b);
+  f.dugMin = 0; // wherever it ends up, the position is lost
   const enemies = front.forces.filter((g) => g.side !== f.side && g.strength > 0);
   const nearEnemy = (n: number): number => {
     let best = Infinity;
     for (const g of enemies) best = Math.min(best, graphGap(t, { kind: 'node', nodeId: n }, g.pos));
     return best;
   };
+  // The retreat pivots on a node: the force's own, or the end of its road
+  // BEHIND its direction of travel. A force parked facing its rear (a company
+  // thrown back from a crossing) has the enemy behind it, so when an enemy
+  // stands between it and that end, and none between it and the other, it
+  // goes out by the other. Reading only the direction of travel sent it
+  // through the node it had just been thrown back from.
+  const pivot = (): number => {
+    const pos = f.pos;
+    if (pos.kind === 'node') return pos.nodeId;
+    const e = edgeById(t, pos.edgeId);
+    const through = (end: number): boolean =>
+      enemies.some((g) => (g.pos.kind === 'node' ? g.pos.nodeId === end : g.pos.edgeId === e.id && (end === e.b ? g.pos.s > pos.s : g.pos.s < pos.s)));
+    const [behind, ahead] = pos.dir === 1 ? [e.a, e.b] : [e.b, e.a];
+    return through(behind) && !through(ahead) ? ahead : behind;
+  };
+  const nodeId = pivot();
   const candidates = incidentFoot(t, nodeId)
     .filter((e) => e.id !== approachEdgeId)
     .filter((e) => nearEnemy(otherEnd(e, nodeId)) > THREAT_M)
@@ -272,10 +310,8 @@ export function resolveBattleV2(
 ): { attackerWon: boolean; battleClass: BattleClass; record: BattleRecord } {
   const t = front.theater;
   const sides = battleSides(front, battle);
-  const { battleClass, siteKey } = battleSiteOf(t, battle.site, battle.approachEdgeId ?? undefined);
-  let terrainMult = COARSE_DEF_MULT[battleClass];
-  if (battleClass === 'bridge-assault' || battleClass === 'ford-assault') terrainMult *= CROSSING_ASSAULT_MULT;
-  if (lightAt(battle.startMin) < 0.25) terrainMult *= nightMult;
+  const { battleClass, siteKey, mult } = siteDefence(t, battle.site, battle.approachEdgeId);
+  const terrainMult = lightAt(battle.startMin) < 0.25 ? mult * nightMult : mult;
 
   const seed = (campaign.seed ^ (battle.startMin * 7919 + siteKey)) >>> 0;
   const rng = mulberry32(seed);
@@ -320,7 +356,11 @@ export function resolveBattleV2(
   // Winner occupies the site NODE; a mid-edge fight leaves positions alone.
   if (battle.site.kind === 'node') {
     const nodeId = battle.site.nodeId;
-    for (const w of winners) if (w.strength > 0) w.pos = { kind: 'node', nodeId };
+    for (const w of winners) {
+      if (w.strength <= 0 || (w.pos.kind === 'node' && w.pos.nodeId === nodeId)) continue;
+      w.pos = { kind: 'node', nodeId };
+      w.dugMin = 0;
+    }
     const winnerSide = winners[0]?.side;
     if (winnerSide && front.controlByNode[nodeId] !== winnerSide) {
       front.controlByNode[nodeId] = winnerSide;
@@ -358,6 +398,31 @@ export function resolveBattleV2(
 
 function siteName(t: FrontV2['theater'], site: CoarseBattle['site']): string {
   return site.kind === 'node' ? t.nodes[site.nodeId].name : edgeById(t, site.edgeId).kind === 'rail' ? 'the line' : 'the road';
+}
+
+// A screening force does not fight a stronger enemy: it falls back in front
+// of it, by the same graph retreat as a beaten force, with no losses. The
+// enemy's march goes on. True when the contact ended that way. A screen with
+// nowhere to go stays and fights.
+function screenFallsBack(front: FrontV2, c: Contact): boolean {
+  const pair = [forceById(front, c.attackerId), forceById(front, c.defenderId)];
+  for (const [f, other] of [pair, [pair[1], pair[0]]]) {
+    if (f.posture !== 'screen' || other.strength <= f.strength) continue;
+    const was = f.pos;
+    retreatForce(front, f, other.pos.kind === 'edge' ? other.pos.edgeId : other.lastEdgeId, { trapped: 'stay' });
+    if (f.pos !== was) return true;
+  }
+  return false;
+}
+
+// The free forces inside contact range of a fight's site, other than the two
+// that are fighting it: the ones the join step folds into a coarse battle and
+// the ones whose fire supports a fought one. ONE list for the contact card
+// and for staging, so the card's line is true.
+export function supportersOf(front: FrontV2, site: NetPos, principals: readonly number[]): Force[] {
+  return front.forces
+    .filter((f) => !principals.includes(f.id) && f.strength > 0 && f.engagedIn === null && graphGap(front.theater, f.pos, site) <= CONTACT_M)
+    .sort((a, b) => a.id - b.id);
 }
 
 export interface StepOptions {
@@ -400,6 +465,7 @@ export function stepWar(front: FrontV2, campaign: Campaign, opts: StepOptions = 
   const contacts = detectContacts(front);
   const pending: Contact[] = [];
   for (const c of contacts) {
+    if (screenFallsBack(front, c)) continue;
     if ((opts.autoBattle ?? (() => true))(c)) openBattle(front, c);
     else {
       haltAtContact(front, c);

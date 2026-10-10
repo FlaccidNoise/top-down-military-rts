@@ -259,6 +259,11 @@ for (const device of DEVICES) {
     await newCampaign(page);
     await page.evaluate(() => window.__game.freezeFx(1000));
     await page.evaluate(STATES[state]);
+    // Two frames before any real input: a new selection opens the force card
+    // and the camera makes room for it on the next frame, so a screen point
+    // read before that frame is stale (phone-preview pointed at empty road on
+    // one run in two).
+    await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
     await ACTS[state]?.(page, device);
     await page.waitForTimeout(150);
     if (PERF) {

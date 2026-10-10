@@ -7,6 +7,9 @@ import type { Side } from '../../sim/sim';
 import type { NetPos, Theater, TheaterEdge } from '../theater';
 
 export type ForceRole = 'line' | 'garrison' | 'reserve';
+// How a force carries itself (jtbug #786). March, forced march and screen are
+// ways of moving. Rest and dig in are ways of standing: a move order ends them.
+export type Posture = 'march' | 'forced' | 'rest' | 'dig' | 'screen';
 
 export interface Force {
   id: number;
@@ -32,12 +35,20 @@ export interface Force {
   repulsedAtMin: number | null;
   // Strength at muster. The counter's bar reads strength against it.
   establishment: number;
+  // A garrison's post: the node it sorties from and comes back to. Null for
+  // every other role.
+  homeNode: number | null;
+  posture: Posture;
+  // Minutes spent digging in at this spot. The position is done at DIG_IN_MIN.
+  dugMin: number;
 }
 
 // Creation shape: the realism fields default to fresh at the ONE chokepoint
 // (addForce), so disposition and test literals never carry boilerplate zeros.
-export type ForceInit = Omit<Force, 'id' | 'untracedMin' | 'fatigue' | 'lastEdgeId' | 'repulsedAtMin' | 'establishment'> &
-  Partial<Pick<Force, 'untracedMin' | 'fatigue' | 'lastEdgeId' | 'repulsedAtMin' | 'establishment'>>;
+type ForceDefaulted = 'untracedMin' | 'fatigue' | 'lastEdgeId' | 'repulsedAtMin' | 'establishment' | 'homeNode' | 'posture' | 'dugMin';
+export type ForceInit = Omit<Force, 'id' | ForceDefaulted> & Partial<Pick<Force, ForceDefaulted>>;
+
+export const garrisonPost = (f: Pick<Force, 'role' | 'pos'>): number | null => (f.role === 'garrison' && f.pos.kind === 'node' ? f.pos.nodeId : null);
 
 export interface CoarseBattle {
   id: number;
@@ -66,6 +77,8 @@ export interface StratContact {
   pos: NetPos;
   strength: number;
   seenMin: number;
+  moving: boolean; // seen on the march: pos.dir is then its heading
+  dug: boolean; // seen dug in
 }
 
 export const EVENT_LOG_CAP = 64;
@@ -99,7 +112,7 @@ export function addForce(front: FrontV2, f: ForceInit): Force {
   if (front.forces.length >= MAX_FORCES) {
     throw new Error(`addForce: MAX_FORCES (${MAX_FORCES}) reached — the force cap is asserted here and in makeDisposition, never at generation`);
   }
-  const force: Force = { untracedMin: 0, fatigue: 0, lastEdgeId: null, repulsedAtMin: null, establishment: f.strength, ...f, id: front.nextForceId++ };
+  const force: Force = { untracedMin: 0, fatigue: 0, lastEdgeId: null, repulsedAtMin: null, establishment: f.strength, homeNode: garrisonPost(f), posture: 'march', dugMin: 0, ...f, id: front.nextForceId++ };
   front.forces.push(force);
   return force;
 }

@@ -1540,6 +1540,7 @@ html.mobile #theater-hud .hbtn { min-height: 44px; }
 #theater-hud .k-front { height: 0; margin: 9px 0; border-top: 2.5px dashed #f4ead0; }
 #theater-hud .k-march, #theater-hud .k-preview { height: 0; margin: 8px 0; border-top: 2.5px solid #a9c4f5; }
 #theater-hud .k-preview { border-top: 3.5px solid #ffe9a0; }
+#theater-hud .k-enemy { border-top-color: #f0a79c; }
 #theater-hud .k-fight { width: 16px; height: 16px; margin: 0 14px; background: #f0963c; clip-path: polygon(50% 0, 62% 30%, 92% 10%, 72% 40%, 100% 50%, 72% 60%, 92% 90%, 62% 70%, 50% 100%, 38% 70%, 8% 90%, 28% 60%, 0 50%, 28% 40%, 8% 10%, 38% 30%); }
 #theater-hud .k-road { height: 0; margin: 7px 0; border-top: 3px solid #cbbb94; box-shadow: 0 5px 0 -1px #ab9d82, 0 9px 0 -1.2px #8b8269; }
 #theater-hud .k-rail { height: 0; margin: 9px 0; border-top: 2.4px dashed #7b7364; }
@@ -1563,9 +1564,11 @@ html.mobile #theater-hud .hbtn { min-height: 44px; }
 #theater-hud .th-sup-full { color: var(--muted); }
 #theater-hud .th-sup-low { color: #c9803c; }
 #theater-hud .th-sup-out { color: #b5533c; }
-/* Last row of a bottom-anchored card: the button keeps its place while the
-   ETA text above it changes every game minute. */
-#theater-hud .th-halt { display: block; margin-top: 6px; }
+#theater-hud .th-post { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+#theater-hud .th-post[hidden], #theater-hud .th-postfx[hidden], #theater-hud .th-pb[hidden] { display: none; }
+#theater-hud .th-pb { flex: 1 1 auto; min-height: 30px; padding: 2px 6px; font-size: 11px; white-space: nowrap; }
+#theater-hud .th-pb i { margin-right: 4px; font-style: normal; font-weight: bold; }
+#theater-hud .th-postfx { display: block; margin-top: 4px; font-size: 11px; color: var(--muted); }
 #theater-hud .th-log {
   max-height: 30vh;
   overflow-y: auto;
@@ -1686,6 +1689,16 @@ html.mobile #theater-hud .th-ev[data-ev] { padding: 6px 0; }
   #theater-hud .th-contact .fc-actions .hbtn { flex: 1; }
   #theater-hud .th-log { max-height: 22vh; margin-bottom: 4px; }
   #theater-hud .th-log:last-child, #theater-hud .th-force:last-child { margin-bottom: 4px; }
+}
+
+@media (max-width: 720px), (min-width: 721px) and (max-height: 520px) {
+  /* A phone, either way up: the card is compact. Postures and Halt are one
+     row of icon-first buttons, and the fatigue and supply lines show only
+     when they have news. */
+  #theater-hud .th-fat.nominal, #theater-hud .th-sup.nominal { display: none; }
+  #theater-hud .th-post { flex-wrap: nowrap; }
+  #theater-hud .th-pb { display: flex; flex: 1 1 0; flex-direction: column; align-items: center; justify-content: center; min-width: 0; min-height: 44px; padding: 2px 0; font-size: 9px; }
+  #theater-hud .th-pb i { margin: 0 0 2px; font-size: 15px; line-height: 1; }
 }
 
 @media (min-width: 721px) and (max-height: 520px) {

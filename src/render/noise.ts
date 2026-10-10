@@ -32,3 +32,21 @@ export function vec(x: number, y: number, salt: number, cell: number): [number, 
   }
   return [dx, dy];
 }
+
+// Value noise on a `cell`-metre lattice with smoothstep weights, 0..1.
+// Bilinear weights are fine for a tone drift under texture. Where the field is
+// seen bare (the out-of-focus surround) or moves geometry (a hedgerow's
+// wander) the bilinear lattice shows as creases.
+export function soft(x: number, y: number, cell: number, salt: number): number {
+  const gx = x / cell;
+  const gy = y / cell;
+  const ix = Math.floor(gx);
+  const iy = Math.floor(gy);
+  const fx = gx - ix;
+  const fy = gy - iy;
+  const ux = fx * fx * (3 - 2 * fx);
+  const uy = fy * fy * (3 - 2 * fy);
+  const a = hash(ix, iy, salt) * (1 - ux) + hash(ix + 1, iy, salt) * ux;
+  const b = hash(ix, iy + 1, salt) * (1 - ux) + hash(ix + 1, iy + 1, salt) * ux;
+  return a * (1 - uy) + b * uy;
+}

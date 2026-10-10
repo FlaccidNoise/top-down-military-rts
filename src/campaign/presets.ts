@@ -12,7 +12,9 @@ export interface Preset {
 
 // townDensity is towns per 100 km²: the default 24×18 km theater (432 km²) at
 // density 1 asks for 4.3 towns, which is the plausibility band §2 pins at 3-5.
-// recon stays 'omniscient' until ContactIntel and its doctrine re-tune ship (S53).
+// The three standard presets play under fog (recon 'contacts', jtbug #786):
+// the Screen posture is the player's way to see. Skirmish keeps every realism
+// rule off, fog with them.
 export const PRESETS: readonly Preset[] = [
   {
     name: 'Normandy Bocage',
@@ -33,7 +35,7 @@ export const PRESETS: readonly Preset[] = [
       blueCompanies: 3,
       redStrength: 2,
       supply: true,
-      recon: 'omniscient',
+      recon: 'contacts',
       nightTempo: true,
     },
   },
@@ -56,7 +58,7 @@ export const PRESETS: readonly Preset[] = [
       blueCompanies: 3,
       redStrength: 3,
       supply: true,
-      recon: 'omniscient',
+      recon: 'contacts',
       nightTempo: true,
     },
   },
@@ -79,7 +81,7 @@ export const PRESETS: readonly Preset[] = [
       blueCompanies: 4,
       redStrength: 3,
       supply: true,
-      recon: 'omniscient',
+      recon: 'contacts',
       nightTempo: true,
     },
   },
