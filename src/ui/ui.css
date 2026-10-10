@@ -533,6 +533,7 @@ button.hbtn.active { background: var(--chip-active-bg); border-color: var(--ambe
 #mainmenu .db-scroll { overflow-y: auto; min-height: 0; touch-action: pan-y; }
 #mainmenu .db { max-width: 640px; margin: 48px auto 0; padding: 0 var(--sp-5); }
 #mainmenu h1 { letter-spacing: 6px; font-size: 26px; margin: 0 0 var(--sp-1); }
+#mainmenu .mm-tag { margin: 0; color: var(--paper); }
 #mainmenu .mm-panel { margin: var(--sp-5) 0; }
 #mainmenu .mm-continue { margin-top: var(--sp-4); }
 #mainmenu .mm-continue-actions { display: flex; gap: 10px; margin-top: var(--sp-2); }
@@ -576,6 +577,15 @@ button.hbtn.active { background: var(--chip-active-bg); border-color: var(--ambe
 #mainmenu.first-run .db-actions { flex-wrap: wrap; align-items: center; }
 #mainmenu .mm-big { flex: 1 0 100%; padding: var(--sp-4) 22px; font-size: 20px; letter-spacing: 4px; }
 #mainmenu .mm-quiet { border-color: transparent; padding: var(--sp-2) var(--sp-2); min-height: 44px; }
+/* Over the battle behind the menu (render/backdrop.ts) the title, its line and
+   the quiet links are text on a moving picture: a dark edge keeps them read.
+   Play is a filled button and needs none. */
+.menu-backdrop #mainmenu h1,
+.menu-backdrop #mainmenu p,
+.menu-backdrop #mainmenu .mm-quiet { text-shadow: 0 0 3px #0d0f0b, 0 0 8px #0d0f0b, 0 1px 12px #0d0f0b; }
+.menu-backdrop #mainmenu .mm-quiet { color: var(--paper); }
+/* The later menu's outline buttons get a dark fill for the same reason. */
+.menu-backdrop #mainmenu button:not(.primary):not(.mm-quiet) { background: rgba(13, 15, 11, 0.72); color: var(--paper); }
 #mainmenu button.primary { background: var(--chip-bg); color: var(--amber-bright); border-color: var(--amber); font-weight: var(--fw-label); }
 #mainmenu button.primary:hover:not(:disabled) { background: var(--chip-active-bg); }
 
@@ -1350,9 +1360,14 @@ html.mobile #topbar .panel { padding: 2px 6px; }
 /* Beside the title where the screen is wide enough, under it where it is not. */
 html.mobile #obj-strip { flex: 1 1 auto; justify-content: space-between; min-width: 0; }
 /* A defender's goal is the longer line (battle-goal.ts GOAL_LABEL). At 390 px
-   the bars give way to it, the words and the numbers do not. */
-html.mobile #obj-strip .obj-side { min-width: 0; }
-html.mobile #obj-strip .obj-bar { flex: 0 1 72px; min-width: 24px; }
+   the bars give way to it and nothing else does. A side with a bar in it may
+   shrink, and inside it only the bar can: the words and the numbers do not
+   wrap. A side without one (the enemy as a coarse read) keeps its width, or
+   its last word slid under the next side's first. */
+html.mobile #obj-strip .obj-kind,
+html.mobile #obj-strip .obj-side:not(:has(> .obj-bar)) { flex: none; }
+html.mobile #obj-strip .obj-side:has(> .obj-bar) { flex: 0 1 auto; min-width: 0; }
+html.mobile #obj-strip .obj-bar { flex: 0 1 72px; min-width: 0; }
 /* The action buttons moved into the touchbar; keeping both would put the only
    copy of Pause at the far end of a thumb's reach. */
 html.mobile #tb-actions { display: none; }
@@ -1412,6 +1427,9 @@ html.mobile #debrief button { min-height: 44px; }
 @media (max-width: 620px) {
   html.mobile #mainmenu .db-actions,
   html.mobile #pausemenu .db-actions { flex-direction: column; }
+  /* The first run is one button and two links: Play the full width, the links
+     in a row under it. In a column Play's full-width basis became its height. */
+  html.mobile #mainmenu.first-run .db-actions { flex-direction: row; }
 }
 html.mobile #manual #mn-close { width: 44px; height: 44px; }
 html.mobile #manual #mn-search,
@@ -1467,13 +1485,19 @@ html.mobile #floormenu .fm-row { min-height: 44px; box-sizing: border-box; displ
 
 /* ---- floor menu ---- */
 /* The menu hangs off <body>, not #hud, so the panel background rule up there
-   never reached it and the rows floated as bare text over the map. */
+   never reached it and the rows floated as bare text over the map. Nor did
+   the HUD's type and colour: the rows were the browser's black serif on ink.
+   It is the answer the player's last press asked for, so it goes over
+   everything, a tutorial bubble included (.coach is 20): a hold on a house
+   during "hold the ground to move them" opened it under the bubble. */
 #floormenu {
   position: absolute;
-  z-index: 7;
+  z-index: 21;
+  color: var(--paper);
+  font: var(--fs-md) / 1.4 var(--font-hud);
   padding: 3px 0;
   min-width: 100px;
-  background: var(--ink);
+  background: rgb(var(--ink-rgb)); /* solid: what it covers must not read through it */
   border: 1px solid var(--border);
   border-radius: 3px;
 }
@@ -1564,14 +1588,6 @@ html.mobile #theater-hud .hbtn { min-height: 44px; }
   font-weight: var(--fw-label);
 }
 #theater-hud .is-paused .st-speed { opacity: 0.45; }
-#theater-hud .th-nocontact {
-  padding: 6px 14px;
-  color: #c9b891;
-  font-size: 12px;
-  letter-spacing: 0.06em;
-  white-space: nowrap;
-  pointer-events: none;
-}
 
 /* The side column. */
 #theater-hud .th-side {
@@ -1747,7 +1763,6 @@ html.mobile #theater-hud .th-ev[data-ev] { padding: 6px 0; }
     padding: 6px 8px;
     font-size: 11px;
   }
-  #theater-hud .th-nocontact { white-space: normal; text-align: center; }
   /* The column dissolves: its blocks join the layer's own column. */
   #theater-hud .th-side { display: contents; }
   #theater-hud .th-strip,
@@ -1825,7 +1840,6 @@ html.mobile #theater-hud .th-ev[data-ev] { padding: 6px 0; }
   }
   #theater-hud .th-top { flex-wrap: wrap; justify-content: center; gap: 6px; padding: 4px 6px; white-space: normal; }
   #theater-hud .th-controls { flex-wrap: wrap; justify-content: center; }
-  #theater-hud .th-nocontact { white-space: normal; text-align: center; }
   #theater-hud .th-side { grid-column: 1; grid-row: 2; position: static; width: auto; min-height: 0; padding: 4px; gap: 4px; }
   /* Rows and the Key button are finger targets here too: 44 px. The strip
      scrolls when a selected company's card leaves it less room than that. */

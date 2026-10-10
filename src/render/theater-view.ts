@@ -183,6 +183,9 @@ const WASH_FADE_MS = 900;
 const NIGHT_ALPHA = 0.5;
 const NIGHT = '6, 10, 30';
 
+// The flash line's plate, in CSS px.
+const FLASH_H = 20;
+
 export class TheaterView {
   zoomMul = 1;
   panX = 0;
@@ -197,6 +200,8 @@ export class TheaterView {
   // on the next draw. A later event clears the flash: at 60x a six-second
   // "Able moving" outlived the march by hours.
   private flashSig: string | undefined | null = null;
+  /** Where the flash line was drawn on the last frame, in CSS px. null = none. The gates read it. */
+  flashRect: { left: number; top: number; right: number; bottom: number } | null = null;
   // The render clock: wall time, so the map is alive while the war is paused
   // and does not strobe at 60x. scripts/stratsweep.mjs freezes it.
   frozenAt: number | null = null;
@@ -822,24 +827,29 @@ export class TheaterView {
     // Chrome lives in the TheaterHud DOM; the canvas keeps only the flash.
     void paused;
     void speed;
+    this.flashRect = null;
     if (this.flashText && performance.now() < this.flashUntil) {
-      // Under the top bar is unreadable, and that bar wraps to two rows on a
-      // phone — so its height is measured, never assumed. On a phone the strip
-      // stacks under the bar as well, and the inset is where the map starts.
-      // Turned on its side the bar is in the left column, beside the map and
-      // not over it: there it pushes nothing down.
-      const bar = typeof document === 'undefined' ? null : document.querySelector('#theater-hud .th-top')?.getBoundingClientRect();
-      const over = bar && bar.height > 0 && bar.right > this.inset.left + 1;
-      const x = (this.inset.left + w - this.inset.right) / 2;
-      const y = Math.max(over ? bar.bottom : 4, this.inset.top) + 20;
+      // The line goes on the map and under no DOM panel: the canvas is behind
+      // every one of them. It starts at the top of the map (the inset: under
+      // the bar and, on a phone, the strip stacked below it) and steps down
+      // past any panel still in its way, on a plate because the place it
+      // lands has a town's name on it as often as not.
       ctx.textAlign = 'center';
       ctx.font = '13px ui-monospace, monospace';
-      // On a plate: the line lands on whatever town label is there.
-      const tw = ctx.measureText(this.flashText).width;
+      const tw = ctx.measureText(this.flashText).width + 16;
+      const x = (this.inset.left + w - this.inset.right) / 2;
+      const panels = typeof document === 'undefined' ? [] : Array.from(document.querySelectorAll('#theater-hud .panel'), (e) => e.getBoundingClientRect()).filter((r) => r.width > 0 && r.height > 0);
+      let top = this.inset.top + 6;
+      for (let i = 0; i < panels.length; i++) {
+        const hit = panels.find((r) => r.left < x + tw / 2 && r.right > x - tw / 2 && r.top < top + FLASH_H && r.bottom > top);
+        if (!hit) break;
+        top = hit.bottom + 6;
+      }
+      this.flashRect = { left: x - tw / 2, top, right: x + tw / 2, bottom: top + FLASH_H };
       ctx.fillStyle = 'rgba(14, 17, 11, 0.88)';
-      ctx.fillRect(x - tw / 2 - 8, y - 14, tw + 16, 20);
+      ctx.fillRect(x - tw / 2, top, tw, FLASH_H);
       ctx.fillStyle = '#e8dcc4';
-      ctx.fillText(this.flashText, x, y);
+      ctx.fillText(this.flashText, x, top + 14);
     }
   }
 

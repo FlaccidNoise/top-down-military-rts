@@ -49,6 +49,9 @@ export function esc(s: string): string {
   return s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 }
 
+/** What this is, under the title: one line, for somebody who has never seen it. */
+export const TAGLINE = 'Command a US rifle company.';
+
 const CONTINUE_ID = 'mm-continue';
 const CONTINUE_LEGACY_ID = 'mm-continue-legacy';
 const DISCARD_ID = 'mm-discard';
@@ -186,6 +189,7 @@ export class MainMenu {
     // On a first run there is no campaign to continue and no reason to say so.
     this.el.innerHTML = `${renderStorageBanner(this.storageWritable)}<div class="db-scroll"><div class="db"><div class="mm-panel">
       <h1>NORMANDY</h1>
+      <p class="mm-tag">${TAGLINE}</p>
       ${firstRun ? '' : renderContinueBlock(this.probe)}
     </div></div></div>
     <div class="db-actions">

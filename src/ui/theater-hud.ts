@@ -46,6 +46,10 @@ const NEXT = {
   order: MOBILE ? 'Hold a town to march there.' : 'Right-click a town to march there.',
   play: 'Press Play.',
   marching: 'On the march.',
+  // Under fog with no enemy reported. These two replace a banner that was a
+  // second "what next" line stacked over this one.
+  scout: MOBILE ? 'No contact. Tap a company.' : 'No contact. Click a company.',
+  scouting: 'On the march. No contact.',
 } as const;
 
 // The key. Each row is a swatch and a few words; the counters are drawn by
@@ -110,7 +114,6 @@ export class TheaterHud {
   private readonly target: HTMLElement;
   private readonly pause: HTMLElement;
   private readonly speeds: HTMLElement[];
-  private readonly noContact: HTMLElement;
   private readonly next: HTMLElement;
   private readonly objs: HTMLElement;
   private objRows: { nodeId: number; who: HTMLElement; row: HTMLElement }[] = [];
@@ -148,7 +151,6 @@ export class TheaterHud {
             <button class="hbtn th-menu" data-th="menu" title="Menu, keybinds and the Field Manual">⚙</button>
           </span>
         </div>
-        <div class="panel th-nocontact" hidden>NO CONTACT REPORTED — advance a company to find the enemy</div>
       </div>
       <div class="th-side">
         <div class="panel th-strip">
@@ -179,7 +181,6 @@ export class TheaterHud {
     this.target = q('.th-target');
     this.pause = q('.st-pause');
     this.speeds = Array.from(this.root.querySelectorAll<HTMLElement>('.st-speed'));
-    this.noContact = q('.th-nocontact');
     this.next = q('.th-next');
     this.objs = q('.th-objs');
     this.reinf = q('.th-reinf');
@@ -302,16 +303,16 @@ export class TheaterHud {
     this.top.classList.toggle('is-paused', paused);
     this.pause.textContent = paused ? '▶ Play' : '⏸ Pause';
     this.speeds.forEach((b, i) => b.classList.toggle('active', i === speedIdx));
-    this.noContact.hidden = !(reconOn && contacts === 0);
 
     // What next: one line, the objectives, the replacements clock.
+    const blind = reconOn && contacts === 0;
     this.next.textContent = inContact
       ? document.getElementById('req') ? NEXT.requisition : NEXT.contact
       : sel && sel.path.length === 0 && sel.engagedIn === null
         ? NEXT.order
         : marching
-          ? paused ? NEXT.play : NEXT.marching
-          : sel ? '' : NEXT.select;
+          ? paused ? NEXT.play : blind ? NEXT.scouting : NEXT.marching
+          : sel ? '' : blind ? NEXT.scout : NEXT.select;
     const ids = objectives.join(',');
     if (ids !== this.objSig) {
       // Built once per war: the rows are buttons, and a button must outlive
@@ -398,6 +399,11 @@ export class TheaterHud {
   }
 
   hideContact(): void {
+    // Emptied, not only hidden: the frame loop and the tutorial ask whether a
+    // requisition card is up by its #req, and a hidden one left behind
+    // answered yes for good. The next requisition then never showed while the
+    // clock held for it.
+    this.contact.innerHTML = '';
     this.contact.hidden = true;
     this.root.classList.remove('in-contact');
   }

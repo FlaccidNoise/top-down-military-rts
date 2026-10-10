@@ -371,7 +371,7 @@ const hud = new Hud({
     if (!aiControl && sim.airstrikesLeft.blue > 0) setTargetMode(targetMode === 'air' ? '' : 'air');
   },
   togglePause: () => {
-    if (mode === 'strategic') stratPaused = !stratPaused;
+    if (mode === 'strategic') toggleStratPause();
     else paused = !paused;
   },
   cycleSpeed: () => { battleSpeed = nextSpeed(battleSpeed); },
@@ -439,16 +439,24 @@ if (touchbarEl && topbarEl && typeof ResizeObserver === 'function') {
   watch.observe(topbarEl);
   publishBars();
 }
+// The theater clock's Play and Pause, from the button, the key and the touch
+// bar alike. A contact or a requisition holds the clock until it is answered
+// (the frame loop), so while one waits the control stays on Play and says what
+// is in the way: a label that flipped to Pause over a stopped clock was a lie.
+function toggleStratPause(): void {
+  const v2 = S().v2;
+  if (v2 && !opEnded) {
+    if (v2.pending) return v2.view.flash('Answer the contact first');
+    if (requisitionDue(v2.front)) return v2.view.flash('Pick a requisition first');
+  }
+  stratPaused = !stratPaused;
+}
 const stratHud = new StratHud({
-  togglePause: () => { stratPaused = !stratPaused; },
+  togglePause: toggleStratPause,
   setSpeed: (i) => { speedIdx = i; },
 });
 const theaterHud = new TheaterHud({
-  togglePause: () => {
-    const v2 = S().v2;
-    if (v2 && requisitionDue(v2.front) && !v2.pending) return v2.view.flash('Pick a requisition first');
-    stratPaused = !stratPaused;
-  },
+  togglePause: toggleStratPause,
   setSpeed: (i) => { speedIdx = i; },
   openMenu: () => { openPauseMenu(); },
   fitAll: () => { S().v2?.view.fitAll(view.w, view.h); },
@@ -720,6 +728,8 @@ function theaterMark(mark: WorldMark): Circle | null {
     const n = capturedObjective(v2);
     if (n === null) return null;
     const on = v2.front.forces.find((f) => f.side === 'blue' && f.strength > 0 && f.pos.kind === 'node' && f.pos.nodeId === n);
+    // Selected: its card is up and the bubble is on the button. The ring has done its work.
+    if (on && on.id === v2.selectedForce) return null;
     const r = on && v2.view.counterOf(on.id);
     if (r) return { x: (r.x0 + r.x1) / 2, y: (r.y0 + r.y1) / 2, r: Math.hypot(r.x1 - r.x0, r.y1 - r.y0) / 2 + 4 };
     const at = v2.front.theater.nodes[n].pos;
@@ -1033,12 +1043,18 @@ function pollDrill(d: NonNullable<typeof drill>): void {
   if (tutorial.awaits('fire-armed') && armedOrder === 'fire') tutorial.notify('fire-armed');
   if (tutorial.wants('enemy-seen') && enemiesInSight(sim).length > 0) tutorial.notify('enemy-seen');
   if (tutorial.wants('house-quiet') && houseIsQuiet(d, drillOther(d))) tutorial.notify('house-quiet');
-  if (tutorial.wants('team-balked')) {
+  // A refusal while the step on screen already says to fire needs no line of
+  // its own. Raised there it took the screen for one frame, gave it back to
+  // "Enemy seen", and stopped a battle the player had just pressed Play on
+  // (the squad sent to the hedge can refuse that march once it is shot at).
+  const firing = tutorial.awaits('fire-armed') || tutorial.awaits('fire-ordered');
+  if (firing || tutorial.wants('team-balked')) {
     for (const q of d.rifles) {
       if (!hasRefused(sim, q)) continue;
       const refused = sim.squads[q].teamIds.map((t) => sim.teams[t].orderState.order).find((o) => o !== null);
       if (!refused || d.asked.has(refused)) continue;
       d.asked.add(refused);
+      if (firing) continue;
       tutorial.notify('team-balked');
       break;
     }
@@ -2267,7 +2283,7 @@ window.addEventListener('keydown', (e) => {
   
   // Global actions
   if (action === 'pause') {
-    if (mode === 'strategic') stratPaused = !stratPaused;
+    if (mode === 'strategic') toggleStratPause();
     else paused = !paused;
     return;
   }
@@ -2453,7 +2469,10 @@ let heldAt = -1e9;
 function frame(now: number): void {
   const dtReal = Math.min(now - last, 250);
   last = now;
-  tutorial?.frame(menu.isOpen || manual.isOpen);
+  // A requisition card is a decision the tutorial does not explain: while it is
+  // up the bubble, the goal line and the ring stand down, and come back after.
+  const requisition = mode === 'strategic' && document.getElementById('req') !== null;
+  tutorial?.frame(menu.isOpen || manual.isOpen || requisition);
   const held = mode === 'battle' && now < holdUntil;
   if (!(mode === 'battle' ? paused : stratPaused) && !held) fxNow += dtReal;
   if (mode === 'battle') easeCamera(dtReal);
@@ -2500,7 +2519,7 @@ function frame(now: number): void {
     if (tutorial?.wants('objective-captured') && !v2.pending && capturedObjective(v2) !== null) tutorial.notify('objective-captured');
     // One thing talks at a time: while a tutorial step is on screen the
     // theater's own "what next" line is quiet (ui.css, .coached).
-    theaterHud.root.classList.toggle('coached', tutorial?.isShowing ?? false);
+    theaterHud.root.classList.toggle('coached', (tutorial?.isShowing ?? false) && !requisition);
     v2.view.inset = theaterInset();
     if (v2.needsFrame) {
       v2.needsFrame = false;
@@ -2520,7 +2539,7 @@ function frame(now: number): void {
     v2.view.clampPan(view.w, view.h);
     v2.view.preview = theaterPreview(v2);
     v2.view.draw(ctx, v2.front, v2.selectedForce, stratPaused, SPEEDS[speedIdx], view.w, view.h);
-    const ring = tutorial?.ring();
+    const ring = requisition ? null : tutorial?.ring();
     if (ring) drawMarkRing(ctx, ring, now);
     if (touchHold) drawHoldRing(ctx, touchHold, now);
   } else if (mode === 'strategic') {

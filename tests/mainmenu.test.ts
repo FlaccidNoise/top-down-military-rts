@@ -1,7 +1,7 @@
 // @ts-expect-error no @types/node in this project; node:fs still resolves fine at runtime under vitest
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { renderActions, renderContinueBlock, renderStorageBanner, type MenuView, type SaveProbe } from '../src/ui/mainmenu';
+import { renderActions, renderContinueBlock, renderStorageBanner, TAGLINE, type MenuView, type SaveProbe } from '../src/ui/mainmenu';
 
 describe('renderContinueBlock — five states from literal SaveProbes', () => {
   it('none: Continue is disabled-with-a-reason, never hidden', () => {
@@ -92,6 +92,13 @@ describe('renderActions: what the menu offers', () => {
 
   it('has no tutorial switch where no tutorial exists', () => {
     expect(ids(renderActions(NONE, { ...later, tutorial: null }))).not.toContain('mm-tutorial');
+  });
+});
+
+describe('the line under the title', () => {
+  it('says what this is in at most eight words, and types no game number', () => {
+    expect(TAGLINE.split(/\s+/).length).toBeLessThanOrEqual(8);
+    expect(TAGLINE).not.toMatch(/\d/);
   });
 });
 
