@@ -1,36 +1,37 @@
 import { describe, expect, it } from 'vitest';
 import { BOOM } from '../src/render/audio';
-import { BLAST, BLAST_FLOOR, blastOf, blastScale, FX_FLOOR, fxScale, type BlastKind } from '../src/render/fx';
+import { BLAST, BLAST_FLOOR, blastOf, blastScale, FX_FLOOR, fxScale } from '../src/render/fx';
+import type { BoomKind } from '../src/sim/sim';
 
-// The sim names a blast (`kind`) and sizes it (`r`) on output-only fields that
-// older builds and the harness may not send. Every consumer has to survive
+// The sim names a blast (`kind`) and sizes most of them (`r`; a brew-up has
+// none). The harness stages booms with neither. Every consumer has to survive
 // both being absent, and garbage in either must never reach a draw call or an
 // AudioParam: cosmetic code cannot be allowed to throw in the frame loop.
 describe('blastOf', () => {
   it('draws a boom with no kind and no radius as the reference mortar', () => {
-    const b = blastOf({ x: 1, y: 2 });
+    const b = blastOf({});
     expect(b.kind).toBe('mortar');
     expect(b.spec).toBe(BLAST.mortar);
     expect(b.k).toBe(1);
   });
 
   it('falls back to the mortar row for a kind this build does not know', () => {
-    const b = blastOf({ x: 0, y: 0, kind: 'nuke' as BlastKind });
+    const b = blastOf({ kind: 'nuke' as BoomKind });
     expect(b.kind).toBe('mortar');
   });
 
   it('draws at the reference size when the radius is unusable', () => {
-    for (const r of [Number.NaN, 0, -3]) expect(blastOf({ x: 0, y: 0, kind: 'shell', r }).k, String(r)).toBe(1);
+    for (const r of [Number.NaN, 0, -3]) expect(blastOf({ kind: 'shell', r }).k, String(r)).toBe(1);
   });
 
   it('is 1 at the reference radius, grows with it, and stays inside its clamp', () => {
-    for (const kind of Object.keys(BLAST) as BlastKind[]) {
+    for (const kind of Object.keys(BLAST) as BoomKind[]) {
       const ref = BLAST[kind].ref;
-      expect(blastOf({ x: 0, y: 0, kind, r: ref }).k, kind).toBeCloseTo(1, 10);
-      expect(blastOf({ x: 0, y: 0, kind, r: ref * 2 }).k, kind).toBeGreaterThan(1);
-      expect(blastOf({ x: 0, y: 0, kind, r: ref / 2 }).k, kind).toBeLessThan(1);
+      expect(blastOf({ kind, r: ref }).k, kind).toBeCloseTo(1, 10);
+      expect(blastOf({ kind, r: ref * 2 }).k, kind).toBeGreaterThan(1);
+      expect(blastOf({ kind, r: ref / 2 }).k, kind).toBeLessThan(1);
       for (const r of [1e-9, 1e9, Infinity]) {
-        const k = blastOf({ x: 0, y: 0, kind, r }).k;
+        const k = blastOf({ kind, r }).k;
         expect(k, `${kind} @ ${r}`).toBeGreaterThanOrEqual(0.45);
         expect(k, `${kind} @ ${r}`).toBeLessThanOrEqual(1.6);
       }
@@ -39,7 +40,7 @@ describe('blastOf', () => {
 });
 
 describe('BLAST recipes', () => {
-  const kinds = Object.keys(BLAST) as BlastKind[];
+  const kinds = Object.keys(BLAST) as BoomKind[];
 
   it('makes the tank kill the biggest fire on the field and the grenade the smallest', () => {
     for (const k of kinds) {

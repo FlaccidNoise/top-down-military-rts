@@ -355,9 +355,9 @@ export function stageMorale(page, { x, y }) {
 // Desktop only: three ages × three kinds is 9 live effects, and MAX_MORALE_FX
 // is 10 there but 6 under MOBILE — staged on a phone the last column silently
 // never lands.
-export function stageMoraleFx(page, { x, y, ages = [40, 150, 300] }) {
+export function stageMoraleFx(page, { x, y, ages = [40, 150, 300], scale = 30 }) {
   return page.evaluate(
-    ({ x, y, ages }) => {
+    ({ x, y, ages, scale }) => {
       const g = window.__game;
       const canvas = document.querySelector('canvas');
       const ctx = canvas.getContext('2d');
@@ -371,11 +371,11 @@ export function stageMoraleFx(page, { x, y, ages = [40, 150, 300] }) {
       });
       g.cam.x = x;
       g.cam.y = y + 11;
-      g.cam.scale = 30;
+      g.cam.scale = scale;
       g.renderer.draw(ctx, g.cam, [], T);
       return canvas.toDataURL('image/png');
     },
-    { x, y, ages }
+    { x, y, ages, scale }
   );
 }
 

@@ -1,4 +1,5 @@
 import type { WeaponKey } from '../sim/data';
+import type { BoomKind } from '../sim/sim';
 import { EDGE, type GameMap } from '../sim/map';
 import { WIND_SPEED } from '../sim/wind';
 import { SUN, sun, WIND as LIGHT_WIND } from './light';
@@ -73,18 +74,6 @@ export function blastScale(scale: number): number {
   return Math.max(scale, BLAST_FLOOR);
 }
 
-// What went off. The sim names it on the boom (`kind`) and sizes it (`r`, the
-// frag radius in metres); the renderer and the audio layer both key on this.
-export type BlastKind = 'grenade' | 'shell' | 'mortar' | 'at' | 'brewup' | 'bomb';
-
-// A boom as the sim reports it. `r` and `kind` are output-only fields the sim
-// may not send; blastOf() covers both being absent.
-export interface BoomEvent {
-  x: number;
-  y: number;
-  r?: number; // frag radius, m
-  kind?: BlastKind;
-}
 
 // One row per kind: the same layers in the same order, in different
 // proportions, which is what makes a grenade and a mortar round two different
@@ -121,7 +110,7 @@ export interface BlastSpec {
   crater: number; // scorch decal multiplier
 }
 
-export const BLAST: Record<BlastKind, BlastSpec> = {
+export const BLAST: Record<BoomKind, BlastSpec> = {
   grenade: { ref: 3, flash: 1.6, fire: 0.85, burn: 110, rim: 0.35, ring: 3.4, spokes: 8, throw: 2.4, debris: 4, sparks: 0, dust: 0.8, smoke: 0.3, hang: 2600, shake: 0.3, crater: 0.45 },
   mortar: { ref: 5, flash: 3, fire: 1.7, burn: 200, rim: 0.55, ring: 8, spokes: 16, throw: 5, debris: 10, sparks: 0, dust: 0.8, smoke: 0.35, hang: 5500, shake: 0.62, crater: 1 },
   shell: { ref: 7, flash: 3.8, fire: 2.4, burn: 280, rim: 0.75, ring: 10, spokes: 12, throw: 4.5, debris: 14, sparks: 5, dust: 0.55, smoke: 0.8, hang: 6000, shake: 0.78, crater: 1.25 },
@@ -130,11 +119,14 @@ export const BLAST: Record<BlastKind, BlastSpec> = {
   brewup: { ref: 6, flash: 6, fire: 4.2, burn: 650, rim: 0.95, ring: 9, spokes: 0, throw: 0, debris: 12, sparks: 26, dust: 0.1, smoke: 1, hang: 9000, shake: 0.95, crater: 1.3 },
 };
 
-// The recipe for a boom, and how big to draw it. A boom with no kind is the
-// mortar row, which is what every blast was before the sim named them; one
-// with no usable radius is drawn at its kind's reference size. Size goes as
-// r^0.6 so a kind keeps its character across the radii the sim sends it at.
-export function blastOf(b: BoomEvent): { kind: BlastKind; spec: BlastSpec; k: number } {
+// The recipe for a boom, and how big to draw it. The sim names every blast
+// (sim.ts BoomEvent.kind) and sizes most (`r`, the frag radius; a brew-up has
+// none). Neither is trusted to be there: the harness stages a bare `{x, y}`,
+// and cosmetic code must not throw on a kind it has never heard of. A boom
+// with no usable kind is the mortar row; one with no usable radius is drawn at
+// its kind's reference size. Size goes as r^0.6 so a kind keeps its character
+// across the radii the sim sends it at.
+export function blastOf(b: { r?: number; kind?: BoomKind }): { kind: BoomKind; spec: BlastSpec; k: number } {
   const kind = b.kind !== undefined && b.kind in BLAST ? b.kind : 'mortar';
   const spec = BLAST[kind];
   // Written so NaN fails it and falls to 1, the same rule as audio.ts place().

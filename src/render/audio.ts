@@ -1,7 +1,7 @@
 import type { WeaponKey } from '../sim/data';
 import type { Camera } from './camera';
-import type { MeleeEvent, ShotEvent, UnitEvent } from '../sim/sim';
-import { blastOf, type BlastKind, type BoomEvent } from './fx';
+import type { BoomEvent, BoomKind, MeleeEvent, ShotEvent, UnitEvent } from '../sim/sim';
+import { blastOf } from './fx';
 import { MOBILE } from './view';
 
 // Procedural WebAudio combat layer. No assets: every sound is synthesized from
@@ -67,7 +67,7 @@ interface BoomVoice {
   roll?: boolean; // a long low tail after the body
 }
 
-export const BOOM: Record<BlastKind, BoomVoice> = {
+export const BOOM: Record<BoomKind, BoomVoice> = {
   grenade: { body: 320, bodyDecay: 0.28, bodyGain: 0.8, sub: 80, subDecay: 0.3, subGain: 0.5, crack: 1800, crackGain: 0.5 },
   mortar: { body: 200, bodyDecay: 0.55, bodyGain: 1.1, sub: 64, subDecay: 0.6, subGain: 0.9, crack: 1400, crackGain: 0.35 },
   shell: { body: 170, bodyDecay: 0.7, bodyGain: 1.2, sub: 55, subDecay: 0.75, subGain: 1, crack: 1200, crackGain: 0.4 },

@@ -1,12 +1,12 @@
 import type { Emplacement } from '../sim/emplacement';
 import { smokeAxisAt } from '../sim/wind';
-import { MELEE_STRIKE_RANGE, stanceOf, type BreachEvent, type MeleeEvent, type ShotEvent, type Side, type Sim, type Soldier, type UnitEvent, type Vehicle } from '../sim/sim';
+import { MELEE_STRIKE_RANGE, stanceOf, type BoomEvent, type BreachEvent, type MeleeEvent, type ShotEvent, type Side, type Sim, type Soldier, type UnitEvent, type Vehicle } from '../sim/sim';
 import { gunOf, tapsOf } from './audio';
 import type { Camera } from './camera';
 import { DecalLayer } from './decals';
 import { bandFor, CRAWL_FRAMES, DUDE_SCALE, getShadowSprite, getSprite, glintSprite, headOffset, kitVariant, SPRITE_MIN_SCALE, SPRITE_SPAN, tier, WALK_FRAMES, weaponClass, type Pose } from './dudes';
 import { emplacementBandFor, emplacementFootprintRadius, emplacementSpan, getEmplacementShadow, getEmplacementSprite } from './emplacements';
-import { ballistic, blastOf, blastScale, blit, FLASH, flashClass, fxDetail, fxScale, hazeBand, hotPass, SPIKE_SIDES, traceOvershoot, WIND, type BlastSpec, type BoomEvent, type FlashSpec, type FxKind, type Overshoot } from './fx';
+import { ballistic, blastOf, blastScale, blit, FLASH, flashClass, fxDetail, fxScale, hazeBand, hotPass, SPIKE_SIDES, traceOvershoot, WIND, type BlastSpec, type FlashSpec, type FxKind, type Overshoot } from './fx';
 import { SUN, shadowSoftAlpha, sun } from './light';
 import { MarkLayer } from './marks';
 import { PallLayer } from './pall';
@@ -16,14 +16,10 @@ import { TerrainLayer } from './terrain';
 import { MOBILE, view } from './view';
 import { getVehicleShadow, getVehicleSprite, occBucket, trackGauge, turretBlob, turretCenter, vehicleBandFor, VEHICLE_SPAN } from './vehicles';
 
-// A ShotEvent with the output-only ids the sim may attach: who fired and whom
-// at. Every reader treats them as absent-by-default.
-export type ShotFx = ShotEvent & { shooterId?: number; targetId?: number };
-
 // One ShotEvent is one abstracted attack. An automatic weapon's attack is a
 // burst, drawn as `taps` rounds `gap` ms apart — the same two numbers the
 // audio layer voices it with (audio.ts gunOf/tapsOf).
-interface Tracer extends ShotFx {
+interface Tracer extends ShotEvent {
   at: number; // ms timestamp
   over?: Overshoot; // misses only: where the round actually came down
   taps: number;
@@ -331,7 +327,7 @@ export class Renderer {
     for (const [x, y, seed] of craterSpots(sim.map, this.terrain.index)) this.decals.oldCrater(x, y, seed);
   }
 
-  addEvents(events: ShotFx[], now: number): void {
+  addEvents(events: ShotEvent[], now: number): void {
     for (const e of events) {
       const gun = gunOf(e.weapon);
       const taps = tapsOf(gun);
@@ -437,7 +433,7 @@ export class Renderer {
   }
 
   // Heat the weapon this shot came from (see Firing).
-  private noteFiring(e: ShotFx, taps: number, now: number, seen: () => boolean): void {
+  private noteFiring(e: ShotEvent, taps: number, now: number, seen: () => boolean): void {
     const d = Math.hypot(e.tx - e.fx, e.ty - e.fy);
     if (!(d > 0)) return; // also drops a NaN bearing
     const ux = (e.tx - e.fx) / d;
@@ -1878,9 +1874,12 @@ export class Renderer {
   // man losing his nerve is not an additive event.
   private drawMoraleFx(ctx: CanvasRenderingContext2D, cam: Camera, m: MoraleFx, now: number, cw: number, ch: number): void {
     const [x, y] = cam.worldToScreen(m.x, m.y, cw, ch);
-    if (!this.onScreen(x, y, cw, ch, 3 * cam.scale)) return;
+    // Sized by the legibility floor like every other effect round a man
+    // (fx.ts fxScale): at true scale the rallied ring was 5 px across at the
+    // zoom the game is played at.
+    const S = fxScale(cam.scale);
+    if (!this.onScreen(x, y, cw, ch, 3 * S)) return;
     const t = (now - m.at) / MORALE_MS[m.kind];
-    const S = cam.scale;
     if (m.kind === 'pinned') {
       // Dust kicked sideways as he goes flat. Squashed on y and never lifted:
       // this is a man hitting the dirt, not a shell landing.
@@ -1891,9 +1890,11 @@ export class Renderer {
       }
     } else if (m.kind === 'rallied') {
       // Back on his feet. Deliberately the other end of the palette from the
-      // kill ring's pale tan, half its alpha and twice its life — the read is
-      // "settled", and nothing calm should be brighter than a confirmed kill.
-      blit(ctx, 'ringDark', x, y, (0.35 + t * 1.15) * S, (1 - t) * 0.38);
+      // kill ring's pale tan, and twice its life — the read is "settled", and
+      // nothing calm should be brighter than a confirmed kill. The sim emits
+      // this for real now (about 34 a battle); at 0.38 it did not show on
+      // ploughed earth at all.
+      blit(ctx, 'ringDark', x, y, (0.35 + t * 1.15) * S, (1 - t) * 0.6);
     } else {
       // The volley's own flashes land this same tick and they are the show.
       // This is the full stop after them.

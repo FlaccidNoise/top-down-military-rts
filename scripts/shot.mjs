@@ -171,7 +171,7 @@ if (has('map')) {
   ({ x, y, scale } = await stageMorale(page, targets.units));
   if (has('fx')) {
     await place(page, x, y, scale);
-    const url = await stageMoraleFx(page, { x, y });
+    const url = await stageMoraleFx(page, { x, y, scale: Number(arg('scale', '30')) });
     writeFileSync(OUT, Buffer.from(url.split(',')[1], 'base64'));
     console.log(`${OUT}  (morale transition FX: pinned/rallied/ambush x ages 40/150/300 ms, ${at})`);
     await browser.close();

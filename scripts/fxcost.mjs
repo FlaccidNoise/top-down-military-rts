@@ -10,8 +10,9 @@
 // (the squad in its field, the town centre) at the two zooms the game is
 // played at. This is the table to record before and after any FX change. The
 // load is fixed, so two runs compare: 12 blasts of every kind at staggered
-// ages, 60 shots of which 20 are MG bursts, 10 morale crossings, one brewed-up
-// tank, and whatever buildings those blasts set alight.
+// ages, 60 shots of which 20 are MG bursts, 10 morale crossings (pinned,
+// rallied and ambush), one brewed-up tank, and whatever buildings those blasts
+// set alight.
 //
 //   node scripts/fxcost.mjs --port 5271 [--seed 9] [--scale 24] [--n 400]
 //                           [--device phone] [--hour night] [--frames 150]
@@ -171,23 +172,21 @@ async function wholeFrame(view, scale) {
           T - (i % 6) * 40
         );
       }
-      for (let i = 0; i < 10; i++) R.addUnitEvents([{ kind: 'pinned', x: x + i - 5, y: y + 2, side: 'blue', name: 'x' }], T - 100);
+      // all three crossings: the sim emits 'rallied' for real now, about 34 a battle
+      for (let i = 0; i < 10; i++) R.addUnitEvents([{ kind: ['pinned', 'rallied', 'ambush'][i % 3], x: x + i - 5, y: y + 2, side: 'blue', name: 'x' }], T - 100);
       const wreck = g.sim.addVehicle('red', 'panzer4', x + 7, y + 6, 0.6);
       wreck.alive = false;
       wreck.burning = true;
       for (let i = 0; i < 10; i++) draw(T); // the fx atlas and the wreck sprite bake on first use
 
-      let heavy = 0;
-      let idle = 0;
-      let max = 0;
+      const heavy = [];
+      const idle = [];
       const live = Object.fromEntries(stores.filter((k) => R[k]).map((k) => [k, R[k].length]));
       live.fires = R.fires.size;
       live.pall = R.pall.puffs.length;
       live.firing = R.firing.size;
       for (let i = 0; i < n; i++) {
-        const h = draw(T);
-        heavy += h;
-        max = Math.max(max, h);
+        heavy.push(draw(T));
         const held = stores.filter((k) => R[k]).map((k) => [k, R[k]]);
         for (const [k] of held) R[k] = [];
         const fires = R.fires;
@@ -196,14 +195,25 @@ async function wholeFrame(view, scale) {
         R.firing = new Map();
         const pall = R.pall.puffs.splice(0);
         wreck.burning = false;
-        idle += draw(T);
+        idle.push(draw(T));
         for (const [k, v] of held) R[k] = v;
         R.fires = fires;
         R.firing = firing;
         R.pall.puffs.push(...pall);
         wreck.burning = true;
       }
-      return { idle: idle / n, heavy: heavy / n, max, live, mpx: (canvas.width * canvas.height) / 1e6 };
+      // A trimmed mean, not the mean: other sessions share this machine, and
+      // a few preempted draws in 150 moved a plain mean by tenths of a
+      // millisecond. Dropping the slowest tenth keeps the sub-0.1 ms
+      // resolution a median would lose to the clock's quantization.
+      const trim = (a) => {
+        a.sort((p, q) => p - q);
+        const keep = Math.ceil(a.length * 0.9);
+        let s = 0;
+        for (let i = 0; i < keep; i++) s += a[i];
+        return s / keep;
+      };
+      return { idle: trim(idle), heavy: trim(heavy), max: heavy[heavy.length - 1], live, mpx: (canvas.width * canvas.height) / 1e6 };
     },
     { x: at.x, y: at.y, scale, n: FRAMES, stores: STORES }
   );
@@ -212,7 +222,7 @@ async function wholeFrame(view, scale) {
 }
 
 console.log(`\nwhole frame: ${DEVICE}${HOUR === null ? '' : `, hour ${arg('hour')}`}, seed ${SEED}, n=${FRAMES} interleaved pairs, renderer.draw() only`);
-console.log('view   px/m   idle ms  heavy ms   delta   max ms   live');
+console.log('view   px/m   idle ms  heavy ms   delta   max ms   live      (idle, heavy: mean of the fastest 90%)');
 for (const view of ['field', 'town']) {
   for (const scale of [14, 24]) {
     const w = await wholeFrame(view, scale);
