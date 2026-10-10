@@ -24,11 +24,11 @@ import { computeShot, pickAt, Tooltip } from './ui/tooltip';
 import { HealthPanel } from './ui/health-panel';
 import { actionForEvent, loadKeymap, type Keymap } from './ui/keymap';
 import { PauseMenu } from './ui/menu';
-import { coach } from './ui/coach';
+import { Coach } from './ui/coach';
 import { showFloorMenu } from './ui/floormenu';
 import { MainMenu, type SaveProbe } from './ui/mainmenu';
 import { ManualScreen } from './ui/manual';
-import { Tutorial } from './ui/tutorial';
+import { drawMarkRing, Tutorial, type Circle, type WorldMark } from './ui/tutorial';
 import { TheaterView } from './render/theater-view';
 import { TheaterHud } from './ui/theater-hud';
 import { CustomizeScreen } from './ui/customize';
@@ -255,17 +255,13 @@ function selectSquad(id: number): void {
   if (renderer) renderer.selectedVehicle = -1;
   armedOrder = null;
   if (id >= 0) lastTeamId = sim.squads[id].teamIds[0];
-  if (id >= 0 && mode === 'battle') {
-    const t = document.getElementById(MOBILE ? 'touchbar' : 'squads');
-    if (t)
-      coach.maybeShow(
-        MOBILE ? 'touch-order' : 'first-squad-select',
-        t,
-        MOBILE
-          ? 'Squad selected — press and hold the ground to send them. Tap an order chip first to change how.'
-          : 'Select a squad, then right-click to move. Shift+1-8 arms an order.',
-      );
-  }
+  noteSelection();
+}
+
+// Deployment has its own step on screen: a squad picked there is reported
+// when the fight starts, not before.
+function noteSelection(): void {
+  if (selectedSquads.length > 0 && !deployPhase) tutorial?.notify('squad-selected');
 }
 
 function toggleSquadSelection(id: number): void {
@@ -277,21 +273,12 @@ function toggleSquadSelection(id: number): void {
   selectedVehicle = -1;
   if (renderer) renderer.selectedVehicle = -1;
   armedOrder = null;
+  noteSelection();
 }
 
-/** Arm an order kind (toggle) and fire first-order-arm coachmark once. */
+/** Arm an order kind (toggle). */
 function doArmOrder(kind: OrderKind): void {
   armedOrder = armedOrder === kind ? null : kind;
-  if (armedOrder) {
-    const btn = document.querySelector(`[data-order="${armedOrder}"]`) as HTMLElement | null;
-    const t = btn ?? document.getElementById(MOBILE ? 'touchbar' : 'squads');
-    if (t)
-      coach.maybeShow(
-        'first-order-arm',
-        t,
-        MOBILE ? 'Order armed — press and hold the ground to issue it.' : 'Order armed — right-click to issue.',
-      );
-  }
 }
 
 function selectVehicle(id: number): void {
@@ -382,6 +369,7 @@ const hud = new Hud({
     selectedVehicle = -1;
     if (renderer) renderer.selectedVehicle = -1;
     armedOrder = null;
+    noteSelection();
   },
   cancel: () => { escapeLadder(); },
   cycleFloor: () => { cycleFloorFocus(); },
@@ -448,7 +436,47 @@ function openPauseMenu(): void {
 // the pinned art path: ?camp= must render byte-identical frames forever.
 const tutorial = campPinned
   ? null
-  : new Tutorial(coach, MOBILE, (chapterId) => manual.open(chapterId), typeof localStorage !== 'undefined' ? localStorage : undefined);
+  : new Tutorial(new Coach(), MOBILE, (chapterId) => manual.open(chapterId), typeof localStorage !== 'undefined' ? localStorage : undefined, tutorialMark, tutorialStage);
+
+// The map as the player sees it: the screen less the opaque HUD around it.
+function tutorialStage(): { left: number; top: number; right: number; bottom: number } {
+  const inset = viewportInset();
+  const bar = document.getElementById('topbar')?.getBoundingClientRect();
+  return { left: inset.left, top: Math.max(inset.top, bar ? bar.bottom : 0), right: view.w, bottom: view.h - inset.bottom };
+}
+
+// Where a tutorial step's world mark is on screen.
+function tutorialMark(mark: WorldMark): Circle | null {
+  if (mode !== 'battle') return null;
+  switch (mark) {
+    // The squad the player has picked. Before any pick, the one nearest the
+    // middle of the map on screen: the ring must be somewhere they can see.
+    case 'squad': {
+      if (getPrimary() >= 0) return squadCircle(getPrimary());
+      const st = tutorialStage();
+      const cx = (st.left + st.right) / 2;
+      const cy = (st.top + st.bottom) / 2;
+      let best: Circle | null = null;
+      for (const q of infantrySquads(sim)) {
+        const c = squadCircle(q.id);
+        if (c && (!best || Math.hypot(c.x - cx, c.y - cy) < Math.hypot(best.x - cx, best.y - cy))) best = c;
+      }
+      return best;
+    }
+  }
+}
+
+function squadCircle(id: number): Circle | null {
+  const squad = sim.squads[id];
+  if (!squad) return null;
+  const men = squad.soldierIds.map((sid) => sim.soldiers[sid]).filter((s) => s.alive && s.inVehicle < 0);
+  if (men.length === 0) return null;
+  const wx = men.reduce((a, s) => a + s.x, 0) / men.length;
+  const wy = men.reduce((a, s) => a + s.y, 0) / men.length;
+  const spread = Math.max(...men.map((s) => Math.hypot(s.x - wx, s.y - wy)));
+  const [x, y] = cam.worldToScreen(wx, wy, view.w, view.h);
+  return { x, y, r: Math.max(22, (spread + 1.5) * cam.scale) };
+}
 
 function probeSave(): SaveProbe {
   if (campPinned) return { status: 'none' };
@@ -545,10 +573,6 @@ function showContactModal(e: Engagement): void {
       ${defending ? '' : '<button id="standdown">Stand down</button>'}
     </div>`;
   debriefEl.style.display = 'flex';
-  {
-    const fight = document.getElementById('fight');
-    coach.maybeShow('first-engagement', fight ?? debriefEl, 'Staging — review the force comparison, then Attack or Stand down.');
-  }
   document.getElementById('fight')!.onclick = () => startEngagementBattle(e);
   if (forced) {
     document.getElementById('autoresolve')!.onclick = () => {
@@ -1175,6 +1199,7 @@ function commitBox(additive: boolean): void {
   selectedTeam = -1;
   dragStart = null;
   boxRect = null;
+  noteSelection();
 }
 
 function tapSelect(sx: number, sy: number, additive: boolean): void {
@@ -1312,6 +1337,7 @@ function issueShortClick(wx: number, wy: number, squadForce: boolean, l?: number
       sim.orderSquad(id, order, used);
     }
   }
+  tutorial?.notify('order-issued');
 }
 
 function commitOrder(sx: number, sy: number, opts: { squadForce: boolean; floors: boolean }): void {
@@ -1386,6 +1412,7 @@ function commitOrder(sx: number, sy: number, opts: { squadForce: boolean; floors
       const order: TeamOrder = { kind, x: ax, y: ay, facing, width: seg };
       sim.orderSquad(id, order, used);
     }
+    tutorial?.notify('order-issued');
     if (useArmed) armedOrder = null;
   }
 
@@ -1402,10 +1429,6 @@ function stratTapSelect(sx: number, sy: number): void {
   const cell = S().stratView.cellAtScreen(sx, sy, view.w, view.h);
   const chit = cell >= 0 ? S().front.chitAt(cell, 'blue') : undefined;
   selectedChit = chit ? chit.id : -1;
-  if (chit) {
-    const t = document.getElementById('strat-hud');
-    if (t) coach.maybeShow('first-strat-chit', t, 'Chit selected — right-click a cell to move. ✕ on a waypoint cancels it.');
-  }
 }
 
 function stratOrderMove(sx: number, sy: number): void {
@@ -1792,6 +1815,7 @@ let fxNow = 0;
 function frame(now: number): void {
   const dtReal = Math.min(now - last, 250);
   last = now;
+  tutorial?.frame(menu.isOpen || manual.isOpen);
   if (!(mode === 'battle' ? paused : stratPaused)) fxNow += dtReal;
   if (mode === 'battle' && panHeld.size > 0 && !menu.isOpen) {
     let pdx = 0;
@@ -1957,6 +1981,7 @@ function frame(now: number): void {
       deployPhase = false;
       deployMsg = '';
       tutorial?.notify('deploy-commit');
+      noteSelection();
     }
     renderer.draw(ctx, cam, selectedSquads, fxNow, floorFocus);
     if (deployPhase) {
@@ -2024,6 +2049,8 @@ function frame(now: number): void {
       floorFocus,
       deploy: deployPhase ? { ...deployZone(), bearing: deployBearing() } : null,
     }, pings);
+    const ring = tutorial?.ring();
+    if (ring) drawMarkRing(ctx, ring, now);
     if (touchHold) drawHoldRing(ctx, touchHold, now);
     tooltip.update(sim, pick, shot, mouse.x, mouse.y, pick?.kind === 'terrain' && (primary >= 0 || selectedVehicle >= 0));
     const km = loadKeymap(localStorage);
@@ -2062,12 +2089,6 @@ function frame(now: number): void {
       cam.x = b.x;
       cam.y = b.y;
       cam.scale = b.scale;
-      // Same frame, same reason: the touch bar the coachmark points at only
-      // exists once the HUD has rendered once.
-      if (MOBILE) {
-        const t = document.getElementById('touchbar');
-        if (t) coach.maybeShow('touch-basics', t, 'Drag to pan · pinch to zoom · press and hold to give an order');
-      }
       // Same frame, same reason: the deploy bubble points at the battle HUD's
       // pause control, which the update above has only just built.
       if (deployPhase) tutorial?.notify('deploy-start');

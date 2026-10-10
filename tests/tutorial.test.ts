@@ -113,6 +113,8 @@ describe('advance', () => {
       'contact-closed',
       'deploy-start',
       'deploy-commit',
+      'squad-selected',
+      'order-issued',
       'debrief-open',
       'debrief-closed',
     ]);
@@ -123,25 +125,21 @@ describe('advance', () => {
       'speed',
       'contact',
       'deploy',
-      'battle-orders',
+      'battle-select',
+      'battle-order',
       'debrief',
     ]);
-    // Every event-completed step retires through advance; battle-orders (the
-    // one doneOn: null step) retires in the PRESENTER once its bubble truly
-    // shows — advance leaves it live so a failed anchor query re-arms it.
-    const eventDone = STEPS.filter((s) => s.doneOn !== null).map((s) => s.id);
-    expect(new Set(state.done)).toEqual(new Set(eventDone));
+    expect(new Set(state.done)).toEqual(new Set(STEPS.map((s) => s.id)));
   });
 
-  it('never shows a step twice once the presenter marks the null-doneOn step', () => {
+  it('never shows a step twice', () => {
     const events: TutorialEvent[] = [
       'campaign-start', 'briefing-begun', 'force-selected', 'move-ordered', 'speed-changed',
-      'contact-open', 'contact-closed', 'deploy-start', 'deploy-commit', 'debrief-open', 'debrief-closed',
+      'contact-open', 'contact-closed', 'deploy-start', 'deploy-commit', 'squad-selected', 'order-issued',
+      'debrief-open', 'debrief-closed',
     ];
     const first = run(fresh(), events);
-    const presented = { ...first.state, done: [...first.state.done, 'battle-orders' as const] };
-    const second = run(presented, events);
-    expect(second.shown).toEqual([]);
+    expect(run(first.state, events).shown).toEqual([]);
   });
 
   it('opens the next step on the same event that retires the current one', () => {
@@ -167,17 +165,26 @@ describe('advance', () => {
     expect(r.show).toBe('speed');
   });
 
-  it('battle-orders is NOT retired at selection — a failed anchor re-arms it', () => {
-    // The presenter retires it (markDone after the bubble shows). If advance
-    // retired it here, one missing anchor would bury the step forever — the
-    // bug the 2026-07-28 wrap-up review caught.
+  it('every step is retired by a real event, never by merely showing', () => {
+    // The old battle step retired the frame it showed and taught nothing.
+    for (const s of STEPS) expect(typeof s.doneOn, s.id).toBe('string');
+  });
+
+  it('teaches the battle by doing: pick a squad, then give it an order', () => {
     const r = advance({ skipped: false, done: ['deploy'] }, 'deploy-commit');
-    expect(r.show).toBe('battle-orders');
-    expect(r.state.done).not.toContain('battle-orders');
-    const again = advance(r.state, 'deploy-commit');
-    expect(again.show).toBe('battle-orders');
-    const done = advance({ ...r.state, done: [...r.state.done, 'battle-orders'] }, 'deploy-commit');
-    expect(done.show).toBeNull();
+    expect(r.show).toBe('battle-select');
+    expect(r.state.done).not.toContain('battle-select');
+    const picked = advance(r.state, 'squad-selected');
+    expect(picked.state.done).toContain('battle-select');
+    expect(picked.show).toBe('battle-order');
+    const ordered = advance(picked.state, 'order-issued');
+    expect(ordered.state.done).toContain('battle-order');
+    expect(ordered.show).toBeNull();
+  });
+
+  it('a later squad pick does not bring the order step back once it is done', () => {
+    const done: TutorialState = { skipped: false, done: ['battle-select', 'battle-order'] };
+    expect(advance(done, 'squad-selected').show).toBeNull();
   });
 });
 
@@ -227,10 +234,10 @@ describe('advance when skipped', () => {
 // ---- the step table itself ----
 
 describe('STEPS', () => {
-  it('gives every bubble step an anchor and both copy variants', () => {
+  it('gives every bubble step one thing to point at and both copy variants', () => {
     for (const s of STEPS) {
       if (s.id === 'briefing') continue; // rendered as a card, not a bubble
-      expect(s.anchor, s.id).toBeDefined();
+      expect((s.anchor ? 1 : 0) + (s.mark ? 1 : 0), s.id).toBe(1);
       expect(s.text!.desktop.length, s.id).toBeGreaterThan(0);
       expect(s.text!.touch.length, s.id).toBeGreaterThan(0);
     }
@@ -244,11 +251,9 @@ describe('STEPS', () => {
     }
   });
 
-  it('states the top speed and the order-key range from their constants', () => {
+  it('states the top speed from its constant', () => {
     const speed = STEPS.find((s) => s.id === 'speed')!;
     expect(speed.text!.desktop).toContain('60×');
-    const orders = STEPS.find((s) => s.id === 'battle-orders')!;
-    expect(orders.text!.desktop).toContain('⇧1–⇧8');
   });
 });
 
@@ -258,7 +263,7 @@ describe('Tutorial.setEnabled (the menu toggle)', () => {
   // The Tutorial class touches the DOM only when it PRESENTS a step; the
   // switch is pure state + storage, so it tests in the node env like the rest.
   const makeTutorial = (storage: Storage) =>
-    new Tutorial({ hide() {}, showStep() {} } as unknown as ConstructorParameters<typeof Tutorial>[0], false, () => {}, storage);
+    new Tutorial({ hide() {}, show() {}, reflow() {} }, false, () => {}, storage);
 
   it('turning it OFF is exactly Skip, and survives a reload', () => {
     const storage = makeStorage();

@@ -1,6 +1,5 @@
 import type { Keymap } from './keymap';
 import { CONTEXT, DEFAULTS, formatBinding, LABEL, rebind, saveKeymap } from './keymap';
-import { coach } from './coach';
 
 export class PauseMenu {
   private el: HTMLDivElement;
@@ -107,7 +106,6 @@ export class PauseMenu {
       <h1>KEYBINDINGS</h1>
       ${rows}
       <div class="db-actions">
-        <button id="pm-coach-reset">Reset coachmarks</button>
         <button id="pm-reset">Reset to defaults</button>
         <button id="pm-back" class="primary">Back</button>
       </div>
@@ -120,11 +118,6 @@ export class PauseMenu {
       this.km.version++;
       saveKeymap(this.km, localStorage);
       this.cb.onKeymapChanged(this.km);
-      this.renderKeybindings();
-    });
-
-    this.el.querySelector('#pm-coach-reset')?.addEventListener('click', () => {
-      coach.dismissAll();
       this.renderKeybindings();
     });
 

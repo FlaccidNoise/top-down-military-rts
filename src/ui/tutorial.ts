@@ -6,10 +6,9 @@
 // The driver never blocks a veteran: every bubble carries ✕ (retire this step)
 // and "Skip tutorial" (retire every step, forever), and the briefing card
 // carries both plus a Field Manual door.
-import type { Coach } from './coach';
+import { visibleRect, type Coach, type Rect } from './coach';
 import { esc } from './mainmenu';
 import { MANUAL } from './manual-data';
-import { ORDER_AFFORDANCE } from './order-data';
 import { SPEED_LABELS } from './strat-hud';
 
 export const TUTORIAL_STORAGE_KEY = 'rts.tutorial.v1';
@@ -24,6 +23,8 @@ export type TutorialEvent =
   | 'contact-closed'
   | 'deploy-start'
   | 'deploy-commit'
+  | 'squad-selected'
+  | 'order-issued'
   | 'debrief-open'
   | 'debrief-closed';
 
@@ -34,7 +35,8 @@ export type StepId =
   | 'speed'
   | 'contact'
   | 'deploy'
-  | 'battle-orders'
+  | 'battle-select'
+  | 'battle-order'
   | 'debrief';
 
 export interface TutorialState {
@@ -42,24 +44,34 @@ export interface TutorialState {
   done: StepId[];
 }
 
+/** A place in the game world a step can ring. The game resolves it per frame. */
+export type WorldMark = 'squad';
+
+/** A world mark on screen: centre and ring radius, in CSS px. */
+export interface Circle {
+  x: number;
+  y: number;
+  r: number;
+}
+
 interface Step {
   id: StepId;
   /** Events that put this step on screen. More than one keeps it resumable. */
   showOn: readonly TutorialEvent[];
-  /** The event that retires it. null retires it the moment it shows. */
-  doneOn: TutorialEvent | null;
+  /** The event that retires it. */
+  doneOn: TutorialEvent;
   /** A step that must already be done before this one may show. */
   requires?: StepId;
-  /** CSS selector for the bubble anchor. Absent on the briefing card. */
+  /** CSS selector the bubble points at. A step has this or `mark`; the briefing card has neither. */
   anchor?: { desktop: string; touch: string };
+  /** The world point the bubble points at, drawn as a pulsing ring. */
+  mark?: WorldMark;
   text?: { desktop: string; touch: string };
 }
 
 // Every number the copy states is imported from the constant that owns it —
 // the manual-data drift tripwire does not watch this file.
 const TOP_SPEED = SPEED_LABELS[SPEED_LABELS.length - 1];
-const ORDER_KEYS = Object.values(ORDER_AFFORDANCE).map((o) => o.hotkey);
-const ORDER_KEY_RANGE = `${ORDER_KEYS[0]}–${ORDER_KEYS[ORDER_KEYS.length - 1]}`;
 
 const GOAL_CHAPTER = MANUAL.find((c) => c.id === 'goal');
 if (!GOAL_CHAPTER) throw new Error("tutorial: MANUAL has no 'goal' chapter — the briefing card reads its first three entries");
@@ -125,22 +137,28 @@ export const STEPS: readonly Step[] = [
     doneOn: 'deploy-commit',
     anchor: { desktop: '[data-act="pause"]', touch: '[data-tb="pause"]' },
     text: {
-      desktop: 'Deployment. Select squads and right-click inside your zone to reposition them. Resume commits and begins the fight.',
-      touch: 'Deployment. Tap a squad, then press and hold inside your zone to reposition it. Resume commits and begins the fight.',
+      desktop: 'Press Resume to start.',
+      touch: 'Tap Play to start.',
     },
   },
   {
-    id: 'battle-orders',
+    id: 'battle-select',
     showOn: ['deploy-commit'],
-    doneOn: null,
-    requires: 'deploy',
-    // The desktop anchor is the key-hint bar, not the roster panel: #squads is
-    // full-viewport-height chrome, so a bubble hung off it has nowhere to sit,
-    // and #hint is where the ⇧1–⇧8 bindings this step names are already listed.
-    anchor: { desktop: '#hint', touch: '#touchbar' },
+    doneOn: 'squad-selected',
+    mark: 'squad',
     text: {
-      desktop: `Your orders arm with ${ORDER_KEY_RANGE}. The menu holds the Field Manual — it explains when each order is right.`,
-      touch: 'Tap a squad, then an order chip. The ⚙ menu holds the Field Manual — it explains when each order is right.',
+      desktop: 'Click a squad.',
+      touch: 'Tap a squad.',
+    },
+  },
+  {
+    id: 'battle-order',
+    showOn: ['squad-selected'],
+    doneOn: 'order-issued',
+    mark: 'squad',
+    text: {
+      desktop: 'Right-click the ground to send them.',
+      touch: 'Press and hold the ground to send them.',
     },
   },
   {
@@ -202,16 +220,47 @@ export function advance(state: TutorialState, event: TutorialEvent): { state: Tu
   return { state: { skipped: false, done: [...done] }, show };
 }
 
+const circleRect = (c: Circle): Rect => ({ left: c.x - c.r, top: c.y - c.r, right: c.x + c.r, bottom: c.y + c.r });
+
+const RING_PERIOD_MS = 1100;
+
+/**
+ * The pulsing ring on a world mark. Wall clock, not the battle clock: the sim
+ * is often paused while a step waits, and a ring that stops pulsing reads as
+ * part of the map.
+ */
+export function drawMarkRing(ctx: CanvasRenderingContext2D, c: Circle, now: number): void {
+  const t = (now % RING_PERIOD_MS) / RING_PERIOD_MS;
+  ctx.save();
+  ctx.lineWidth = 4;
+  ctx.strokeStyle = 'rgba(18, 22, 15, 0.55)';
+  ctx.beginPath();
+  ctx.arc(c.x, c.y, c.r, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = '#ffe9a0';
+  ctx.stroke();
+  ctx.globalAlpha = 1 - t;
+  ctx.beginPath();
+  ctx.arc(c.x, c.y, c.r + 14 * t, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.restore();
+}
+
 export class Tutorial {
   private state: TutorialState;
   private shown: StepId | null = null;
   private card: HTMLDivElement | null = null;
 
   constructor(
-    private readonly coach: Coach,
+    private readonly coach: Pick<Coach, 'show' | 'hide' | 'reflow'>,
     private readonly touch: boolean,
     private readonly openManual: (chapterId: string) => void,
     private readonly storage?: Pick<Storage, 'getItem' | 'setItem'>,
+    /** Where a world mark is on screen right now. null = not in this scene. */
+    private readonly world: (mark: WorldMark) => Circle | null = () => null,
+    /** The part of the screen that is map: a world bubble never sits on the HUD. */
+    private readonly stage: () => Rect | undefined = () => undefined,
   ) {
     this.state = loadState(storage);
   }
@@ -220,17 +269,32 @@ export class Tutorial {
     return this.state.skipped;
   }
 
-  /** The only entry point the game calls. */
+  /** The game reports what happened. Called from many sites, some every input. */
   notify(event: TutorialEvent): void {
     if (this.state.skipped) return;
     const r = advance(this.state, event);
+    const progressed = r.state.done.length !== this.state.done.length;
     this.state = r.state;
     if (this.shown && this.state.done.includes(this.shown)) {
       this.coach.hide();
       this.shown = null;
     }
     if (r.show) this.present(r.show);
-    saveState(this.state, this.storage);
+    if (progressed) saveState(this.state, this.storage);
+  }
+
+  /**
+   * Once per frame, in every mode. `suppressed` = a full-screen menu owns the
+   * screen, so the bubble stands down until it closes.
+   */
+  frame(suppressed: boolean): void {
+    this.coach.reflow(suppressed);
+  }
+
+  /** The ring the game draws on its canvas for the step on screen, if any. */
+  ring(): Circle | null {
+    const mark = this.shown ? STEPS.find((s) => s.id === this.shown)!.mark : undefined;
+    return mark ? this.world(mark) : null;
   }
 
   /** The briefing card's Begin: retires the card and starts the chain. */
@@ -272,18 +336,28 @@ export class Tutorial {
     }
     if (typeof document === 'undefined') return;
     const step = STEPS.find((s) => s.id === id)!;
-    const target = document.querySelector<HTMLElement>(this.touch ? step.anchor!.touch : step.anchor!.desktop);
-    if (!target) return; // anchor not on screen — the step re-arms on its next trigger
-    this.coach.showStep(
-      target,
-      this.touch ? step.text!.touch : step.text!.desktop,
-      () => this.markDone(id),
-      () => this.skip(),
-    );
+    const sel = step.anchor ? (this.touch ? step.anchor.touch : step.anchor.desktop) : null;
+    this.coach.show({
+      text: this.touch ? step.text!.touch : step.text!.desktop,
+      locate: () => {
+        if (step.mark) {
+          const c = this.world(step.mark);
+          if (!c) return null;
+          const r = circleRect(c);
+          return { anchor: r, clear: r, bounds: this.stage() };
+        }
+        const target = document.querySelector(sel!);
+        const anchor = target && visibleRect(target);
+        if (!anchor) return null;
+        // A bubble pointing into the touch bar clears the whole bar: the order
+        // row sits right above the chip it names.
+        const bar = target!.closest('#touchbar');
+        return { anchor, clear: (bar && visibleRect(bar)) ?? anchor };
+      },
+      onDismiss: () => this.markDone(id),
+      onSkip: () => this.skip(),
+    });
     this.shown = id;
-    // A step no event completes retires when it actually SHOWS — retiring it
-    // at selection would bury it forever behind one failed anchor query.
-    if (step.doneOn === null) this.markDone(id);
   }
 
   private markDone(id: StepId): void {

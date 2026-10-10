@@ -197,8 +197,9 @@ export class Hud {
     const bar = document.createElement('div');
     bar.id = 'touchbar';
     bar.innerHTML =
-      '<div class="tb-orders"></div>' +
+      '<div class="tb-orders tb-scroll"></div>' +
       '<div class="tb-acts">' +
+      '<div class="tb-scroll">' +
       '<button class="hbtn" data-tb="roster">☰ Roster</button>' +
       '<button class="hbtn" data-tb="select">▭ Select</button>' +
       '<button class="hbtn" data-tb="add">＋ Add</button>' +
@@ -207,8 +208,13 @@ export class Hud {
       '<button class="hbtn" data-tb="cancel">✕ Cancel</button>' +
       '<button class="hbtn" data-tb="barrage"></button>' +
       '<button class="hbtn" data-tb="air"></button>' +
+      '</div>' +
+      // Outside the scroll row: the two controls a player must always be able
+      // to reach are never a swipe away (jtbug #783).
+      '<div class="tb-pin">' +
       '<button class="hbtn" data-tb="pause"></button>' +
-      '<button class="hbtn" data-tb="menu">⚙</button>' +
+      '<button class="hbtn" data-tb="menu" aria-label="Menu">⚙</button>' +
+      '</div>' +
       '</div>';
     this.root.appendChild(bar);
     this.tb = bar;

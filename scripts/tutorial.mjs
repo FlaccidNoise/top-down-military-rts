@@ -596,13 +596,13 @@ async function desktopLeg() {
 
     // ch7 — Resume commits the deployment and starts the fight.
     await page.click('#hud [data-act="pause"]');
-    await waitBubble(page, 'battle-orders');
+    await waitBubble(page, 'battle-select');
     const running = await until(page, (t) => window.__game.sim.tick > t + 5 ? window.__game.sim.tick : false, moved.tick, {
       what: 'the sim to advance after Resume',
       fix: 'Resume must clear deployPhase and unpause (src/main.ts, the deployPhase && !paused branch).',
     });
     check(running > moved.tick, `Resume begins the battle (tick ${moved.tick} → ${running})`);
-    await shot(page, 'ch7-battle-orders', 'chapter 7: the fight has begun and the battle-orders coachmark names the order keys');
+    await shot(page, 'ch7-battle-select', 'chapter 7: the fight has begun and the battle-select step rings a squad');
 
     // ch8 — win it for real.
     console.log(`  fighting (budget ${(WIN_BUDGET_MS / 1000).toFixed(0)}s)…`);

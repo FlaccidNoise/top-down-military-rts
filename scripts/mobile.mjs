@@ -226,7 +226,7 @@ async function phoneRun(device) {
     };
   });
   check(!!chips, `${device} #touchbar exists`);
-  check(chips.acts.length === 9, `${device} touch bar has all 9 action chips (${chips.acts.length})`);
+  check(chips.acts.length === 10, `${device} touch bar has all 10 action chips (${chips.acts.length})`);
   check(chips.acts.every((c) => c.h >= 44 && c.w >= 44), `${device} every action chip >= 44x44 (min ${Math.min(...chips.acts.map((c) => Math.min(c.w, c.h)))})`);
   const chip = (name) => chips.acts.find((c) => c.tb === name);
 

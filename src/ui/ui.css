@@ -38,6 +38,9 @@
   /* Glass */
   --glass-blur: blur(6px);
 
+  /* The HUD face, for chrome that mounts outside #hud */
+  --font-hud: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+
   /* Type scale (rem-based) */
   --fs-sm: 0.625rem;   /* 10px */
   --fs-md: 0.75rem;    /* 12px */
@@ -1056,83 +1059,66 @@ html.mobile .st-wp-cancel { width: 32px; height: 32px; font-size: 18px; }
 #debrief .fc-forced { color: var(--muted); }
 #debrief .stakes { margin: 0 0 6px; color: var(--amber); }
 
-/* ---- UI redesign T6: coachmarks + idle hint + top-bar key chips ---- */
+/* ---- the tutorial bubble (src/ui/coach.ts) ----
+   Mounted on <body> because #hud is hidden outside a battle, so it carries the
+   HUD's font and panel colours itself. Fixed, never absolute: a fixed box
+   cannot grow the document (jtbug #783). coach.ts writes left/top, data-side
+   and --coach-arrow every frame. */
 .coach {
-  position: absolute;
+  position: fixed;
+  left: 0;
+  top: 0;
   z-index: 20;
-  /* An absolutely-positioned box shrink-to-fits into the space LEFT of the
-     viewport edge, so a bubble anchored to right-hand chrome collapses to a
-     one-word column before the clamp in coach.ts ever measures it. max-content
-     opts out of that; max-width still caps it. */
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  box-sizing: border-box;
   width: max-content;
-  max-width: min(280px, calc(100vw - 24px));
-  padding: 10px var(--sp-3);
-  background: var(--paper);
-  color: var(--ink);
+  max-width: min(420px, calc(100vw - 16px));
+  padding: 6px 6px 6px var(--sp-3);
+  background: var(--ink);
+  color: var(--amber-bright);
   border: 1px solid var(--amber);
-  border-radius: 4px;
-  font-size: var(--fs-sm);
-  line-height: 1.4;
+  border-radius: 3px;
+  font: var(--fw-label) var(--fs-md) / 1.35 var(--font-hud);
+  letter-spacing: 1px;
+  text-transform: uppercase;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
   pointer-events: auto;
+  user-select: none;
+  -webkit-user-select: none;
 }
 .coach::before {
   content: '';
   position: absolute;
-  top: -6px;
-  left: 50%;
-  transform: translateX(-50%);
-  border-left: 6px solid transparent;
-  border-right: 6px solid transparent;
-  border-bottom: 6px solid var(--paper);
+  width: 10px;
+  height: 10px;
+  background: var(--ink);
+  border: solid var(--amber);
+  border-width: 1px 0 0 1px;
 }
-/* Flipped above its target (bottom-anchored chrome — the phone touch bar). */
-.coach.above::before {
-  top: auto;
-  bottom: -6px;
-  border-bottom: none;
-  border-top: 6px solid var(--paper);
-}
-.coach-text {
-  display: block;
-  word-wrap: break-word;
-}
-.coach-x {
-  position: absolute;
-  top: 2px;
-  right: 4px;
+.coach[data-side='below']::before { top: -6px; left: var(--coach-arrow); transform: translateX(-50%) rotate(45deg); }
+.coach[data-side='above']::before { bottom: -6px; left: var(--coach-arrow); transform: translateX(-50%) rotate(225deg); }
+.coach[data-side='right']::before { left: -6px; top: var(--coach-arrow); transform: translateY(-50%) rotate(-45deg); }
+.coach[data-side='left']::before { right: -6px; top: var(--coach-arrow); transform: translateY(-50%) rotate(135deg); }
+.coach-text { flex: 1 1 auto; min-width: 0; }
+.coach button {
+  flex: none;
+  min-width: 28px;
+  min-height: 28px;
   background: none;
   border: none;
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 1;
-  padding: 2px 4px;
-  cursor: pointer;
-}
-.coach-x:hover { color: var(--ink); }
-.coach-x:focus-visible {
-  outline: 2px solid var(--amber);
-  outline-offset: 1px;
-}
-/* Tutorial-driver bubbles only: the door out of the whole sequence, on every
-   step, so a veteran is never more than one click from silence. */
-.coach-skip {
-  display: block;
-  margin: 6px 0 0 auto;
-  padding: 4px 0;
-  background: none;
-  border: none;
+  border-radius: 3px;
   font: inherit;
-  font-size: var(--fs-sm);
-  color: rgba(var(--ink-rgb), 0.7);
-  text-decoration: underline;
+  color: var(--muted);
   cursor: pointer;
 }
-.coach-skip:hover { color: var(--ink); }
-.coach-skip:focus-visible {
-  outline: 2px solid var(--amber);
-  outline-offset: 1px;
-}
+.coach button:hover { color: var(--paper); }
+.coach button:focus-visible { outline: 2px solid var(--amber); outline-offset: -2px; }
+/* The door out of the whole sequence, on every step. */
+.coach-skip { font-size: var(--fs-sm); letter-spacing: 0.5px; text-decoration: underline; padding: 0 var(--sp-1); }
+.coach-x { font-size: var(--fs-lg); }
+html.mobile .coach button { min-width: 44px; min-height: 44px; }
 
 /* idle "what now" hint */
 .idle-hint {
@@ -1193,8 +1179,13 @@ html.mobile #touchbar {
    untappable target this whole task exists to remove — so the rows scroll.
    The right-edge fade is the only cue that they do; without it the row reads
    as a bar that happens to be clipped. */
-html.mobile #touchbar > div {
+html.mobile #touchbar .tb-acts,
+html.mobile #touchbar .tb-pin { display: flex; gap: var(--sp-1); }
+html.mobile #touchbar .tb-pin { flex: none; }
+html.mobile #touchbar .tb-scroll {
   display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
   gap: var(--sp-1);
   overflow-x: auto;
   overflow-y: hidden;
@@ -1203,7 +1194,7 @@ html.mobile #touchbar > div {
   -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
   mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
 }
-html.mobile #touchbar > div::-webkit-scrollbar { display: none; }
+html.mobile #touchbar .tb-scroll::-webkit-scrollbar { display: none; }
 html.mobile #touchbar .hbtn {
   flex: 0 0 auto;
   min-height: 44px;
