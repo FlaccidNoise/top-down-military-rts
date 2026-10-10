@@ -257,6 +257,7 @@ let addMode = false;
 const additiveWith = (shift: boolean): boolean => shift || addMode;
 
 function selectSquad(id: number): void {
+  if (id >= 0) audio.uiSelect();
   selectedSquads = id < 0 ? [] : [id];
   selectedTeam = -1;
   selectedVehicle = -1;
@@ -303,6 +304,7 @@ function doArmOrder(kind: OrderKind): void {
 }
 
 function selectVehicle(id: number): void {
+  if (id >= 0) audio.uiSelect();
   selectedVehicle = id;
   selectedSquads = [];
   selectedTeam = -1;
@@ -1357,6 +1359,7 @@ function issueShortClick(wx: number, wy: number, squadForce: boolean, l?: number
   const offs = formation ? squadClumpOffsets(K) : null;
   const used = new Set<number>();
   const primary = getPrimary();
+  if (K > 0) audio.uiOrder();
   for (let i = 0; i < K; i++) {
     const id = selectedSquads[i];
     const order: TeamOrder = { kind, x: wx + (offs?.[i][0] ?? 0), y: wy + (offs?.[i][1] ?? 0), l };
@@ -1414,6 +1417,7 @@ function commitOrder(sx: number, sy: number, opts: { squadForce: boolean; floors
   const K = selectedSquads.length;
 
   if (selectedVehicle >= 0) {
+    audio.uiOrder();
     sim.orderVehicleMove(selectedVehicle, wx, wy);
     rmbAnchor = null;
     return;
@@ -1977,6 +1981,7 @@ const DT_MS = DT * 1000;
 // Real `now` still drives the things that are about the player and not the
 // battle — the hold ring, the debrief delay, coachmarks.
 let fxNow = 0;
+const hullsHeard: { x: number; y: number }[] = []; // reused every frame: the hulls audio.ambience() hears
 
 // The hold: on the biggest events — a tank kill, an air strike or a heavy
 // shell inside the view — the battle stops for three frames on the flash. The
@@ -2000,6 +2005,8 @@ function frame(now: number): void {
   document.documentElement.classList.toggle('in-battle', mode === 'battle'); // gates the portrait guidance (ui.css)
   stratHud.root.style.display = mode === 'strategic' && !S().v2 ? '' : 'none';
   theaterHud.root.style.display = mode === 'strategic' && S().v2 ? '' : 'none';
+  // Off the battle map there are no engines and no guns to rumble: wind only.
+  if (mode !== 'battle') audio.ambience(hullsHeard, cam, view.w, view.h, true);
   if (mode === 'menu') {
     requestAnimationFrame(frame);
     return;
@@ -2128,6 +2135,11 @@ function frame(now: number): void {
     audio.addMelee(melee, cam, cw, chh);
     audio.addBooms(booms, cam, cw, chh);
     audio.addBreaches(breaches, cam, cw, chh);
+    // The bed: engines for the live hulls the player can see, the far rumble
+    // off the firing just counted. Quiet under pause.
+    hullsHeard.length = 0;
+    for (const v of sim.vehicles) if (v.alive && sim.vehicleVisibleTo('blue', v)) hullsHeard.push(v);
+    audio.ambience(hullsHeard, cam, cw, chh, paused);
     // fog of war: enemy unit events only ping where a friendly can see. An
     // event that happened to a man is filtered by the man — a point test would
     // announce a concealed German the renderer refuses to draw. The two kinds
