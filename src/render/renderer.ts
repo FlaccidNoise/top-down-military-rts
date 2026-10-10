@@ -11,6 +11,7 @@ import { SUN, shadowSoftAlpha, sun } from './light';
 import { BrassLayer, MarkLayer } from './marks';
 import { PallLayer } from './pall';
 import { craterSpots } from './props';
+import { chase, fallSlide, gunRecoil, hitJerk, hullRock, kickBack, wrapAngle } from './react';
 import { RoofLayer } from './roofs';
 import { SURROUND_FAR, TerrainLayer } from './terrain';
 import { MOBILE, view } from './view';
@@ -101,12 +102,7 @@ interface VState {
 const DUST_RING = 12;
 const DUST_EVERY = 0.5; // m of travel per puff
 const DUST_LIFE = 6; // m of travel a puff survives — a trail a hull-length long, where 2.5 m was gone under the hull itself
-const TURRET_SLEW = 0.7; // rad/s — about 40 degrees a second, a powered traverse
-const RECOIL_MS = 380; // the gun runs back and the hull rocks for this long
 const HULL_MUZZLE = 3.1; // m from the hull centre to the muzzle of a tank gun
-const KICK_MS = 240; // a man's recoil
-const JERK_MS = 280; // a hit man's flinch
-const FALL_MS = 250; // a falling man's slide
 const EXHAUST_TICKS = 26; // sim ticks between exhaust puffs
 const MARK_EVERY = 0.7; // m of travel per rut stamp
 const TRACK_PITCH = 0.16; // m of travel per track-phase step
@@ -288,13 +284,6 @@ const MOTE_CAP = 24;
 // sim says it was fired. A man's rifle, or a tank gun measured from the hull.
 function muzzleReach(weapon: ShotEvent['weapon']): number {
   return weapon === undefined ? HULL_MUZZLE : 0.9;
-}
-
-// An angle into (-PI, PI].
-function wrapAngle(a: number): number {
-  while (a > Math.PI) a -= Math.PI * 2;
-  while (a <= -Math.PI) a += Math.PI * 2;
-  return a;
 }
 
 // Positive modulo — the wrapping every world-anchored ambient layer needs, and
@@ -1832,15 +1821,13 @@ export class Renderer {
     // goes back to the centreline when there is nothing. On the fx clock.
     if (tc) {
       const tgt = v.targetVehicleId >= 0 ? this.sim.vehicles[v.targetVehicleId] : v.targetSoldierId >= 0 ? this.sim.soldiers[v.targetSoldierId] : undefined;
-      const want = tgt ? wrapAngle(Math.atan2(tgt.y - v.y, tgt.x - v.x) - v.facing) : 0;
-      const diff = wrapAngle(want - st.turret);
-      st.turret += Math.sign(diff) * Math.min(Math.abs(diff), TURRET_SLEW * this.fxDt);
+      st.turret = chase(st.turret, tgt ? Math.atan2(tgt.y - v.y, tgt.x - v.x) - v.facing : 0, this.fxDt);
     } else st.turret = 0;
     // Recoil: the gun runs back in its cradle and the hull rocks away from
     // the shot, then both settle.
-    const ra = this.frameNow - st.firedAt;
-    const recoil = v.alive && ra >= 0 && ra < RECOIL_MS ? Math.exp(-ra / 80) : 0;
-    const rock = recoil > 0 ? 0.11 * Math.exp(-ra / 130) * Math.cos(ra / 60) * cam.scale : 0;
+    const ra = v.alive ? this.frameNow - st.firedAt : -1;
+    const recoil = gunRecoil(ra);
+    const rock = hullRock(ra) * cam.scale;
     ctx.save();
     ctx.translate(x - st.fux * rock, y - st.fuy * rock);
     ctx.rotate(v.facing);
@@ -2002,26 +1989,19 @@ export class Renderer {
         st.restY = 0;
       }
       const now = this.frameNow;
-      const slid = 1 - (1 - Math.min(1, Math.max(0, (now - st.fellAt) / FALL_MS))) ** 3;
+      const slid = fallSlide(now - st.fellAt);
       wx += st.restX + st.fdx * st.fall * slid;
       wy += st.restY + st.fdy * st.fall * slid;
       if (s.alive) {
         // A few pixels, so they are sized by the legibility floor like the
         // flash that causes them: at true scale a 10 cm recoil is one pixel.
         const px = fxScale(cam.scale) / cam.scale;
-        const ka = now - st.kickAt;
-        if (ka >= 0 && ka < (st.kickTaps - 1) * st.kickGap + KICK_MS) {
-          const tap = st.kickGap > 0 ? Math.min(st.kickTaps - 1, Math.floor(ka / st.kickGap)) : 0;
-          const k = 0.11 * Math.exp(-(ka - tap * st.kickGap) / 55) * px;
-          wx -= st.kux * k;
-          wy -= st.kuy * k;
-        }
-        const ha = now - st.hitAt;
-        if (ha >= 0 && ha < JERK_MS) {
-          const k = 0.2 * Math.exp(-ha / 70) * px;
-          wx += st.hux * k;
-          wy += st.huy * k;
-        }
+        const kick = kickBack(now - st.kickAt, st.kickTaps, st.kickGap) * px;
+        wx -= st.kux * kick;
+        wy -= st.kuy * kick;
+        const jerk = hitJerk(now - st.hitAt) * px;
+        wx += st.hux * jerk;
+        wy += st.huy * jerk;
       }
     }
     const [x, y] = cam.worldToScreen(wx, wy, cw, ch);
