@@ -37,7 +37,6 @@ export const WAR_DAYS_CHOICES = [7, 14, 21, 30] as const;
 export type WarDays = (typeof WAR_DAYS_CHOICES)[number];
 
 export type VictoryPreset = 'objectives' | 'majority';
-export type RedDoctrine = 'defensive' | 'offensive';
 export type ReconMode = 'omniscient' | 'contacts';
 
 // Structurally unable to reach the generator: makeTheater takes TheaterConfig only.
@@ -46,7 +45,6 @@ export interface CampaignConfig {
   victory: VictoryPreset;
   blueCompanies: 2 | 3 | 4;
   redStrength: 0 | 1 | 2 | 3 | 4;
-  redDoctrine: RedDoctrine;
   supply: boolean;
   recon: ReconMode;
   nightTempo: boolean;

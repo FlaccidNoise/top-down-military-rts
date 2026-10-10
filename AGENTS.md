@@ -26,5 +26,5 @@ mapgen territory or the owner asks for full.
 
 ## Where things are
 
-- `scripts/` — browser gates (playwright/CDP) and probes; `scripts/tutorial.mjs` is the strategic/UX gate
+- `scripts/` — browser gates (playwright/CDP) and probes; `scripts/tutorial.mjs` is the strategic/UX gate; `scripts/stratsweep.mjs` is the theater map's art gate (fixed seed, staged states, three devices, `--diff <baseline dir>`)
 - `docs/` — plans, specs, and decision records (`docs/decisions/INDEX.md` indexes the decisions)

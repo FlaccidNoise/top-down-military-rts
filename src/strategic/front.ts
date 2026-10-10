@@ -55,7 +55,9 @@ export function chitEtaMinutes(front: Front, chit: Chit): number {
 // Minutes until the next reinforcement cycle boundary (midnight starting the
 // next day divisible by REINFORCE_CYCLE_DAYS). Reinforcements for the current
 // day, if it's a cycle day, have already arrived at the moment it began.
-export function minutesToReinforcement(front: Front): number {
+// Both strategic layers count days the same way (day d begins at minute
+// (d - 1) x 1440), so the grid Front and the V2 theater front both read here.
+export function minutesToReinforcement(front: { day: number; clockMin: number }): number {
   const day = front.day;
   const nextDay = day + (REINFORCE_CYCLE_DAYS - (day % REINFORCE_CYCLE_DAYS));
   return (nextDay - 1) * 1440 - front.clockMin;

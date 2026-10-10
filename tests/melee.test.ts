@@ -35,6 +35,26 @@ describe('melee', () => {
     expect(a.targetId).toBe(-1);
   });
 
+  it('a melee does not end the walk it interrupted: the order stands, and he goes on after (#787)', () => {
+    const { sim, a, b } = pair({ dist: 130, map: new GameMap(140, 10) }); // the red man is out of sight and out of range
+    sim.orderTeam(a.teamId, { kind: 'move', x: 40.5, y: 5.5 });
+    expect(sim.teams[a.teamId].orderState.phase).toBe('executing');
+    for (let i = 0; i < 30; i++) sim.step();
+    b.x = a.x + 1.3; // staged: he steps out in front of the walking man
+    expect(stepUntil(sim, () => a.meleeId === b.id)).toBe(true);
+    expect(a.path).toBeNull(); // the lock took his path
+    for (let i = 0; i < 20; i++) sim.step();
+    expect(sim.teams[a.teamId].orderState.order?.kind).toBe('move'); // a one-man team: the order used to end here
+    // staged: the fight goes his way
+    b.wounds.push({ part: 0, dmg: 100 });
+    b.bloodLoss = 1;
+    a.pain = 0;
+    expect(stepUntil(sim, () => !b.alive && a.meleeId < 0, 60)).toBe(true);
+    expect(a.alive && !a.downed).toBe(true);
+    expect(stepUntil(sim, () => sim.teams[a.teamId].orderState.order === null, 30 * 60)).toBe(true);
+    expect(Math.hypot(a.x - 40.5, a.y - 5.5)).toBeLessThan(4); // he arrived where he was sent
+  });
+
   it('strikes wound through the body model without spending ammo', () => {
     const { sim, a, b } = pair();
     expect(stepUntil(sim, () => a.wounds.length + b.wounds.length > 0 || !a.alive || !b.alive, 1200)).toBe(true);

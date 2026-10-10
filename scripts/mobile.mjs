@@ -138,7 +138,9 @@ async function phoneRun(device) {
   check(await page.evaluate(() => window.__game.MOBILE === true), `${device} boots with MOBILE on`);
 
   // (0) PWA + portrait guidance. The banner is CSS-only, so "does it show in
-  // portrait and hide in landscape" is a real assertion, not a formality.
+  // portrait and hide in landscape" is a real assertion, not a formality. It
+  // is about the battlefield: it must NOT show before a battle (here), and
+  // must show in portrait once one starts (asserted after stageBattle).
   const meta = await page.evaluate(() => ({
     manifest: document.querySelector('link[rel=manifest]')?.getAttribute('href'),
     appleCapable: document.querySelector('meta[name="apple-mobile-web-app-capable"]')?.content,
@@ -152,16 +154,10 @@ async function phoneRun(device) {
   // scripts/smoke-dist.mjs asserts it there, under a subpath URL.
   check(!!meta.manifest, `${device} manifest link present (${meta.manifest})`);
   check(meta.appleCapable === 'yes' && meta.statusBar === 'black-translucent', `${device} apple standalone meta present`);
-  check(meta.rotateVisible === meta.portrait, `${device} rotate banner shows exactly in portrait (visible=${meta.rotateVisible}, portrait=${meta.portrait})`);
+  check(!meta.rotateVisible, `${device} no rotate banner before a battle (visible=${meta.rotateVisible}, portrait=${meta.portrait})`);
   const manifestRes = await page.request.get(`http://[::1]:${PORT}/manifest.webmanifest`);
   const manifest = manifestRes.ok() ? await manifestRes.json() : null;
   check(!!manifest && manifest.display === 'standalone' && manifest.orientation === 'landscape' && manifest.icons.length > 0, `${device} manifest serves and declares standalone/landscape + an icon`);
-  if (meta.rotateVisible) {
-    await shot('rotate-banner');
-    await page.click('#rotate-anyway');
-    await page.waitForTimeout(150);
-    check(await page.evaluate(() => getComputedStyle(document.getElementById('rotate')).display === 'none'), `${device} rotate banner dismisses`);
-  }
 
   // The classifier is pure and exposed on the __game seam precisely so the
   // grammar can be asserted here without synthesising timing-sensitive touch.
@@ -202,6 +198,18 @@ async function phoneRun(device) {
   // (b) staged battle at boot framing
   console.log(`  staged ${JSON.stringify(await stageBattle(page))}`);
   await page.waitForTimeout(1200);
+  // The portrait guidance belongs HERE: at battle entry, in portrait only.
+  const rot = await page.evaluate(() => ({
+    visible: getComputedStyle(document.getElementById('rotate')).display !== 'none',
+    portrait: matchMedia('(orientation: portrait)').matches,
+  }));
+  check(rot.visible === rot.portrait, `${device} rotate banner shows at battle entry exactly in portrait (visible=${rot.visible}, portrait=${rot.portrait})`);
+  if (rot.visible) {
+    await shot('rotate-banner');
+    await page.click('#rotate-anyway');
+    await page.waitForTimeout(150);
+    check(await page.evaluate(() => getComputedStyle(document.getElementById('rotate')).display === 'none'), `${device} rotate banner dismisses`);
+  }
   await shot('battle-boot');
   const f = await framing(page);
   console.log(`  framing ${JSON.stringify(f)}`);

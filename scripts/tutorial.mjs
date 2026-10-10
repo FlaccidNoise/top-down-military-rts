@@ -212,7 +212,7 @@ async function newOperation(page, { tap = false } = {}) {
 
 const theaterTargets = (page) =>
   page.evaluate(async () => {
-    const { orderMove } = await import('/src/strategic/theater/step.ts');
+    const { previewMove } = await import('/src/strategic/theater/step.ts');
     const W = innerWidth, H = innerHeight;
     // The coachmark is DOM too: a click that lands on the bubble teaching the
     // move never reaches the map underneath it.
@@ -238,9 +238,9 @@ const theaterTargets = (page) =>
     // An unheld control node a red garrison is actually sitting on — an empty
     // one flips without a fight and the player never sees a battle — that this
     // company can be ordered onto, weakest first: the target a briefed player
-    // picks. Reachability is asked of orderMove itself rather than guessed at
-    // (a pure ford objective refuses every order), dry-run on a saved path so
-    // the theater is exactly as it was.
+    // picks. Reachability is asked of previewMove, the order's own reject
+    // ladder and plan with nothing changed, rather than guessed at (a pure
+    // ford objective refuses every order).
     const ctrl = v2.goals.blue.find((c) => c.kind === 'control');
     if (!ctrl) throw new Error('blue has no control goal — makeWarGoals changed shape');
     const redAt = (n) => v2.front.forces
@@ -248,11 +248,7 @@ const theaterTargets = (page) =>
       .reduce((a, f) => a + f.strength, 0);
     const wouldTake = (nodeId) => {
       if (!force) return { ok: false, reason: 'no company selected' };
-      const f = v2.front.forces.find((x) => x.id === force.id);
-      const saved = f.path.slice();
-      const r = orderMove(v2.front, force.id, nodeId);
-      f.path = saved;
-      return r;
+      return previewMove(v2.front, force.id, nodeId);
     };
     const cands = ctrl.nodeIds
       .filter((n) => v2.front.controlByNode[n] !== 'blue')
@@ -494,7 +490,7 @@ async function desktopLeg() {
     await page.click('#theater-hud [data-clock="2"]');
     await page.click('#theater-hud [data-clock="pause"]');
     // The war clock itself, not the label: the HUD is signature-throttled and
-    // still shows the pre-click text for a frame after Resume.
+    // still shows the pre-click text for a frame after Play.
     const clock = await until(
       page,
       (b) => {
@@ -504,7 +500,7 @@ async function desktopLeg() {
       before,
       {
         timeout: 8000,
-        what: 'the theater clock to start advancing after Resume',
+        what: 'the theater clock to start advancing after Play',
         fix: 'The clock buttons are #theater-hud [data-clock] (src/ui/theater-hud.ts) — data-clock="pause" toggles stratPaused, "2" sets 60×. A stuck clock means the click never reached the handler.',
       },
     );
@@ -881,12 +877,12 @@ async function mobileLeg() {
           const h = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
           if (w > 2 && h > 2) overlaps.push(`${panels[i].cls} × ${panels[j].cls} (${Math.round(w)}x${Math.round(h)}px)`);
         }
-      return { overlaps, log: document.querySelector('#theater-hud .th-log')?.textContent.trim() ?? '' };
+      return { overlaps, next: document.querySelector('#theater-hud .th-next')?.textContent.trim() ?? '' };
     });
     check(chrome.overlaps.length === 0, `theater HUD panels do not sit on top of each other at 390px${chrome.overlaps.length ? `: ${chrome.overlaps.join(', ')}` : ''}`);
     check(
-      !/right-click|Click /i.test(chrome.log),
-      `the theater's own instruction line speaks touch on a phone (reads: "${chrome.log}") — src/ui/theater-hud.ts hardcodes the empty-log line and never asks whether this is a touch build`,
+      chrome.next.length > 0 && !/right-click|Click /i.test(chrome.next),
+      `the theater's "what next" line speaks touch on a phone (reads: "${chrome.next}") — src/ui/theater-hud.ts NEXT picks its words from MOBILE`,
     );
 
     // The claim the tutorial's own touch copy makes in battle: the ⚙ menu.

@@ -5,33 +5,46 @@
 // existing touch grammar ports unchanged. Muted-Normandy palette shared in
 // register with the grid view it replaces.
 import { pointAlong, type Region, type TerrainClass, type Theater, type TheaterNode, type Vec } from '../strategic/theater';
-import type { Force, FrontV2 } from '../strategic/theater/force';
+import type { Force, FrontV2, TheaterEvent } from '../strategic/theater/force';
+import { lightAt } from '../sim/solar';
 import { forceEtaMinutes, type MoveKernelOpts } from '../strategic/theater/step';
-import { supplyTierOf, type SupplyTier } from '../strategic/theater/supply';
+import { supplyTierOf } from '../strategic/theater/supply';
 import { contactConf } from '../strategic/intel';
 import type { ReconMode } from '../campaign/spec';
 
 import type { Side } from '../sim/sim';
 import { MOBILE } from './view';
+import { buildFrontLayer, controlKey, washRectM, type FrontLayer } from './theater-front';
+import { supplyCuts } from './theater-supply';
+import { counterRect, drawCounter, drawLeader, layoutCounters, type CounterSpec, type PlacedCounter } from './theater-counters';
 
 // Terrain separates by VALUE, not hue (the Muted-Normandy rule): a luma ladder
 // from forest floor up to rooftops, every rung a clear step. The old palette
 // packed farmland, bocage and marsh into one narrow band, which is why the
 // theater read as a single green mass.
+// The ladder is deliberately SHORT: this is an operational map, and the
+// loudest marks on it are forces and the front. The wider ladder it replaces
+// made the forest masses and the tan settlement regions the first thing the
+// eye found, and neither is something to act on.
 const REGION_STYLE: Record<TerrainClass, string> = {
-  farmland: '#6d7a57',
-  bocage: '#46543a',
-  forest: '#2f3b28',
-  marsh: '#4f6360',
-  settlement: '#8f8068',
+  farmland: '#5b6550',
+  bocage: '#4a5443',
+  forest: '#3a4437',
+  marsh: '#4a5856',
+  settlement: '#6c6557',
 };
 // Value is still one channel. Bocage and marsh carry a texture as well, so the
 // pair a red-green eye collapses stays separable.
 const REGION_TEXTURE: Partial<Record<TerrainClass, 'hedge' | 'reed'>> = { bocage: 'hedge', marsh: 'reed' };
 // Without a boundary, two same-class neighbours are one shape.
-const REGION_EDGE = 'rgba(26, 22, 16, 0.55)';
+const REGION_EDGE = 'rgba(26, 22, 16, 0.32)';
 const MAP_BG = '#211d16';
-const WATER = '#46647a';
+// Under the regions, to the theater bounds. The region polygons stop short of
+// the bounds and leave wedges between each other; over the bare background
+// those read as holes in the map.
+const GROUND = '#525b49';
+const FRAME = '#b9ae94';
+const WATER = '#3f5d73';
 const ROAD: Record<0 | 1 | 2, { color: string; width: number }> = {
   0: { color: '#cbbb94', width: 3 }, // highway
   1: { color: '#ab9d82', width: 2.1 }, // road
@@ -50,50 +63,320 @@ const SIDE_COLOR: Record<Side, string> = { blue: '#3a5a9a', red: '#9a3a3a' };
 const OBJ_TAKE = '#d8b25c';
 const OBJ_HELD = '#7da0d8';
 const OBJ_TICKS: readonly (readonly [number, number])[] = [[0, -1], [1, 0], [0, 1], [-1, 0]];
-const OWNER_TINT: Record<Side, string> = { blue: 'rgba(70, 110, 180, 0.55)', red: 'rgba(180, 70, 70, 0.55)' };
+// The wash says whose ground it is; a node only needs a rim in its holder's
+// colour so a town that changes hands reads at the town as well.
+const OWNER_RIM: Record<Side, string> = { blue: '#7fa6ee', red: '#e2796c' };
+const WASH_ALPHA = 0.26;
+const FRONT_LINE = '#f4ead0';
 
-const SUPPLY_TAG: Record<SupplyTier, { text: string; color: string } | null> = {
-  full: null,
-  low: { text: 'LOW', color: '#c9803c' },
-  out: { text: 'OUT', color: '#b5533c' },
-};
+// The HUD is opaque DOM over the canvas, so the canvas is not what the player
+// can see. main.ts measures the panels and hands the borders in; every
+// framing operation works against the clear rectangle they leave.
+export interface ViewInset {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+}
+// zoomMul is relative to the whole theater fitted to the raw canvas. The
+// floor is whatever fits the theater into the CLEAR rectangle (at most 1).
+export const THEATER_ZOOM_MAX = 8;
+// Boot framing stops here: three companies in one town must not open the war
+// on a close-up of a road junction.
+const FRAME_ZOOM_MAX = 3;
+const PAN_SLACK_PX = 80;
+
+// One ETA format for the card, the preview chip and the order flash.
+export function fmtEta(min: number): string {
+  const h = Math.floor(min / 60);
+  const m = Math.round(min % 60);
+  return h > 0 ? `${h}h${String(m).padStart(2, '0')}m` : `${m}m`;
+}
+
+// The march the player is pointing at, not yet ordered. `ok: false` is a
+// place the selected company cannot be sent.
+export type MarchPreview =
+  // `contact`: the first known enemy the march runs into, and where the
+  // company stands when it does. The march stops there.
+  | { ok: true; pos: Force['pos']; path: number[]; etaMin: number; contact: { etaMin: number; stop: Force['pos'] } | null }
+  | { ok: false; nodeId: number };
+
+const ARROW_OWN = '#a9c4f5';
+const ARROW_SEL = '#d4e3ff';
+const ARROW_PREVIEW = '#ffe9a0';
+const ARROW_CASE = 'rgba(12, 10, 6, 0.85)';
+const FIGHT = '#f0963c'; // contact and battle: one colour, one mark
+
+// Cut a polyline at the point on it nearest to `p`.
+function splitAt(pts: readonly Vec[], p: Vec): [Vec[], Vec[]] {
+  let best = { d: Infinity, i: 0, q: pts[0] };
+  for (let i = 0; i < pts.length - 1; i++) {
+    const a = pts[i], b = pts[i + 1];
+    const len2 = (b.x - a.x) ** 2 + (b.y - a.y) ** 2;
+    const t = len2 === 0 ? 0 : Math.max(0, Math.min(1, ((p.x - a.x) * (b.x - a.x) + (p.y - a.y) * (b.y - a.y)) / len2));
+    const q = { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
+    const d = Math.hypot(p.x - q.x, p.y - q.y);
+    if (d < best.d) best = { d, i, q };
+  }
+  return [[...pts.slice(0, best.i + 1), best.q], [best.q, ...pts.slice(best.i + 1)]];
+}
+
+// A supply depot: a crate, in its side's colour.
+function depot(ctx: CanvasRenderingContext2D, x: number, y: number, color: string): void {
+  ctx.fillStyle = 'rgba(14, 12, 8, 0.92)';
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.rect(x - 6, y - 6, 12, 12);
+  ctx.fill();
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(x - 6, y - 6);
+  ctx.lineTo(x + 6, y + 6);
+  ctx.moveTo(x + 6, y - 6);
+  ctx.lineTo(x - 6, y + 6);
+  ctx.stroke();
+}
+
+// Supply is cut HERE: a barred circle.
+function cutMark(ctx: CanvasRenderingContext2D, x: number, y: number): void {
+  for (const [style, lw] of [['rgba(12, 10, 6, 0.9)', 5.5], ['#e2543c', 3]] as const) {
+    ctx.strokeStyle = style;
+    ctx.lineWidth = lw;
+    ctx.beginPath();
+    ctx.arc(x, y, 10, 0, Math.PI * 2);
+    ctx.moveTo(x - 7, y + 7);
+    ctx.lineTo(x + 7, y - 7);
+    ctx.stroke();
+  }
+}
+
+// The mark for a fight: an eight-point burst. Used where a previewed march
+// will meet the enemy and, larger and alive, where a battle is being fought.
+function burst(ctx: CanvasRenderingContext2D, x: number, y: number, r: number, spin = 0): void {
+  ctx.beginPath();
+  for (let i = 0; i < 16; i++) {
+    const a = spin + (i * Math.PI) / 8;
+    const rr = i % 2 === 0 ? r : r * 0.48;
+    if (i === 0) ctx.moveTo(x + Math.cos(a) * rr, y + Math.sin(a) * rr);
+    else ctx.lineTo(x + Math.cos(a) * rr, y + Math.sin(a) * rr);
+  }
+  ctx.closePath();
+  ctx.fillStyle = FIGHT;
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(12, 10, 6, 0.9)';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+}
+
+// Things that just happened, drawn for a moment on the render clock.
+type Fx =
+  | { kind: 'capture'; at: Vec; side: Side; t0: number }
+  | { kind: 'retreat'; from: Vec; to: Vec; side: Side; t0: number };
+const FX_MS = { capture: 1800, retreat: 6000 } as const;
+// Under fog, a report at least this confident is of a force in sight now.
+const FRESH_CONF = 0.9;
+const WASH_FADE_MS = 900;
+// Full dark puts this much night over the ground. Towns, names and counters
+// are drawn after it and stay at full strength.
+const NIGHT_ALPHA = 0.5;
+const NIGHT = '6, 10, 30';
 
 export class TheaterView {
   zoomMul = 1;
   panX = 0;
   panY = 0;
+  inset: ViewInset = { left: 0, top: 0, right: 0, bottom: 0 };
+  preview: MarchPreview | null = null; // set by main.ts from the hover or the hold
   supplyOn = false; // S50: gates cut hatching + tier tags (set from CampaignConfig)
   recon: ReconMode = 'omniscient'; // S53: 'contacts' fogs every enemy-derived mark
   private flashText = '';
   private flashUntil = 0;
+  // The event log's signature when the flash went up. `undefined` = take it
+  // on the next draw. A later event clears the flash: at 60x a six-second
+  // "Able moving" outlived the march by hours.
+  private flashSig: string | undefined | null = null;
+  // The render clock: wall time, so the map is alive while the war is paused
+  // and does not strobe at 60x. scripts/stratsweep.mjs freezes it.
+  frozenAt: number | null = null;
+  private fx: Fx[] = [];
+  private readonly seenEvents = new WeakSet<TheaterEvent>();
+  private eventsPrimed = false;
+  private readonly lastXY = new Map<number, Vec>();
+  private washWas: { layer: FrontLayer; t0: number } | null = null;
   private readonly smoothed = new Map<number, Vec[]>();
   private readonly labelW = new Map<string, number>();
   private readonly patterns = new Map<string, CanvasPattern | null>();
+  // The counters as last drawn. forceAtScreen reads them: a click lands on
+  // what the player sees.
+  private counters: PlacedCounter[] = [];
+  private frontKey = '';
+  private frontCache: FrontLayer | null = null;
 
   constructor(private readonly theater: Theater) {}
 
   flash(text: string): void {
     this.flashText = text;
     this.flashUntil = performance.now() + 6000;
+    this.flashSig = undefined;
+  }
+
+  private now(): number {
+    return this.frozenAt ?? performance.now();
+  }
+
+  // New theater events become marks on the map. Events already in the log
+  // when the view first draws (a loaded war) are history, not news.
+  private takeEvents(front: FrontV2): void {
+    const t0 = this.now();
+    for (const e of front.events) {
+      if (this.seenEvents.has(e)) continue;
+      this.seenEvents.add(e);
+      if (!this.eventsPrimed) continue;
+      if (e.kind === 'capture' && e.nodeId !== undefined) {
+        const side = front.controlByNode[e.nodeId];
+        if (side) this.fx.push({ kind: 'capture', at: this.theater.nodes[e.nodeId].pos, side, t0 });
+      } else if (e.kind === 'retreat') {
+        for (const id of e.forceIds) {
+          const f = front.forces.find((x) => x.id === id);
+          const from = this.lastXY.get(id);
+          // Under fog an enemy's retreat would draw where he went.
+          if (!f || !from || (this.recon === 'contacts' && f.side === 'red')) continue;
+          const to = this.forceXY(f);
+          if (Math.hypot(to.x - from.x, to.y - from.y) > 200) this.fx.push({ kind: 'retreat', from, to, side: f.side, t0 });
+        }
+      }
+    }
+    this.eventsPrimed = true;
+    for (const f of front.forces) this.lastXY.set(f.id, this.forceXY(f));
+    this.fx = this.fx.filter((x) => t0 - x.t0 < FX_MS[x.kind]);
+    const last = front.events[front.events.length - 1];
+    const sig = `${front.events.length}:${last?.min}:${last?.text}`;
+    if (this.flashSig === undefined) this.flashSig = sig;
+    else if (this.flashSig !== null && this.flashSig !== sig) {
+      this.flashText = '';
+      this.flashSig = null;
+    }
   }
 
   // Base fit: the whole theater inside the viewport with a margin.
   layout(w: number, h: number): { scale: number; ox: number; oy: number } {
-    const m = MOBILE ? 8 : 40;
+    const m = this.margin();
     const scale = (Math.min((w - m * 2) / this.theater.boundsM.w, (h - m * 2) / this.theater.boundsM.h)) * this.zoomMul;
     const ox = (w - this.theater.boundsM.w * scale) / 2 + this.panX;
     const oy = (h - this.theater.boundsM.h * scale) / 2 + this.panY;
     return { scale, ox, oy };
   }
 
-  clampPan(w: number, h: number): void {
+  private clear(w: number, h: number): { x: number; y: number; w: number; h: number } {
+    const i = this.inset;
+    return { x: i.left, y: i.top, w: Math.max(1, w - i.left - i.right), h: Math.max(1, h - i.top - i.bottom) };
+  }
+
+  private margin(): number {
+    return MOBILE ? 8 : 40;
+  }
+
+  // The zoom at which the whole theater sits inside the clear rectangle.
+  minZoom(w: number, h: number): number {
+    const m = this.margin();
+    const c = this.clear(w, h);
+    const { w: tw, h: th } = this.theater.boundsM;
+    const fit = Math.min((c.w - m * 2) / tw, (c.h - m * 2) / th);
+    const base = Math.min((w - m * 2) / tw, (h - m * 2) / th);
+    return Math.max(0.2, Math.min(1, fit / base));
+  }
+
+  // The map may leave the clear rectangle by a thumb's width and no more: a
+  // map smaller than the clear rectangle stays inside it, a larger one never
+  // shows more than the slack of empty ground. A panel that appears later
+  // (the company card) moves the map only if it would cover it.
+  clampPan(w: number, h: number, slack = PAN_SLACK_PX): void {
+    this.zoomMul = Math.max(this.minZoom(w, h), Math.min(THEATER_ZOOM_MAX, this.zoomMul));
     const { scale } = this.layout(w, h);
-    const mw = this.theater.boundsM.w * scale;
-    const mh = this.theater.boundsM.h * scale;
-    const slackX = Math.max(0, (mw - w) / 2 + 80);
-    const slackY = Math.max(0, (mh - h) / 2 + 80);
-    this.panX = Math.max(-slackX, Math.min(slackX, this.panX));
-    this.panY = Math.max(-slackY, Math.min(slackY, this.panY));
+    const c = this.clear(w, h);
+    const axis = (pan: number, full: number, c0: number, cLen: number, mapLen: number): number => {
+      const neutral = (full - mapLen) / 2; // the offset at pan 0
+      const lo = Math.min(c0, c0 + cLen - mapLen) - slack;
+      const hi = Math.max(c0, c0 + cLen - mapLen) + slack;
+      return Math.max(lo, Math.min(hi, neutral + pan)) - neutral;
+    };
+    this.panX = axis(this.panX, w, c.x, c.w, this.theater.boundsM.w * scale);
+    this.panY = axis(this.panY, h, c.y, c.h, this.theater.boundsM.h * scale);
+  }
+
+  // Put the bounding box of `pts` (theater metres) in the middle of the clear
+  // rectangle, as large as it goes with `padPx` of room for counters and names.
+  frame(pts: readonly Vec[], w: number, h: number, maxZoom = FRAME_ZOOM_MAX, padPx = MOBILE ? 48 : 72): void {
+    if (pts.length === 0) return;
+    const xs = pts.map((p) => p.x);
+    const ys = pts.map((p) => p.y);
+    const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
+    const c = this.clear(w, h);
+    const base = this.layout(w, h).scale / this.zoomMul;
+    const want = Math.min(Math.max(1, c.w - padPx * 2) / Math.max(1, x1 - x0), Math.max(1, c.h - padPx * 2) / Math.max(1, y1 - y0));
+    this.zoomMul = Math.max(this.minZoom(w, h), Math.min(maxZoom, want / base));
+    const scale = base * this.zoomMul;
+    const { w: tw, h: th } = this.theater.boundsM;
+    this.panX = c.x + c.w / 2 - ((x0 + x1) / 2) * scale - (w - tw * scale) / 2;
+    this.panY = c.y + c.h / 2 - ((y0 + y1) / 2) * scale - (h - th * scale) / 2;
+    // No slack here: a framed map never starts with ground under a panel
+    // while there is room to show it.
+    this.clampPan(w, h, 0);
+  }
+
+  // The whole theater, inside the clear rectangle.
+  fitAll(w: number, h: number): void {
+    const { w: tw, h: th } = this.theater.boundsM;
+    this.frame([{ x: 0, y: 0 }, { x: tw, y: th }], w, h, 1, this.margin());
+  }
+
+  // How a war opens: the player's companies and the nearest objective they do
+  // not hold, as large as they go. A phone fitted to the whole theater shows
+  // a map a third of the screen tall with the player's sector an inch across.
+  frameStart(front: FrontV2, w: number, h: number): void {
+    const own = front.forces.filter((f) => f.side === 'blue' && f.strength > 0).map((f) => this.forceXY(f));
+    if (own.length === 0) return this.fitAll(w, h);
+    const cx = own.reduce((a, p) => a + p.x, 0) / own.length;
+    const cy = own.reduce((a, p) => a + p.y, 0) / own.length;
+    const goal = this.theater.objectiveNodes
+      .filter((n) => front.controlByNode[n] !== 'blue')
+      .map((n) => this.theater.nodes[n].pos)
+      .sort((a, b) => Math.hypot(a.x - cx, a.y - cy) - Math.hypot(b.x - cx, b.y - cy))[0];
+    const pts = goal ? [...own, goal] : own;
+    this.frame(pts, w, h);
+    // An objective cut by a panel or by the screen edge is worse than one
+    // off screen: bring every objective that shows at all fully into the
+    // clear, ring, name and garrison. Each pass can only add, so it ends.
+    const c = this.clear(w, h);
+    const rest = this.theater.objectiveNodes.map((n) => this.theater.nodes[n].pos).filter((p) => !pts.includes(p));
+    for (let pass = 0; pass < rest.length; pass++) {
+      const cutOff = rest.find((p) => {
+        if (pts.includes(p)) return false;
+        const [sx, sy] = this.toScreen(p.x, p.y, w, h);
+        const showing = sx > -20 && sx < w + 20 && sy > -20 && sy < h + 20;
+        const whole = sx - 60 >= c.x && sx + 60 <= c.x + c.w && sy - 36 >= c.y && sy + 50 <= c.y + c.h;
+        return showing && !whole;
+      });
+      if (!cutOff) break;
+      pts.push(cutOff);
+      this.frame(pts, w, h);
+    }
+  }
+
+  // Centre a theater point in the clear rectangle without changing the zoom.
+  centerOn(p: Vec, w: number, h: number): void {
+    this.frame([p], w, h, this.zoomMul, 0);
+  }
+
+  // Zoom by `factor`, keeping the map point under (sx, sy) where it is.
+  zoomAt(factor: number, sx: number, sy: number, w: number, h: number): void {
+    const [wx, wy] = this.toWorld(sx, sy, w, h);
+    this.zoomMul = Math.max(this.minZoom(w, h), Math.min(THEATER_ZOOM_MAX, this.zoomMul * factor));
+    const [nx, ny] = this.toScreen(wx, wy, w, h);
+    this.panX += sx - nx;
+    this.panY += sy - ny;
+    this.clampPan(w, h);
   }
 
   toScreen(x: number, y: number, w: number, h: number): [number, number] {
@@ -123,6 +406,14 @@ export class TheaterView {
   }
 
   forceAtScreen(front: FrontV2, side: Side | null, sx: number, sy: number, w: number, h: number): number {
+    const slop = MOBILE ? 8 : 2;
+    const onCounter = this.counters.find((c) => {
+      const f = front.forces.find((x) => x.id === c.id);
+      if (!f || f.strength <= 0 || (side !== null && f.side !== side)) return false;
+      const r = counterRect(c);
+      return sx >= r.x0 - slop && sx <= r.x1 + slop && sy >= r.y0 - slop && sy <= r.y1 + slop;
+    });
+    if (onCounter) return onCounter.id;
     const [wx, wy] = this.toWorld(sx, sy, w, h);
     const { scale } = this.layout(w, h);
     const rM = Math.max(500, (MOBILE ? 28 : 18) / scale);
@@ -147,6 +438,8 @@ export class TheaterView {
   }
 
   draw(ctx: CanvasRenderingContext2D, front: FrontV2, selectedForce: number, paused: boolean, speed: number, w: number, h: number): void {
+    this.takeEvents(front);
+    const now = this.now();
     const { scale, ox, oy } = this.layout(w, h);
     ctx.fillStyle = MAP_BG;
     ctx.fillRect(0, 0, w, h);
@@ -160,6 +453,17 @@ export class TheaterView {
         else ctx.lineTo(sx, sy);
       });
     };
+
+    const mapW = this.theater.boundsM.w * scale;
+    const mapH = this.theater.boundsM.h * scale;
+    ctx.fillStyle = GROUND;
+    ctx.fillRect(ox, oy, mapW, mapH);
+    // Everything that is ground is drawn inside the bounds: smoothed region
+    // corners and wide rivers would otherwise poke out past the frame.
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(ox, oy, mapW, mapH);
+    ctx.clip();
 
     // Regions — the ground truth, painted as organic polygons: fill, then any
     // terrain texture, then a boundary so neighbours never merge.
@@ -180,6 +484,22 @@ export class TheaterView {
       ctx.lineWidth = Math.min(2, 1 + this.zoomMul * 0.25);
       ctx.stroke();
     }
+
+    // Whose ground: a soft wash, drawn stretched from one pixel per grid cell
+    // so its edge is a gradient, not a border.
+    const fl = this.frontLayer(front.controlByNode);
+    // A capture MOVES the wash: the old ground fades out under the new.
+    const fade = this.washWas ? Math.min(1, (now - this.washWas.t0) / WASH_FADE_MS) : 1;
+    if (fade >= 1) this.washWas = null;
+    const r = washRectM(this.theater);
+    ctx.save();
+    ctx.imageSmoothingEnabled = true;
+    for (const [layer, k] of [[this.washWas?.layer, 1 - fade], [fl, fade]] as const) {
+      if (!layer?.wash || k <= 0) continue;
+      ctx.globalAlpha = WASH_ALPHA * k;
+      ctx.drawImage(layer.wash, ox + r.x * scale, oy + r.y * scale, r.w * scale, r.h * scale);
+    }
+    ctx.restore();
 
     // Rivers over ground, under roads.
     for (const rv of this.theater.rivers) {
@@ -212,51 +532,80 @@ export class TheaterView {
       }
     }
 
-    // Supply cut lines (S50): a live enemy force standing ON a road cuts the
-    // trace under it — hatch the edge so the interdiction reads at a glance.
-    // Drawn from the player's (blue) perspective; the FOW lane gates this on
-    // contact visibility when recon: 'contacts' ships.
-    if (this.supplyOn) {
-      // Under fog the hatch derives from KNOWN contacts, never truth — a cut
-      // you have not seen is a cut you have not seen.
-      const interdictors: { pos: Force['pos'] }[] =
-        this.recon === 'contacts'
-          ? (front.intel?.blue ?? [])
-          : front.forces.filter((f) => f.side === 'red' && f.strength > 0);
-      for (const f of interdictors) {
-        if (f.pos.kind !== 'edge') continue;
-        const e = this.theater.edges[f.pos.edgeId];
-        ctx.strokeStyle = 'rgba(181, 83, 60, 0.85)';
-        ctx.lineWidth = 3;
-        ctx.setLineDash([3, 5]);
-        trace(e.polyline);
-        ctx.stroke();
-        ctx.setLineDash([]);
-      }
+    // Supply (S50), made visible. A cut is marked WHERE it happens: the enemy
+    // on the road (the road hatched under him) or the enemy-held town that the
+    // trace to a cut-off company stops at. Under fog a cut made by an enemy
+    // the player has not seen is not drawn: a cut you have not seen is a cut
+    // you have not seen.
+    const cuts = this.supplyOn ? this.knownCuts(front) : [];
+    for (const c of cuts) {
+      if (c.kind !== 'edge') continue;
+      ctx.strokeStyle = 'rgba(226, 84, 60, 0.9)';
+      ctx.lineWidth = 3;
+      ctx.setLineDash([3, 5]);
+      trace(this.theater.edges[c.edgeId].polyline);
+      ctx.stroke();
+      ctx.setLineDash([]);
     }
 
-    // Nodes: control tint ring, kind glyph; labels collected for a
+    // The front: where the two washes meet. Over the roads, under the towns.
+    for (const [style, lw] of [['rgba(12, 10, 6, 0.75)', 5.5], [FRONT_LINE, 2.5]] as const) {
+      ctx.strokeStyle = style;
+      ctx.lineWidth = lw;
+      ctx.setLineDash(style === FRONT_LINE ? [9, 5] : []);
+      for (const line of fl.lines) {
+        trace(line);
+        ctx.stroke();
+      }
+    }
+    ctx.setLineDash([]);
+
+    // Night, from the same solar model the march and the battle read. Over
+    // the ground, the roads and the front; under the towns and the forces.
+    const dark = NIGHT_ALPHA * (1 - Math.min(1, lightAt(front.clockMin) / 0.5));
+    if (dark > 0.01) {
+      ctx.fillStyle = `rgba(${NIGHT}, ${dark.toFixed(3)})`;
+      ctx.fillRect(ox, oy, mapW, mapH);
+    }
+    ctx.restore(); // end of the bounds clip
+    // A neatline: the map is a sheet with an edge, not a shape in a void.
+    ctx.strokeStyle = 'rgba(12, 10, 6, 0.9)';
+    ctx.lineWidth = 4;
+    ctx.strokeRect(ox, oy, mapW, mapH);
+    ctx.strokeStyle = FRAME;
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(ox, oy, mapW, mapH);
+
+    // Nodes: holder's rim, kind glyph; labels collected for a
     // declutter pass — towns first, then villages/crossings, greedy cull on
     // screen-space overlap so a dense cluster reads as its principal name.
     // Objectives always carry a ticked designation ring and a starred name —
     // the win condition has to read off the map itself.
-    const labels: { sx: number; sy: number; text: string; rank: number; id: number; px: number }[] = [];
+    const labels: { sx: number; sy: number; text: string; rank: number; id: number; px: number; r: number }[] = [];
     const objectives = new Set(this.theater.objectiveNodes);
+    // Counters claim their ground first: clear of every town and objective
+    // ring, and inside what the HUD leaves visible.
+    const cl = this.clear(w, h);
+    const clearRect = { x0: cl.x + 2, y0: cl.y + 2, x1: cl.x + cl.w - 2, y1: cl.y + cl.h - 2 };
+    const townBoxes = this.theater.nodes.map((n) => {
+      const [sx, sy] = this.toScreen(n.pos.x, n.pos.y, w, h);
+      const half = (n.rank === 0 ? 7 : n.rank === 1 ? 5 : 3.5) + (objectives.has(n.id) ? 12 : 3);
+      return { x0: sx - half, y0: sy - half, x1: sx + half, y1: sy + half };
+    });
+    this.counters = layoutCounters(this.counterSpecs(front, selectedForce, objectives, w, h), townBoxes, clearRect);
+    for (const c of this.counters) drawLeader(ctx, c);
     for (const n of this.theater.nodes) {
       const [sx, sy] = this.toScreen(n.pos.x, n.pos.y, w, h);
       const owner = front.controlByNode[n.id];
       const r = n.rank === 0 ? 7 : n.rank === 1 ? 5 : 3.5;
-      if (owner) {
-        ctx.fillStyle = OWNER_TINT[owner];
-        ctx.beginPath();
-        ctx.arc(sx, sy, r + 5, 0, Math.PI * 2);
-        ctx.fill();
-      }
       ctx.fillStyle = n.crossing ? '#d6c9a4' : n.rank === 0 ? '#e2d6ba' : '#b9ae94';
       this.glyph(ctx, n, sx, sy, r);
       ctx.fill();
       ctx.strokeStyle = INK;
-      ctx.lineWidth = 1;
+      ctx.lineWidth = 3.5;
+      ctx.stroke();
+      ctx.strokeStyle = owner ? OWNER_RIM[owner] : INK;
+      ctx.lineWidth = 1.5;
       ctx.stroke();
       const objective = objectives.has(n.id);
       if (objective) {
@@ -277,11 +626,28 @@ export class TheaterView {
         // ordinary name in the declutter, the ★ marks it, and the lifted
         // baseline clears the north tick.
         labels.push(objective
-          ? { sx, sy: sy - r - 14, text: `★ ${n.name}`, rank: -1, id: n.id, px: n.rank === 0 ? 12 : 10 }
-          : { sx, sy: sy - r - 5, text: n.name, rank: n.rank, id: n.id, px: n.rank === 0 ? 12 : 10 });
+          ? { sx, sy: sy - r - 14, text: `★ ${n.name}`, rank: -1, id: n.id, px: n.rank === 0 ? 13 : 12, r }
+          : { sx, sy: sy - r - 5, text: n.name, rank: n.rank, id: n.id, px: n.rank === 0 ? 12 : 10, r });
       }
     }
-    const placed: { x0: number; y0: number; x1: number; y1: number }[] = [];
+    const placed: { x0: number; y0: number; x1: number; y1: number }[] = this.counters.map(counterRect);
+    // Depots: where each side's supply starts. A crate beside the place.
+    if (this.supplyOn) {
+      for (const side of ['blue', 'red'] as const) {
+        for (const n of this.theater.sources[side]) {
+          const p = this.theater.nodes[n].pos;
+          const [sx, sy] = this.toScreen(p.x, p.y, w, h);
+          depot(ctx, sx - 17, sy - 3, OWNER_RIM[side]);
+          placed.push({ x0: sx - 25, y0: sy - 11, x1: sx - 9, y1: sy + 5 }); // names keep off the crate
+        }
+      }
+      for (const c of cuts) {
+        const p = c.kind === 'node' ? this.theater.nodes[c.nodeId].pos : pointAlong(this.theater.edges[c.edgeId], c.s);
+        const [sx, sy] = this.toScreen(p.x, p.y, w, h);
+        cutMark(ctx, sx, sy - (c.kind === 'node' ? 0 : 14));
+      }
+    }
+
     ctx.textAlign = 'center';
     // A halo, not a drop shadow: a name has to read over rooftops and forest
     // alike, and the map has no single background to tune against.
@@ -295,16 +661,39 @@ export class TheaterView {
         tw = ctx.measureText(l.text).width;
         this.labelW.set(key, tw);
       }
-      const rect = { x0: l.sx - tw / 2 - 2, y0: l.sy - l.px, x1: l.sx + tw / 2 + 2, y1: l.sy + 2 };
-      if (placed.some((p) => rect.x0 < p.x1 && rect.x1 > p.x0 && rect.y0 < p.y1 && rect.y1 > p.y0)) continue;
-      placed.push(rect);
-      ctx.strokeText(l.text, l.sx, l.sy);
-      ctx.fillStyle = 'rgba(238, 230, 212, 0.95)';
-      ctx.fillText(l.text, l.sx, l.sy);
+      // Above the place, else beside it, else under it.
+      // A name of a place the HUD leaves visible stays visible: it slides
+      // sideways off a screen edge, and a seat under a panel is no seat.
+      const shown = l.sx >= clearRect.x0 && l.sx <= clearRect.x1 && l.sy >= clearRect.y0 && l.sy <= clearRect.y1 + 40;
+      const fitX = (cx: number): number => (shown && tw + 8 < cl.w ? Math.max(clearRect.x0 + tw / 2 + 2, Math.min(clearRect.x1 - tw / 2 - 2, cx)) : cx);
+      const seats = [
+        { cx: l.sx, y: l.sy },
+        { cx: l.sx + l.r + 12 + tw / 2, y: l.sy + l.r + 9 },
+        { cx: l.sx - l.r - 12 - tw / 2, y: l.sy + l.r + 9 },
+        { cx: l.sx, y: l.sy + 2 * l.r + (l.rank < 0 ? 36 : 22) },
+      ].map((s) => ({ cx: fitX(s.cx), y: s.y }))
+        .map((s) => ({ ...s, rect: { x0: s.cx - tw / 2 - 2, y0: s.y - l.px, x1: s.cx + tw / 2 + 2, y1: s.y + 2 } }));
+      const open = (s: (typeof seats)[number]): boolean =>
+        (!shown || (s.rect.y0 >= clearRect.y0 && s.rect.y1 <= clearRect.y1)) &&
+        !placed.some((p) => s.rect.x0 < p.x1 && s.rect.x1 > p.x0 && s.rect.y0 < p.y1 && s.rect.y1 > p.y0);
+      const free = seats.find(open);
+      // An objective name is never dropped. With every seat taken it takes
+      // the one that covers least.
+      const covered = (s: (typeof seats)[number]): number =>
+        placed.reduce((a, p) => a + Math.max(0, Math.min(s.rect.x1, p.x1) - Math.max(s.rect.x0, p.x0)) * Math.max(0, Math.min(s.rect.y1, p.y1) - Math.max(s.rect.y0, p.y0)), 0);
+      const seat = free ?? (l.rank < 0 ? seats.reduce((best, s) => (covered(s) < covered(best) ? s : best)) : null);
+      if (!seat) continue;
+      placed.push(seat.rect);
+      ctx.strokeText(l.text, seat.cx, seat.y);
+      ctx.fillStyle = l.rank < 0 ? '#f3e2ae' : 'rgba(238, 230, 212, 0.95)';
+      ctx.fillText(l.text, seat.cx, seat.y);
     }
 
-    // Battles: a pulsing ring at the site (deterministic phase from clock).
-    // Under fog only battles with an OWN participant ring — an AI-vs-AI
+    // Battles in progress: a burst that sits OUTSIDE the objective ring, with
+    // a ring that breathes out from the site. On the render clock: it moves
+    // while the war is paused and keeps one pace at any game speed. (It
+    // pulsed on clockMin % 8: frozen when paused, a 7.5 Hz flicker at 60x.)
+    // Under fog only battles with an OWN participant show — an AI-vs-AI
     // fight behind the line would leak positions the sweep never earned.
     for (const b of front.battles) {
       if (this.recon === 'contacts') {
@@ -313,94 +702,85 @@ export class TheaterView {
       }
       const p = b.site.kind === 'node' ? this.theater.nodes[b.site.nodeId].pos : pointAlong(this.theater.edges[b.site.edgeId], b.site.s);
       const [sx, sy] = this.toScreen(p.x, p.y, w, h);
-      const pulse = 8 + 3 * Math.sin((front.clockMin % 8) / 8 * Math.PI * 2);
-      ctx.strokeStyle = '#c9803c';
-      ctx.lineWidth = 2;
+      const beat = (now % 1400) / 1400;
+      ctx.strokeStyle = FIGHT;
+      ctx.globalAlpha = 1 - beat;
+      ctx.lineWidth = 2.5;
       ctx.beginPath();
-      ctx.arc(sx, sy, pulse, 0, Math.PI * 2);
+      ctx.arc(sx, sy, 22 + beat * 16, 0, Math.PI * 2);
       ctx.stroke();
+      ctx.globalAlpha = 1;
+      // Beside the place: its name is above it and its counters hang below.
+      burst(ctx, sx + 30, sy, 10 + 1.5 * Math.sin(beat * Math.PI * 2), (now / 6000) * Math.PI * 2);
     }
 
-    // FOW ghosts (S53): the enemy is drawn from the contact map, aged — a
-    // hollow outline that fades as confidence decays. Rendered BEFORE own
-    // forces so live friendly markers always read on top.
-    if (this.recon === 'contacts') {
-      for (const c of front.intel?.blue ?? []) {
-        const conf = contactConf(c, front.clockMin);
-        const p = c.pos.kind === 'node' ? this.theater.nodes[c.pos.nodeId].pos : pointAlong(this.theater.edges[c.pos.edgeId], c.pos.s);
-        const [sx, sy] = this.toScreen(p.x, p.y, w, h);
-        ctx.globalAlpha = 0.3 + 0.7 * conf;
-        ctx.strokeStyle = SIDE_COLOR.red;
-        ctx.lineWidth = 1.5;
-        ctx.strokeRect(sx - 7, sy - 5, 14, 10);
-        ctx.fillStyle = 'rgba(230, 200, 190, 0.9)';
-        ctx.font = '9px ui-monospace, monospace';
-        ctx.textAlign = 'center';
-        ctx.fillText(`~${c.strength}`, sx, sy + 15);
-        ctx.globalAlpha = 1;
-      }
-    }
-
-    // Forces: rectangles at continuous positions, strength bar underneath.
-    for (const f of [...front.forces].sort((a, b) => a.id - b.id)) {
-      if (f.strength <= 0) continue;
-      if (this.recon === 'contacts' && f.side === 'red') continue; // ghosts own the enemy picture
-      const p = this.forceXY(f);
-      const [sx, sy] = this.toScreen(p.x, p.y, w, h);
-      const sel = f.id === selectedForce;
-      const bw = f.side === 'blue' ? 16 : 14;
-      ctx.fillStyle = SIDE_COLOR[f.side];
-      ctx.strokeStyle = sel ? '#e8dcc4' : 'rgba(20, 18, 12, 0.8)';
-      ctx.lineWidth = sel ? 2 : 1;
-      ctx.fillRect(sx - bw / 2, sy - 5, bw, 10);
-      ctx.strokeRect(sx - bw / 2, sy - 5, bw, 10);
-      if (f.engagedIn !== null) {
-        ctx.fillStyle = '#c9803c';
-        ctx.fillRect(sx - 2, sy - 9, 4, 3);
-      }
-      ctx.fillStyle = 'rgba(230, 220, 200, 0.9)';
-      ctx.font = '9px ui-monospace, monospace';
-      ctx.textAlign = 'center';
-      ctx.fillText(`${f.strength}`, sx, sy + 15);
-      if (this.supplyOn) {
-        const tag = SUPPLY_TAG[supplyTierOf(f.untracedMin)];
-        if (tag) {
-          ctx.fillStyle = tag.color;
-          ctx.font = 'bold 8px ui-monospace, monospace';
-          ctx.fillText(tag.text, sx, sy + 24);
+    // What just happened: a capture rings the town in its new holder's
+    // colour, a retreat leaves a short arrow from where the force stood.
+    for (const x of this.fx) {
+      const k = (now - x.t0) / FX_MS[x.kind];
+      if (x.kind === 'capture') {
+        const [sx, sy] = this.toScreen(x.at.x, x.at.y, w, h);
+        for (const lag of [0, 0.25]) {
+          const kk = k - lag;
+          if (kk <= 0 || kk >= 1) continue;
+          ctx.strokeStyle = OWNER_RIM[x.side];
+          ctx.globalAlpha = 1 - kk;
+          ctx.lineWidth = 4 * (1 - kk) + 1;
+          ctx.beginPath();
+          ctx.arc(sx, sy, 12 + kk * 46, 0, Math.PI * 2);
+          ctx.stroke();
         }
+        ctx.globalAlpha = 1;
+      } else {
+        ctx.save();
+        ctx.globalAlpha = Math.min(1, 2 * (1 - k));
+        ctx.setLineDash([5, 4]);
+        this.arrow(ctx, [x.from, x.to], w, h, OWNER_RIM[x.side], 2.5);
+        ctx.restore();
       }
     }
 
-    // Path preview for the selection.
-    const sel = front.forces.find((f) => f.id === selectedForce);
-    if (sel && sel.path.length > 0) {
-      ctx.strokeStyle = 'rgba(230, 220, 200, 0.5)';
-      ctx.lineWidth = 1.5;
-      ctx.setLineDash([4, 4]);
-      ctx.beginPath();
-      const start = this.forceXY(sel);
-      let [px, py] = this.toScreen(start.x, start.y, w, h);
-      ctx.moveTo(px, py);
-      // Walk from the anchor node ahead of the force through each path edge.
-      let at = sel.pos.kind === 'edge'
-        ? (sel.pos.dir === 1 ? this.theater.edges[sel.pos.edgeId].b : this.theater.edges[sel.pos.edgeId].a)
-        : sel.pos.nodeId;
-      {
-        const ap = this.theater.nodes[at].pos;
-        [px, py] = this.toScreen(ap.x, ap.y, w, h);
-        ctx.lineTo(px, py);
+    // Marches. Every moving company keeps a thin arrow to where it is going,
+    // along the roads it will use. The selected one is brighter.
+    for (const f of front.forces) {
+      if (f.side !== 'blue' || f.strength <= 0 || f.path.length === 0 || f.engagedIn !== null) continue;
+      const sel = f.id === selectedForce;
+      this.arrow(ctx, this.routePts(f.pos, f.path), w, h, sel ? ARROW_SEL : ARROW_OWN, sel ? 3 : 1.8);
+    }
+
+    // Forces, on top of everything the map says about the ground.
+    for (const c of this.counters) drawCounter(ctx, c);
+
+    // The order preview: the real route, bright, with the time it will take.
+    // Drawn over the counters, because it is what the player is looking at.
+    if (this.preview?.ok) {
+      const pts = this.routePts(this.preview.pos, this.preview.path);
+      const end = pts[pts.length - 1];
+      const [ex, ey] = this.toScreen(end.x, end.y, w, h);
+      const hit = this.preview.contact;
+      if (!hit) {
+        this.arrow(ctx, pts, w, h, ARROW_PREVIEW, 3.5);
+        this.chip(ctx, fmtEta(this.preview.etaMin), ex, ey, w, ARROW_PREVIEW);
+      } else {
+        // The march stops at the first fight. Bright as far as that, a dim
+        // dashed remainder to the place asked for, and the fight marked where
+        // the company will stand.
+        const stop = hit.stop.kind === 'node' ? this.theater.nodes[hit.stop.nodeId].pos : pointAlong(this.theater.edges[hit.stop.edgeId], hit.stop.s);
+        const [near, far] = splitAt(pts, stop);
+        ctx.save();
+        ctx.globalAlpha = 0.5;
+        ctx.setLineDash([6, 6]);
+        this.arrow(ctx, far, w, h, ARROW_PREVIEW, 2.5);
+        ctx.restore();
+        this.arrow(ctx, near, w, h, ARROW_PREVIEW, 3.5, false);
+        const [cx, cy] = this.toScreen(stop.x, stop.y, w, h);
+        burst(ctx, cx, cy, 9);
+        this.chip(ctx, `contact ${fmtEta(hit.etaMin)}`, cx, cy, w, FIGHT);
       }
-      for (const eid of sel.path) {
-        if (sel.pos.kind === 'edge' && eid === sel.pos.edgeId) continue; // own edge already drawn
-        const e = this.theater.edges[eid];
-        at = e.a === at ? e.b : e.a;
-        const fp = this.theater.nodes[at].pos;
-        [px, py] = this.toScreen(fp.x, fp.y, w, h);
-        ctx.lineTo(px, py);
-      }
-      ctx.stroke();
-      ctx.setLineDash([]);
+    } else if (this.preview) {
+      const n = this.theater.nodes[this.preview.nodeId].pos;
+      const [ex, ey] = this.toScreen(n.x, n.y, w, h);
+      this.chip(ctx, '✕', ex, ey, w, '#e2543c');
     }
 
     // Chrome lives in the TheaterHud DOM; the canvas keeps only the flash.
@@ -415,6 +795,155 @@ export class TheaterView {
       ctx.font = '13px ui-monospace, monospace';
       ctx.fillText(this.flashText, w / 2, bar && bar.height > 0 ? bar.bottom + 20 : 24);
     }
+  }
+
+  // The wash and the front, rebuilt only when a node changes hands.
+  frontLayer(control: readonly (Side | null)[]): FrontLayer {
+    const key = controlKey(control);
+    if (!this.frontCache || key !== this.frontKey) {
+      if (this.frontCache) this.washWas = { layer: this.frontCache, t0: this.now() };
+      this.frontKey = key;
+      this.frontCache = buildFrontLayer(this.theater, control);
+    }
+    return this.frontCache;
+  }
+
+  // The ground a march covers: the rest of the force's own road, then each
+  // road of the path, following the road's own bends.
+  private routePts(pos: Force['pos'], path: readonly number[]): Vec[] {
+    const out: Vec[] = [];
+    let at: number;
+    let rest = path;
+    if (pos.kind === 'edge') {
+      const e = this.theater.edges[pos.edgeId];
+      const s1 = pos.dir === 1 ? e.lengthM : 0;
+      const lo = Math.min(pos.s, s1);
+      const hi = Math.max(pos.s, s1);
+      const span: Vec[] = [pointAlong(e, lo)];
+      let d = 0;
+      for (let i = 1; i < e.polyline.length; i++) {
+        d += Math.hypot(e.polyline[i].x - e.polyline[i - 1].x, e.polyline[i].y - e.polyline[i - 1].y);
+        if (d > lo && d < hi) span.push(e.polyline[i]);
+      }
+      span.push(pointAlong(e, hi));
+      out.push(...(pos.dir === 1 ? span : span.reverse()));
+      at = pos.dir === 1 ? e.b : e.a;
+      if (path[0] === e.id) rest = path.slice(1);
+    } else {
+      at = pos.nodeId;
+      out.push(this.theater.nodes[at].pos);
+    }
+    for (const eid of rest) {
+      const e = this.theater.edges[eid];
+      const fwd = e.a === at;
+      out.push(...(fwd ? e.polyline : [...e.polyline].reverse()));
+      at = fwd ? e.b : e.a;
+    }
+    return out;
+  }
+
+  // A cased line with an arrowhead at its end.
+  private arrow(ctx: CanvasRenderingContext2D, pts: readonly Vec[], w: number, h: number, color: string, width: number, withHead = true): void {
+    if (pts.length < 2) return;
+    const s = pts.map((p) => this.toScreen(p.x, p.y, w, h));
+    const tip = s[s.length - 1];
+    // The direction at the tip, read a few pixels back so a kink at the last
+    // vertex does not turn the head sideways.
+    let back = s[s.length - 2];
+    for (let i = s.length - 2; i >= 0 && Math.hypot(tip[0] - s[i][0], tip[1] - s[i][1]) < 10; i--) back = s[i];
+    const a = Math.atan2(tip[1] - back[1], tip[0] - back[0]);
+    const head = width * 3 + 4;
+    for (const [style, lw] of [[ARROW_CASE, width + 2.5], [color, width]] as const) {
+      ctx.strokeStyle = style;
+      ctx.fillStyle = style;
+      ctx.lineWidth = lw;
+      ctx.beginPath();
+      s.forEach(([x, y], i) => (i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y)));
+      ctx.stroke();
+      if (!withHead) continue;
+      const grow = style === ARROW_CASE ? 2 : 0;
+      ctx.beginPath();
+      ctx.moveTo(tip[0] + Math.cos(a) * grow, tip[1] + Math.sin(a) * grow);
+      ctx.lineTo(tip[0] - Math.cos(a - 0.45) * (head + grow), tip[1] - Math.sin(a - 0.45) * (head + grow));
+      ctx.lineTo(tip[0] - Math.cos(a + 0.45) * (head + grow), tip[1] - Math.sin(a + 0.45) * (head + grow));
+      ctx.closePath();
+      ctx.fill();
+    }
+  }
+
+  // A small label on a dark plate beside a point, kept on screen. Beside, not
+  // above: the place's own name sits above it.
+  private chip(ctx: CanvasRenderingContext2D, text: string, x: number, y: number, w: number, color: string): void {
+    ctx.font = 'bold 12px ui-monospace, monospace';
+    const tw = ctx.measureText(text).width + 12;
+    // Right of the point when it fits. Otherwise left and raised, so it does
+    // not sit on the line it describes.
+    const right = x + 20 + tw <= w - 4;
+    const bx = right ? x + 20 : Math.max(4, x - 12 - tw);
+    const by = Math.max(this.inset.top + 4, right ? y - 10 : y - 34);
+    ctx.beginPath();
+    ctx.roundRect(bx, by, tw, 20, 4);
+    ctx.fillStyle = 'rgba(14, 12, 8, 0.92)';
+    ctx.fill();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.fillStyle = color;
+    ctx.textAlign = 'left';
+    ctx.fillText(text, bx + 6, by + 14.5);
+  }
+
+  // The cuts the player may know of: all of them with full intel; under fog
+  // an enemy-held town (control is on the map) or an enemy he has a report of.
+  private knownCuts(front: FrontV2): ReturnType<typeof supplyCuts> {
+    const all = supplyCuts(front);
+    if (this.recon !== 'contacts') return all;
+    const seen = front.intel?.blue ?? [];
+    return all.filter((c) => c.kind === 'node' || seen.some((k) => k.pos.kind === 'edge' && k.pos.edgeId === c.edgeId));
+  }
+
+  // One spec per force the player may see. Own forces are truth. Under fog
+  // (S53) the enemy is drawn from the CONTACT map: a last-seen report, hollow
+  // and fading, never the live force. A contact names the force, so its role
+  // is known; a force with no contact is not drawn at all.
+  private counterSpecs(front: FrontV2, selectedForce: number, objectives: Set<number>, w: number, h: number): CounterSpec[] {
+    const at = (pos: Force['pos']): { ax: number; ay: number; drop: number } => {
+      const p = pos.kind === 'node' ? this.theater.nodes[pos.nodeId].pos : pointAlong(this.theater.edges[pos.edgeId], pos.s);
+      const [ax, ay] = this.toScreen(p.x, p.y, w, h);
+      const n = pos.kind === 'node' ? this.theater.nodes[pos.nodeId] : null;
+      const r = !n ? 0 : n.rank === 0 ? 7 : n.rank === 1 ? 5 : 3.5;
+      return { ax, ay, drop: !n ? 10 : objectives.has(n.id) ? r + 16 : r + 9 };
+    };
+    const fogged = this.recon === 'contacts';
+    const out: CounterSpec[] = [];
+    for (const f of front.forces) {
+      if (f.strength <= 0 || (fogged && f.side === 'red')) continue;
+      out.push({
+        id: f.id, side: f.side, letter: f.side === 'blue' ? f.name.charAt(0).toUpperCase() : null, role: f.role,
+        strength: f.strength, frac: f.strength / Math.max(1, f.establishment),
+        supply: this.supplyOn ? supplyTierOf(f.untracedMin) : null,
+        fatigue: f.side === 'blue' ? f.fatigue : 0,
+        // An enemy the trace does not reach. The lever the supply rules
+        // offer: cut a garrison off, then fight it on short ammunition.
+        tag: this.supplyOn && f.side === 'red' && f.untracedMin > 0 ? 'ISOLATED' : null,
+        selected: f.id === selectedForce, engaged: f.engagedIn !== null, conf: 1, ghost: false, ...at(f.pos),
+      });
+    }
+    if (fogged) {
+      for (const c of front.intel?.blue ?? []) {
+        const f = front.forces.find((x) => x.id === c.forceId);
+        if (!f) continue;
+        const conf = contactConf(c, front.clockMin);
+        out.push({
+          id: c.forceId, side: 'red', letter: null, role: f.role, strength: c.strength, frac: c.strength / Math.max(1, f.establishment),
+          // A report this fresh saw the force itself: its supply state is known.
+          supply: this.supplyOn && conf > FRESH_CONF ? supplyTierOf(f.untracedMin) : null,
+          tag: this.supplyOn && conf > FRESH_CONF && f.untracedMin > 0 ? 'ISOLATED' : null,
+          fatigue: 0, selected: false, engaged: false, conf, ghost: true, ...at(c.pos),
+        });
+      }
+    }
+    return out;
   }
 
   // ETA readout for the HUD: the S13 mirror, kernel opts threaded (S52).

@@ -80,10 +80,18 @@ const BOF_LEG = 20;
 // kind the commander wants, toward a point this close to the one it wants,
 // is left to get on with it.
 const SAME_ORDER_RADIUS = 5;
-// Armour: a hull this close to the objective it was sent to has arrived, and
-// two hulls sent to one objective stand this far apart instead of on one tile.
-const HULL_ARRIVED_RADIUS = 25;
+// Armour: two hulls sent to one objective stand this far apart instead of on
+// one tile.
 const HULL_SPACING = 10;
+// A hull supports from behind its infantry (#787). It closes no nearer the
+// objective than the lead rifle team working it, and holds HULL_STANDOFF out
+// until that team is on the objective: 60 m is outside a panzerfaust's 35 m
+// and inside the hull's own 100 m MG and 120 m gun. Sent straight to the
+// objective it arrived first and alone, and 7 of 12 hulls were lost on the
+// probe set (3 of 12 when they did not move at all). It is sent on again once
+// it stands HULL_REORDER short of where it may be.
+const HULL_STANDOFF = 60;
+const HULL_REORDER = 10;
 // Objective progression: a post with a live man of the commander's own side
 // within this radius is held, and a maneuver team this close to its own post
 // is standing on the objective.
@@ -166,7 +174,8 @@ export class RedCommander {
   private breachSeen = 0; // how much of sim.breachLog this commander has already reacted to
   private asked = new Map<number, OrderKind>(); // teamId -> the kind last sent it, which a cautious team may be executing as a plain 'move'
   private flankLeg = new Map<number, { post: { x: number; y: number }; x: number; y: number }>(); // maneuver teamId -> the flank bound it is on
-  private hullPost = new Map<number, { x: number; y: number }>(); // vehicleId -> the objective it was last sent to
+  private hullSent = new Map<number, { x: number; y: number }>(); // vehicleId -> the hold point it was last sent to
+  private charged = new Map<number, { x: number; y: number }>(); // maneuver teamId -> the objective its charge has already run its course on
 
   constructor(private cfg: CommanderConfig) {}
 
@@ -309,7 +318,18 @@ export class RedCommander {
   private updateCulmination(sim: Sim): void {
     if (this.culminated || this.forceStart <= 0) return;
     if (sim.tick - this.lastProgressTick < CULMINATION_STALL_TICKS) return; // an attack taking ground is not culminating, whatever it costs
-    if (this.effectives(sim, this.committedTeamIds()) / this.forceStart <= 1 - CULMINATION_LOSS) this.culminated = true;
+    if (this.effectives(sim, this.committedTeamIds()) / this.forceStart <= 1 - CULMINATION_LOSS) {
+      this.culminated = true;
+      this.say(sim, 'culminated');
+    }
+  }
+
+  // The commander's voice (#787): what it has just decided, for its OWN
+  // side's ticker. Output only. It says nothing about the enemy — what a side
+  // may know of its enemy comes from the sim's sightings, not from here.
+  private say(sim: Sim, kind: 'reserve-committed' | 'culminated' | 'smoke-objective', at?: { x: number; y: number }): void {
+    const p = at ?? this.centroid(sim, this.committedTeamIds().flatMap((id) => sim.teams[id].soldierIds));
+    sim.report({ kind, x: p.x, y: p.y, side: this.cfg.side, name: 'HQ' });
   }
 
   // Consolidate: hold the ground the team is standing on — for a team that
@@ -343,7 +363,7 @@ export class RedCommander {
       return;
     }
     this.asked.set(team.id, order.kind);
-    sim.orderTeam(team.id, order);
+    sim.orderTeam(team.id, order, undefined, true);
   }
 
   // Whether the team is still walking the bound that ends at `p`.
@@ -456,6 +476,20 @@ export class RedCommander {
       const cleared = seen && this.threatConfNear(post.x, post.y, POST_CLEAR_RADIUS) < CLEAR_CONF;
       const c = this.centroid(sim, team.soldierIds);
       const dist = Math.hypot(c.x - post.x, c.y - post.y);
+      // A charge that has run its course is not ordered again onto the ground
+      // it took (#787). The sim ends an assault when no man of the team sees a
+      // defender he can reach; the objective "reads live" off the whole side's
+      // intel, last-known ghosts and other teams' sightings included. Where
+      // the two disagree — a contact behind a wall, a ghost 31 s old — the
+      // team was charged at the spot it stood on every eval (322 assault
+      // orders in two probed battles), each one a fresh compliance roll. It
+      // holds what it took instead, until the objective reads clear or it is
+      // pushed off it.
+      if (this.asked.get(teamId) === 'assault' && team.orderState.order === null) this.charged.set(teamId, post);
+      if (this.charged.get(teamId) === post && !cleared && dist <= POST_HELD_RADIUS) {
+        this.consolidate(sim, team);
+        continue;
+      }
       // Same gate at two distance bands: press the objective when suppression's
       // up and the post still reads live.
       const pressing = suppressed && !cleared;
@@ -686,6 +720,7 @@ export class RedCommander {
   // objective, flank and suppression reading everyone else is working from.
   private commitReserve(sim: Sim): void {
     this.reserveCommitted = true;
+    this.say(sim, 'reserve-committed');
     for (const teamId of this.reserveTeamIds) {
       this.maneuverTeamIds.push(teamId);
       this.startStrength.set(teamId, sim.teams[teamId].soldierIds.filter((sid) => sim.soldiers[sid].alive).length);
@@ -756,16 +791,16 @@ export class RedCommander {
       const confAtPost = this.threatConfNear(post.x, post.y, 12);
       const team = sim.teams[squad.teamIds[0]];
       if (confAtPost > 0 && distToPost > 8 && !moving) {
-        sim.orderSquad(squad.id, { kind: 'move', x: post.x, y: post.y }); // counterattack a lost post
+        sim.orderSquad(squad.id, { kind: 'move', x: post.x, y: post.y }, undefined, true); // counterattack a lost post
       } else if (distToPost <= 8 && !moving) {
         const order = team.orderState.order;
         const approach = this.cfg.approach;
         const arcDefend = (): void => {
           if (approach) {
             const center = Math.atan2(approach.y - post.y, approach.x - post.x);
-            sim.orderSquad(squad.id, { kind: 'defend', x: post.x, y: post.y, arc: [center - DEFEND_ARC_HALF, center + DEFEND_ARC_HALF] });
+            sim.orderSquad(squad.id, { kind: 'defend', x: post.x, y: post.y, arc: [center - DEFEND_ARC_HALF, center + DEFEND_ARC_HALF] }, undefined, true);
           } else {
-            sim.orderSquad(squad.id, { kind: 'defend', x: post.x, y: post.y });
+            sim.orderSquad(squad.id, { kind: 'defend', x: post.x, y: post.y }, undefined, true);
           }
         };
         if (order === null) {
@@ -776,7 +811,7 @@ export class RedCommander {
           if (approach && longRange) {
             arcDefend();
           } else {
-            sim.orderSquad(squad.id, { kind: 'ambush', x: post.x, y: post.y }); // settled in, holding fire
+            sim.orderSquad(squad.id, { kind: 'ambush', x: post.x, y: post.y }, undefined, true); // settled in, holding fire
           }
         } else if (order.kind === 'ambush' && this.spottedPositions(sim).length >= MASS_RELEASE) {
           arcDefend(); // see MASS_RELEASE: fire-at-will against a spotted mass
@@ -829,21 +864,55 @@ export class RedCommander {
   // first post in the briefing, once: they reached it in about 20 s, ahead of
   // every rifleman, and stood there for the rest of the battle while the
   // attack worked objectives 100 m further on. Defend stance issues nothing —
-  // a hull holds where it was staged. No cooperation doctrine here: the hull
-  // still drives straight to the objective.
+  // a hull holds where it was staged.
+  //
+  // Each hull closes along its own line to the objective, to the distance
+  // the lead rifle team stands at or HULL_STANDOFF, whichever is farther
+  // (#787): it comes up as the riflemen do and stops short while they close.
+  // Once they are inside ASSAULT_RANGE it goes in with them, still no nearer
+  // than they are — held at the standoff for good, the hulls survived and the
+  // attack stopped winning (probed: 4 of 8, from 6). It is only ever sent
+  // forward: a hold point laid on the lead team's axis instead swung with
+  // every flank bound, and the hulls drove 750 m a battle chasing it. An
+  // objective the attack has taken is driven onto, which arises only when
+  // there is no next one to roll to.
   private updateVehicles(sim: Sim): void {
     if (this.cfg.stance !== 'attack' || this.culminated) return;
     const post = this.maneuverPost(sim);
     if (!post) return;
+    const lead = this.leadDistance(sim, post);
+    if (lead === undefined) return;
+    const hold = this.isTaken(post) ? 0 : lead <= ASSAULT_RANGE ? lead : Math.max(HULL_STANDOFF, lead);
     const hulls = sim.vehicles.filter((v) => v.side === this.cfg.side);
     hulls.forEach((v, slot) => {
       if (!v.alive) return;
-      const sent = this.hullPost.get(v.id);
-      const same = sent !== undefined && Math.hypot(sent.x - post.x, sent.y - post.y) < 1;
-      if (same && (v.path || Math.hypot(v.x - post.x, v.y - post.y) <= HULL_ARRIVED_RADIUS)) return;
-      this.hullPost.set(v.id, post);
-      sim.orderVehicleMove(v.id, post.x, post.y + (slot - (hulls.length - 1) / 2) * HULL_SPACING);
+      const d = Math.hypot(v.x - post.x, v.y - post.y);
+      if (d <= hold + HULL_REORDER) return; // as far forward as it may go
+      const ux = (v.x - post.x) / d;
+      const uy = (v.y - post.y) / d;
+      const off = (slot - (hulls.length - 1) / 2) * HULL_SPACING;
+      const tx = post.x + ux * hold - uy * off;
+      const ty = post.y + uy * hold + ux * off;
+      const sent = this.hullSent.get(v.id);
+      if (v.path && sent && Math.hypot(sent.x - tx, sent.y - ty) <= HULL_REORDER) return; // already on its way there
+      this.hullSent.set(v.id, { x: tx, y: ty });
+      sim.orderVehicleMove(v.id, tx, ty);
     });
+  }
+
+  // How far from `post` the nearest living maneuver team working it stands.
+  private leadDistance(sim: Sim, post: { x: number; y: number }): number | undefined {
+    let lead: number | undefined;
+    for (const id of this.maneuverTeamIds) {
+      const p = this.teamPost.get(id);
+      const team = sim.teams[id];
+      if (!p || Math.hypot(p.x - post.x, p.y - post.y) >= 1) continue;
+      if (!team.soldierIds.some((sid) => sim.soldiers[sid].alive && !sim.soldiers[sid].downed)) continue;
+      const c = this.centroid(sim, team.soldierIds);
+      const d = Math.hypot(c.x - post.x, c.y - post.y);
+      if (lead === undefined || d < lead) lead = d;
+    }
+    return lead;
   }
 
   // The objective most of the living maneuver element is working this eval
@@ -891,7 +960,9 @@ export class RedCommander {
   // finish (readyMortar skips smokeRoundsLeft > 0) rather than re-tasked.
   private maybeSmokeObjective(sim: Sim, post: { x: number; y: number }): void {
     const mortar = this.readyMortar(sim, post);
-    if (mortar) sim.orderSmoke(mortar.id, post.x, post.y);
+    if (!mortar) return;
+    sim.orderSmoke(mortar.id, post.x, post.y);
+    this.say(sim, 'smoke-objective', post);
   }
 
   // A deployed mortar of its side not mid-smoke-mission, with shells its crew can
