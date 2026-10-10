@@ -1290,7 +1290,10 @@ function commitBox(additive: boolean): void {
   noteSelection();
 }
 
+// Every order to a squad comes through here once, whichever gesture gave it:
+// the acknowledge sound, the quiet-minute clock and the tutorial all hang on it.
 function noteOrder(): void {
+  audio.uiOrder();
   lastOrderTick = sim.tick;
   tutorial?.notify('order-issued');
 }
@@ -1418,7 +1421,6 @@ function issueShortClick(wx: number, wy: number, squadForce: boolean, l?: number
   const offs = formation ? squadClumpOffsets(K) : null;
   const used = new Set<number>();
   const primary = getPrimary();
-  if (K > 0) audio.uiOrder();
   for (let i = 0; i < K; i++) {
     const id = selectedSquads[i];
     const order: TeamOrder = { kind, x: wx + (offs?.[i][0] ?? 0), y: wy + (offs?.[i][1] ?? 0), l };
@@ -1432,7 +1434,7 @@ function issueShortClick(wx: number, wy: number, squadForce: boolean, l?: number
       sim.orderSquad(id, order, used);
     }
   }
-  noteOrder();
+  if (K > 0) noteOrder();
 }
 
 function commitOrder(sx: number, sy: number, opts: { squadForce: boolean; floors: boolean }): void {

@@ -43,19 +43,17 @@ export interface ScreenRect {
 
 /**
  * Where the ticker's column starts, top edge in px. It hangs from `top` unless
- * that puts it on one of `avoid`. Then it drops to just under the lowest thing
- * in its way, and if that runs off `bottom` it goes above the highest one.
- * With nowhere free it stays at `top`: a covered line beats a lost one.
+ * that puts it on one of `avoid`. Then it drops to the first free place under
+ * one of them. Every gap the column fits in starts at `top` or under something,
+ * so those are all the places there are. With none free it stays at `top`: a
+ * covered line beats a lost one.
  */
 export function dockFeed(x: number, w: number, h: number, top: number, bottom: number, avoid: readonly ScreenRect[]): number {
   const GAP = 6;
   const inWay = avoid.filter((r) => r.right > x && r.left < x + w);
   const free = (y: number): boolean => y >= top && y + h <= bottom && inWay.every((r) => y >= r.bottom + GAP || y + h <= r.top - GAP);
   if (free(top)) return top;
-  const below = inWay.map((r) => r.bottom + GAP).sort((a, b) => a - b).find(free);
-  if (below !== undefined) return below;
-  const above = inWay.map((r) => r.top - GAP - h).sort((a, b) => b - a).find(free);
-  return above ?? top;
+  return inWay.map((r) => r.bottom + GAP).sort((a, b) => a - b).find(free) ?? top;
 }
 
 function teamCentroid(sim: Sim, soldierIds: number[]): { x: number; y: number } | null {

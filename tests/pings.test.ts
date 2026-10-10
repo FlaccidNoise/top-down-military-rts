@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { EventPings, type TeamPulse } from '../src/ui/overlays';
+import { dockFeed, EventPings, type TeamPulse } from '../src/ui/overlays';
 import type { UnitEvent } from '../src/sim/sim';
 
 const PIN_COOLDOWN = 30 * 30;
@@ -234,5 +234,62 @@ describe('EventPings — feed pressure', () => {
     p.reset();
     p.add([], 1, [pulse({ pinned: 4 })]);
     expect(p.labels()).toEqual(['Able 1 — PINNED DOWN']);
+  });
+});
+
+// ---- where the feed hangs ----
+
+describe('dockFeed: the ticker keeps off the tutorial', () => {
+  // A 190 px column at the right edge of a 1280x800 screen, room for five rows.
+  const X = 1078;
+  const W = 190;
+  const H = 115;
+  const TOP = 60;
+  const BOTTOM = 760;
+  const overlaps = (y: number, r: { left: number; top: number; right: number; bottom: number }): boolean =>
+    r.right > X && r.left < X + W && y < r.bottom && y + H > r.top;
+
+  it('hangs from the top when nothing is in the way', () => {
+    expect(dockFeed(X, W, H, TOP, BOTTOM, [])).toBe(TOP);
+  });
+
+  it('ignores a bubble that is not in its column', () => {
+    expect(dockFeed(X, W, H, TOP, BOTTOM, [{ left: 300, top: 50, right: 700, bottom: 110 }])).toBe(TOP);
+  });
+
+  it('drops under a bubble in its column', () => {
+    const bubble = { left: 935, top: 45, right: 1272, bottom: 87 };
+    const y = dockFeed(X, W, H, TOP, BOTTOM, [bubble]);
+    expect(y).toBeGreaterThan(bubble.bottom);
+    expect(overlaps(y, bubble)).toBe(false);
+  });
+
+  it('clears the bubble and the ring it points at together', () => {
+    const bubble = { left: 900, top: 70, right: 1260, bottom: 120 };
+    const ring = { left: 1100, top: 150, right: 1200, bottom: 250 };
+    const y = dockFeed(X, W, H, TOP, BOTTOM, [bubble, ring]);
+    expect(overlaps(y, bubble)).toBe(false);
+    expect(overlaps(y, ring)).toBe(false);
+    expect(y + H).toBeLessThanOrEqual(BOTTOM);
+  });
+
+  it('takes the gap between two things when the first place under one is taken', () => {
+    const a = { left: 1100, top: 50, right: 1250, bottom: 170 };
+    const b = { left: 1100, top: 200, right: 1250, bottom: 400 };
+    const y = dockFeed(X, W, H, TOP, BOTTOM, [a, b]);
+    expect(y).toBeGreaterThan(b.bottom);
+    expect(y + H).toBeLessThanOrEqual(BOTTOM);
+  });
+
+  it('stays put when nowhere is free', () => {
+    expect(dockFeed(X, W, H, TOP, BOTTOM, [{ left: 1100, top: 100, right: 1250, bottom: 700 }])).toBe(TOP);
+  });
+
+  it('never leaves the map', () => {
+    for (const top of [40, 200, 400, 600]) {
+      const y = dockFeed(X, W, H, TOP, BOTTOM, [{ left: 1000, top, right: 1280, bottom: top + 80 }]);
+      expect(y).toBeGreaterThanOrEqual(TOP);
+      expect(y + H).toBeLessThanOrEqual(BOTTOM);
+    }
   });
 });
