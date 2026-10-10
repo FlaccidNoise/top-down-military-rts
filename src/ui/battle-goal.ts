@@ -2,17 +2,11 @@
 // and the line each side breaks at. Pure, no DOM.
 import type { Side, Sim } from '../sim/sim';
 
-// The break-off rule lives in Sim.step(): a side breaks off the battle below a
-// quarter of its starting strength, and never with two men or more above an
-// empty floor. Until the sim exports these, this is the one UI-side copy, and
-// tests/battle-goal.test.ts pins it against a live Sim so it cannot drift.
-// When the sim's own BREAK_FRACTION, BREAK_FLOOR_MIN and Sim.breakFloor land,
-// this block becomes a re-export.
-export const BREAK_FRACTION = 0.25;
-export const BREAK_FLOOR_MIN = 2;
-export function breakFloor(sim: Sim, side: Side): number {
-  return Math.max(BREAK_FLOOR_MIN, sim.startStrength[side] * BREAK_FRACTION);
-}
+// The break-off rule is the sim's own: these are the constants Sim.step()
+// runs on. tests/battle-goal.test.ts still walks a live Sim across the line,
+// so the strip's count and the sim's verdict cannot part company.
+export { BREAK_FLOOR_MIN, BREAK_FRACTION } from '../sim/sim';
+export const breakFloor = (sim: Sim, side: Side): number => sim.breakFloor(side);
 
 /** Men still fighting: the count Sim.step() tests against the floor. */
 export function effective(sim: Sim, side: Side): number {
