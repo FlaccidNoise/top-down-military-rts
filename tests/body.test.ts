@@ -102,6 +102,7 @@ describe('psychology', () => {
     const sim = new Sim(map, 4);
     sim.addSquad('blue', 'A', [{ name: 'a', weapon: 'garand', x: 40.5, y: 10.5 }]);
     sim.addSquad('red', 'B', [{ name: 'b', weapon: 'garand', x: 20.5, y: 10.5 }]);
+    sim.threatAxis.blue = Math.PI; // staged with the enemy in the west, so his rear is east (#790)
     const s = sim.soldiers[0];
     s.morale = 0.1; // broken
     for (let i = 0; i < 30 * 10; i++) sim.step();

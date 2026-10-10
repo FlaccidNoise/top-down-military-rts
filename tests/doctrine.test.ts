@@ -882,6 +882,17 @@ describe('intel layer math', () => {
     }
   });
 
+  it('a prisoner is no part of the picture: not a threat on the objective, not a target', () => {
+    const sim = new Sim(new GameMap(40, 40), 1);
+    const red = sim.addSquad('red', 'R', [{ name: 'R1', weapon: 'kar98k', x: 5.5, y: 5.5 }]);
+    const blue = sim.addSquad('blue', 'B', [{ name: 'B1', weapon: 'garand', x: 20.5, y: 5.5 }]);
+    const commander = new RedCommander({ side: 'red', stance: 'defend', posts: { [red.id]: { x: 5, y: 5 } } });
+    sim.spotted.red.set(blue.soldierIds[0], { x: 20.5, y: 5.5 });
+    expect(commander['spottedPositions'](sim)).toHaveLength(1);
+    sim.soldiers[blue.soldierIds[0]].captured = true;
+    expect(commander['spottedPositions'](sim)).toHaveLength(0);
+  });
+
   it('maybeBarrage: shells a spotted 5-man cluster beyond every red weapon range, at its centroid', () => {
     const sim = new Sim(new GameMap(200, 60), 2);
     const red = sim.addSquad('red', 'R', [{ name: 'R1', weapon: 'kar98k', x: 10.5, y: 30.5 }]);
@@ -908,6 +919,234 @@ describe('intel layer math', () => {
     expect(Math.hypot(target!.x - spotter.x, target!.y - spotter.y)).toBeGreaterThan(WEAPONS.kar98k.range);
     expect(Math.hypot(target!.x - 185.5, target!.y - 30.5)).toBeLessThan(1); // the cluster centroid, not a corner of it
     expect(sim.barragesLeft.red).toBe(0);
+  });
+});
+
+// #790. The attacker's tubes had never fired HE (0 shells in 38 probed
+// battles) and nobody called the plane. Staged flat and open with no small-
+// arms round on the field, so every wound in these runs is a shell's.
+describe('attacker fire support (#790)', () => {
+  const POST = { x: 150, y: 30 };
+  const stage = (garrison: number, rifleX = 40.5) => {
+    const sim = new Sim(new GameMap(200, 60), 9);
+    const rifle = sim.addSquad('red', 'Rifle', Array.from({ length: 6 }, (_, i) => ({ name: `R${i}`, weapon: 'kar98k' as const, x: rifleX, y: 27.5 + i, xp: 20 })));
+    // Spread 4 m by 8 m: one group by DEFEND_HE_RADIUS, and no one shell takes them all.
+    const blue = sim.addSquad('blue', 'Garrison', Array.from({ length: garrison }, (_, i) => ({ name: `B${i}`, weapon: 'garand' as const, x: 150.5 + (i % 3) * 4, y: 26.5 + Math.floor(i / 3) * 8 })));
+    const tube = sim.addEmplacement('red', 'mortar81', 60, 30, 0, 'deployed'); // 90 m from the post: inside its band
+    for (const m of sim.soldiers) {
+      m.ammo = m.ammo.shell_81 ? { shell_81: m.ammo.shell_81 } : {};
+      m.magLeft = 0;
+      m.morale = 1;
+    }
+    const centroid = { x: mean(blue.soldierIds.map((id) => sim.soldiers[id].x)), y: mean(blue.soldierIds.map((id) => sim.soldiers[id].y)) };
+    const shells = (): number => sim.teams[tube.crewTeamId].soldierIds.reduce((a, id) => a + (sim.soldiers[id].ammo.shell_81 ?? 0), 0);
+    const commander = new RedCommander({ side: 'red', stance: 'attack', posts: { [rifle.id]: POST } });
+    const nearestOwn = (x: number, y: number): number => Math.min(...sim.soldiers.filter((m) => m.side === 'red' && m.alive).map((m) => Math.hypot(m.x - x, m.y - y)));
+    return { sim, rifle, tube, shells, commander, nearestOwn, centroid };
+  };
+
+  it('the tubes shell the spotted defenders of the working objective, and no shell lands on their own riflemen', () => {
+    const { sim, tube, shells, commander, nearestOwn } = stage(6);
+    const start = shells();
+    expect(start).toBeGreaterThan(12);
+    let bursts = 0;
+    let closestBurst = Infinity;
+    let liftedAt = -1;
+    for (let i = 0; i < 9000; i++) {
+      commander.update(sim);
+      sim.step();
+      for (const boom of sim.takeBooms()) {
+        if (boom.kind !== 'mortar') continue;
+        bursts++;
+        expect(Math.hypot(boom.x - POST.x, boom.y - POST.y)).toBeLessThan(25); // on the garrison, give or take the tube's scatter
+        closestBurst = Math.min(closestBurst, nearestOwn(boom.x, boom.y));
+      }
+      if (bursts > 0 && liftedAt < 0 && !tube.hasTarget) liftedAt = sim.tick;
+    }
+    expect(bursts).toBeGreaterThan(3);
+    expect(closestBurst).toBeGreaterThan(10); // mortar81: 5 m of fragments
+    expect(sim.soldiers.filter((m) => m.side === 'red').every((m) => m.wounds.length === 0)).toBe(true);
+    expect(liftedAt).toBeGreaterThan(0); // and the mission ended
+    expect(shells()).toBeLessThan(start);
+  });
+
+  it('a tube down to its smoke reserve stops, and danger close lifts the mission in the eval that sees it', () => {
+    const { sim, rifle, tube, commander, centroid } = stage(3);
+    const evalNow = (): void => {
+      commander['lastEval'] = -Infinity;
+      commander.update(sim);
+    };
+    for (let i = 0; i < 200 && !tube.hasTarget; i++) {
+      commander.update(sim);
+      sim.step();
+    }
+    expect(tube.hasTarget).toBe(true);
+    expect(Math.hypot(tube.targetX - centroid.x, tube.targetY - centroid.y)).toBeLessThan(0.01);
+    const crew = sim.teams[tube.crewTeamId].soldierIds.map((id) => sim.soldiers[id]);
+    crew.forEach((m, i) => (m.ammo.shell_81 = i === 0 ? 8 : 0)); // PREP_SMOKE_RESERVE: two screens
+    evalNow();
+    expect(tube.hasTarget).toBe(false);
+    crew[0].ammo.shell_81 = 9;
+    evalNow();
+    expect(tube.hasTarget).toBe(true);
+    const point = sim.soldiers[rifle.soldierIds[0]];
+    point.x = tube.targetX - 39; // one man inside PREP_HE_LIFT (40 m) of the aim point
+    point.path = null;
+    evalNow();
+    expect(tube.hasTarget).toBe(false);
+  });
+
+  it('a side with a plane calls it on four or more together while its own are well clear, and not otherwise', () => {
+    const run = (garrison: number, rifleX: number): { sim: Sim; at: { x: number; y: number } | null; centroid: { x: number; y: number } } => {
+      const { sim, commander, centroid } = stage(garrison, rifleX);
+      sim.airstrikesLeft.red = 1;
+      let at: { x: number; y: number } | null = null;
+      const real = sim.callAirstrike.bind(sim);
+      sim.callAirstrike = (side, x, y) => {
+        at = { x, y };
+        return real(side, x, y);
+      };
+      for (let i = 0; i < 200 && !at; i++) {
+        commander.update(sim);
+        sim.step();
+      }
+      return { sim, at, centroid };
+    };
+    const called = run(4, 40.5);
+    expect(called.at).not.toBeNull();
+    expect(Math.hypot(called.at!.x - called.centroid.x, called.at!.y - called.centroid.y)).toBeLessThan(0.01);
+    expect(called.sim.airstrikesLeft.red).toBe(0);
+    expect(run(3, 40.5).at).toBeNull(); // three men are not worth the one plane
+    expect(run(4, 90.5).at).toBeNull(); // its own riflemen some 62 m from the target: inside AIR_SAFETY (70 m)
+  });
+});
+
+// #790. A defensive fire mission had no end: the tubes shelled the last aim
+// point until they were dry, whoever stood there. The tube in these cases is
+// held on a long cooldown, so nobody is hit and the men stay where the test
+// puts them: what is read is where the commander has it aimed.
+describe('a fire mission follows its men and ends (#790)', () => {
+  const stage = () => {
+    const sim = new Sim(new GameMap(240, 80), 4);
+    const spotter = sim.addSquad('red', 'Spotter', [{ name: 'S', weapon: 'kar98k', x: 20.5, y: 40.5 }]);
+    const mass = sim.addSquad('blue', 'Mass', Array.from({ length: 8 }, (_, i) => ({ name: `M${i}`, weapon: 'garand' as const, x: 120.5 + (i % 4) * 2, y: 39.5 + Math.floor(i / 4) * 2 })));
+    const tube = sim.addEmplacement('red', 'mortar81', 30, 40, 0, 'deployed');
+    for (const m of sim.soldiers) {
+      m.ammo = m.ammo.shell_81 ? { shell_81: m.ammo.shell_81 } : {};
+      m.magLeft = 0;
+      m.morale = 1;
+    }
+    const commander = new RedCommander({ side: 'red', stance: 'defend', posts: { [spotter.id]: { x: 20, y: 40 } } });
+    const men = mass.soldierIds.map((id) => sim.soldiers[id]);
+    // One spotting sweep, then one commander eval, with the tube held silent.
+    const look = (ticks = SPOT_INTERVAL): void => {
+      for (let i = 0; i < ticks; i++) {
+        tube.cooldown = 1e6;
+        sim.step();
+      }
+      commander['lastEval'] = -Infinity;
+      commander.update(sim);
+    };
+    const aim = (): { x: number; y: number } | null => (tube.hasTarget ? { x: tube.targetX, y: tube.targetY } : null);
+    const mid = (ms: { x: number; y: number }[]): { x: number; y: number } => ({ x: mean(ms.map((m) => m.x)), y: mean(ms.map((m) => m.y)) });
+    return { sim, men, tube, look, aim, mid, spotter: sim.soldiers[spotter.soldierIds[0]] };
+  };
+
+  it('with the mass broken up it stays on the men still inside a burst of the aim point, then shells the empty point 20 s and ends', () => {
+    const { sim, men, look, aim, mid } = stage();
+    look();
+    expect(aim()).toEqual(mid(men)); // eight together: the mission
+    for (const m of men.slice(3)) m.x += 60; // five walk off; three stay
+    look();
+    expect(aim()).toEqual(mid(men.slice(0, 3))); // not a mass any more, and still the target
+    for (const m of men.slice(0, 3)) m.y += 4;
+    look();
+    expect(aim()).toEqual(mid(men.slice(0, 3))); // it goes with them
+    const last = aim()!;
+    const left = sim.tick;
+    for (const m of men.slice(0, 3)) m.y -= 30; // and now they are gone too, not to the five
+    look();
+    expect(aim()).toEqual(last); // the point is shelled a while longer
+    look(20 * 30 - (sim.tick - left) - 1);
+    expect(aim()).toEqual(last);
+    look(1 + SPOT_INTERVAL);
+    expect(aim()).toBeNull(); // 20 s with nobody on it: the mission is over
+  });
+
+  it('a mission that ended is on the next mass in the eval that sees it', () => {
+    const { men, look, aim, mid } = stage();
+    look();
+    men.forEach((m, i) => {
+      m.x = 60.5 + i * 15; // strung out 30 m off: nobody on the point, no mass anywhere
+      m.y = 10.5;
+    });
+    look(21 * 30);
+    expect(aim()).toBeNull();
+    men.forEach((m, i) => {
+      m.x = 170.5 + (i % 4) * 2;
+      m.y = 20.5 + Math.floor(i / 4) * 2;
+    });
+    look();
+    expect(aim()).toEqual(mid(men)); // the same eight, together again 50 m on
+  });
+
+  it('danger close ends it: a tube does not go on shelling a point its own men have reached', () => {
+    const { men, look, aim, mid, spotter } = stage();
+    look();
+    expect(aim()).toEqual(mid(men));
+    spotter.x = mid(men).x - 24; // inside DEFEND_HE_SAFETY (25 m)
+    look();
+    expect(aim()).toBeNull();
+  });
+});
+
+// #790. The commander fired one barrage a battle whatever its side held: the
+// attacker's second sat unused in every probed battle.
+describe('the commander spends the barrages it holds (#790)', () => {
+  it.each(['attack', 'defend'] as const)('%s: every one it has, 90 s apart; an attacker calls none onto ground its own men are closing on', (stance) => {
+    const sim = new Sim(new GameMap(240, 60), 2);
+    const red = sim.addSquad('red', 'R', [{ name: 'R1', weapon: 'kar98k', x: 10.5, y: 30.5 }]);
+    const cluster = sim.addSquad('blue', 'Cluster', Array.from({ length: 5 }, (_, i) => ({ name: `C${i}`, weapon: 'garand' as const, x: 185.5, y: 28.5 + i })));
+    for (const m of sim.soldiers) {
+      m.ammo = {};
+      m.magLeft = 0;
+    }
+    sim.barragesLeft.red = 3;
+    const calls: number[] = [];
+    // Counted and not fired: the five have to be there for the next one.
+    sim.callBarrage = (side) => {
+      sim.barragesLeft[side]--;
+      calls.push(sim.tick);
+      return true;
+    };
+    const commander = new RedCommander({ side: 'red', stance, posts: { [red.id]: stance === 'attack' ? { x: 185, y: 30 } : { x: 10, y: 30 } } });
+    const spotter = sim.soldiers[red.soldierIds[0]];
+    const hold = { x: spotter.x, y: spotter.y };
+    for (let i = 0; i < 200 * 30; i++) {
+      commander.update(sim);
+      sim.step();
+      // he stays where he is, whatever the attack stance tells him
+      spotter.x = hold.x;
+      spotter.y = hold.y;
+      spotter.path = null;
+    }
+    expect(calls).toHaveLength(3);
+    expect(sim.barragesLeft.red).toBe(0);
+    expect(calls[1] - calls[0]).toBeGreaterThanOrEqual(90 * 30);
+    expect(calls[2] - calls[1]).toBeGreaterThanOrEqual(90 * 30);
+    expect(calls[2] - calls[0]).toBeLessThan(200 * 30); // and no slower than the gap and one eval
+
+    // His own man 39 m from the five, inside PREP_HE_LIFT. A defender calls it all the same.
+    sim.barragesLeft.red = 1;
+    hold.x = sim.soldiers[cluster.soldierIds[0]].x - 39;
+    for (let i = 0; i < 120 * 30; i++) {
+      commander.update(sim);
+      sim.step();
+      spotter.x = hold.x;
+      spotter.y = hold.y;
+      spotter.path = null;
+    }
+    expect(calls).toHaveLength(stance === 'attack' ? 3 : 4);
   });
 });
 

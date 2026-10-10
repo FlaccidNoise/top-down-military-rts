@@ -1,7 +1,7 @@
 import { EMPLACEMENTS, WEAPONS, type WeaponDef } from './data';
 import { crewNear, friendlyHasLos, type Emplacement } from './emplacement';
 import { dangerScore, orderVerdict, type OrderKind, type TeamOrder } from './orders';
-import { CONTACT_TTL, EYE_CROUCH, EYE_STAND, SPOT_INTERVAL, sightBetween, type Side, type Sim, type Team } from './sim';
+import { CONTACT_TTL, EYE_CROUCH, EYE_STAND, MORTAR_BLAST, SPOT_INTERVAL, sightBetween, type Side, type Sim, type Team } from './sim';
 
 // Red commander: issues squad orders through the same public order API the
 // player uses. Design requirement (decision log): must maneuver and
@@ -137,6 +137,48 @@ const DEFEND_ARC_HALF = Math.PI / 3;
 const DEFEND_HE_CLUSTER = 8;
 const DEFEND_HE_RADIUS = 12;
 const DEFEND_HE_SAFETY = 25;
+// A fire mission, either stance, is on the men it was called on, not on the
+// ground they stood on (#790). With no fresh target it follows the spotted
+// enemy still inside one burst of its aim point, shells the point for LINGER
+// after the last of them was seen there (men who have ducked are still
+// there), and then ends. It ends at once when its own side is danger close.
+// A mission used to have no end at all: the tubes shelled the last aim point
+// until they were dry.
+const HE_MISSION_LINGER = 20 * 30;
+// Preparatory fire, attack stance (#790). The attacker's tubes had never
+// fired a round of HE: 0 shells in 38 probed battles. They now work over the
+// spotted defenders of the objective the maneuver element is going for, from
+// the first sighting until the riflemen come up. MIN together inside
+// DEFEND_HE_RADIUS and within RADIUS of the post make a target: a garrison is
+// a team in cover, never the shoulder-to-shoulder mass the defensive mission
+// waits for. The mission ENDS once any man of its own side is inside LIFT of
+// the aim point. That is DEFEND_HE_SAFETY plus the ground a team covers in
+// one commander eval and a shell's flight, since here the friendlies are
+// walking toward the bursts, and it falls between SMOKE_RANGE and
+// ASSAULT_RANGE on purpose: HE, then the lift, then smoke, then the charge.
+// Each tube keeps SMOKE_RESERVE shells back, two of the screens the charge
+// cannot clear compliance without.
+const PREP_HE_RADIUS = 30;
+const PREP_HE_MIN = 2;
+const PREP_HE_LIFT = 40;
+const PREP_SMOKE_RESERVE = 8;
+// The strafing run: MIN spotted together make it worth the one plane, and no
+// man of its own side inside SAFETY of the target. The run is 40 m long and
+// arrives 25 s after the call, which is a long way for a rifle team.
+const AIR_MIN = 4;
+const AIR_SAFETY = 70;
+// The commander spends every barrage its side holds (#790; it used to fire
+// one and sit on the rest), one at a time: the next is not called until the
+// last has landed and what it left can be seen. An ATTACKER does not call
+// one with its own men inside PREP_HE_LIFT of the point: the rounds fall from
+// 20 s to a minute after the call, onto ground its riflemen are walking to
+// (probed: 1.9 of its own men hit a battle, and that with one barrage). A
+// DEFENDER keeps the rule it had, which has no such limit. Its first sight
+// of a company in close country is at arm's length, and the barrage it calls
+// onto its own wire then is the one that counts: with a danger-close limit
+// it never fired in the doctrine suite's campaign battle, and a fight the
+// garrison won in 8,200 ticks became one it lost.
+const BARRAGE_GAP_TICKS = 90 * 30;
 // Fire discipline releases against a massed attack (balance 2026-07): ambush
 // is sited for infiltrators and patrols; once the commander's own intel shows
 // this many enemies AT ONCE, the garrison is looking at a company in the open
@@ -147,7 +189,9 @@ const MASS_RELEASE = 20;
 
 export class RedCommander {
   private lastEval = -EVAL_TICKS;
-  private barrageUsed = false;
+  private lastBarrageTick = -BARRAGE_GAP_TICKS;
+  private heAim: { x: number; y: number } | null = null; // the HE mission's aim point, while one runs
+  private heSeenTick = 0; // last eval a spotted enemy stood inside one burst of it
   private threat: ThreatContact[] = [];
   private groupsReady = false;
   // Task groups are TEAM-scoped, not squad-scoped: a squad like the German
@@ -191,8 +235,10 @@ export class RedCommander {
     this.updateThreat(sim);
     this.invalidateBreachedSpots(sim);
 
-    if (this.cfg.stance === 'attack') this.runAttack(sim);
-    else this.runDefend(sim);
+    if (this.cfg.stance === 'attack') {
+      this.runAttack(sim);
+      this.prepFire(sim);
+    } else this.runDefend(sim);
 
     this.updateVehicles(sim);
     this.maybeBarrage(sim);
@@ -204,7 +250,8 @@ export class RedCommander {
   private spottedPositions(sim: Sim): { x: number; y: number }[] {
     const out: { x: number; y: number }[] = [];
     for (const [id, p] of sim.spotted[this.cfg.side]) {
-      if (!sim.soldiers[id].downed) out.push(p); // tracked but downed: out of the fight
+      const s = sim.soldiers[id];
+      if (!s.downed && !s.captured) out.push(p); // tracked but downed, or a prisoner: out of the fight, and no target
     }
     return out;
   }
@@ -821,42 +868,94 @@ export class RedCommander {
     this.maybeDefendHE(sim);
   }
 
-  // Defensive fires (balance 2026-07): task every ready mortar onto the
-  // densest spotted mass, re-aimed each eval so the mission tracks it. The
-  // only defensive weapon whose effect scales with target density is the
-  // 81mm shell (15m suppression, 9m fragments) — without this the garrison's
-  // tubes sit silent while a company crosses the open in a crowd. Honest
-  // vision throughout: the cluster comes from spottedPositions (the sim's
-  // own intel layer) and every mission is gated on friendlyHasLos, the same
-  // shared-vision spotting rule the player's own fire missions obey.
-  private maybeDefendHE(sim: Sim): void {
-    const seen = this.spottedPositions(sim);
-    if (seen.length < DEFEND_HE_CLUSTER) return;
+  private mid(ps: { x: number; y: number }[]): { x: number; y: number; n: number } {
+    return { x: ps.reduce((a, s) => a + s.x, 0) / ps.length, y: ps.reduce((a, s) => a + s.y, 0) / ps.length, n: ps.length };
+  }
+
+  // The densest group among `seen`: `min` or more inside `radius` of one of
+  // them, as its centroid.
+  private densest(seen: { x: number; y: number }[], radius: number, min: number): { x: number; y: number; n: number } | null {
     let best: { x: number; y: number; n: number } | null = null;
+    if (seen.length < min) return best;
     for (const b of seen) {
-      const cluster = seen.filter((o) => Math.hypot(o.x - b.x, o.y - b.y) < DEFEND_HE_RADIUS);
-      if (cluster.length < DEFEND_HE_CLUSTER || (best && cluster.length <= best.n)) continue;
-      best = {
-        x: cluster.reduce((a, s) => a + s.x, 0) / cluster.length,
-        y: cluster.reduce((a, s) => a + s.y, 0) / cluster.length,
-        n: cluster.length,
-      };
+      const cluster = seen.filter((o) => Math.hypot(o.x - b.x, o.y - b.y) < radius);
+      if (cluster.length < min || (best && cluster.length <= best.n)) continue;
+      best = this.mid(cluster);
     }
-    if (!best) return;
+    return best;
+  }
+
+  private ownWithin(sim: Sim, x: number, y: number, r: number): boolean {
     for (const s of sim.soldiers) {
-      if (s.side !== this.cfg.side || !s.alive || s.downed) continue;
-      if (Math.hypot(s.x - best.x, s.y - best.y) < DEFEND_HE_SAFETY) return; // danger close
+      if (s.side === this.cfg.side && s.alive && Math.hypot(s.x - x, s.y - y) < r) return true;
     }
+    return false;
+  }
+
+  // The HE fire plan, both stances (see HE_MISSION_LINGER). `fresh` is this
+  // eval's target by the stance's own rule: the mission goes onto it at once,
+  // wherever it was before, so the fire follows the fight. `safety` is the
+  // danger-close radius.
+  //
+  // Every tube that can range the aim point and has more than `reserve`
+  // shells fires on it, and every other tube ceases fire. Honest vision: the
+  // aim point comes off the side's own intel and must be in a friendly's
+  // sight, the rule the player's fire missions obey (the sim checks it again
+  // per round).
+  private fireMission(sim: Sim, fresh: { x: number; y: number } | null, safety: number, reserve: number): void {
+    let aim = fresh && !this.ownWithin(sim, fresh.x, fresh.y, safety) ? fresh : null;
+    if (aim) this.heSeenTick = sim.tick;
+    else if (this.heAim) {
+      const at = this.heAim;
+      const on = this.spottedPositions(sim).filter((p) => Math.hypot(p.x - at.x, p.y - at.y) <= MORTAR_BLAST.suppRadius);
+      if (on.length > 0) this.heSeenTick = sim.tick;
+      const next = on.length > 0 ? this.mid(on) : sim.tick - this.heSeenTick < HE_MISSION_LINGER ? at : null;
+      if (next && !this.ownWithin(sim, next.x, next.y, safety)) aim = next;
+    }
+    this.heAim = aim;
+    const seen = !!aim && friendlyHasLos(sim, this.cfg.side, aim.x, aim.y);
     for (const e of sim.emplacements) {
       if (e.side !== this.cfg.side || e.state !== 'deployed' || e.smokeRoundsLeft > 0) continue;
       const w: WeaponDef = WEAPONS[EMPLACEMENTS[e.kind].weapon];
       if (!w.arc) continue;
-      const d = Math.hypot(e.x - best.x, e.y - best.y);
-      if (d < w.arc.minRange || d > w.range) continue;
-      if (!friendlyHasLos(sim, e.side, best.x, best.y)) continue;
-      if (!crewNear(sim, e).some((s) => (s.ammo[w.ammo.type] ?? 0) > 0)) continue;
-      sim.orderFire(e.id, best.x, best.y);
+      const d = aim && seen ? Math.hypot(e.x - aim.x, e.y - aim.y) : -1;
+      const shells = crewNear(sim, e).reduce((a, s) => a + (s.ammo[w.ammo.type] ?? 0), 0);
+      if (aim && d >= w.arc.minRange && d <= w.range && shells > reserve) sim.orderFire(e.id, aim.x, aim.y);
+      else if (e.hasTarget) sim.ceaseFire(e.id);
     }
+  }
+
+  private maybeAirstrike(sim: Sim, target: { x: number; y: number; n: number } | null): void {
+    if (!target || target.n < AIR_MIN || sim.airstrikesLeft[this.cfg.side] <= 0) return;
+    if (this.ownWithin(sim, target.x, target.y, AIR_SAFETY)) return;
+    sim.callAirstrike(this.cfg.side, target.x, target.y);
+  }
+
+  // See PREP_HE_RADIUS. Called after the maneuver loop, so teamPost is this
+  // eval's and a tube just put on a smoke mission is left to it.
+  private prepFire(sim: Sim): void {
+    const post = this.culminated ? undefined : this.maneuverPost(sim);
+    let target: { x: number; y: number; n: number } | null = null;
+    if (post && !this.isTaken(post)) {
+      const on = this.spottedPositions(sim).filter((p) => Math.hypot(p.x - post.x, p.y - post.y) <= PREP_HE_RADIUS);
+      target = this.densest(on, DEFEND_HE_RADIUS, PREP_HE_MIN);
+    }
+    this.fireMission(sim, target, PREP_HE_LIFT, PREP_SMOKE_RESERVE);
+    this.maybeAirstrike(sim, target);
+  }
+
+  // Defensive fires (balance 2026-07): task every ready mortar onto the
+  // densest spotted mass, re-aimed each eval so the mission tracks it. The
+  // only defensive weapon whose effect scales with target density is the
+  // 81mm shell — without this the garrison's tubes sit silent while a
+  // company crosses the open in a crowd. Honest vision throughout: the
+  // cluster comes from spottedPositions (the sim's own intel layer) and every
+  // mission is gated on friendlyHasLos, the same shared-vision spotting rule
+  // the player's own fire missions obey.
+  private maybeDefendHE(sim: Sim): void {
+    const mass = this.densest(this.spottedPositions(sim), DEFEND_HE_RADIUS, DEFEND_HE_CLUSTER);
+    this.fireMission(sim, mass, DEFEND_HE_SAFETY, 0);
+    this.maybeAirstrike(sim, mass);
   }
 
   // Armour, attack stance: hulls go where the maneuver element is going and
@@ -931,21 +1030,22 @@ export class RedCommander {
     return best?.p;
   }
 
-  // One barrage on the densest cluster among its side's spotted contacts, once
-  // five or more sit together — intel-range knowledge, not weapon range: the
+  // A barrage on a cluster among its side's spotted contacts, once five or
+  // more sit together — intel-range knowledge, not weapon range: the
   // commander can shell an observed concentration its rifles can't yet reach.
+  // See BARRAGE_GAP_TICKS.
   private maybeBarrage(sim: Sim): void {
-    if (this.barrageUsed || sim.barragesLeft[this.cfg.side] <= 0) return;
+    if (sim.barragesLeft[this.cfg.side] <= 0 || sim.tick - this.lastBarrageTick < BARRAGE_GAP_TICKS) return;
+    const safety = this.cfg.stance === 'attack' ? PREP_HE_LIFT : 0;
     const seen = this.spottedPositions(sim);
     for (const b of seen) {
       const cluster = seen.filter((o) => Math.hypot(o.x - b.x, o.y - b.y) < 8);
-      if (cluster.length >= 5) {
-        const cx = cluster.reduce((a, s) => a + s.x, 0) / cluster.length;
-        const cy = cluster.reduce((a, s) => a + s.y, 0) / cluster.length;
-        sim.callBarrage(this.cfg.side, cx, cy);
-        this.barrageUsed = true;
-        break;
-      }
+      if (cluster.length < 5) continue;
+      const c = this.mid(cluster);
+      if (this.ownWithin(sim, c.x, c.y, safety)) continue;
+      sim.callBarrage(this.cfg.side, c.x, c.y);
+      this.lastBarrageTick = sim.tick;
+      break;
     }
   }
 
