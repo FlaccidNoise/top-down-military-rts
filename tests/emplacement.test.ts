@@ -65,6 +65,35 @@ describe('emplaced MG belts (#765)', () => {
     expect(fired).toBeGreaterThan(1); // and back in action after it
   });
 
+  it('firingAmmo reads the gun for the man serving it, and his own kit for everyone else (#787)', () => {
+    const { sim, e, belts, bursts, targets } = gun(7);
+    const crew = sim.teams[e.crewTeamId].soldierIds.map((id) => sim.soldiers[id]);
+    const gunner = crew.find((m) => m.role === 'gunner')!;
+    const bearer = crew.find((m) => m.role === 'bearer')!;
+    expect(sim.firingAmmo(gunner)).toEqual({ mag: WEAPONS.mg42.ammo.perUnit, reserve: belts() });
+    expect(sim.firingAmmo(bearer)).toEqual({ mag: bearer.magLeft, reserve: bearer.ammo.belt_792 }); // his rifle, his pouches
+    targets(12, 60.5);
+    let fired = 0;
+    for (let i = 0; i < 600 && fired < 5; i++) {
+      sim.step();
+      fired += bursts();
+    }
+    expect(sim.firingAmmo(gunner).mag).toBe(WEAPONS.mg42.ammo.perUnit - fired);
+    expect(gunner.magLeft).toBe(WEAPONS.mg42.ammo.perUnit); // what the roster used to show: untouched
+
+    const packed = new Sim(new GameMap(40, 20), 8);
+    const p = packed.addEmplacement('blue', 'mg42_lafette', 10.5, 10.5); // packed: nothing to serve
+    const carrier = packed.teams[p.crewTeamId].soldierIds.map((id) => packed.soldiers[id]).find((m) => m.role === 'gunner')!;
+    expect(packed.firingAmmo(carrier)).toEqual({ mag: carrier.magLeft, reserve: carrier.ammo.belt_792 });
+
+    const tube = new Sim(new GameMap(40, 20), 9);
+    const t = tube.addEmplacement('blue', 'mortar60', 10.5, 10.5, 0, 'deployed');
+    const tubeCrew = tube.teams[t.crewTeamId].soldierIds.map((id) => tube.soldiers[id]);
+    const shells = tubeCrew.reduce((a, m) => a + (m.ammo.shell_60 ?? 0), 0);
+    expect(shells).toBeGreaterThan(0);
+    expect(tube.firingAmmo(tubeCrew.find((m) => m.role === 'gunner')!)).toEqual({ mag: 0, reserve: shells });
+  });
+
   it('with no belt left to change to, the gun stops when the one on it runs out', () => {
     const { sim, e, bursts, targets } = gun(5);
     targets(16, 60.5);

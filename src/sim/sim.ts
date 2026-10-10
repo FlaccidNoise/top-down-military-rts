@@ -3308,10 +3308,7 @@ export class Sim {
     // updateEmplacement's fire loop bails on state before ever reaching
     // pickFirer, so excluding personal fire here too would just strand the
     // crew unarmed. Packed, everyone fights with whatever's in their hands.
-    if (s.inEmplacement >= 0) {
-      const emp = this.emplacements[s.inEmplacement];
-      if (emp && emp.state === 'deployed' && (s.weapon === EMPLACEMENTS[emp.kind].weapon || pickFirer(this, emp)?.id === s.id)) return;
-    }
+    if (this.servedGun(s)) return;
 
     // Order-level fire discipline: sneak and (untriggered) ambush hold fire
     // entirely; fast holds fire only while actually sprinting.
@@ -4622,6 +4619,29 @@ export class Sim {
         m.suppression = Math.min(1, m.suppression + gain);
       }
     }
+  }
+
+  // The deployed gun this man's hands are on, if any: he holds its gunner
+  // slot, or he is the one firing it this tick. The rule updateSoldier gates
+  // his personal fire on, in one place.
+  private servedGun(s: Soldier): Emplacement | null {
+    if (s.inEmplacement < 0) return null;
+    const emp = this.emplacements[s.inEmplacement];
+    return emp && emp.state === 'deployed' && (s.weapon === EMPLACEMENTS[emp.kind].weapon || pickFirer(this, emp)?.id === s.id) ? emp : null;
+  }
+
+  // The ammunition a man is actually firing from, for the UI (#787). On foot
+  // that is his own magazine and everything he carries. Serving a deployed
+  // gun it is the gun's: the belt on it (tubes and AT guns load a round a
+  // shot, so 0) and the stock its crew at the gun can feed it — the same men
+  // consumeEmplacementAmmo draws on. His own magLeft says nothing there: a
+  // tripod gunner's read 250 while the gun changed belts beside him.
+  firingAmmo(s: Soldier): { mag: number; reserve: number } {
+    const emp = this.servedGun(s);
+    if (!emp) return { mag: s.magLeft, reserve: Object.values(s.ammo).reduce((a: number, n) => a + (n ?? 0), 0) };
+    const w: WeaponDef = WEAPONS[EMPLACEMENTS[emp.kind].weapon];
+    const reserve = crewNear(this, emp).reduce((a, m) => a + (m.ammo[w.ammo.type] ?? 0), 0);
+    return { mag: w.arc || w.pen !== undefined ? 0 : emp.magLeft, reserve };
   }
 
   woundSummary(s: Soldier): string {
