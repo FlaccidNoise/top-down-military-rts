@@ -85,7 +85,40 @@ const observedPoint = (minD, maxD) =>
     return null;
   }, { minD, maxD });
 
-// ── 1-2. Mortar HE mission and smoke mission ────────────────────────────────
+// ── 1. Vehicle orders (player-driven) ───────────────────────────────────────
+// Use the battle's OWN blue armour — the fielding lane put it there.
+//
+// FIRST, before anything is fired: this check needs a living blue hull, and
+// the rest of the gate is three minutes of live battle during which one can be
+// lost — most often to the red hull section 6 stages 25 m from the bazooka
+// man, which then had the vehicle checks still to come (2 failures in 6 runs
+// on main: "blue armour is on the field to command"). At tick 0 the hulls are
+// as staging left them, so a failure here is a fielding or a UI defect and
+// never the luck of the battle. What is proved is unchanged: the hull is
+// there, a click selects it, a right-click drives it.
+const veh = await page.evaluate(() => {
+  const s = window.__game.sim;
+  const v = s.vehicles.find((k) => k.alive && k.side === 'blue');
+  return v ? { id: v.id, kind: v.kind, x: v.x, y: v.y } : null;
+});
+check(!!veh, `blue armour is on the field to command${veh ? ` (${veh.kind})` : ''}`);
+if (veh) {
+  await clickWorld(veh.x, veh.y);
+  const vsel = await page.evaluate(() => window.__game.getSelection().vehicle);
+  check(vsel === veh.id, `clicking the hull selects it (${vsel} vs ${veh.id})`);
+  if (vsel === veh.id) {
+    const dest = await page.evaluate(({ x, y }) => window.__game.sim.nudgeSpawn(x + 25, y), veh);
+    await clickWorld(dest.x, dest.y, 'right');
+    await run(9000);
+    const moved = await page.evaluate(({ id, x, y }) => {
+      const v = window.__game.sim.vehicles.find((k) => k.id === id);
+      return Math.hypot(v.x - x, v.y - y);
+    }, veh);
+    check(moved > 3, `a right-click drives it (${moved.toFixed(1)} m travelled)`);
+  }
+}
+
+// ── 2-3. Mortar HE mission and smoke mission ────────────────────────────────
 const mortar = await page.evaluate(() => {
   const s = window.__game.sim;
   const e = s.emplacements.find((m) => m.side === 'blue' && m.state === 'deployed' && ['mortar60', 'mortar81'].includes(m.kind));
@@ -141,7 +174,7 @@ if (mortar) {
   }
 }
 
-// ── 3. Barrage (artillery) ──────────────────────────────────────────────────
+// ── 4. Barrage (artillery) ──────────────────────────────────────────────────
 const hasBarrage = (await page.$('button[data-act="barrage"]')) !== null;
 check(hasBarrage, 'the HUD offers a barrage button');
 if (hasBarrage) {
@@ -162,7 +195,7 @@ if (hasBarrage) {
   check((await boomsNear(t.x, t.y, 40)) > 0, `the barrage lands on the called point: ${await boomsNear(t.x, t.y, 40)} bursts`);
 }
 
-// ── 4. Airstrike ────────────────────────────────────────────────────────────
+// ── 5. Airstrike ────────────────────────────────────────────────────────────
 const hasAir = (await page.$('button[data-act="air"]')) !== null;
 check(hasAir, 'the HUD offers an airstrike button');
 if (hasAir) {
@@ -183,7 +216,7 @@ if (hasAir) {
   check((await boomsNear(t.x, t.y, 45)) > 0, `the airstrike strafes the called point: ${await boomsNear(t.x, t.y, 45)} impacts`);
 }
 
-// ── 5. Bazooka vs armour, under natural dynamics ───────────────────────────
+// ── 6. Bazooka vs armour, under natural dynamics ───────────────────────────
 // Campaign battles now field armour, so the enemy hull is the game's own, not
 // one staged by this script — the AT loops finally have something to acquire.
 const at = await page.evaluate(async () => {
@@ -220,30 +253,6 @@ if (at) {
   }, at.vid);
   const engaged = res.onHull > 0 || !res.alive || res.wounds > wounds0;
   check(engaged, `the bazooka engages ${at.staged ? 'staged' : 'FIELDED'} armour (${res.onHull} rounds on the hull, crew wounds ${wounds0} → ${res.wounds}, alive ${res.alive})`);
-}
-
-// ── 6. Vehicle orders (player-driven) ───────────────────────────────────────
-// Use the battle's OWN blue armour — the fielding lane put it there.
-const veh = await page.evaluate(() => {
-  const s = window.__game.sim;
-  const v = s.vehicles.find((k) => k.alive && k.side === 'blue');
-  return v ? { id: v.id, kind: v.kind, x: v.x, y: v.y } : null;
-});
-check(!!veh, `blue armour is on the field to command${veh ? ` (${veh.kind})` : ''}`);
-if (veh) {
-  await clickWorld(veh.x, veh.y);
-  const vsel = await page.evaluate(() => window.__game.getSelection().vehicle);
-  check(vsel === veh.id, `clicking the hull selects it (${vsel} vs ${veh.id})`);
-  if (vsel === veh.id) {
-    const dest = await page.evaluate(({ x, y }) => window.__game.sim.nudgeSpawn(x + 25, y), veh);
-    await clickWorld(dest.x, dest.y, 'right');
-    await run(9000);
-    const moved = await page.evaluate(({ id, x, y }) => {
-      const v = window.__game.sim.vehicles.find((k) => k.id === id);
-      return Math.hypot(v.x - x, v.y - y);
-    }, veh);
-    check(moved > 3, `a right-click drives it (${moved.toFixed(1)} m travelled)`);
-  }
 }
 
 await browser.close();
