@@ -511,6 +511,10 @@ function weaponRank(w: WeaponKey): number {
   return WEAPON_RANK[w] ?? 0;
 }
 
+// Who a leaderless team can best spare for the job, lowest first. Roles not
+// listed are riflemen for this purpose.
+const LEADER_SPARE: Partial<Record<Role, number>> = { bearer: 1, assistant: 2, aidman: 3, gunner: 4 };
+
 // Which crewSkill class a weapon trains (spec: mg/mortar/gun/vehicle — the
 // 'vehicle' class is reserved for a future vehicle-crew succession pass and
 // never accrued/applied by this milestone).
@@ -3139,12 +3143,7 @@ export class Sim {
           );
           if (i >= 0) {
             const kit = this.droppedKit[i];
-            s.weapon = kit.weapon;
-            s.secondary = undefined;
-            s.ammo = { ...kit.ammo };
-            s.ammoStart = Object.values(kit.ammo).reduce((a: number, n) => a + (n ?? 0), 0);
-            s.magLeft = kit.magLeft;
-            s.heat = 0;
+            this.takeWeapon(s, kit.weapon, kit.ammo, kit.magLeft);
             this.droppedKit.splice(i, 1);
           }
         } else {
@@ -3610,6 +3609,14 @@ export class Sim {
   // timed 3s riding the reloading busy-timer, inherits remaining ammo.
   private considerPickup(s: Soldier): void {
     if (s.reloading > 0 || s.pickingUp || s.path) return;
+    // A launcher or a mortar ranks 0 because it is not in the small-arms
+    // table, not because it is worse than a carbine — and the man carrying it
+    // traded it for the first dropped rifle he stood next to (#766, measured
+    // in 38 battles: bazooka 13 times, Schreck 8, mortar 22). The swap also
+    // replaces his whole ammo record, so a gun's own gunner keeps his hands
+    // off too: the shells the gun fires are in his pockets.
+    const w: WeaponDef = WEAPONS[s.weapon];
+    if (w.pen !== undefined || w.arc || (s.role === 'gunner' && s.inEmplacement >= 0)) return;
     const myRank = weaponRank(s.weapon);
     for (const kit of this.droppedKit) {
       if (kit.load || kit.side !== s.side || weaponRank(kit.weapon) <= myRank) continue;
@@ -3725,11 +3732,7 @@ export class Sim {
     // swap: crawl to the gun, shoulder it — a timed, exposed action
     task.timer -= DT;
     if (task.timer > 0) return;
-    s.weapon = task.weapon;
-    s.secondary = undefined;
-    s.ammo = { ...task.ammo };
-    s.magLeft = task.magLeft;
-    s.heat = 0;
+    this.takeWeapon(s, task.weapon, task.ammo, task.magLeft);
     s.role = 'gunner';
     // the predecessor's own dropped copy of this weapon (from dropKit) is
     // now spoken for — clear it so nobody double-claims it via considerPickup
@@ -3738,14 +3741,42 @@ export class Sim {
     s.task = null;
   }
 
+  // A man takes up a weapon and the ammunition that came with it, on a
+  // battlefield pickup or a crew hand-over. He lets go of what his old weapon
+  // fed on (unless the new one takes the same) and keeps the rest of what he
+  // carries. Both callers used to replace his whole ammo record (#766): the
+  // assistant who took over the gun lost the belts on his own back, and a
+  // bearer who picked up a better rifle left the gun's shells in the grass.
+  private takeWeapon(s: Soldier, weapon: WeaponKey, ammo: Partial<Record<AmmoKey, number>>, magLeft: number): void {
+    const carried = { ...s.ammo };
+    const own = WEAPONS[s.weapon].ammo.type;
+    if (own !== WEAPONS[weapon].ammo.type) delete carried[own];
+    for (const k of Object.keys(ammo) as AmmoKey[]) carried[k] = (carried[k] ?? 0) + (ammo[k] ?? 0);
+    s.weapon = weapon;
+    s.secondary = undefined;
+    s.ammo = carried;
+    s.ammoStart = Object.values(carried).reduce((a: number, n) => a + (n ?? 0), 0);
+    s.magLeft = magLeft;
+    s.heat = 0;
+  }
+
   // Leader succession (spec: "highest xp teammate becomes leader after
   // 10s" — death only, no travel needed, so no takeOver task).
+  //
+  // Highest xp among the men whose job the team can spare (#766). A role is a
+  // single field, so the man promoted stops being whatever he was: a gunner
+  // loses crewAimMult and his death no longer triggers succession, an aidman
+  // stops treating at aidman speed, an assistant stops speeding the reload.
+  // Promotion took any role on xp alone (measured: gunner 1.7 and aidman 0.8
+  // times a battle). Specialists are now promoted only when nobody else is
+  // left, in the order LEADER_SPARE gives.
   private promoteLeader(team: Team): void {
     let best: Soldier | null = null;
     for (const sid of team.soldierIds) {
       const c = this.soldiers[sid];
-      if (!c.alive || c.downed || c.role === 'leader') continue;
-      if (!best || c.xp > best.xp) best = c;
+      if (!c.alive || c.downed || c.captured || c.role === 'leader') continue;
+      const d = best ? (LEADER_SPARE[c.role] ?? 0) - (LEADER_SPARE[best.role] ?? 0) : -1;
+      if (d < 0 || (d === 0 && c.xp > best!.xp)) best = c;
     }
     if (best) best.role = 'leader';
   }

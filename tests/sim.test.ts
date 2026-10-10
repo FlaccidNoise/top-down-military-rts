@@ -820,6 +820,112 @@ describe('casualty chain v2: succession, two-man carry, aidman', () => {
     expect(low.role).not.toBe('leader');
   });
 
+  // #766. A role is one field: the man promoted stops being what he was.
+  const leaderless = (seed: number, rest: { name: string; weapon: 'garand' | 'm1919'; xp: number; role?: 'gunner' | 'aidman' | 'assistant' | 'bearer' }[]) => {
+    const sim = new Sim(new GameMap(20, 20), seed);
+    sim.addSquad('blue', 'a', [{ name: 'L', weapon: 'garand', x: 10.5, y: 10.5 }, ...rest.map((m) => ({ name: m.name, weapon: m.weapon, x: 10.5, y: 10.5, xp: m.xp }))]);
+    const [leader, ...men] = sim.soldiers;
+    leader.role = 'leader';
+    rest.forEach((m, i) => {
+      if (m.role) men[i].role = m.role;
+    });
+    leader.wounds.push({ part: 0, dmg: 100 });
+    leader.bloodLoss = 1;
+    for (let i = 0; i < 360; i++) sim.step(); // past the 10 s vacancy
+    expect(leader.alive).toBe(false);
+    return Object.fromEntries(men.map((m) => [m.name, m.role]));
+  };
+
+  it('leader succession passes over the gunner and the aidman for a rifleman, whatever their xp', () => {
+    const roles = leaderless(54, [
+      { name: 'Gun', weapon: 'm1919', xp: 9, role: 'gunner' },
+      { name: 'Aid', weapon: 'garand', xp: 8, role: 'aidman' },
+      { name: 'Green', weapon: 'garand', xp: 1 },
+      { name: 'Old', weapon: 'garand', xp: 4 },
+    ]);
+    expect(roles).toEqual({ Gun: 'gunner', Aid: 'aidman', Green: 'rifleman', Old: 'leader' }); // highest xp among the riflemen
+  });
+
+  it('a specialist leads only when nobody else is left: bearer, assistant, aidman, then the gunner', () => {
+    expect(
+      leaderless(55, [
+        { name: 'Gun', weapon: 'm1919', xp: 9, role: 'gunner' },
+        { name: 'Asst', weapon: 'garand', xp: 8, role: 'assistant' },
+        { name: 'Bear', weapon: 'garand', xp: 1, role: 'bearer' },
+      ]),
+    ).toEqual({ Gun: 'gunner', Asst: 'assistant', Bear: 'leader' });
+    expect(
+      leaderless(56, [
+        { name: 'Gun', weapon: 'm1919', xp: 9, role: 'gunner' },
+        { name: 'Aid', weapon: 'garand', xp: 1, role: 'aidman' },
+      ]),
+    ).toEqual({ Gun: 'gunner', Aid: 'leader' });
+    expect(leaderless(57, [{ name: 'Gun', weapon: 'm1919', xp: 9, role: 'gunner' }])).toEqual({ Gun: 'leader' });
+  });
+
+  it('a bazooka man and a mortar man leave a dropped rifle where it lies', () => {
+    for (const weapon of ['bazooka', 'mortar60'] as const) {
+      const sim = new Sim(new GameMap(20, 20), 58);
+      sim.addSquad('blue', 's', [
+        { name: 'Dead', weapon: 'garand', x: 5.5, y: 5.5, ammo: { clip_3006: 8 } },
+        { name: 'Keeper', weapon, x: 6.0, y: 5.5, ammo: weapon === 'bazooka' ? { rocket_bazooka: 3 } : { shell_60: 12 } },
+      ]);
+      const [dead, keeper] = sim.soldiers;
+      dead.wounds.push({ part: 0, dmg: 100 });
+      dead.bloodLoss = 1;
+      for (let i = 0; i < 250; i++) sim.step();
+      expect(dead.alive).toBe(false);
+      expect(keeper.weapon, weapon).toBe(weapon); // was 'garand' inside 5 s
+      expect(keeper.ammo.clip_3006, weapon).toBeUndefined(); // and his rockets or shells were gone with it
+      expect(sim.droppedKit.length, weapon).toBe(1);
+    }
+  });
+
+  it("an AT gun's gunner does not trade his carbine for a rifle", () => {
+    const sim = new Sim(new GameMap(40, 20), 59);
+    const e = sim.addEmplacement('blue', 'at57', 10.5, 10.5, 0, 'deployed');
+    const crew = sim.teams[e.crewTeamId].soldierIds.map((id) => sim.soldiers[id]);
+    const gunner = crew.find((m) => m.role === 'gunner')!;
+    for (const m of crew) if (m !== gunner) m.x += 12; // staged: only the gunner stands by the rifle
+    const dead = sim.soldiers[sim.addSquad('blue', 'r', [{ name: 'Dead', weapon: 'garand', x: gunner.x, y: gunner.y, ammo: { clip_3006: 8 } }]).soldierIds[0]];
+    dead.wounds.push({ part: 0, dmg: 100 });
+    dead.bloodLoss = 1;
+    for (let i = 0; i < 250; i++) sim.step();
+    expect(gunner.weapon).toBe('carbine');
+    expect(sim.droppedKit.length).toBe(1);
+  });
+
+  it('a man who takes up a weapon keeps what he carries for other weapons', () => {
+    // A bearer with the gun's shells picks up a rifle: the carbine magazines
+    // go, the shells stay.
+    const sim = new Sim(new GameMap(40, 20), 60);
+    sim.addSquad('blue', 's', [
+      { name: 'Dead', weapon: 'garand', x: 5.5, y: 5.5, ammo: { clip_3006: 8 } },
+      { name: 'Bearer', weapon: 'carbine', x: 6.0, y: 5.5, ammo: { mag_carbine: 6, shell_57: 4 } },
+    ]);
+    const [dead, bearer] = sim.soldiers;
+    dead.wounds.push({ part: 0, dmg: 100 });
+    dead.bloodLoss = 1;
+    for (let i = 0; i < 250 && bearer.weapon !== 'garand'; i++) sim.step();
+    expect(bearer.weapon).toBe('garand');
+    expect(bearer.ammo).toEqual({ shell_57: 4, clip_3006: 8 });
+
+    // The assistant who takes over the MG42 adds the dead gunner's belts to
+    // the ones on his own back instead of swapping one stock for the other.
+    const sim2 = new Sim(new GameMap(60, 20), 61);
+    const e = sim2.addEmplacement('blue', 'mg42_lafette', 10.5, 10.5, 0, 'deployed');
+    const crew = sim2.teams[e.crewTeamId].soldierIds.map((id) => sim2.soldiers[id]);
+    const gunner = crew.find((m) => m.role === 'gunner')!;
+    const assistant = crew.find((m) => m.role === 'assistant')!;
+    const belts = (gunner.ammo.belt_792 ?? 0) + (assistant.ammo.belt_792 ?? 0);
+    expect(assistant.ammo.belt_792).toBeGreaterThan(0);
+    gunner.wounds.push({ part: 0, dmg: 100 });
+    gunner.bloodLoss = 1;
+    for (let i = 0; i < 400 && assistant.role !== 'gunner'; i++) sim2.step();
+    expect(assistant.role).toBe('gunner');
+    expect(assistant.ammo.belt_792).toBe(belts);
+  });
+
   it('an MG42 gunner killed on an emplacement is served by the assistant within ~10s, with a worse-aim penalty during the interim', () => {
     const sim = new Sim(new GameMap(60, 20), 46);
     const e = sim.addEmplacement('blue', 'mg42_lafette', 10.5, 10.5, 0, 'deployed');
