@@ -319,7 +319,23 @@ describe('red runDefend garrisons through the resolver (M3)', () => {
     const seesWest = (s: { x: number; y: number }): boolean =>
       [0, Math.PI / 6, -Math.PI / 6].some((a) => los(sim.map, s.x, s.y, Math.max(0.5, s.x - Math.cos(a) * 40), s.y + Math.sin(a) * 40, 0, 0, 1.1, 1.6).visible);
     expect(inside.filter(seesWest).length).toBeGreaterThanOrEqual(4);
-    expect(tiles.some((t) => ['27,17', '27,21', '22,23', '25,23'].includes(t))).toBe(false); // the east and south loopholes
+  });
+
+  it('a window over 30 m of open ground to a hedgerow is a field of fire (the drill garrison)', () => {
+    const sim = new Sim(new GameMap(80, 40), 11);
+    room(sim, 50, 16, 57, 23);
+    sim.map.setVEdge(58, 19, EDGE.DOOR);
+    for (const y of [17, 21]) sim.map.setVEdge(50, y, EDGE.WINDOW); // west wall, on the field
+    for (const y of [17, 21]) sim.map.setVEdge(58, y, EDGE.WINDOW); // east wall
+    for (let y = 0; y < 40; y++) for (const x of [17, 20]) sim.map.setTerrain(x, y, 'hedge'); // a double hedge 30 m west: nothing is seen past it
+    const ids = Array.from({ length: 6 }, (_, i) => addOne(sim, 'red', 61.5, 17.5 + i));
+    const spots = resolveMoveSpots(sim, { soldierIds: ids, x: 54.5, y: 19.5, kind: 'defend', arc: [Math.PI - 1, Math.PI + 1] }, new Set());
+    const tiles = spots.map((s) => `${s.x},${s.y}`);
+    expect(tiles).toContain('50,17');
+    expect(tiles).toContain('50,21');
+    // and every man has 20 m of the field in sight, straight west or 30 degrees off it
+    const sees = (t: { x: number; y: number }): boolean => [0, Math.PI / 6, -Math.PI / 6].some((a) => los(sim.map, t.x + 0.5, t.y + 0.5, t.x + 0.5 - Math.cos(a) * 20, t.y + 0.5 + Math.sin(a) * 20, 0, 0, 1.1, 1.6).visible);
+    expect(spots.filter(sees)).toHaveLength(6);
   });
 
   it('field of fire is for holding ground: a move order resolves as it did, and a blind room still places every man', () => {

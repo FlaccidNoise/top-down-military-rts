@@ -46,12 +46,22 @@ const SLOT_PENALTY = 0.15; // per Chebyshev tile of drift from the formation slo
 // of all defenders never fired because no enemy inside their weapon's range
 // was ever in their sight, 278 of those 389 men inside a building.
 // Three rays from a crouching eye, the bearing and FIELD_SPREAD either side,
-// to a standing man FIELD_REACH out. W_FIELD is above the most a blind tile
-// can score (a covered nook behind a hedge lip, about 4), and the share of
-// rays that are clear breaks ties toward the wider view.
+// each read to a standing man at FIELD_NEAR and again at FIELD_REACH. A ray
+// clear to FIELD_NEAR is a field of fire: the first form asked for the whole
+// FIELD_REACH or nothing, so a window looking over 30 m of open field to a
+// hedgerow counted as blind, and the drill's garrison left the windows that
+// face the field for a room at the back (the drill gate caught it: no
+// contact in four minutes). W_FIELD is above the most a blind tile can score
+// (a covered nook behind a hedge lip, about 4). The share of the six readings
+// that are clear only breaks ties, at W_FIELD_TIE: less than one tile of slot
+// drift, so the wider view never outvotes cover. At full weight it did: a man
+// hard against a hedge sees straight through it and not along it, and the
+// open ground on the enemy's side of the hedge, with its view, won.
+const FIELD_NEAR = 20;
 const FIELD_REACH = 40;
 const FIELD_SPREAD = Math.PI / 6;
 const W_FIELD = 5;
+const W_FIELD_TIE = 0.1;
 // A 1 m bank blocks a 0.4 m prone eye outright (the relief rule, sim.ts
 // stance heights), so at prone it scores like a hedge lip; a crouching or
 // standing man sees straight over it and gets no directional credit.
@@ -251,18 +261,24 @@ function nook(sim: Sim, x: number, y: number): number {
   return isNook(m.hEdge(x, y)) || isNook(m.hEdge(x, y + 1)) || isNook(m.vEdge(x, y)) || isNook(m.vEdge(x + 1, y)) ? 2 : 0;
 }
 
-// Share of the three field-of-fire rays that are clear from this tile: 0, 1/3,
-// 2/3 or 1. Map only (no smoke, no men), so it draws nothing and a placement
-// does not change with who happens to be standing where.
+// Share of the six field-of-fire readings that are clear from this tile
+// (three rays, each at FIELD_NEAR and at FIELD_REACH; the far one is read
+// only when the near one is clear). Map only (no smoke, no men), so it draws
+// nothing and a placement does not change with who happens to be standing
+// where.
 function fieldOfFire(sim: Sim, x: number, y: number, level: number, bearing: number): number {
   const m = sim.map;
+  const sees = (a: number, d: number): boolean => {
+    const tx = Math.max(0.5, Math.min(m.w - 0.5, x + 0.5 + Math.cos(a) * d));
+    const ty = Math.max(0.5, Math.min(m.h - 0.5, y + 0.5 + Math.sin(a) * d));
+    return los(m, x + 0.5, y + 0.5, tx, ty, level, 0, EYE_CROUCH, EYE_STAND).visible;
+  };
   let clear = 0;
   for (const off of [0, FIELD_SPREAD, -FIELD_SPREAD]) {
-    const tx = Math.max(0.5, Math.min(m.w - 0.5, x + 0.5 + Math.cos(bearing + off) * FIELD_REACH));
-    const ty = Math.max(0.5, Math.min(m.h - 0.5, y + 0.5 + Math.sin(bearing + off) * FIELD_REACH));
-    if (los(m, x + 0.5, y + 0.5, tx, ty, level, 0, EYE_CROUCH, EYE_STAND).visible) clear++;
+    if (!sees(bearing + off, FIELD_NEAR)) continue;
+    clear += sees(bearing + off, FIELD_REACH) ? 2 : 1;
   }
-  return clear / 3;
+  return clear / 6;
 }
 
 // What a tile is WORTH as a firing position, threat bearing included. Shared
@@ -498,7 +514,7 @@ export function resolveMoveSpots(sim: Sim, q: SpotQuery, used: Set<number>): Res
       f = fieldOfFire(sim, x, y, level, bearing);
       fields.set(k, f);
     }
-    return f > 0 ? W_FIELD + f : 0;
+    return f > 0 ? W_FIELD + W_FIELD_TIE * f : 0;
   };
   for (let i = 0; i < n; i++) {
     const [ox, oy] = slots[i];
