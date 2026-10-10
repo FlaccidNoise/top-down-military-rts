@@ -129,7 +129,7 @@ function stockpileAmmo(sim: Sim, e: { kind: EmplacementKey; crewTeamId: number }
 // nothing to acquire, and the towed AT guns were data nothing fielded at all.
 // Fields on ground a hull can fight over — woods and river cells stay
 // infantry fights.
-const ARMOR_KINDS = new Set<MapKind>(['road', 'open', 'bridge', 'bourg']);
+export const ARMOR_KINDS = new Set<MapKind>(['road', 'open', 'bridge', 'bourg']);
 const ATTACKER_ARMOR: Record<Side, VehicleKey[]> = {
   blue: ['sherman', 'm3_halftrack'],
   red: ['stug3', 'sdkfz251'],
@@ -235,7 +235,10 @@ export function makeStrategicBattle(
   seed: number,
   // startLineClear: 0 sites the garrison as it was before #789. The staging
   // test stages both ways to prove the rule moves men and draws nothing.
-  opts: { startLineClear?: number } = {},
+  // extraArmor: hulls attached to the ATTACKER on top of its own (a
+  // requisition card). They join the same column, after it, inside the same
+  // private stream, so a battle with none stages byte for byte as before.
+  opts: { startLineClear?: number; extraArmor?: readonly VehicleKey[] } = {},
 ): { sim: Sim; commander: RedCommander; blueCommander: RedCommander; name: string; companyIndex: number } {
   const attacker = front.chits.find((ch) => ch.id === e.attackerId)!;
   const defender = front.chits.find((ch) => ch.id === e.defenderId)!;
@@ -569,7 +572,7 @@ export function makeStrategicBattle(
         }
       }
     }
-    ATTACKER_ARMOR[attackerSide].forEach((kind, i) => {
+    [...ATTACKER_ARMOR[attackerSide], ...(opts.extraArmor ?? [])].forEach((kind, i) => {
       const spot = roadSpot(sim, west.x + 2 + i * 6, west.y, taken);
       taken.add(Math.floor(spot.y) * plan.map.w + Math.floor(spot.x));
       sim.addVehicle(attackerSide, kind, spot.x, spot.y, 0);

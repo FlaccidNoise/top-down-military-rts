@@ -412,6 +412,10 @@ button.hbtn.active { background: var(--chip-active-bg); border-color: var(--ambe
 #debrief h1.win { color: var(--state-steady); }
 #debrief h1.loss { color: var(--red); }
 #debrief .sub { color: var(--muted); margin: 0 0 6px; }
+#debrief .db-tier { margin: 0 0 2px; font-size: var(--fs-lg); font-weight: var(--fw-head); letter-spacing: 2px; text-transform: uppercase; }
+#debrief .db-tier-decisive { color: var(--amber-bright); }
+#debrief .db-tier-marginal { color: var(--paper); }
+#debrief .db-tier-pyrrhic { color: var(--red); }
 #debrief .fallen { color: var(--red); margin: 0 0 6px; }
 #debrief .fallen.none { color: var(--muted); } /* nobody died: not a line to print in red */
 /* The result as a few large numbers: the first thing read, before any table. */
@@ -1653,6 +1657,17 @@ html.mobile #theater-hud .th-ev[data-ev] { padding: 6px 0; }
 #theater-hud .th-contact .fc-actions .hbtn { padding: 6px 16px; }
 #theater-hud .th-contact .hbtn.primary { background: var(--chip-active-bg); border-color: var(--amber); color: var(--amber-bright); font-weight: var(--fw-label); }
 #theater-hud.in-contact .th-force, #theater-hud.in-contact .th-log { display: none; }
+#theater-hud .th-target { color: var(--muted); white-space: nowrap; }
+#theater-hud .th-target-on { color: var(--amber-bright); }
+/* The requisition sheet, in the contact card's panel. */
+#theater-hud .rq-for { display: flex; gap: 4px; margin: 6px 0; }
+#theater-hud .rq-co { flex: 1 1 0; min-height: 32px; padding: 2px 4px; }
+#theater-hud .rq-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+#theater-hud .rq-card { display: grid; grid-template-columns: auto 1fr; gap: 0 6px; align-items: center; min-height: 52px; padding: 6px 8px; text-align: left; }
+#theater-hud .rq-card i { grid-row: 1 / 3; font-style: normal; font-size: 18px; color: var(--amber-bright); }
+#theater-hud .rq-card b { font-weight: var(--fw-label); }
+#theater-hud .rq-card span { font-size: 11px; color: var(--muted); }
+#theater-hud .rq-card[disabled] { opacity: 0.5; }
 /* Parts the HUD shows and hides in place. Keep this after the rules above:
    several of them set display, and at equal specificity the later one wins. */
 #theater-hud [hidden] { display: none; }
