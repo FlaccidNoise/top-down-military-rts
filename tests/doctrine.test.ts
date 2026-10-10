@@ -1150,6 +1150,171 @@ describe('the commander spends the barrages it holds (#790)', () => {
   });
 });
 
+// #794. Probed before it: no defending squad left its post in a battle
+// (median drift 3 m), no reserve existed, and a gun laid on the approach
+// watched the enemy walk round it. Nobody on these fields has a round, so the
+// men stay where the cases put them and only the commander's orders move.
+// The squads are led veterans unless a case says otherwise: the ground is
+// flat and seen, and a green squad's refusal to cross it is its own case.
+describe('a defence that moves (#794)', () => {
+  const A = { x: 100, y: 30 }; // the forward post
+  const B = { x: 130, y: 30 }; // one bound back: the approach is from the west
+  const stage = (cfg: { fallback?: boolean; reserve?: boolean; green?: boolean } = {}) => {
+    const sim = new Sim(new GameMap(200, 60), 5);
+    const xp = cfg.green ? 0 : 40;
+    const line = sim.addSquad('red', 'Line', Array.from({ length: 6 }, (_, i) => ({ name: `L${i}`, weapon: 'kar98k' as const, x: 100.5, y: 27.5 + i, xp })));
+    const res = sim.addSquad('red', 'Reserve', Array.from({ length: 6 }, (_, i) => ({ name: `R${i}`, weapon: 'kar98k' as const, x: 150.5, y: 27.5 + i, xp })));
+    if (!cfg.green) for (const sq of [line, res]) sim.soldiers[sq.soldierIds[5]].role = 'leader';
+    const enemy = (x: number, y: number) => sim.soldiers[sim.addSquad('blue', 'E', [{ name: 'E', weapon: 'garand', x, y }]).soldierIds[0]];
+    const said: string[] = [];
+    const commander = new RedCommander({
+      side: 'red',
+      stance: 'defend',
+      approach: { x: 5, y: 30 },
+      posts: { [line.id]: A, [res.id]: { x: 150, y: 30 } },
+      sectorOf: { [line.id]: 0, [res.id]: 0 },
+      ...(cfg.fallback === false ? {} : { fallback: { [line.id]: [B] } }),
+      ...(cfg.reserve ? { reserve: [res.id] } : {}),
+    });
+    const run = (ticks: number): void => {
+      for (let i = 0; i < ticks; i++) {
+        for (const m of sim.soldiers) {
+          m.ammo = {};
+          m.magLeft = 0;
+          m.morale = 1;
+        }
+        commander.update(sim);
+        sim.step();
+        said.push(...sim.takeUnitEvents().filter((e) => e.kind === 'fell-back' || e.kind === 'counterattack').map((e) => `${e.kind}@${Math.round(e.x)}`));
+      }
+    };
+    const at = (sq: { soldierIds: number[] }): number => mean(sq.soldierIds.map((id) => sim.soldiers[id]).filter((m) => m.alive).map((m) => m.x));
+    return { sim, line, res, enemy, commander, run, said, at };
+  };
+
+  it('a flanked squad goes back one bound to the post it was briefed, and holds there', () => {
+    const { enemy, run, said, at, line } = stage();
+    run(200);
+    expect(at(line)).toBeLessThan(105); // nothing behind it: it holds
+    expect(said).toEqual([]);
+    enemy(115.5, 10.5); // two of them BEHIND the post, off to one side of the way back
+    enemy(118.5, 10.5);
+    run(900);
+    expect(said).toEqual(['fell-back@100']);
+    expect(Math.abs(at(line) - B.x)).toBeLessThan(8);
+  });
+
+  it('a squad that will not cross seen ground goes back under its own smoke', () => {
+    const { sim, enemy, run, said, at, line } = stage({ green: true });
+    enemy(75.5, 30.5);
+    line.soldierIds.slice(0, 3).forEach((id) => (sim.soldiers[id].alive = false));
+    run(40);
+    expect(said).toEqual([]); // not ordered back yet: the smoke goes first
+    expect(sim.smoke.length).toBeGreaterThan(0);
+    expect(sim.teams[line.teamIds[0]].smokeLeft).toBe(1);
+    expect(sim.smoke.every((p) => p.x < 100.5 && p.x > 85)).toBe(true); // between the squad and the enemy
+    run(900);
+    expect(said).toEqual(['fell-back@100']);
+    expect(Math.abs(at(line) - B.x)).toBeLessThan(8);
+  });
+
+  it('a squad at half strength with the enemy on its post gives the post up; at full strength it stands', () => {
+    const full = stage();
+    full.enemy(75.5, 30.5); // 25 m in FRONT of the post
+    full.run(600);
+    expect(full.said).toEqual([]);
+
+    const half = stage();
+    half.enemy(75.5, 30.5);
+    half.line.soldierIds.slice(0, 3).forEach((id) => (half.sim.soldiers[id].alive = false));
+    half.run(900);
+    expect(half.said).toEqual(['fell-back@100']);
+    expect(Math.abs(half.at(half.line) - B.x)).toBeLessThan(8);
+  });
+
+  it('a squad briefed nowhere to go stands, and no squad falls back twice inside a minute', () => {
+    const none = stage({ fallback: false });
+    none.enemy(115.5, 10.5);
+    none.enemy(118.5, 10.5);
+    none.run(600);
+    expect(none.said).toEqual([]);
+    expect(none.at(none.line)).toBeLessThan(105);
+  });
+
+  it('the sector reserve goes for a post the attacker has just taken, once, and not for an old loss', () => {
+    const { sim, enemy, run, said, at, line, res } = stage({ reserve: true });
+    run(100);
+    line.soldierIds.forEach((id) => (sim.soldiers[id].alive = false)); // the line squad is gone
+    const e = enemy(101.5, 30.5); // and the enemy stands on its post
+    run(1500);
+    expect(said).toEqual(['counterattack@100']);
+    expect(at(res)).toBeLessThan(125); // it came forward from 150
+    e.x = 60.5;
+    run(600);
+    expect(said).toHaveLength(1);
+
+    // A reserve in no state to go when the post fell does not go for it two minutes on.
+    const late = stage({ reserve: true });
+    late.run(100);
+    late.line.soldierIds.forEach((id) => (late.sim.soldiers[id].alive = false));
+    late.enemy(101.5, 30.5);
+    const unfit = late.res.soldierIds.slice(0, 4).map((id) => late.sim.soldiers[id]);
+    for (const m of unfit) m.captured = true;
+    late.run(125 * 30);
+    for (const m of unfit) m.captured = false;
+    late.run(600);
+    expect(late.said).toEqual([]);
+    expect(late.at(late.res)).toBeGreaterThan(145);
+  });
+
+  it('a squad on an arc with the enemy in range outside it turns the arc onto him, and leaves it alone while it has work', () => {
+    const { sim, enemy, run, line, commander } = stage({ fallback: false });
+    sim.soldiers[line.soldierIds[0]].weapon = 'mg42'; // a long-range squad: it fights from an arc on the approach
+    run(200);
+    const arcOf = (): [number, number] | undefined => sim.teams[line.teamIds[0]].orderState.order?.arc;
+    const west = arcOf()!;
+    expect(sim.teams[line.teamIds[0]].orderState.order?.kind).toBe('defend');
+    expect((west[0] + west[1]) / 2).toBeCloseTo(Math.PI, 1);
+    const north = enemy(100.5, 5.5); // 25 m due north: in range, 90 degrees off the arc
+    run(200);
+    const turned = arcOf()!;
+    expect((turned[0] + turned[1]) / 2).toBeCloseTo(-Math.PI / 2, 1);
+    // one appears in the old arc as well: the gun has work where it is laid, so nothing changes
+    enemy(60.5, 30.5);
+    north.x = 99.5;
+    run(900);
+    expect(arcOf()).toEqual(turned);
+    expect(commander['relaidTick'].size).toBe(1);
+  });
+
+  it('the briefing: fallbacks lie a bound or more behind the post, a dug-in gun has none, one reserve to a sector at most', () => {
+    for (const [atk, def] of [['blue', 'red'], ['red', 'blue']] as const) {
+      const c = newCampaign(3);
+      const front = newFront(c, makeDefaultSector());
+      const able = front.chits.find((ch) => ch.side === 'blue')!;
+      const garrison = front.chits.find((ch) => ch.name === 'Garnison St-Aubin')!;
+      const e = atk === 'blue' ? { attackerId: able.id, defenderId: garrison.id, cell: garrison.cell } : { attackerId: garrison.id, defenderId: able.id, cell: able.cell };
+      const staged = makeStrategicBattle(c, front, e, 3);
+      const cfg = (def === 'red' ? staged.commander : staged.blueCommander)['cfg'];
+      expect(cfg.stance).toBe('defend');
+      const posts = cfg.posts;
+      const fb = cfg.fallback!;
+      expect(Object.keys(fb).length).toBeGreaterThan(3);
+      const west = cfg.approach!;
+      const back = (p: { x: number; y: number }): number => Math.hypot(p.x - west.x, p.y - west.y);
+      for (const [id, list] of Object.entries(fb)) {
+        expect(list.length).toBeLessThanOrEqual(2);
+        for (const p of list) expect(back(p)).toBeGreaterThanOrEqual(back(posts[Number(id)]) + 15);
+      }
+      for (const emp of staged.sim.emplacements) expect(fb[staged.sim.teams[emp.crewTeamId].squadId]).toBeUndefined();
+      const reserve = cfg.reserve!;
+      const sectors = reserve.map((id) => cfg.sectorOf![id]);
+      expect(new Set(sectors).size).toBe(sectors.length);
+      for (const id of reserve) expect(fb[id]).toBeUndefined();
+    }
+  });
+});
+
 // Night A/B (day/night design §7.4): same seed, same AI-driven strategic
 // battle, startMin 14:00 vs 02:00. Direction-only assertions, and the
 // direction asserted is the one the mechanics actually own: night caps the

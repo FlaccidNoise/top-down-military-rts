@@ -763,6 +763,8 @@ const COMMAND: Partial<Record<UnitEvent['kind'], [string, string]>> = {
   'reserve-committed': ['RESERVE COMMITTED', C_STEADY],
   culminated: ['ATTACK CALLED OFF', C_WARN],
   'smoke-objective': ['SMOKE ON OBJECTIVE', C_STEADY],
+  'fell-back': ['FALLING BACK', C_WARN],
+  counterattack: ['COUNTERATTACK', C_STEADY],
 };
 const MAX_KIAS = 12;
 const KIA_CELL = 8; // world meters — casualties inside a cell share one stack

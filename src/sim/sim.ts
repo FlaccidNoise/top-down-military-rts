@@ -491,6 +491,8 @@ export interface UnitEvent {
     | 'reserve-committed'
     | 'culminated'
     | 'smoke-objective'
+    | 'fell-back' // a defending squad gave up its post for the next one back
+    | 'counterattack' // a local reserve went in to retake a lost post
     | 'grenade' // a man threw one: `id` is the thrower
     // A team seen moving onto ground the other side holds. Raised by the sim
     // off what that other side can see, never by a commander: `id` is a man
@@ -790,6 +792,17 @@ export function eyeOf(sim: Sim, s: Soldier): number {
 // terrain.
 // e0/e1 are the observer's and target's heights above their feet; they feed
 // both los()'s profile check and the smoke z-line below, so the two agree.
+// Is (tx, ty) inside the facing arc of a man at (fx, fy)? The span runs
+// arc[0] -> arc[1] in increasing angle, wrapping.
+export function inArc(fx: number, fy: number, tx: number, ty: number, arc: [number, number]): boolean {
+  const twoPi = 2 * Math.PI;
+  const norm = (a: number) => ((a % twoPi) + twoPi) % twoPi;
+  const angle = norm(Math.atan2(ty - fy, tx - fx));
+  const a0 = norm(arc[0]);
+  const a1 = norm(arc[1]);
+  return a0 <= a1 ? angle >= a0 && angle <= a1 : angle >= a0 || angle <= a1;
+}
+
 export function sightBetween(sim: Sim, x0: number, y0: number, x1: number, y1: number, l0 = 0, l1 = 0, e0 = EYE_H, e1 = EYE_H): LosResult {
   const base = los(sim.map, x0, y0, x1, y1, l0, l1, e0, e1);
   if (!base.visible || sim.smoke.length === 0) return base;
@@ -2217,12 +2230,7 @@ export class Sim {
   }
 
   private inArc(fx: number, fy: number, tx: number, ty: number, arc: [number, number]): boolean {
-    const twoPi = 2 * Math.PI;
-    const norm = (a: number) => ((a % twoPi) + twoPi) % twoPi;
-    const angle = norm(Math.atan2(ty - fy, tx - fx));
-    const a0 = norm(arc[0]);
-    const a1 = norm(arc[1]);
-    return a0 <= a1 ? angle >= a0 && angle <= a1 : angle >= a0 || angle <= a1;
+    return inArc(fx, fy, tx, ty, arc);
   }
 
   // Enemy within per-weapon-class range (or a team casualty) converts an

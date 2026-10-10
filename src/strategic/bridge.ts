@@ -141,6 +141,47 @@ const ARMOR_SALT = 0x41726d72; // 'Armr': salts the private staging stream (see 
 // 3.5 m before it looks at emplacement glyphs).
 const ARMOR_CLEAR = 3;
 
+// The defence's depth, briefed at staging (#794). A squad's fallback positions
+// are the anchors of its own sector at least one bound (FALLBACK_BOUND, a
+// bounding leg) farther from the approach than its own, then the objectives
+// of the sectors behind it, nearest first, FALLBACK_DEPTH of them. A dug-in
+// gun has none: it stays. A sector with two or more rifle squads holds the
+// one sited deepest as its local reserve. All of it is a choice among points
+// already computed: it draws nothing and moves nobody at T+0.
+const FALLBACK_BOUND = 15;
+const FALLBACK_DEPTH = 2;
+const RIFLE_SQUADS = new Set<SquadKey>(['de_gruppe', 'us_rifle']);
+interface Sited {
+  id: number;
+  key: SquadKey;
+  sector: number;
+  anchor: Vec;
+  emplaced: boolean;
+}
+function defenceBrief(sited: Sited[], sectorAnchors: Vec[][], sectorObjectives: Vec[], west: Vec): { fallback: Record<number, Vec[]>; reserve: number[]; sectorOf: Record<number, number> } {
+  const fallback: Record<number, Vec[]> = {};
+  const reserve: number[] = [];
+  const sectorOf: Record<number, number> = {};
+  const back = (a: Vec): number => Math.sqrt(distSq(a, west));
+  for (const s of sited) {
+    sectorOf[s.id] = s.sector;
+    if (s.emplaced) continue;
+    const nearestFirst = (list: Vec[]): Vec[] => list.filter((a) => back(a) >= back(s.anchor) + FALLBACK_BOUND).sort((p, q) => distSq(p, s.anchor) - distSq(q, s.anchor));
+    const own = nearestFirst(sectorAnchors[s.sector] ?? []);
+    const behind = nearestFirst(sectorObjectives.filter((_, i) => i !== s.sector));
+    const list = [...own, ...behind].slice(0, FALLBACK_DEPTH);
+    if (list.length > 0) fallback[s.id] = list;
+  }
+  sectorAnchors.forEach((_, sector) => {
+    const rifles = sited.filter((s) => s.sector === sector && !s.emplaced && RIFLE_SQUADS.has(s.key));
+    if (rifles.length < 2) return;
+    const deepest = rifles.reduce((best, s) => (back(s.anchor) >= back(best.anchor) ? s : best));
+    reserve.push(deepest.id);
+    delete fallback[deepest.id]; // it is what is behind the others
+  });
+  return { fallback, reserve, sectorOf };
+}
+
 export const GARRISON_RADIUS = 45; // meters from an objective a garrison post may sit
 export const ATTACK_POST_MARGIN = 32; // attack posts start this far east of the west spawn (see attackObjectives)
 // No defender stages inside the attacker's deployment strip. ATTACK_POST_MARGIN
@@ -411,6 +452,7 @@ export function makeStrategicBattle(
   const weight = sortedSectorAnchors.map((s) => s.length / totalAnchors);
 
   // --- Field defender ---
+  const sited: Sited[] = [];
   if (attackerSide === 'blue') {
     // Field exactly defender.strength men: TO&E squads in order, the last one
     // partial if the strength doesn't land on a squad boundary.
@@ -465,6 +507,7 @@ export function makeStrategicBattle(
         squad = sim.addSquadFromDef('red', key, anchor.x, anchor.y, roster);
       }
       commanderPosts[squad.id] = anchor;
+      sited.push({ id: squad.id, key, sector: sectorOfSquad[i], anchor, emplaced: !!empKind });
       squad.name = `${i + 1}. ${SQUADS[key].name}`;
     });
   } else {
@@ -536,10 +579,12 @@ export function makeStrategicBattle(
       }
       squad.name = c.squads[si].name;
       bluePosts[squad.id] = anchor;
+      sited.push({ id: squad.id, key, sector: sectorOfSquad[i], anchor, emplaced: !!empKind });
       defRosters.push(teamRosters.flat());
     });
     wireBonds(sim, defRosters);
   }
+  const brief = defenceBrief(sited, sortedSectorAnchors, sectorObjectives, west);
 
   // --- Field armour and the anti-tank gun ---
   // RNG DISCIPLINE: this block is the LAST staging step and it draws nothing
@@ -612,7 +657,7 @@ export function makeStrategicBattle(
     side: 'blue',
     stance: attackerSide === 'blue' ? 'attack' : 'defend',
     posts: bluePosts,
-    ...(attackerSide === 'blue' ? { objectives: attackObjectives } : { approach: { x: west.x, y: west.y } }),
+    ...(attackerSide === 'blue' ? { objectives: attackObjectives } : { approach: { x: west.x, y: west.y }, ...brief }),
   });
   return {
     sim,
@@ -620,7 +665,7 @@ export function makeStrategicBattle(
       side: 'red',
       stance,
       posts: commanderPosts,
-      ...(stance === 'attack' ? { objectives: attackObjectives } : { approach: { x: west.x, y: west.y } }),
+      ...(stance === 'attack' ? { objectives: attackObjectives } : { approach: { x: west.x, y: west.y }, ...brief }),
     }),
     blueCommander,
     name: `${defender.name} at (${x}, ${y})`,
