@@ -10,7 +10,7 @@
 //   Dev server must already be running: npm run dev -- --port 5198 --strictPort
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { arg, launch, gotoStaged, deriveTargets, deriveBuilding, wallStage, burst, ageFx, stageSmoke } from './lib/stage.mjs';
+import { arg, launch, gotoStaged, deriveTargets, deriveBuilding, wallStage, burst, ageFx, FX_FLUSH_MS, stageSmoke } from './lib/stage.mjs';
 
 const PORT = Number(arg('port', '5198'));
 const SEED = Number(arg('seed', '7'));
@@ -22,7 +22,7 @@ const slug = (s) => s.replace(/[^a-z0-9]+/gi, '-').replace(/^-|-$/g, '').toLower
 
 // Fx-clock transient effects — must be caught in-page (burst).
 // Buckets chosen from renderer timing: shots span muzzle(0-60ms)→travel(0-90)→
-// impact(90-340); booms span flash(0-45)→fireball(30-260)→debris→column(→2600).
+// impact(90-340); booms span flash(0-70)→fireball(→burn)→debris→smoke(→hang).
 // A flash is over in 110 ms, so short effects get 4 buckets over 140 ms rather
 // than spending half their columns on an empty tail.
 //
@@ -39,9 +39,16 @@ const DYN = [
   { name: 'muzzle bazooka', trigger: { type: 'shot', hit: true, kill: false, weapon: 'bazooka' }, dur: 420, buckets: 4 },
   { name: 'cannon blast', trigger: { type: 'shot', hit: true, kill: false, weapon: 'pak40_gun' }, dur: 720, buckets: 4 },
   { name: 'wall strike', anchor: 'wall', trigger: { type: 'shot', hit: false, kill: false }, dur: 400, buckets: 4, roiFrac: 0.3, minPeak: 15 },
-  { name: 'explosion smoke', trigger: { type: 'boom' }, dur: 2600, buckets: 8 },
-  { name: 'grenade boom', trigger: { type: 'boom', r: 3 }, dur: 2600, buckets: 8 },
-  { name: 'barrage boom', trigger: { type: 'boom', r: 9 }, dur: 2600, buckets: 8 },
+  // One row per blast recipe (src/render/fx.ts BLAST), plus the boom with no
+  // kind and no radius, which is what a sim that sends neither still gets.
+  // Each runs for its own hang time, so the last bucket is the smoke it leaves.
+  { name: 'boom unnamed', trigger: { type: 'boom' }, dur: 5500, buckets: 8 },
+  { name: 'boom grenade', trigger: { type: 'boom', r: 3, kind: 'grenade' }, dur: 2600, buckets: 8 },
+  { name: 'boom mortar', trigger: { type: 'boom', r: 9, kind: 'mortar' }, dur: 5500, buckets: 8 },
+  { name: 'boom shell', trigger: { type: 'boom', r: 12, kind: 'shell' }, dur: 6000, buckets: 8 },
+  { name: 'boom at', trigger: { type: 'boom', r: 4, kind: 'at' }, dur: 3000, buckets: 8 },
+  { name: 'boom bomb', trigger: { type: 'boom', r: 14, kind: 'bomb' }, dur: 8000, buckets: 8 },
+  { name: 'boom brewup', trigger: { type: 'boom', r: 6, kind: 'brewup' }, dur: 9000, buckets: 8 },
 ];
 
 const { browser, page } = await launch();
@@ -169,7 +176,7 @@ await page.evaluate(
   },
   house
 );
-await ageFx(page, 2900);
+await ageFx(page, FX_FLUSH_MS);
 await page.screenshot({ path: join(OUT, 'building-fire.png') });
 rows.push({ name: 'building fire', cells: [{ file: 'building-fire.png', bucket: 0, age: 0, score: 0 }] });
 

@@ -1,6 +1,7 @@
 import type { WeaponKey } from '../sim/data';
 import type { Camera } from './camera';
 import type { MeleeEvent, ShotEvent, UnitEvent } from '../sim/sim';
+import { blastOf, type BlastKind, type BoomEvent } from './fx';
 import { MOBILE } from './view';
 
 // Procedural WebAudio combat layer. No assets: every sound is synthesized from
@@ -46,6 +47,33 @@ export const GUN: Record<WeaponKey, Gun> = {
   mg42: { freq: 1900, q: 1.3, decay: 0.05, gain: 0.62, body: 70, taps: 5, spacing: 0.050 },
   bazooka: ROCKET, schreck: ROCKET, panzerfaust: ROCKET,
   mortar60: CANNON, mortar81: CANNON, at57_gun: CANNON, pak40_gun: CANNON,
+};
+
+// One blast's voice: a low-passed body, a sub thump whose pitch drops, and a
+// crack front. The kinds differ in which of the three leads. A grenade is
+// mostly crack; a bomb is mostly sub and keeps rolling; an AT round rings on
+// the plate it hit. `mortar` is the voice every blast had before the sim named
+// them, and is what a boom with no kind still gets.
+interface BoomVoice {
+  body: number; // low-pass corner of the blast body, Hz
+  bodyDecay: number; // seconds
+  bodyGain: number;
+  sub: number; // thump start pitch, Hz — it falls to about half
+  subDecay: number;
+  subGain: number;
+  crack: number; // band-pass centre of the crack front, Hz
+  crackGain: number;
+  ring?: number; // struck-steel tone, Hz
+  roll?: boolean; // a long low tail after the body
+}
+
+export const BOOM: Record<BlastKind, BoomVoice> = {
+  grenade: { body: 320, bodyDecay: 0.28, bodyGain: 0.8, sub: 80, subDecay: 0.3, subGain: 0.5, crack: 1800, crackGain: 0.5 },
+  mortar: { body: 200, bodyDecay: 0.55, bodyGain: 1.1, sub: 64, subDecay: 0.6, subGain: 0.9, crack: 1400, crackGain: 0.35 },
+  shell: { body: 170, bodyDecay: 0.7, bodyGain: 1.2, sub: 55, subDecay: 0.75, subGain: 1, crack: 1200, crackGain: 0.4 },
+  at: { body: 260, bodyDecay: 0.3, bodyGain: 0.7, sub: 70, subDecay: 0.35, subGain: 0.6, crack: 2200, crackGain: 0.7, ring: 900 },
+  bomb: { body: 130, bodyDecay: 1.1, bodyGain: 1.3, sub: 48, subDecay: 1.2, subGain: 1.1, crack: 1000, crackGain: 0.4, roll: true },
+  brewup: { body: 150, bodyDecay: 0.9, bodyGain: 1.2, sub: 50, subDecay: 1, subGain: 1, crack: 1300, crackGain: 0.4, roll: true },
 };
 
 const MAX_TAPS = MOBILE ? 3 : 6;
@@ -294,15 +322,25 @@ export class AudioEngine {
     }
   }
 
-  addBooms(booms: { x: number; y: number }[], cam: Camera, cw: number, ch: number): void {
+  addBooms(booms: BoomEvent[], cam: Camera, cw: number, ch: number): void {
     if (!this.live()) return;
     for (const b of booms) {
       const placed = this.place(b.x, b.y, cam, cw, ch);
       if (!placed) continue;
       const [g, pan] = placed;
-      this.burst(200, 0.5, 0.55, 1.1 * g, pan, 'lowpass'); // debris/blast body
-      this.tone(64, 0.6, 0.9 * g, pan, 34, 'sine'); // sub thump, pitch drops
-      this.burst(1400, 1, 0.08, 0.35 * g, pan, 'bandpass'); // sharp crack front
+      // The same size the renderer draws the blast at: a round bigger than
+      // its kind's reference is louder and rings longer, never a new sound.
+      const { kind, k } = blastOf(b);
+      const v = BOOM[kind];
+      const long = Math.sqrt(k);
+      const loud = g * (0.7 + 0.3 * k);
+      this.burst(v.body, 0.5, v.bodyDecay * long, v.bodyGain * loud, pan, 'lowpass'); // debris/blast body
+      this.tone(v.sub, v.subDecay * long, v.subGain * loud, pan, v.sub * 0.53, 'sine'); // sub thump, pitch drops
+      this.burst(v.crack, 1, 0.08, v.crackGain * loud, pan, 'bandpass'); // sharp crack front
+      if (v.ring) this.tone(v.ring, 0.18, 0.22 * loud, pan, v.ring * 0.66, 'triangle'); // the plate it hit
+      // A fourth long voice per blast is what a phone's 12-voice cap cannot
+      // spare in a barrage.
+      if (v.roll && !MOBILE) this.burst(90, 0.5, 1.2 * long, 0.55 * loud, pan, 'lowpass');
     }
   }
 

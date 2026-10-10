@@ -3,7 +3,9 @@ import { hash } from './noise';
 
 // Persistent battle scarring — mortar scorches, blood smears from dragged
 // casualties. Drawn once into a world-aligned offscreen canvas and blitted
-// each frame between terrain and soldiers. Render-only; Math.random is fine.
+// each frame between terrain and soldiers. Render-only. Blast scars (scorch,
+// grit) take their variety from `hash` of the position, so the VFX gate
+// reshoots the same crater; the smears still use Math.random.
 
 const PPM = 8; // px per meter; soft marks don't need more
 
@@ -24,7 +26,9 @@ export class DecalLayer {
   // short ejecta streaks, tight gradient falloff (no huge blurred starburst).
   scorch(x: number, y: number, mult = 1): void {
     const g = this.g;
-    const r = (0.8 + Math.random() * 0.4) * mult; // outer radius incl. rim — smaller than the old 1.2-1.8 blob
+    const hx = Math.round(x * 100);
+    const hy = Math.round(y * 100);
+    const r = (0.8 + hash(hx, hy, 290) * 0.4) * mult; // outer radius incl. rim — smaller than the old 1.2-1.8 blob
 
     // raised-earth rim: lighter earth tone ring just outside the core
     const rimR = r * 0.95;
@@ -52,10 +56,10 @@ export class DecalLayer {
     // short ejecta streaks
     g.strokeStyle = 'rgba(90,72,48,0.4)';
     g.lineWidth = 0.1;
-    const n = 4 + Math.floor(Math.random() * 3); // 4-6
+    const n = 4 + Math.floor(hash(hx, hy, 291) * 3); // 4-6
     for (let i = 0; i < n; i++) {
-      const a = Math.random() * Math.PI * 2;
-      const l = r * (0.9 + Math.random() * 0.5);
+      const a = hash(hx, hy, 292 + i) * Math.PI * 2;
+      const l = r * (0.9 + hash(hx, hy, 299 + i) * 0.5);
       g.beginPath();
       g.moveTo(x + Math.cos(a) * coreR, y + Math.sin(a) * coreR);
       g.lineTo(x + Math.cos(a) * l, y + Math.sin(a) * l);
@@ -65,7 +69,7 @@ export class DecalLayer {
     // ash center
     g.fillStyle = 'rgba(60,52,42,0.45)';
     g.beginPath();
-    g.arc(x, y, 0.22, 0, Math.PI * 2);
+    g.arc(x, y, 0.22 * Math.min(1.6, Math.max(0.6, mult)), 0, Math.PI * 2);
     g.fill();
   }
 
@@ -102,14 +106,16 @@ export class DecalLayer {
   // Where a thrown debris chunk came down: one dark speck plus two flecks.
   grit(x: number, y: number): void {
     const g = this.g;
+    const hx = Math.round(x * 100);
+    const hy = Math.round(y * 100);
     g.fillStyle = 'rgba(38,32,24,0.5)';
     g.beginPath();
-    g.arc(x, y, 0.12 + Math.random() * 0.18, 0, Math.PI * 2);
+    g.arc(x, y, 0.12 + hash(hx, hy, 285) * 0.18, 0, Math.PI * 2);
     g.fill();
     g.fillStyle = 'rgba(52,44,33,0.35)';
     for (let i = 0; i < 2; i++) {
-      const a = Math.random() * Math.PI * 2;
-      const d = 0.2 + Math.random() * 0.3;
+      const a = hash(hx, hy, 286 + i) * Math.PI * 2;
+      const d = 0.2 + hash(hx, hy, 288 + i) * 0.3;
       g.beginPath();
       g.arc(x + Math.cos(a) * d, y + Math.sin(a) * d, 0.07, 0, Math.PI * 2);
       g.fill();

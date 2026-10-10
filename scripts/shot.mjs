@@ -16,7 +16,7 @@
 //   node scripts/shot.mjs --list                             # presets + effects
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { arg, launch, gotoStaged, deriveTargets, deriveBuilding, wallStage, place, burst, ageFx, stageEmplacements, stageMorale, stageMoraleFx, stageSmoke, stageVehicles, hourMin, fmtHour, HOUR_PRESETS, stagedHour } from './lib/stage.mjs';
+import { arg, launch, gotoStaged, deriveTargets, deriveBuilding, wallStage, place, burst, ageFx, FX_FLUSH_MS, stageEmplacements, stageMorale, stageMoraleFx, stageSmoke, stageVehicles, hourMin, fmtHour, HOUR_PRESETS, stagedHour } from './lib/stage.mjs';
 
 const has = (name) => process.argv.includes(`--${name}`);
 const PORT = Number(arg('port', '5198'));
@@ -48,10 +48,16 @@ const EFFECTS = {
   kill: { trigger: { type: 'shot', hit: true, kill: true }, dur: 340, buckets: 6 },
   miss: { trigger: { type: 'shot', hit: false, kill: false }, dur: 120, buckets: 3 },
   wall: { anchor: 'wall', trigger: { type: 'shot', hit: false, kill: false }, dur: 400, buckets: 4, roiFrac: 0.3 },
+  // `boom` is the blast with no kind and no radius; the rest name a recipe
+  // (src/render/fx.ts BLAST) at its reference radius.
   boom: { trigger: { type: 'boom' }, dur: 2000, buckets: 8 },
-  grenade: { trigger: { type: 'boom', r: 3 }, dur: 2000, buckets: 8 },
-  barrage: { trigger: { type: 'boom', r: 9 }, dur: 2600, buckets: 8 },
-  fire: { anchor: 'building', trigger: { type: 'boom', r: 6 }, hold: 3000, scale: 30 },
+  grenade: { trigger: { type: 'boom', r: 3, kind: 'grenade' }, dur: 2000, buckets: 8 },
+  mortar: { trigger: { type: 'boom', r: 9, kind: 'mortar' }, dur: 2600, buckets: 8 },
+  barrage: { trigger: { type: 'boom', r: 12, kind: 'shell' }, dur: 2600, buckets: 8 },
+  at: { trigger: { type: 'boom', r: 4, kind: 'at' }, dur: 1200, buckets: 8 },
+  bomb: { trigger: { type: 'boom', r: 14, kind: 'bomb' }, dur: 3000, buckets: 8 },
+  brewup: { trigger: { type: 'boom', r: 6, kind: 'brewup' }, dur: 3000, buckets: 8 },
+  fire: { anchor: 'building', trigger: { type: 'boom', r: 6 }, hold: FX_FLUSH_MS, scale: 30 },
   // Sim-owned smoke, not a boom's column: staged at five ages so the plume
   // curve (V11) and the lean the renderer reads off it (V12) are both in one
   // frame. `hold` is short because nothing here animates on wall-clock.
@@ -107,7 +113,9 @@ if (has('effect')) {
   if (!anchor) throw new Error(`unknown preset "${arg('preset')}" — one of: ${PRESETS.join(', ')}`);
   let trigger = e.trigger;
   if (e.anchor) {
-    const b = await deriveBuilding(page, targets.village);
+    // `village` only exists in the legacy target set; a bourg map calls the
+    // same crop `place`, and the default seed carves a bourg.
+    const b = await deriveBuilding(page, targets.village ?? targets.place);
     if (e.anchor === 'wall') {
       const w = wallStage(b);
       anchor = w.anchor;
@@ -130,7 +138,7 @@ if (has('effect')) {
       },
       { x: view.x, y: view.y, scale: has('scale') ? scale : (view.scale ?? scale), trigger }
     );
-    await ageFx(page, e.hold); // age the blast transient out; what is left is the fire
+    await ageFx(page, e.hold); // age the blast and its smoke out; what is left is the fire
     await page.screenshot({ path: OUT });
     console.log(`${OUT}  (effect ${name}, ${e.hold}ms after the blast, ${at})`);
     await browser.close();

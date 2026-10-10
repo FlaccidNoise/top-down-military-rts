@@ -23,6 +23,8 @@ export type FxKind =
   | 'fire'
   | 'ringTan'
   | 'ringDark'
+  | 'shock'
+  | 'dirt'
   | 'spark'
   | 'leaf'
   | 'chunk0'
@@ -65,9 +67,72 @@ export function fxScale(scale: number): number {
 // The same idea for a blast, which is already metres across: it only needs
 // help when the whole map is on screen and a shell would otherwise be a 3 px
 // dot. Below this zoom a blast is drawn as if the camera stopped here.
-export const BLAST_FLOOR = 6;
+export const BLAST_FLOOR = 5;
 export function blastScale(scale: number): number {
   return Math.max(scale, BLAST_FLOOR);
+}
+
+// What went off. The sim names it on the boom (`kind`) and sizes it (`r`, the
+// frag radius in metres); the renderer and the audio layer both key on this.
+export type BlastKind = 'grenade' | 'shell' | 'mortar' | 'at' | 'brewup' | 'bomb';
+
+// A boom as the sim reports it. `r` and `kind` are output-only fields the sim
+// may not send; blastOf() covers both being absent.
+export interface BoomEvent {
+  x: number;
+  y: number;
+  r?: number; // frag radius, m
+  kind?: BlastKind;
+}
+
+// One row per kind: the same layers in the same order, in different
+// proportions, which is what makes a grenade and a mortar round two different
+// things instead of one disc at two sizes. Lengths are metres AT the kind's
+// reference radius; blastOf() scales them from there.
+//
+//   grenade  a sharp crack and a dirt puff. Almost no fire, gone in two seconds.
+//   mortar   the fountain: long spokes of thrown earth and dust that hangs.
+//   shell    more fire, a darker edge, more smoke than dust.
+//   at       a white-hot point and a shower of sparks. No earth: it hit steel.
+//   bomb     the largest of everything.
+//   brewup   fuel and ammunition: a long rolling fireball that goes black.
+export interface BlastSpec {
+  ref: number; // frag radius the row is tuned at, m
+  flash: number; // white flash, peak radius
+  fire: number; // fireball radius
+  burn: number; // ms the fireball lasts
+  rim: number; // 0..1, how dark the roiling soot edge is
+  ring: number; // shockwave reach
+  spokes: number; // streaks of thrown earth
+  throw: number; // how far they go
+  debris: number; // ballistic chunks
+  sparks: number; // hot ballistic sparks
+  dust: number; // 0..1, tan dust left hanging
+  smoke: number; // 0..1, dark smoke left hanging
+  hang: number; // ms the dust and smoke stay
+  shake: number; // camera trauma at the reference radius
+  crater: number; // scorch decal multiplier
+}
+
+export const BLAST: Record<BlastKind, BlastSpec> = {
+  grenade: { ref: 3, flash: 1.6, fire: 0.85, burn: 110, rim: 0.35, ring: 3.4, spokes: 8, throw: 2.4, debris: 4, sparks: 0, dust: 0.8, smoke: 0.3, hang: 2600, shake: 0.3, crater: 0.45 },
+  mortar: { ref: 9, flash: 3, fire: 1.7, burn: 200, rim: 0.55, ring: 8, spokes: 16, throw: 5, debris: 10, sparks: 0, dust: 0.8, smoke: 0.35, hang: 5500, shake: 0.62, crater: 1 },
+  shell: { ref: 12, flash: 3.8, fire: 2.4, burn: 280, rim: 0.75, ring: 10, spokes: 12, throw: 4.5, debris: 14, sparks: 5, dust: 0.55, smoke: 0.8, hang: 6000, shake: 0.78, crater: 1.25 },
+  at: { ref: 4, flash: 3.2, fire: 1.3, burn: 150, rim: 0.45, ring: 4, spokes: 0, throw: 0, debris: 4, sparks: 22, dust: 0.15, smoke: 0.6, hang: 3000, shake: 0.45, crater: 0.5 },
+  bomb: { ref: 14, flash: 5.5, fire: 3.4, burn: 360, rim: 0.8, ring: 14, spokes: 20, throw: 7.5, debris: 20, sparks: 8, dust: 0.75, smoke: 0.7, hang: 8000, shake: 1, crater: 1.9 },
+  brewup: { ref: 6, flash: 6, fire: 4.2, burn: 650, rim: 0.95, ring: 9, spokes: 0, throw: 0, debris: 12, sparks: 26, dust: 0.1, smoke: 1, hang: 9000, shake: 0.95, crater: 1.3 },
+};
+
+// The recipe for a boom, and how big to draw it. A boom with no kind is the
+// mortar row, which is what every blast was before the sim named them; one
+// with no usable radius is drawn at its kind's reference size. Size goes as
+// r^0.6 so a kind keeps its character across the radii the sim sends it at.
+export function blastOf(b: BoomEvent): { kind: BlastKind; spec: BlastSpec; k: number } {
+  const kind = b.kind !== undefined && b.kind in BLAST ? b.kind : 'mortar';
+  const spec = BLAST[kind];
+  // Written so NaN fails it and falls to 1, the same rule as audio.ts place().
+  const k = b.r !== undefined && b.r > 0 ? Math.min(1.6, Math.max(0.45, Math.pow(b.r / spec.ref, 0.6))) : 1;
+  return { kind, spec, k };
 }
 
 // Every additive draw batches into one call per frame, so the composite mode
@@ -440,6 +505,20 @@ function bake(kind: FxKind, px: number): HTMLCanvasElement {
       break;
     case 'ringDark':
       ring(g, px, '30,24,16');
+      break;
+    case 'shock':
+      // The pressure front itself: pale, and a third the width of the dust
+      // rings, so it reads as an edge travelling over the ground and not as
+      // more dust. Pale because the ground under it is mid-value everywhere.
+      radial(g, h, h, h, [
+        [0, 'rgba(236,230,214,0)'],
+        [0.8, 'rgba(236,230,214,0)'],
+        [0.92, 'rgba(236,230,214,1)'],
+        [1, 'rgba(236,230,214,0)'],
+      ]);
+      break;
+    case 'dirt':
+      puff(g, px, '70,55,38', 5);
       break;
     case 'spark':
       radial(g, h, h, h, [
