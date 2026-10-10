@@ -1522,6 +1522,14 @@ export class Sim {
     e.hasTarget = true;
   }
 
+  // Ends an HE mission: orderFire has no end of its own, the tube shells the
+  // point until it is told otherwise or runs dry. A smoke mission is left to
+  // run its rounds out.
+  ceaseFire(empId: number): void {
+    const e = this.emplacements[empId];
+    if (e && e.smokeRoundsLeft <= 0) e.hasTarget = false;
+  }
+
   // Mortar-only: a 4-round smoke screen at the point, consuming shells —
   // sustained coverage the rifle-squad smoke grenades can't match.
   orderSmoke(empId: number, x: number, y: number): void {
