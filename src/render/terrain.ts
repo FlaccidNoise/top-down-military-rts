@@ -69,6 +69,7 @@ export function chunkSpan(t0: number, t1: number, n: number): [number, number] {
 
 import { cornerCuts, cutOnH, cutOnV, HARD, reliefShade, smoothElev, tuftCount, type ReliefLight } from './ground';
 import { buildHedgerows, hedgeLobes, type Hedgerows } from './hedgerow';
+import { buildShore, SHORE_TETHER, shorePieces, type Shore } from './shore';
 import { hash, soft, vec } from './noise';
 import { stamp, stampRect } from './stamps';
 import { SPRITE as CANOPY_SPRITE, canopySprite, drawLog } from './canopy';
@@ -1171,65 +1172,102 @@ function drawBridgeDeck(g: Ctx, x: number, y: number, ew: boolean, waterAt: (tx:
   if (waterAt(x - 1, y)) g.fillRect(x, y, 0.04, 1);
 }
 
-// Water banks in a post-pass over finished tile bases: a mud fringe painted
-// onto the LAND side of each bank edge (raster order would overpaint an E/S
-// fringe drawn from the water tile), depth jittered per half-tile so the
-// tile-quantized bank edge stops reading as a hard staircase; then the dark
-// waterline and a few ripple dashes inside the water.
-function drawWaterBanks(g: Ctx, map: GameMap, tx0: number, ty0: number, tx1: number, ty1: number): void {
-  const waterAt = (tx: number, ty: number) => map.inBounds(tx, ty) && map.terrainKeyAt(tx, ty) === 'water';
-  const mudAt = (tx: number, ty: number) => {
-    if (!map.inBounds(tx, ty)) return false;
-    const k = map.terrainKeyAt(tx, ty);
-    return k === 'grass' || k === 'field' || k === 'woods' || k === 'hedge'; // roads keep a clean edge (bridge rails own it)
-  };
+// The water's outline (shore.ts) as two canvas paths in world metres, built
+// once a map: `water` is every loop closed, for filling and clipping; `banks`
+// is only the stretches with open ground beside them, for the strokes a bank
+// is drawn with. A deck end, a quay wall and the map edge get no bank.
+interface ShorePaths {
+  water: Path2D;
+  banks: Path2D;
+}
+
+function shorePaths(shore: Shore): ShorePaths {
+  const water = new Path2D();
+  const banks = new Path2D();
+  for (const loop of shore.loops) {
+    const n = loop.soft.length;
+    let started = false;
+    let run = false; // the bank path is mid-stretch, at this piece's start point
+    shorePieces(loop, (i, x0, y0, vx, vy, x1, y1, curved) => {
+      if (!started) water.moveTo(x0, y0);
+      started = true;
+      if (curved) water.quadraticCurveTo(vx, vy, x1, y1);
+      else {
+        water.lineTo(vx, vy);
+        water.lineTo(x1, y1);
+      }
+      const before = loop.soft[(i + n - 1) % n] === 1;
+      const after = loop.soft[i] === 1;
+      if (before) {
+        if (!run) banks.moveTo(x0, y0);
+        if (curved && after) banks.quadraticCurveTo(vx, vy, x1, y1);
+        else banks.lineTo(vx, vy);
+      }
+      if (after && !(curved && before)) {
+        if (!before) banks.moveTo(vx, vy);
+        banks.lineTo(x1, y1);
+      }
+      run = after;
+    });
+    water.closePath();
+  }
+  return { water, banks };
+}
+
+const waterTone = (x: number, y: number): string => shade(WATER, 0.925 + coarse(x, y) * 0.12);
+
+// Open ground a bank can be drawn on. Anything made keeps a ruled edge.
+const bankable = (k: TerrainKey): boolean => k === 'grass' || k === 'field' || k === 'woods' || k === 'hedge' || k === 'bank';
+
+// Water banks, in a post-pass over the finished tile bases. The tiles gave a
+// staircase with a jittered mud fringe down it; the bank is now the smoothed
+// outline, and it is drawn as what a bank is: a wet margin of dark earth, the
+// water up to the line, a darker waterline just inside it and a thin pale edge
+// where it meets the ground.
+//
+// The margin has a second job. Where the outline pulls back INSIDE a water
+// tile, that tile's corner has to become land again, and the margin is what
+// is painted there: it is opaque for half its width either side of the line,
+// and that half is wider than the outline may move (SHORE_TETHER).
+function drawWaterBanks(g: Ctx, map: GameMap, shore: ShorePaths | null, tx0: number, ty0: number, tx1: number, ty1: number): void {
+  if (!shore) return;
+  const wet = (x: number, y: number): boolean => map.inBounds(x, y) && (map.terrainKeyAt(x, y) === 'water' || map.isBridge(x, y));
+  // tiles the bank passes through or beside: water with land next to it, and
+  // open ground with water next to it (corners count)
+  const edge: [number, number][] = [];
   for (let y = ty0; y < ty1; y++) {
     for (let x = tx0; x < tx1; x++) {
-      if (!waterAt(x, y)) continue;
-      for (let h = 0; h < 2; h++) {
-        if (mudAt(x, y - 1)) {
-          const d = 0.1 + hash(x * 2 + h, y, 120) * 0.22;
-          g.fillStyle = 'rgba(88,76,52,0.5)';
-          g.fillRect(x + h * 0.5, y - d, 0.5, d);
-          g.fillStyle = 'rgba(50,48,38,0.45)';
-          g.fillRect(x + h * 0.5, y - d * 0.45, 0.5, d * 0.45);
-        }
-        if (mudAt(x, y + 1)) {
-          const d2 = 0.1 + hash(x * 2 + h, y, 121) * 0.22;
-          g.fillStyle = 'rgba(88,76,52,0.5)';
-          g.fillRect(x + h * 0.5, y + 1, 0.5, d2);
-          g.fillStyle = 'rgba(50,48,38,0.45)';
-          g.fillRect(x + h * 0.5, y + 1, 0.5, d2 * 0.45);
-        }
-        if (mudAt(x - 1, y)) {
-          const d3 = 0.1 + hash(x, y * 2 + h, 122) * 0.22;
-          g.fillStyle = 'rgba(88,76,52,0.5)';
-          g.fillRect(x - d3, y + h * 0.5, d3, 0.5);
-          g.fillStyle = 'rgba(50,48,38,0.45)';
-          g.fillRect(x - d3 * 0.45, y + h * 0.5, d3 * 0.45, 0.5);
-        }
-        if (mudAt(x + 1, y)) {
-          const d4 = 0.1 + hash(x, y * 2 + h, 123) * 0.22;
-          g.fillStyle = 'rgba(88,76,52,0.5)';
-          g.fillRect(x + 1, y + h * 0.5, d4, 0.5);
-          g.fillStyle = 'rgba(50,48,38,0.45)';
-          g.fillRect(x + 1, y + h * 0.5, d4 * 0.45, 0.5);
-        }
-      }
-      // dark waterline inside the water tile on every land edge
-      g.fillStyle = 'rgba(30,38,32,0.35)';
-      if (!waterAt(x, y - 1)) g.fillRect(x, y, 1, 0.12);
-      if (!waterAt(x, y + 1)) g.fillRect(x, y + 0.88, 1, 0.12);
-      if (!waterAt(x - 1, y)) g.fillRect(x, y, 0.12, 1);
-      if (!waterAt(x + 1, y)) g.fillRect(x + 0.88, y, 0.12, 1);
-      // ripple dashes just inside the banks
-      g.fillStyle = 'rgba(200,220,225,0.1)';
-      if (!waterAt(x, y - 1) && hash(x, y, 124) < 0.6) g.fillRect(x + hash(x, y, 125) * 0.5, y + 0.2 + hash(x, y, 126) * 0.15, 0.4, 0.05);
-      if (!waterAt(x, y + 1) && hash(x, y, 127) < 0.6) g.fillRect(x + hash(x, y, 128) * 0.5, y + 0.65 + hash(x, y, 129) * 0.15, 0.4, 0.05);
-      if (!waterAt(x - 1, y) && hash(x, y, 130) < 0.6) g.fillRect(x + 0.2 + hash(x, y, 131) * 0.15, y + hash(x, y, 132) * 0.5, 0.05, 0.4);
-      if (!waterAt(x + 1, y) && hash(x, y, 133) < 0.6) g.fillRect(x + 0.65 + hash(x, y, 134) * 0.15, y + hash(x, y, 135) * 0.5, 0.05, 0.4);
+      const k = map.terrainKeyAt(x, y);
+      const w = k === 'water';
+      if (!w && (!bankable(k) || map.isBridge(x, y))) continue;
+      let mixed = false;
+      for (let dy = -1; dy <= 1 && !mixed; dy++) for (let dx = -1; dx <= 1 && !mixed; dx++) mixed = wet(x + dx, y + dy) !== w;
+      if (mixed) edge.push([x, y]);
     }
   }
+  if (edge.length === 0) return;
+  g.lineCap = 'butt'; // a bank that ends at a deck or a wall ends ON it, not half a metre past
+  g.lineJoin = 'round';
+  g.strokeStyle = 'rgba(58,54,38,0.28)';
+  g.lineWidth = 2 * SHORE_TETHER + 0.9;
+  g.stroke(shore.banks);
+  g.strokeStyle = 'rgb(82,74,54)';
+  g.lineWidth = 2 * SHORE_TETHER + 0.2;
+  g.stroke(shore.banks);
+  g.save();
+  g.clip(shore.water, 'evenodd');
+  for (const [x, y] of edge) {
+    g.fillStyle = waterTone(x, y);
+    g.fillRect(x, y, 1, 1);
+  }
+  g.strokeStyle = 'rgba(22,32,30,0.4)';
+  g.lineWidth = 0.4;
+  g.stroke(shore.banks);
+  g.restore();
+  g.strokeStyle = 'rgba(214,220,204,0.5)';
+  g.lineWidth = 0.08;
+  g.stroke(shore.banks);
+  g.lineCap = 'round';
 }
 
 // Worn dirt trail out from each exterior building door — overlapping ellipses
@@ -1782,8 +1820,7 @@ function drawTileBase(
     if (!fieldAt(x - 1, y)) g.fillRect(x, y, 0.08, 1);
     if (!fieldAt(x + 1, y)) g.fillRect(x + 0.92, y, 0.08, 1);
   } else if (t === 'water') {
-    // drift only: a random step a tile is a checkerboard, on water more than anywhere
-    g.fillStyle = shade(WATER, 0.925 + coarse(x, y) * 0.12);
+    g.fillStyle = waterTone(x, y); // drift only: a random step a tile is a checkerboard, on water more than anywhere
     g.fillRect(x, y, 1, 1);
     // faint N→S drift streaks with the current
     g.fillStyle = 'rgba(255,255,255,0.05)';
@@ -2220,6 +2257,8 @@ export class TerrainLayer {
   private bakeBudget = 0;
   private patches: PatchIndex;
   readonly hedges: Hedgerows;
+  readonly shore: Shore;
+  private shorePath: ShorePaths | null = null; // built on the first chunk of a map that has water
   private paveMask: HTMLCanvasElement | null = null; // bakePaveMask, built on the first chunk of a map that has a square
   private yards: Yard[];
   // props bucketed by chunk key on their DRAWN extent (a telegraph wire spans
@@ -2263,6 +2302,13 @@ export class TerrainLayer {
     this.chunksW = Math.ceil(map.w / CHUNK);
     this.patches = new PatchIndex(map);
     this.hedges = buildHedgerows((x, y) => map.terrainKeyAt(x, y) === 'hedge', map.w, map.h);
+    // a bridge deck counts as water: the river runs on beneath it, and the deck is drawn over
+    this.shore = buildShore(
+      (x, y) => map.terrainKeyAt(x, y) === 'water' || map.isBridge(x, y),
+      (x, y) => bankable(map.terrainKeyAt(x, y)) && !map.isBridge(x, y),
+      map.w,
+      map.h,
+    );
     this.rail = railIndex(map);
     const churchTiles = new Uint8Array(map.w * map.h);
     for (const b of buildings) {
@@ -2397,7 +2443,8 @@ export class TerrainLayer {
       drawCrossings(g, this.map, tx0, ty0, tx1, ty1, d, this.rail);
       drawTrackRun(g, this.map, tx0, ty0, tx1, ty1, d, this.rail);
     }
-    drawWaterBanks(g, this.map, tx0, ty0, tx1, ty1);
+    if (this.shore.loops.length > 0) this.shorePath ??= shorePaths(this.shore);
+    drawWaterBanks(g, this.map, this.shorePath, tx0, ty0, tx1, ty1);
     drawYardGround(g, this.map, this.patches, this.yards, tx0, ty0, tx1, ty1, d);
     drawEnclosureGround(g, this.map, this.enclos, tx0, ty0, tx1, ty1, d);
     drawDoorTrails(g, this.map, tx0, ty0, tx1, ty1);

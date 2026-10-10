@@ -432,7 +432,7 @@ export class Renderer {
     // shop from a house needs `role`, which lives on the plan and nowhere in
     // the grid. Legacy kinds emit no roles, so those maps behave as before.
     this.terrain = new TerrainLayer(sim.map, sim.buildings);
-    this.ambient = new Ambient(sim.map, this.terrain.hedges, this.terrain.index);
+    this.ambient = new Ambient(sim.map, this.terrain.hedges, this.terrain.index, this.terrain.shore);
     this.decals = new DecalLayer(sim.map.w, sim.map.h);
     // Five world-anchored haze bands, generated once from the map dimensions
     // so the same map always breathes the same way.

@@ -3,6 +3,7 @@ import { Camera } from '../src/render/camera';
 import { buildHedgerows } from '../src/render/hedgerow';
 import { WIND } from '../src/render/light';
 import { PatchIndex } from '../src/render/patches';
+import { buildShore } from '../src/render/shore';
 import { generateMap } from '../src/sim/mapgen';
 
 // Ambient motion (src/render/ambient.ts): the gust arithmetic, and the two
@@ -65,7 +66,7 @@ describe('gusts', () => {
 describe('Ambient.draw', () => {
   const map = generateMap(2, 160, 120, 'open').map;
   const make = (): InstanceType<typeof amb.Ambient> =>
-    new amb.Ambient(map, buildHedgerows((x, y) => map.terrainKeyAt(x, y) === 'hedge', map.w, map.h), new PatchIndex(map));
+    new amb.Ambient(map, buildHedgerows((x, y) => map.terrainKeyAt(x, y) === 'hedge', map.w, map.h), new PatchIndex(map), buildShore(() => false, () => true, map.w, map.h));
   const counter = (): { ctx: CanvasRenderingContext2D; ops: string[] } => {
     const ops: string[] = [];
     const ctx = { globalAlpha: 1, drawImage: (_c: unknown, ...a: number[]) => void ops.push(a.map((v) => v.toFixed(3)).join(',')) };

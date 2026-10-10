@@ -5,6 +5,7 @@ import type { Hedgerows } from './hedgerow';
 import { WIND } from './light';
 import { hash, soft } from './noise';
 import type { PatchIndex } from './patches';
+import { inShore, shorePolygons, type Shore } from './shore';
 import { cropOf, treeAt } from './terrain';
 import { MOBILE } from './view';
 
@@ -68,6 +69,13 @@ const MIN_SCALE = MOBILE ? 12 : 9;
 // sprites is hatching). A phone gets under half a desktop's.
 export const MAX_LIT = MOBILE ? 50 : 120;
 
+// A water glint: half its length (the sprite's radius), half its width, where
+// in the tile it rests and how far down the channel it slides while lit.
+const GLINT_HALF_L = 0.5;
+const GLINT_HALF_W = 0.11;
+const GLINT_REST = 0.1;
+const GLINT_SLIDE = 0.8;
+
 const TAU = Math.PI * 2;
 
 function sprite(w: number, h: number, rgb: string, rot: number): HTMLCanvasElement {
@@ -93,7 +101,7 @@ export class Ambient {
   private phase: Float32Array; // gustPhase of the site, or a water tile's own roll
   private sx: Float32Array; // where the stirring thing actually stands, world metres
   private sy: Float32Array;
-  private r: Float32Array; // its size, metres
+  private r: Float32Array; // its size, metres; for water, how far its glint slides
   private rank: Float32Array; // 0..1, the order sites are dropped in when a view holds too many
   private sites = 0;
   // The lit sites of the frame being drawn: room for a third of the sites of a
@@ -109,7 +117,17 @@ export class Ambient {
     private map: GameMap,
     hedges: Hedgerows,
     patches: PatchIndex,
+    shore: Shore,
   ) {
+    // The water as it is DRAWN (shore.ts), not as it is tiled: a glint is laid
+    // only where all of it lies on drawn water, and slides down the channel
+    // only where the drawn water goes on.
+    // A bridge deck is inside that outline (the river runs on beneath it) and
+    // is not water to a glint: the deck is baked into the chunk this is laid on.
+    const banks = shorePolygons(shore);
+    const wet = (x: number, y: number): boolean => map.inBounds(x, y) && map.terrainKeyAt(x, y) === 'water';
+    const afloat = (x: number, y0: number, y1: number): boolean =>
+      inShore(banks, x - GLINT_HALF_W, y0) && inShore(banks, x + GLINT_HALF_W, y0) && inShore(banks, x - GLINT_HALF_W, y1) && inShore(banks, x + GLINT_HALF_W, y1);
     const n = map.w * map.h;
     this.kind = new Uint8Array(n);
     this.phase = new Float32Array(n);
@@ -133,9 +151,17 @@ export class Ambient {
         } else if (key === 'field') {
           const p = patches.patchAt(x, y);
           if (p && cropOf(p.seed) === 1) k = WHEAT; // cereal: plough and roots have nothing to bend
-        } else if (key === 'water' && !map.isBridge(x, y)) {
-          k = WATER;
+        } else if (key === 'water') {
           px = x + hash(x, y, 631);
+          // Open water is water whichever way the glint goes. A tile on the
+          // bank is tested against the drawn bank: for where the glint rests,
+          // and again for the stretch it would slide through.
+          let open = true;
+          for (let dy = -1; dy <= 2 && open; dy++) for (let dx = -1; dx <= 1 && open; dx++) open = wet(x + dx, y + dy);
+          if (open || (wet(x, y - 1) && afloat(px, y + GLINT_REST - GLINT_HALF_L, y + GLINT_REST + GLINT_HALF_L))) {
+            k = WATER;
+            r = open || (wet(x, y + 1) && afloat(px, y + GLINT_REST + GLINT_HALF_L, y + GLINT_REST + GLINT_SLIDE + GLINT_HALF_L)) ? GLINT_SLIDE : 0;
+          }
         }
         if (k === NONE) continue;
         this.sites++;
@@ -207,7 +233,7 @@ export class Ambient {
       const e = Math.sin(f * Math.PI) * Math.min(1, (keep - this.rank[i]) * 8);
       if (k === WATER) {
         // the glint slides down the channel while it is on (the rivers run north to south)
-        put(this.glint, this.sx[i], ((i / map.w) | 0) + 0.1 + f * 0.8, 0.5, 0.26 * e);
+        put(this.glint, this.sx[i], ((i / map.w) | 0) + GLINT_REST + f * this.r[i], GLINT_HALF_L, 0.26 * e);
         continue;
       }
       // the lit patch runs a little down the wind as the front goes over
