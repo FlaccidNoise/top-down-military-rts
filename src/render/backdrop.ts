@@ -44,7 +44,7 @@ export const BACKDROP_SEED = 1944;
 // phone gets: the first contact, when the most men on both sides are firing
 // (measured: by tick 1500 the full battle has gone quiet). A still backdrop
 // is exactly this tick.
-export const BACKDROP_TICK = { full: 300, small: 450 };
+export const BACKDROP_TICK = { full: 300, small: 200 };
 // The last ticks before that are run with the renderer attached, so the frame
 // the backdrop opens on, and the only frame a still one has, has that
 // moment's tracers and flashes in it.
