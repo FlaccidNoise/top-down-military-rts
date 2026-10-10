@@ -53,6 +53,14 @@ export interface OperationalPlan {
   reserveIds: number[];
 }
 
+// A force beaten in a fight reorganises this long before the planner orders
+// it to ATTACK again (it may still advance onto open ground or withdraw).
+// Measured over the 16 pin wars at 0, 120, 180, 240 and 360: blue-destroyed
+// stays at 0-1 and blue wins at 3-6 with no trend, so the length is a
+// doctrine choice, not a tuned value. What it buys is tempo: planner attacks
+// on the node a force was just thrown back from, inside the hour, go 7 -> 0.
+export const REORG_MIN = 240;
+
 export type StallCode = 'no-forces' | 'no-reachable-objective' | 'no-viable-attack' | 'goals-met-holding';
 export interface PlannerReport {
   orders: { forceId: number; dest: number; why: string }[];
@@ -300,6 +308,7 @@ export class Commander2 {
       const defEff = this.defendersAt(front, intel, target);
       if (defEff > 0) {
         attackConsidered = true;
+        if (f.repulsedAtMin !== null && front.clockMin - f.repulsedAtMin < REORG_MIN) continue;
         // The attack decision weighs the AXIS'S MASS — concentration is the
         // point: individual companies advance because the mass they belong
         // to clears the floor, and the reinforcement-join machinery stacks

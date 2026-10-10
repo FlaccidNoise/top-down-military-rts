@@ -155,6 +155,7 @@ export function applyTheaterOutcome(
     }
   }
   if (loser.strength > 0) {
+    loser.repulsedAtMin = front.clockMin;
     const beatenAssault = !attackerWon && (battleClass === 'bridge-assault' || battleClass === 'ford-assault');
     if (beatenAssault && battle.approachEdgeId !== null && battle.site.kind === 'node') {
       const e = edgeById(front.theater, battle.approachEdgeId);

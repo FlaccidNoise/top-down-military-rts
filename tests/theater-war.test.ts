@@ -6,7 +6,7 @@ import { addForce, type Force, type FrontV2 } from '../src/strategic/theater/for
 import { battleDuration, joinBattle, openBattle, resolveBattleV2, retreatForce, stepWar } from '../src/strategic/theater/war';
 import type { WarGoals } from '../src/strategic/goals';
 import { OmniscientIntel } from '../src/strategic/intel';
-import { BLUE_V2, Commander2 } from '../src/strategic/planner';
+import { BLUE_V2, Commander2, REORG_MIN } from '../src/strategic/planner';
 import { battleSiteOf, MOVE_MPM, type Theater, type TheaterEdge, type Vec } from '../src/strategic/theater';
 
 // Corridor fixture with a bridge site for crossing-assault mechanics.
@@ -123,6 +123,9 @@ describe('battle lifecycle', () => {
       expect(Math.abs(a.pos.s - 1500)).toBeLessThanOrEqual(1); // RETREAT_SETBACK_M from the bridge
     }
     expect(fr.events.some((e) => e.text.includes('thrown back'))).toBe(true);
+    // The loser is marked for the planner's reorganisation pause; the winner is not.
+    expect(a.repulsedAtMin).toBe(fr.clockMin);
+    expect(w.repulsedAtMin).toBeNull();
   });
 
   it('retreat: never down the approach axis, prefers friendly ground; cornered red is overrun', () => {
@@ -194,6 +197,20 @@ describe('planner: march safety and reorganisation (jtbug #762)', () => {
   };
   // A fresh commander each call: no cadence, no carried plan.
   const blueOrders = (fr: FrontV2) => new Commander2('blue', BLUE_V2, GOALS, 14).evaluate(fr, new OmniscientIntel(fr, 'blue'))!;
+
+  it('a beaten force holds off the attack for REORG_MIN, then attacks', () => {
+    const fr = front(PLAN);
+    const a = mk(fr, 'blue', 2, 'Able', 600, 0);
+    mk(fr, 'red', 3, 'Wache', 20);
+    expect(blueOrders(fr).orders).toEqual([{ forceId: a.id, dest: 3, why: 'attack' }]);
+    a.path = [];
+    a.repulsedAtMin = fr.clockMin - (REORG_MIN - 1);
+    const held = blueOrders(fr);
+    expect(held.orders).toEqual([]);
+    expect(held.stall).toBe('no-viable-attack');
+    a.repulsedAtMin = fr.clockMin - REORG_MIN;
+    expect(blueOrders(fr).orders).toEqual([{ forceId: a.id, dest: 3, why: 'attack' }]);
+  });
 
   it('a force is not marched past an enemy it would have to withdraw from', () => {
     const fr = front(PLAN);

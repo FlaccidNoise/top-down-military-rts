@@ -289,6 +289,7 @@ export function resolveBattleV2(
       pushEvent(front, { min: front.clockMin, kind: 'overrun', text: `${l.name} is destroyed`, forceIds: [l.id] });
       continue;
     }
+    l.repulsedAtMin = front.clockMin;
     const beatenAssault = !attackerWins && (battleClass === 'bridge-assault' || battleClass === 'ford-assault') && sides.attackers.includes(l);
     if (beatenAssault && battle.approachEdgeId !== null) {
       const e = edgeById(t, battle.approachEdgeId);

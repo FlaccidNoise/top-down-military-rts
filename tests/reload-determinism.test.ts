@@ -130,4 +130,21 @@ describe('reload determinism (S56)', () => {
     expect(orderMove(g.front, f.id, origin)).toEqual(live);
     expect(loaded).toEqual(f);
   });
+
+  it('a save written before the reorganisation field loads with it cleared', () => {
+    stubStorage();
+    const w = makeHeadlessWorld(1, CFG, CAMP);
+    w.front.forces[0].repulsedAtMin = 400;
+    expect(saveGameV2(1, CFG, CAMP, w.campaign, w.front)).toBe(true);
+    const fresh = loadGameV2();
+    if (fresh.status !== 'ok') throw new Error(`reload: ${fresh.status}`);
+    expect(fresh.front.forces[0].repulsedAtMin).toBe(400);
+
+    const old = JSON.parse(localStorage.getItem('ccg-save-v4')!);
+    for (const f of old.front.forces) delete f.repulsedAtMin;
+    localStorage.setItem('ccg-save-v4', JSON.stringify(old));
+    const g = loadGameV2();
+    if (g.status !== 'ok') throw new Error(`reload: ${g.status}`);
+    expect(g.front.forces.map((f) => f.repulsedAtMin)).toEqual(g.front.forces.map(() => null));
+  });
 });
