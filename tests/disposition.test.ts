@@ -63,10 +63,9 @@ describe('makeDisposition', () => {
     expect(mobile.length).toBeGreaterThanOrEqual(1); // red can ATTACK
   });
 
-  it('redStrength 0 fields no red at all; establishment records every starting strength', () => {
+  it('redStrength 0 fields no red at all', () => {
     const { d } = build(2, 0);
     expect(d.forces.every((f) => f.side === 'blue')).toBe(true);
-    d.forces.forEach((f, i) => expect(d.establishment[i]).toBe(f.strength));
   });
 
   it('the DISPOSITION sub-stream is isolated: red strengths never move the theater', () => {

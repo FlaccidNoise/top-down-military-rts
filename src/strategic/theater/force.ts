@@ -30,12 +30,14 @@ export interface Force {
   // The minute this force last LOST a battle and lived. The planner keeps it
   // off the attack while it reorganises (REORG_MIN). Player orders ignore it.
   repulsedAtMin: number | null;
+  // Strength at muster. The counter's bar reads strength against it.
+  establishment: number;
 }
 
 // Creation shape: the realism fields default to fresh at the ONE chokepoint
 // (addForce), so disposition and test literals never carry boilerplate zeros.
-export type ForceInit = Omit<Force, 'id' | 'untracedMin' | 'fatigue' | 'lastEdgeId' | 'repulsedAtMin'> &
-  Partial<Pick<Force, 'untracedMin' | 'fatigue' | 'lastEdgeId' | 'repulsedAtMin'>>;
+export type ForceInit = Omit<Force, 'id' | 'untracedMin' | 'fatigue' | 'lastEdgeId' | 'repulsedAtMin' | 'establishment'> &
+  Partial<Pick<Force, 'untracedMin' | 'fatigue' | 'lastEdgeId' | 'repulsedAtMin' | 'establishment'>>;
 
 export interface CoarseBattle {
   id: number;
@@ -97,7 +99,7 @@ export function addForce(front: FrontV2, f: ForceInit): Force {
   if (front.forces.length >= MAX_FORCES) {
     throw new Error(`addForce: MAX_FORCES (${MAX_FORCES}) reached — the force cap is asserted here and in makeDisposition, never at generation`);
   }
-  const force: Force = { untracedMin: 0, fatigue: 0, lastEdgeId: null, repulsedAtMin: null, ...f, id: front.nextForceId++ };
+  const force: Force = { untracedMin: 0, fatigue: 0, lastEdgeId: null, repulsedAtMin: null, establishment: f.strength, ...f, id: front.nextForceId++ };
   front.forces.push(force);
   return force;
 }

@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { DEFAULT_PRESET } from '../src/campaign/presets';
 import { makeHeadlessWorld } from '../src/strategic/headless';
 import { THEATER_ZOOM_MAX, TheaterView } from '../src/render/theater-view';
+import { COUNTER_W, counterRect, layoutCounters, type CounterSpec, type PlacedCounter } from '../src/render/theater-counters';
 
 const world = makeHeadlessWorld(19440606, DEFAULT_PRESET.theater, DEFAULT_PRESET.campaign);
 const { theater } = world.front;
@@ -16,6 +17,40 @@ const inClear = (v: TheaterView, dev: typeof PHONE, x: number, y: number, slack 
   const [sx, sy] = v.toScreen(x, y, dev.w, dev.h);
   return sx >= dev.inset.left - slack && sx <= dev.w - dev.inset.right + slack && sy >= dev.inset.top - slack && sy <= dev.h - dev.inset.bottom + slack;
 };
+
+describe('counters', () => {
+  it('every force musters with its establishment, the figure the strength bar reads against', () => {
+    const fresh = makeHeadlessWorld(7, DEFAULT_PRESET.theater, DEFAULT_PRESET.campaign);
+    expect(fresh.front.forces.length).toBeGreaterThan(3);
+    for (const f of fresh.front.forces) expect(f.establishment).toBe(f.strength);
+  });
+
+  const spec = (id: number, side: 'blue' | 'red', ax: number, ay: number, selected = false): CounterSpec => ({
+    id, side, letter: side === 'blue' ? 'A' : null, role: 'line', strength: 100, frac: 1, supply: null, fatigue: 0,
+    selected, engaged: false, conf: 1, ghost: false, ax, ay, drop: 12,
+  });
+  const overlap = (a: PlacedCounter, b: PlacedCounter): boolean => {
+    const p = counterRect(a), q = counterRect(b);
+    return p.x0 < q.x1 && p.x1 > q.x0 && p.y0 < q.y1 && p.y1 > q.y0;
+  };
+
+  it('counters on one point fan out in a row under it, own side first, none overlapping', () => {
+    const placed = layoutCounters([spec(5, 'red', 200, 100), spec(1, 'blue', 200, 100), spec(2, 'blue', 203, 101)]);
+    expect(placed.map((c) => c.id)).toEqual([1, 2, 5]);
+    for (let i = 0; i < placed.length; i++) for (let j = i + 1; j < placed.length; j++) expect(overlap(placed[i], placed[j])).toBe(false);
+    expect(new Set(placed.map((c) => c.y)).size).toBe(1); // one row
+    expect(placed[0].y).toBeGreaterThanOrEqual(100 + 12); // clear of the point
+    expect((placed[0].x + placed[2].x + COUNTER_W) / 2).toBeCloseTo(200, 0); // centred on it
+  });
+
+  it('a neighbouring stack drops a line instead of overprinting, and the selected stack keeps its place', () => {
+    const alone = layoutCounters([spec(1, 'blue', 200, 100, true)])[0];
+    const placed = layoutCounters([spec(0, 'red', 185, 100), spec(1, 'blue', 200, 100, true)]);
+    const sel = placed.find((c) => c.id === 1)!;
+    expect([sel.x, sel.y]).toEqual([alone.x, alone.y]);
+    expect(overlap(placed[0], placed[1])).toBe(false);
+  });
+});
 
 describe('theater camera', () => {
   for (const [name, dev] of [['phone', PHONE], ['desktop', DESKTOP]] as const) {

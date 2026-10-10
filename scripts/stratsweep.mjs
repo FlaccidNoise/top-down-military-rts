@@ -57,6 +57,31 @@ const STATES = {
     v2.selectedForce = blue[0].id;
     window.__game.stepTheater(90);
   },
+  // Three counters on one town, with every pip lit: the fan-out and the
+  // counter's vocabulary. Positions and states are written directly.
+  stack: async () => {
+    const { SUPPLY_LOW_MIN, SUPPLY_OUT_MIN } = await import('/src/strategic/theater/supply.ts');
+    const v2 = window.__game.getV2();
+    const blue = v2.front.forces.filter((f) => f.side === 'blue');
+    const red = v2.front.forces.find((f) => f.side === 'red' && f.role === 'line');
+    blue[1].pos = { ...blue[0].pos };
+    red.pos = { ...blue[0].pos };
+    Object.assign(blue[0], { fatigue: 0.5, untracedMin: SUPPLY_LOW_MIN });
+    Object.assign(blue[1], { fatigue: 0.8, untracedMin: SUPPLY_OUT_MIN, strength: 60 });
+    red.strength = 30;
+    v2.selectedForce = blue[1].id;
+  },
+  // Fog of war: the enemy is last-seen reports only. A company marches four
+  // hours toward the nearest objective so that some reports exist.
+  fog: async () => {
+    const { orderMove } = await import('/src/strategic/theater/step.ts');
+    const v2 = window.__game.getV2();
+    v2.campaignCfg.recon = 'contacts';
+    v2.view.recon = 'contacts';
+    const f = v2.front.forces.find((x) => x.side === 'blue');
+    orderMove(v2.front, f.id, v2.front.theater.objectiveNodes[0]);
+    window.__game.stepTheater(240);
+  },
 };
 
 const want = arg('states', Object.keys(STATES).join(',')).split(',');

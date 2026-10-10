@@ -7,31 +7,36 @@
 import { pointAlong, type Region, type TerrainClass, type Theater, type TheaterNode, type Vec } from '../strategic/theater';
 import type { Force, FrontV2 } from '../strategic/theater/force';
 import { forceEtaMinutes, type MoveKernelOpts } from '../strategic/theater/step';
-import { supplyTierOf, type SupplyTier } from '../strategic/theater/supply';
+import { supplyTierOf } from '../strategic/theater/supply';
 import { contactConf } from '../strategic/intel';
 import type { ReconMode } from '../campaign/spec';
 
 import type { Side } from '../sim/sim';
 import { MOBILE } from './view';
+import { counterRect, drawCounter, layoutCounters, type CounterSpec, type PlacedCounter } from './theater-counters';
 
 // Terrain separates by VALUE, not hue (the Muted-Normandy rule): a luma ladder
 // from forest floor up to rooftops, every rung a clear step. The old palette
 // packed farmland, bocage and marsh into one narrow band, which is why the
 // theater read as a single green mass.
+// The ladder is deliberately SHORT: this is an operational map, and the
+// loudest marks on it are forces and the front. The wider ladder it replaces
+// made the forest masses and the tan settlement regions the first thing the
+// eye found, and neither is something to act on.
 const REGION_STYLE: Record<TerrainClass, string> = {
-  farmland: '#6d7a57',
-  bocage: '#46543a',
-  forest: '#2f3b28',
-  marsh: '#4f6360',
-  settlement: '#8f8068',
+  farmland: '#5b6550',
+  bocage: '#4a5443',
+  forest: '#3a4437',
+  marsh: '#4a5856',
+  settlement: '#6c6557',
 };
 // Value is still one channel. Bocage and marsh carry a texture as well, so the
 // pair a red-green eye collapses stays separable.
 const REGION_TEXTURE: Partial<Record<TerrainClass, 'hedge' | 'reed'>> = { bocage: 'hedge', marsh: 'reed' };
 // Without a boundary, two same-class neighbours are one shape.
-const REGION_EDGE = 'rgba(26, 22, 16, 0.55)';
+const REGION_EDGE = 'rgba(26, 22, 16, 0.32)';
 const MAP_BG = '#211d16';
-const WATER = '#46647a';
+const WATER = '#3f5d73';
 const ROAD: Record<0 | 1 | 2, { color: string; width: number }> = {
   0: { color: '#cbbb94', width: 3 }, // highway
   1: { color: '#ab9d82', width: 2.1 }, // road
@@ -51,12 +56,6 @@ const OBJ_TAKE = '#d8b25c';
 const OBJ_HELD = '#7da0d8';
 const OBJ_TICKS: readonly (readonly [number, number])[] = [[0, -1], [1, 0], [0, 1], [-1, 0]];
 const OWNER_TINT: Record<Side, string> = { blue: 'rgba(70, 110, 180, 0.55)', red: 'rgba(180, 70, 70, 0.55)' };
-
-const SUPPLY_TAG: Record<SupplyTier, { text: string; color: string } | null> = {
-  full: null,
-  low: { text: 'LOW', color: '#c9803c' },
-  out: { text: 'OUT', color: '#b5533c' },
-};
 
 // The HUD is opaque DOM over the canvas, so the canvas is not what the player
 // can see. main.ts measures the panels and hands the borders in; every
@@ -87,6 +86,9 @@ export class TheaterView {
   private readonly smoothed = new Map<number, Vec[]>();
   private readonly labelW = new Map<string, number>();
   private readonly patterns = new Map<string, CanvasPattern | null>();
+  // The counters as last drawn. forceAtScreen reads them: a click lands on
+  // what the player sees.
+  private counters: PlacedCounter[] = [];
 
   constructor(private readonly theater: Theater) {}
 
@@ -222,6 +224,14 @@ export class TheaterView {
   }
 
   forceAtScreen(front: FrontV2, side: Side | null, sx: number, sy: number, w: number, h: number): number {
+    const slop = MOBILE ? 8 : 2;
+    const onCounter = this.counters.find((c) => {
+      const f = front.forces.find((x) => x.id === c.id);
+      if (!f || f.strength <= 0 || (side !== null && f.side !== side)) return false;
+      const r = counterRect(c);
+      return sx >= r.x0 - slop && sx <= r.x1 + slop && sy >= r.y0 - slop && sy <= r.y1 + slop;
+    });
+    if (onCounter) return onCounter.id;
     const [wx, wy] = this.toWorld(sx, sy, w, h);
     const { scale } = this.layout(w, h);
     const rM = Math.max(500, (MOBILE ? 28 : 18) / scale);
@@ -339,8 +349,9 @@ export class TheaterView {
     // screen-space overlap so a dense cluster reads as its principal name.
     // Objectives always carry a ticked designation ring and a starred name —
     // the win condition has to read off the map itself.
-    const labels: { sx: number; sy: number; text: string; rank: number; id: number; px: number }[] = [];
+    const labels: { sx: number; sy: number; text: string; rank: number; id: number; px: number; r: number }[] = [];
     const objectives = new Set(this.theater.objectiveNodes);
+    this.counters = layoutCounters(this.counterSpecs(front, selectedForce, objectives, w, h));
     for (const n of this.theater.nodes) {
       const [sx, sy] = this.toScreen(n.pos.x, n.pos.y, w, h);
       const owner = front.controlByNode[n.id];
@@ -376,11 +387,11 @@ export class TheaterView {
         // ordinary name in the declutter, the ★ marks it, and the lifted
         // baseline clears the north tick.
         labels.push(objective
-          ? { sx, sy: sy - r - 14, text: `★ ${n.name}`, rank: -1, id: n.id, px: n.rank === 0 ? 12 : 10 }
-          : { sx, sy: sy - r - 5, text: n.name, rank: n.rank, id: n.id, px: n.rank === 0 ? 12 : 10 });
+          ? { sx, sy: sy - r - 14, text: `★ ${n.name}`, rank: -1, id: n.id, px: n.rank === 0 ? 13 : 12, r }
+          : { sx, sy: sy - r - 5, text: n.name, rank: n.rank, id: n.id, px: n.rank === 0 ? 12 : 10, r });
       }
     }
-    const placed: { x0: number; y0: number; x1: number; y1: number }[] = [];
+    const placed: { x0: number; y0: number; x1: number; y1: number }[] = this.counters.map(counterRect);
     ctx.textAlign = 'center';
     // A halo, not a drop shadow: a name has to read over rooftops and forest
     // alike, and the map has no single background to tune against.
@@ -394,12 +405,20 @@ export class TheaterView {
         tw = ctx.measureText(l.text).width;
         this.labelW.set(key, tw);
       }
-      const rect = { x0: l.sx - tw / 2 - 2, y0: l.sy - l.px, x1: l.sx + tw / 2 + 2, y1: l.sy + 2 };
-      if (placed.some((p) => rect.x0 < p.x1 && rect.x1 > p.x0 && rect.y0 < p.y1 && rect.y1 > p.y0)) continue;
-      placed.push(rect);
-      ctx.strokeText(l.text, l.sx, l.sy);
-      ctx.fillStyle = 'rgba(238, 230, 212, 0.95)';
-      ctx.fillText(l.text, l.sx, l.sy);
+      // Above the place, else beside it. An objective name is never dropped:
+      // if every seat is taken it keeps the first.
+      const seats = [
+        { cx: l.sx, y: l.sy },
+        { cx: l.sx + l.r + 12 + tw / 2, y: l.sy + l.r + 9 },
+        { cx: l.sx - l.r - 12 - tw / 2, y: l.sy + l.r + 9 },
+      ].map((s) => ({ ...s, rect: { x0: s.cx - tw / 2 - 2, y0: s.y - l.px, x1: s.cx + tw / 2 + 2, y1: s.y + 2 } }));
+      const free = seats.find((s) => !placed.some((p) => s.rect.x0 < p.x1 && s.rect.x1 > p.x0 && s.rect.y0 < p.y1 && s.rect.y1 > p.y0));
+      const seat = free ?? (l.rank < 0 ? seats[0] : null);
+      if (!seat) continue;
+      placed.push(seat.rect);
+      ctx.strokeText(l.text, seat.cx, seat.y);
+      ctx.fillStyle = l.rank < 0 ? '#f3e2ae' : 'rgba(238, 230, 212, 0.95)';
+      ctx.fillText(l.text, seat.cx, seat.y);
     }
 
     // Battles: a pulsing ring at the site (deterministic phase from clock).
@@ -420,56 +439,8 @@ export class TheaterView {
       ctx.stroke();
     }
 
-    // FOW ghosts (S53): the enemy is drawn from the contact map, aged — a
-    // hollow outline that fades as confidence decays. Rendered BEFORE own
-    // forces so live friendly markers always read on top.
-    if (this.recon === 'contacts') {
-      for (const c of front.intel?.blue ?? []) {
-        const conf = contactConf(c, front.clockMin);
-        const p = c.pos.kind === 'node' ? this.theater.nodes[c.pos.nodeId].pos : pointAlong(this.theater.edges[c.pos.edgeId], c.pos.s);
-        const [sx, sy] = this.toScreen(p.x, p.y, w, h);
-        ctx.globalAlpha = 0.3 + 0.7 * conf;
-        ctx.strokeStyle = SIDE_COLOR.red;
-        ctx.lineWidth = 1.5;
-        ctx.strokeRect(sx - 7, sy - 5, 14, 10);
-        ctx.fillStyle = 'rgba(230, 200, 190, 0.9)';
-        ctx.font = '9px ui-monospace, monospace';
-        ctx.textAlign = 'center';
-        ctx.fillText(`~${c.strength}`, sx, sy + 15);
-        ctx.globalAlpha = 1;
-      }
-    }
-
-    // Forces: rectangles at continuous positions, strength bar underneath.
-    for (const f of [...front.forces].sort((a, b) => a.id - b.id)) {
-      if (f.strength <= 0) continue;
-      if (this.recon === 'contacts' && f.side === 'red') continue; // ghosts own the enemy picture
-      const p = this.forceXY(f);
-      const [sx, sy] = this.toScreen(p.x, p.y, w, h);
-      const sel = f.id === selectedForce;
-      const bw = f.side === 'blue' ? 16 : 14;
-      ctx.fillStyle = SIDE_COLOR[f.side];
-      ctx.strokeStyle = sel ? '#e8dcc4' : 'rgba(20, 18, 12, 0.8)';
-      ctx.lineWidth = sel ? 2 : 1;
-      ctx.fillRect(sx - bw / 2, sy - 5, bw, 10);
-      ctx.strokeRect(sx - bw / 2, sy - 5, bw, 10);
-      if (f.engagedIn !== null) {
-        ctx.fillStyle = '#c9803c';
-        ctx.fillRect(sx - 2, sy - 9, 4, 3);
-      }
-      ctx.fillStyle = 'rgba(230, 220, 200, 0.9)';
-      ctx.font = '9px ui-monospace, monospace';
-      ctx.textAlign = 'center';
-      ctx.fillText(`${f.strength}`, sx, sy + 15);
-      if (this.supplyOn) {
-        const tag = SUPPLY_TAG[supplyTierOf(f.untracedMin)];
-        if (tag) {
-          ctx.fillStyle = tag.color;
-          ctx.font = 'bold 8px ui-monospace, monospace';
-          ctx.fillText(tag.text, sx, sy + 24);
-        }
-      }
-    }
+    // Forces, on top of everything the map says about the ground.
+    for (const c of this.counters) drawCounter(ctx, c);
 
     // Path preview for the selection.
     const sel = front.forces.find((f) => f.id === selectedForce);
@@ -514,6 +485,43 @@ export class TheaterView {
       ctx.font = '13px ui-monospace, monospace';
       ctx.fillText(this.flashText, w / 2, bar && bar.height > 0 ? bar.bottom + 20 : 24);
     }
+  }
+
+  // One spec per force the player may see. Own forces are truth. Under fog
+  // (S53) the enemy is drawn from the CONTACT map: a last-seen report, hollow
+  // and fading, never the live force. A contact names the force, so its role
+  // is known; a force with no contact is not drawn at all.
+  private counterSpecs(front: FrontV2, selectedForce: number, objectives: Set<number>, w: number, h: number): CounterSpec[] {
+    const at = (pos: Force['pos']): { ax: number; ay: number; drop: number } => {
+      const p = pos.kind === 'node' ? this.theater.nodes[pos.nodeId].pos : pointAlong(this.theater.edges[pos.edgeId], pos.s);
+      const [ax, ay] = this.toScreen(p.x, p.y, w, h);
+      const n = pos.kind === 'node' ? this.theater.nodes[pos.nodeId] : null;
+      const r = !n ? 0 : n.rank === 0 ? 7 : n.rank === 1 ? 5 : 3.5;
+      return { ax, ay, drop: !n ? 10 : objectives.has(n.id) ? r + 16 : r + 9 };
+    };
+    const fogged = this.recon === 'contacts';
+    const out: CounterSpec[] = [];
+    for (const f of front.forces) {
+      if (f.strength <= 0 || (fogged && f.side === 'red')) continue;
+      out.push({
+        id: f.id, side: f.side, letter: f.side === 'blue' ? f.name.charAt(0).toUpperCase() : null, role: f.role,
+        strength: f.strength, frac: f.strength / Math.max(1, f.establishment),
+        supply: this.supplyOn && f.side === 'blue' ? supplyTierOf(f.untracedMin) : null,
+        fatigue: f.side === 'blue' ? f.fatigue : 0,
+        selected: f.id === selectedForce, engaged: f.engagedIn !== null, conf: 1, ghost: false, ...at(f.pos),
+      });
+    }
+    if (fogged) {
+      for (const c of front.intel?.blue ?? []) {
+        const f = front.forces.find((x) => x.id === c.forceId);
+        if (!f) continue;
+        out.push({
+          id: c.forceId, side: 'red', letter: null, role: f.role, strength: c.strength, frac: c.strength / Math.max(1, f.establishment),
+          supply: null, fatigue: 0, selected: false, engaged: false, conf: contactConf(c, front.clockMin), ghost: true, ...at(c.pos),
+        });
+      }
+    }
+    return out;
   }
 
   // ETA readout for the HUD: the S13 mirror, kernel opts threaded (S52).

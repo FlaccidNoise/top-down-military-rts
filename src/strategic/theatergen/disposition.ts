@@ -37,7 +37,6 @@ const RED_MOBILE_STRENGTH: Record<number, [number, number]> = {
 
 export interface Disposition {
   forces: ForceInit[];
-  establishment: Record<number, number>; // keyed by the force's ARRAY INDEX (ids assigned at addForce)
 }
 
 export function makeDisposition(
@@ -128,9 +127,5 @@ export function makeDisposition(
   if (forces.length > MAX_FORCES) {
     throw new DispositionError('garrison-starved', `disposition wants ${forces.length} forces against MAX_FORCES ${MAX_FORCES}`);
   }
-  const establishment: Record<number, number> = {};
-  forces.forEach((f, i) => {
-    establishment[i] = f.strength;
-  });
-  return { forces, establishment };
+  return { forces };
 }
