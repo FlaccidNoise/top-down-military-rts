@@ -1,7 +1,9 @@
 // TheaterHud (S30): the V2 strategic chrome — TAPPABLE pause/speed (the
 // keyboard is a shortcut, never the only path), day/clock, objective count,
 // the selected force card, and the §3.9 event scrollback. DOM overlay per
-// the hybrid doctrine; rebuilds are signature-throttled like StratHud.
+// the hybrid doctrine. The DOM is built ONCE and update() patches text and
+// classes: a rebuilt button is a new element between mousedown and mouseup,
+// and at 60x that swallowed every click on the clock row (jtbug #761).
 import { MOBILE } from '../render/view';
 
 import type { WarGoals } from '../strategic/goals';
@@ -25,11 +27,58 @@ export interface TheaterHudCallbacks {
 export class TheaterHud {
   readonly root: HTMLDivElement;
   private lastSig = '';
+  private lastLogSig = '';
+  private readonly top: HTMLElement;
+  private readonly obj: HTMLElement;
+  private readonly clock: HTMLElement;
+  private readonly pause: HTMLElement;
+  private readonly speeds: HTMLElement[];
+  private readonly noContact: HTMLElement;
+  private readonly force: HTMLElement;
+  private readonly forceName: HTMLElement;
+  private readonly forceStat: HTMLElement;
+  private readonly forceState: HTMLElement;
+  private readonly fatFill: HTMLElement;
+  private readonly sup: HTMLElement;
+  private readonly log: HTMLElement;
 
   constructor(private readonly cb: TheaterHudCallbacks) {
     this.root = document.createElement('div');
     this.root.id = 'theater-hud';
     this.root.style.display = 'none';
+    this.root.innerHTML = `
+      <div class="th-head">
+        <div class="panel th-top">
+          <span class="th-obj"></span>
+          <span class="th-clock"></span>
+          <span class="th-controls">
+            <button class="hbtn st-pause" data-clock="pause"></button>
+            ${SPEED_LABELS.map((label, i) => `<button class="hbtn st-speed" data-clock="${i}">${label}</button>`).join('')}
+            <button class="hbtn th-menu" data-th="menu" title="Menu, keybinds and the Field Manual">⚙</button>
+          </span>
+        </div>
+        <div class="panel th-nocontact" hidden>NO CONTACT REPORTED — advance a company to find the enemy</div>
+      </div>
+      <div class="panel th-force" hidden>
+        <b class="th-name"></b><span class="th-stat"></span><span class="th-state"></span>
+        <span class="th-fat"><span class="th-fat-label">fatigue</span><span class="th-fat-track"><span class="th-fat-fill"></span></span></span>
+        <span class="th-sup" hidden></span>
+      </div>
+      <div class="panel th-log"></div>`;
+    const q = (sel: string): HTMLElement => this.root.querySelector<HTMLElement>(sel)!;
+    this.top = q('.th-top');
+    this.obj = q('.th-obj');
+    this.clock = q('.th-clock');
+    this.pause = q('.st-pause');
+    this.speeds = Array.from(this.root.querySelectorAll<HTMLElement>('.st-speed'));
+    this.noContact = q('.th-nocontact');
+    this.force = q('.th-force');
+    this.forceName = q('.th-name');
+    this.forceStat = q('.th-stat');
+    this.forceState = q('.th-state');
+    this.fatFill = q('.th-fat-fill');
+    this.sup = q('.th-sup');
+    this.log = q('.th-log');
     document.body.appendChild(this.root);
     this.root.addEventListener('click', (e) => {
       if ((e.target as HTMLElement).closest('[data-th="menu"]')) { this.cb.openMenu(); return; }
@@ -63,65 +112,60 @@ export class TheaterHud {
     if (sig === this.lastSig) return;
     this.lastSig = sig;
 
-    const speeds = SPEED_LABELS.map(
-      (label, i) => `<button class="hbtn st-speed${i === speedIdx ? ' active' : ''}" data-clock="${i}">${label}</button>`,
-    ).join('');
-    const supplyLine = (f: Force): string => {
-      if (!supplyOn) return '';
-      const tier = supplyTierOf(f.untracedMin);
-      if (tier === 'full') return '<span class="th-sup th-sup-full">supplied</span>';
-      const hrs = Math.floor(f.untracedMin / 60);
-      return `<span class="th-sup th-sup-${tier}">${tier === 'low' ? 'SUPPLY LOW' : 'OUT OF SUPPLY'} · cut ${hrs}h</span>`;
-    };
-    // Persistent ETA: destination read off the live path, minutes from the
-    // SAME shadow kernel the step marches — the readout survives re-opens
-    // and dusk instead of living only in the order flash.
-    const etaLine = (f: Force): string => {
-      const dest = pathDestination(front.theater, f);
-      if (dest === null || f.engagedIn !== null) return '';
-      const eta = forceEtaMinutes(front, f, dest, { nightTempo });
-      const hh = Math.floor(eta / 60);
-      const mm = eta % 60;
-      return ` → ${front.theater.nodes[dest].name} · ETA ${hh > 0 ? `${hh}h` : ''}${mm.toString().padStart(2, '0')}m`;
-    };
-    const fatigueBar = (f: Force): string => {
-      const pct = Math.round(f.fatigue * 100);
-      const cls = f.fatigue >= 0.66 ? 'high' : f.fatigue >= 0.33 ? 'mid' : 'low';
-      return `<span class="th-fat"><span class="th-fat-label">fatigue</span><span class="th-fat-track"><span class="th-fat-fill th-fat-${cls}" style="width:${pct}%"></span></span></span>`;
-    };
-    const selCard = sel
-      ? `<div class="panel th-force">
-          <b>${sel.name}</b> · ${sel.strength} men · ${sel.role}
-          ${sel.engagedIn !== null ? '<span class="th-eng">ENGAGED</span>' : sel.path.length > 0 ? `<span class="th-mov">moving${etaLine(sel)}</span>` : '<span class="th-hold">holding</span>'}
-          ${fatigueBar(sel)}
-          ${supplyLine(sel)}
-        </div>`
-      : '';
-    const log = front.events
-      .slice(-8)
-      .map((e) => {
-        const eh = Math.floor((e.min % 1440) / 60).toString().padStart(2, '0');
-        const em = (e.min % 60).toString().padStart(2, '0');
-        return `<div class="th-ev th-ev-${e.kind}">${eh}${em} ${e.text}</div>`;
-      })
-      .reverse()
-      .join('');
-
     const objHelp = lastDay === null
       ? `Hold ${need} of ${objectives.length} objectives to win. You lose if your force is destroyed.`
       : `Hold ${need} of ${objectives.length} objectives before Day ${lastDay} to win. You lose if the deadline passes or your force is destroyed.`;
-    this.root.innerHTML = `
-      <div class="panel th-top">
-        <span class="th-obj" title="${objHelp}">Objectives ${held}/${objectives.length}${need < objectives.length ? ` (need ${need})` : ''}</span>
-        <span class="th-clock">Day ${front.day}${lastDay === null ? '' : ` of ${lastDay}`} · ${hh}${mm}</span>
-        <span class="th-controls">
-          <button class="hbtn st-pause${paused ? ' active' : ''}" data-clock="pause">${paused ? '▶ Resume' : '⏸ Pause'}</button>
-          ${speeds}
-          <button class="hbtn th-menu" data-th="menu" title="Menu, keybinds and the Field Manual">⚙</button>
-        </span>
-      </div>
-      ${selCard}
-      ${reconOn && contacts === 0 ? '<div class="panel th-nocontact">NO CONTACT REPORTED — push a screen toward the enemy</div>' : ''}
-      <div class="panel th-log">${log || `<div class="th-ev">${EMPTY_LOG}</div>`}</div>`;
+    this.obj.title = objHelp;
+    this.obj.textContent = `Objectives ${held}/${objectives.length}${need < objectives.length ? ` (need ${need})` : ''}`;
+    this.clock.textContent = `Day ${front.day}${lastDay === null ? '' : ` of ${lastDay}`} · ${hh}${mm}`;
+    // Paused is a state of the whole row, not one more lit chip: the pause
+    // button inverts and the speeds dim, so "paused at 10x" reads as paused.
+    this.top.classList.toggle('is-paused', paused);
+    this.pause.textContent = paused ? '▶ Resume' : '⏸ Pause';
+    this.speeds.forEach((b, i) => b.classList.toggle('active', i === speedIdx));
+    this.noContact.hidden = !(reconOn && contacts === 0);
+
+    this.force.hidden = !sel;
+    if (sel) {
+      this.forceName.textContent = sel.name;
+      this.forceStat.textContent = ` · ${sel.strength} men · ${sel.role}`;
+      if (sel.engagedIn !== null) this.setState('th-eng', 'ENGAGED');
+      else if (sel.path.length > 0) {
+        // Persistent ETA: destination read off the live path, minutes from the
+        // SAME shadow kernel the step marches — the readout survives re-opens
+        // and dusk instead of living only in the order flash.
+        const dest = pathDestination(front.theater, sel)!;
+        const eta = forceEtaMinutes(front, sel, dest, { nightTempo });
+        const eh = Math.floor(eta / 60);
+        this.setState('th-mov', `moving → ${front.theater.nodes[dest].name} · ETA ${eh > 0 ? `${eh}h` : ''}${(eta % 60).toString().padStart(2, '0')}m`);
+      } else this.setState('th-hold', 'holding');
+      this.fatFill.className = `th-fat-fill th-fat-${sel.fatigue >= 0.66 ? 'high' : sel.fatigue >= 0.33 ? 'mid' : 'low'}`;
+      this.fatFill.style.width = `${Math.round(sel.fatigue * 100)}%`;
+      const tier = supplyTierOf(sel.untracedMin);
+      this.sup.hidden = !supplyOn;
+      this.sup.className = `th-sup th-sup-${tier}`;
+      this.sup.textContent = tier === 'full' ? 'supplied' : `${tier === 'low' ? 'SUPPLY LOW' : 'OUT OF SUPPLY'} · cut ${Math.floor(sel.untracedMin / 60)}h`;
+    }
+
+    // The log is the one part still rebuilt, and only when an event lands: a
+    // rebuild every game minute threw the reader's scroll position away.
+    const logSig = `${front.events.length}|${lastEvent?.min ?? ''}|${lastEvent?.text ?? ''}`;
+    if (logSig !== this.lastLogSig) {
+      this.lastLogSig = logSig;
+      this.log.innerHTML = front.events
+        .slice(-8)
+        .map((e) => {
+          const eh = Math.floor((e.min % 1440) / 60).toString().padStart(2, '0');
+          const em = (e.min % 60).toString().padStart(2, '0');
+          return `<div class="th-ev th-ev-${e.kind}">${eh}${em} ${e.text}</div>`;
+        })
+        .reverse()
+        .join('') || `<div class="th-ev">${EMPTY_LOG}</div>`;
+    }
+  }
+
+  private setState(cls: string, text: string): void {
+    this.forceState.className = `th-state ${cls}`;
+    this.forceState.textContent = text;
   }
 }

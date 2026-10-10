@@ -1429,11 +1429,20 @@ html.mobile #floormenu .fm-row { padding: 12px 16px; }
   -webkit-user-select: none;
 }
 #theater-hud .panel { background: var(--ink); border: 1px solid var(--border); border-radius: 3px; pointer-events: auto; }
-#theater-hud .th-top {
+/* The top bar and the NO CONTACT banner share one column, so the banner sits
+   under the bar whatever height the bar wraps to. It was pinned at top: 52px
+   and covered the lower half of every clock button on a phone. */
+#theater-hud .th-head {
   position: absolute;
   top: 8px;
   left: 50%;
   transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+#theater-hud .th-top {
   display: flex;
   gap: 14px;
   align-items: center;
@@ -1442,20 +1451,29 @@ html.mobile #floormenu .fm-row { padding: 12px 16px; }
 }
 #theater-hud .th-controls { display: flex; gap: 6px; }
 #theater-hud .hbtn { min-width: 44px; min-height: 32px; }
+html.mobile #theater-hud .hbtn { min-height: 44px; }
+/* One width for "Pause" and "Resume": the row must not shift under the cursor. */
+#theater-hud .st-pause { min-width: calc(8ch + 24px); }
+/* Paused is its own state, not a second lit chip beside the selected speed:
+   the pause button inverts and the speed row dims. */
+#theater-hud .is-paused .st-pause {
+  background: var(--amber);
+  border-color: var(--amber);
+  color: #1a1d14;
+  font-weight: var(--fw-label);
+}
+#theater-hud .is-paused .st-speed { opacity: 0.45; }
 #theater-hud .th-force { position: absolute; left: 10px; bottom: 10px; padding: 8px 12px; }
 #theater-hud .th-eng { color: #c9803c; margin-left: 8px; }
 #theater-hud .th-mov { color: #9ab27d; margin-left: 8px; }
 #theater-hud .th-hold { color: var(--muted); margin-left: 8px; }
 #theater-hud .th-nocontact {
-  position: absolute;
-  top: 52px;
-  left: 50%;
-  transform: translateX(-50%);
   padding: 6px 14px;
   color: #c9b891;
   font-size: 12px;
   letter-spacing: 0.06em;
   white-space: nowrap;
+  pointer-events: none;
 }
 #theater-hud .th-fat { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
 #theater-hud .th-fat-label { color: var(--muted); font-size: 10px; letter-spacing: 0.05em; }
@@ -1482,19 +1500,26 @@ html.mobile #floormenu .fm-row { padding: 12px 16px; }
 #theater-hud .th-ev-contact, #theater-hud .th-ev-battle-resolved { color: #c9a06c; }
 #theater-hud .th-ev-capture { color: #9ab27d; }
 #theater-hud .th-ev-overrun { color: #b06a5a; }
+/* Parts the HUD shows and hides in place. Keep this after the rules above:
+   several of them set display, and at equal specificity the later one wins. */
+#theater-hud [hidden] { display: none; }
 @media (max-width: 720px) {
   /* A centred nowrap bar clips off both screen edges on a phone. Span the
      viewport and wrap the controls to a second row instead. */
-  #theater-hud .th-top {
+  #theater-hud .th-head {
     left: 4px;
     right: 4px;
     transform: none;
+    align-items: stretch;
+  }
+  #theater-hud .th-top {
     flex-wrap: wrap;
     justify-content: center;
     gap: 8px;
     padding: 6px 8px;
     font-size: 11px;
   }
+  #theater-hud .th-nocontact { white-space: normal; text-align: center; }
   /* The company card and the event log take a bottom corner each on a desktop,
      and at 390px the two corners are the same place. Stack them: the layer
      becomes a bottom-aligned column and both panels rejoin the flow. Chosen
