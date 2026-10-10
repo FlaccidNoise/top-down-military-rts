@@ -864,11 +864,16 @@ export class Renderer {
     ctx.strokeRect(mx0, my0, mx1 - mx0, my1 - my0);
     this.spreadPools(now);
     this.decals.draw(ctx, cam, cw, ch);
-    this.marks.draw(ctx, cam, cw, ch);
     this.brass.draw(ctx, cam, cw, ch);
     this.roofs.update(this.sim, cam, dt || 1 / 60);
     this.roofs.drawShadows(ctx, cam, cw, ch);
     this.roofs.drawWalls(ctx, cam, cw, ch);
+    // Bullet strikes in masonry go on AFTER the wall bands. A strike is
+    // recorded on the wall's own line, and drawWalls paints an opaque 0.3 m
+    // band down that line: drawn before it, as they were, every chip in a
+    // building's wall was painted over the frame it was made, and the effect
+    // showed only on free-standing walls.
+    this.marks.draw(ctx, cam, cw, ch);
     // interior lighting and stair glyphs, only where the roof fade reveals them
     this.terrain.drawHearthGlow(ctx, cam, cw, ch, this.flickerOn ? now : 0, (x, y) => this.roofs.interiorVisibleAt(x, y));
     this.terrain.drawStairs(ctx, cam, cw, ch, (x, y) => this.roofs.interiorVisibleAt(x, y));
