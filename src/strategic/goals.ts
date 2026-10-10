@@ -15,7 +15,7 @@ export class TheaterGoalsError extends Error {
 }
 
 export type WinCondition =
-  | { kind: 'control'; nodeIds: number[]; need: number; byDay?: number }
+  | { kind: 'control'; nodeIds: number[]; need: number }
   | { kind: 'deadline'; day: number }
   | { kind: 'annihilate'; enemyBelowStrength: number };
 
@@ -45,7 +45,6 @@ function met(front: FrontV2, side: Side, c: WinCondition): string | null {
   switch (c.kind) {
     case 'control': {
       const held = c.nodeIds.filter((n) => front.controlByNode[n] === side).length;
-      if (c.byDay !== undefined && front.day > c.byDay) return null;
       return held >= c.need ? `controls ${held}/${c.nodeIds.length} objectives` : null;
     }
     case 'deadline':

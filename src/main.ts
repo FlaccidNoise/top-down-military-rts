@@ -47,6 +47,7 @@ import { Commander2, RED_V2 } from './strategic/planner';
 import { addForce, pushEvent, type CoarseBattle, type FrontV2, type MoveReject } from './strategic/theater/force';
 import { firstContactOnMarch, orderHalt, orderMove, previewMove, setPosture } from './strategic/theater/step';
 import { applyRequisition, requisitionDue, requisitionOffer, type RequisitionCard } from './strategic/requisition';
+import { resultOfWin, resultTarget } from './strategic/result';
 import { battleCatchUpMin, openBattle, retreatForce, stepWar } from './strategic/theater/war';
 import { syncStrengthsV2 } from './strategic/theater/sync';
 import type { Contact } from './strategic/theater/contact';
@@ -1212,9 +1213,20 @@ function showOperationEnd(status: 'won' | 'lost'): void {
   const sess = S();
   const day = sess.v2 ? sess.v2.front.day : sess.front.day;
   const kia = Object.values(S().campaign.soldiers).filter((s) => s.status === 'kia').length;
+  // A win is graded (result.ts): the grade, then the numbers that decided it.
+  // A loss says how far it got. Neither changes who won.
+  const v2 = sess.v2;
+  const grade = v2 && status === 'won' ? resultOfWin(v2.front, sess.campaign, v2.campaignCfg.warDays) : null;
+  const held = v2 ? v2.front.theater.objectiveNodes.filter((n) => v2.front.controlByNode[n] === 'blue').length : 0;
+  const verdict = grade
+    ? `<p class="db-tier db-tier-${grade.tier}">${grade.title}</p><p class="sub">${grade.why}</p>`
+    : v2
+      ? `<p class="sub">${held} of ${v2.front.theater.objectiveNodes.length} objectives held on Day ${day}.</p>`
+      : '';
   debriefEl.innerHTML = `<div class="db-scroll"><div class="db">
     <h1 class="${status === 'won' ? 'win' : 'loss'}">OPERATION ${status === 'won' ? 'ACCOMPLISHED' : 'FAILED'}</h1>
-    <p class="sub">${S().campaign.log.length} battles fought over ${day} days · ${kia} men killed.</p>
+    ${verdict}
+    <p class="sub">${grade ? `${S().campaign.log.length} battles fought.` : `${S().campaign.log.length} battles fought over ${day} days · ${kia} men killed.`}</p>
     </div></div>
     <div class="db-actions"><button id="next" class="primary">New operation</button><button id="same">Same theater again</button></div>`;
   debriefEl.style.display = 'flex';
@@ -2080,7 +2092,7 @@ function frame(now: number): void {
       const st = warStatus(v2.front, v2.goals);
       if (st.state === 'decided') showOperationEnd(st.winner === 'blue' ? 'won' : 'lost');
     }
-    theaterHud.update(v2.front, v2.goals, v2.selectedForce, stratPaused, speedIdx, v2.campaignCfg.supply, v2.campaignCfg.recon === 'contacts', v2.campaignCfg.nightTempo);
+    theaterHud.update(v2.front, v2.goals, v2.selectedForce, stratPaused, speedIdx, v2.campaignCfg.supply, v2.campaignCfg.recon === 'contacts', v2.campaignCfg.nightTempo, resultTarget(v2.front, S().campaign, v2.campaignCfg.warDays));
     v2.view.inset = theaterInset();
     if (v2.needsFrame) {
       v2.needsFrame = false;

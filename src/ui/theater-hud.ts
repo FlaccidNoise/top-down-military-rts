@@ -106,6 +106,7 @@ export class TheaterHud {
   private readonly top: HTMLElement;
   private readonly obj: HTMLElement;
   private readonly clock: HTMLElement;
+  private readonly target: HTMLElement;
   private readonly pause: HTMLElement;
   private readonly speeds: HTMLElement[];
   private readonly noContact: HTMLElement;
@@ -138,6 +139,7 @@ export class TheaterHud {
         <div class="panel th-top">
           <span class="th-obj"></span>
           <span class="th-clock"></span>
+          <span class="th-target"></span>
           <span class="th-controls">
             <button class="hbtn st-pause" data-clock="pause"></button>
             ${SPEED_LABELS.map((label, i) => `<button class="hbtn st-speed" data-clock="${i}">${label}</button>`).join('')}
@@ -173,6 +175,7 @@ export class TheaterHud {
     this.top = q('.th-top');
     this.obj = q('.th-obj');
     this.clock = q('.th-clock');
+    this.target = q('.th-target');
     this.pause = q('.st-pause');
     this.speeds = Array.from(this.root.querySelectorAll<HTMLElement>('.st-speed'));
     this.noContact = q('.th-nocontact');
@@ -248,7 +251,8 @@ export class TheaterHud {
     });
   }
 
-  update(front: FrontV2, goals: WarGoals, selectedForce: number, paused: boolean, speedIdx: number, supplyOn = false, reconOn = false, nightTempo = false): void {
+  // `target` is the best result still open (result.ts), for the top bar.
+  update(front: FrontV2, goals: WarGoals, selectedForce: number, paused: boolean, speedIdx: number, supplyOn = false, reconOn = false, nightTempo = false, target = ''): void {
     const control = goals.blue.find((c) => c.kind === 'control');
     const objectives = control && control.kind === 'control' ? control.nodeIds : [];
     const held = objectives.filter((n) => front.controlByNode[n] === 'blue').length;
@@ -277,7 +281,7 @@ export class TheaterHud {
     const sig = [
       front.day, hh, mm, held, need, objectives.length, lastDay, paused, speedIdx, selectedForce,
       sel ? `${sel.strength}:${sel.path.length}:${sel.engagedIn}:${sel.untracedMin}:${Math.round(sel.fatigue * 100)}:${sel.posture}:${sel.dugMin}:${sel.armorAttacks}:${sel.reconUntilDay}` : '',
-      requisitionDue(front), front.requisition?.barrageUntilDay ?? 0,
+      requisitionDue(front), front.requisition?.barrageUntilDay ?? 0, target,
       front.events.length, lastEvent?.text ?? '', supplyOn, reconOn, contacts, inContact, marching,
       garrisons.map((g) => `${g.holder}:${g.own}:${g.foe}`).join('/'),
     ].join('|');
@@ -290,6 +294,8 @@ export class TheaterHud {
     this.obj.title = objHelp;
     this.obj.textContent = `Objectives ${held}/${objectives.length}${need < objectives.length ? ` (need ${need})` : ''}`;
     this.clock.textContent = `Day ${front.day}${lastDay === null ? '' : ` of ${lastDay}`} · ${hh}${mm}`;
+    this.target.textContent = target;
+    this.target.className = `th-target${target.startsWith('Decisive') ? ' th-target-on' : ''}`;
     // Paused is a state of the whole row, not one more lit chip: the pause
     // button inverts and the speeds dim, so "paused at 10x" reads as paused.
     this.top.classList.toggle('is-paused', paused);

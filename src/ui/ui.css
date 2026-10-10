@@ -388,6 +388,10 @@ button.hbtn.active { background: var(--chip-active-bg); border-color: var(--ambe
 #debrief h1.win { color: var(--state-steady); }
 #debrief h1.loss { color: var(--red); }
 #debrief .sub { color: var(--muted); margin: 0 0 6px; }
+#debrief .db-tier { margin: 0 0 2px; font-size: var(--fs-lg); font-weight: var(--fw-head); letter-spacing: 2px; text-transform: uppercase; }
+#debrief .db-tier-decisive { color: var(--amber-bright); }
+#debrief .db-tier-marginal { color: var(--paper); }
+#debrief .db-tier-pyrrhic { color: var(--red); }
 #debrief .fallen { color: var(--red); margin: 0 0 6px; }
 #debrief .intel { color: var(--paper); margin: 0 0 6px; }
 #debrief .intel b { color: var(--amber); font-weight: var(--fw-label); }
@@ -1615,6 +1619,8 @@ html.mobile #theater-hud .th-ev[data-ev] { padding: 6px 0; }
 #theater-hud .th-contact .fc-actions .hbtn { padding: 6px 16px; }
 #theater-hud .th-contact .hbtn.primary { background: var(--chip-active-bg); border-color: var(--amber); color: var(--amber-bright); font-weight: var(--fw-label); }
 #theater-hud.in-contact .th-force, #theater-hud.in-contact .th-log { display: none; }
+#theater-hud .th-target { color: var(--muted); white-space: nowrap; }
+#theater-hud .th-target-on { color: var(--amber-bright); }
 /* The requisition sheet, in the contact card's panel. */
 #theater-hud .rq-for { display: flex; gap: 4px; margin: 6px 0; }
 #theater-hud .rq-co { flex: 1 1 0; min-height: 32px; padding: 2px 4px; }
