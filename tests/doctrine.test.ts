@@ -4,9 +4,10 @@ import { describe, expect, it } from 'vitest';
 import { AI_MEMORY_TICKS, RedCommander } from '../src/sim/ai';
 import { newCampaign } from '../src/campaign/campaign';
 import { WEAPONS } from '../src/sim/data';
+import { COMPANY_TOE, squadHeadcount } from '../src/sim/toe';
 import { EDGE, GameMap } from '../src/sim/map';
 import { SPOT_INTERVAL, Sim } from '../src/sim/sim';
-import { makeStrategicBattle, newFront } from '../src/strategic/bridge';
+import { DE_SLICE, fieldGerman, makeStrategicBattle, newFront } from '../src/strategic/bridge';
 import { makeDefaultSector } from '../src/strategic/sector';
 import { ASSAULT_DANGER_MULT, compliance, dangerScore } from '../src/sim/orders';
 
@@ -1442,6 +1443,60 @@ describe('what an attacking German force is given (#794)', () => {
     const plain = stage(false);
     expect(plain.aimed).toBeNull();
     expect(plain.barrages).toEqual([]);
+  });
+});
+
+// #796. A German force under strength was fielded off the front of the
+// company table: nine Gruppen first, weapons after. Under 99 men it had no
+// mortar, under 82 no tripod MG, and most theater garrisons are under both.
+describe('a force under strength is a slice of the company (#796)', () => {
+  const toe = COMPANY_TOE.de_grenadier_co;
+  const count = (f: { key: string; take: number }[], key: string): number => f.filter((q) => q.key === key).length;
+
+  it('a full company is the table, in the table order; the slice draws on every row once', () => {
+    expect(fieldGerman(109).map((f) => f.key)).toEqual(toe);
+    expect(fieldGerman(109).every((f, i) => f.take === squadHeadcount(toe[i]))).toBe(true);
+    expect([...DE_SLICE].sort((a, b) => a - b)).toEqual(toe.map((_, i) => i));
+  });
+
+  it('every strength a garrison comes in has its share of the weapons, and fields exactly its men', () => {
+    for (let n = 1; n <= 109; n++) expect(fieldGerman(n).reduce((a, f) => a + f.take, 0), `${n}`).toBe(n);
+    const platoon = fieldGerman(36); // the smallest theater garrison
+    expect(count(platoon, 'de_gruppe')).toBe(3);
+    expect(count(platoon, 'de_smg42')).toBe(1);
+    expect(count(platoon, 'de_mortar81')).toBe(1);
+    expect(platoon.find((f) => f.key === 'de_mortar81')!.take).toBeGreaterThanOrEqual(3); // enough to serve the tube
+    const sixty = fieldGerman(60);
+    expect(count(sixty, 'de_gruppe')).toBe(6);
+    expect(count(sixty, 'de_smg42')).toBe(1);
+    expect(count(sixty, 'de_mortar81')).toBe(1);
+    const eighty = fieldGerman(80);
+    expect(count(eighty, 'de_smg42')).toBe(2);
+    expect(count(eighty, 'de_mortar81')).toBe(2);
+    // and what is fielded is in table order whatever was drawn first
+    for (const n of [36, 60, 80, 100]) {
+      const idx = fieldGerman(n).map((f) => toe.indexOf(f.key));
+      expect([...idx].sort((a, b) => a - b), `${n}`).toEqual(idx);
+    }
+  });
+
+  it('a Kampfgruppe past the table adds rifle Gruppen', () => {
+    const big = fieldGerman(130);
+    expect(big.slice(0, toe.length).map((f) => f.key)).toEqual(toe);
+    expect(big.slice(toe.length).map((f) => [f.key, f.take])).toEqual([['de_gruppe', 9], ['de_gruppe', 9], ['de_gruppe', 3]]);
+  });
+
+  it('a 60-man garrison stages with a tube and a tripod gun dug in', () => {
+    const c = newCampaign(4);
+    const front = newFront(c, makeDefaultSector());
+    const able = front.chits.find((ch) => ch.side === 'blue')!;
+    const garrison = front.chits.find((ch) => ch.name === 'Garnison St-Aubin')!;
+    garrison.strength = 60;
+    const { sim } = makeStrategicBattle(c, front, { attackerId: able.id, defenderId: garrison.id, cell: garrison.cell }, 4);
+    expect(sim.soldiers.filter((m) => m.side === 'red').length).toBeGreaterThanOrEqual(60); // its 60, and the PaK's crew
+    const kinds = sim.emplacements.filter((e) => e.side === 'red').map((e) => e.kind);
+    expect(kinds).toContain('mortar81');
+    expect(kinds).toContain('mg42_lafette');
   });
 });
 

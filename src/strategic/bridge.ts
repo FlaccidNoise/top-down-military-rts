@@ -254,6 +254,42 @@ function anchorClearOfStartLine(sim: Sim, a: Vec, range: number): boolean {
 const FORD_SUPPRESSION = 0.45; // crossing under fire: shaken at spawn (fast-decaying)
 const FORD_STAMINA = 0.65; // an hour wading: no sprinting off the far bank
 
+// Which squads a German force of `strength` men fields (#796). The company
+// table lists its nine Gruppen first and its weapons after them, and a force
+// was fielded off the front of that list: at 91 men it had no mortar, at 80
+// no tripod MG either, and a 60-man garrison was six and a half rifle Gruppen
+// and nothing else. On the theater a garrison is 36 to 109 men, so that was
+// most of them, and with no tube there is no defensive fire at all (probed:
+// 0 HE shells a battle under 99 men, 30 at full strength).
+//
+// A force under strength is a slice of the company, not its first rows:
+// DE_SLICE is the order the table is drawn on, a platoon of three Gruppen and
+// then its share of the weapons, three times over. Every prefix of it is a
+// balanced force: 36 men are a platoon, a tripod MG and a mortar.
+//
+// The squads still FIELD in table order, the last one drawn partial. A full
+// company is therefore the same list in the same order as before, and stages
+// byte for byte as it did.
+export const DE_SLICE = [0, 1, 2, 9, 11, 3, 4, 5, 10, 12, 13, 6, 7, 8, 14, 15];
+export function fieldGerman(strength: number): { key: SquadKey; take: number }[] {
+  const toe: SquadKey[] = COMPANY_TOE.de_grenadier_co;
+  const take = toe.map(() => 0);
+  let remaining = strength;
+  for (const i of DE_SLICE) {
+    if (remaining <= 0) break;
+    take[i] = Math.min(squadHeadcount(toe[i]), remaining);
+    remaining -= take[i];
+  }
+  const fielded = toe.map((key, i) => ({ key, take: take[i] })).filter((f) => f.take > 0);
+  // Past the company's table (an attacking Kampfgruppe may be): more rifle Gruppen.
+  while (remaining > 0) {
+    const n = Math.min(squadHeadcount('de_gruppe'), remaining);
+    fielded.push({ key: 'de_gruppe', take: n });
+    remaining -= n;
+  }
+  return fielded;
+}
+
 // Front-packed partial roster of slot-default members: fields exactly `count`
 // men of a squad def (teams fill in order), so a garrison's headcount always
 // matches its chit strength — no over- or under-fielding on attrited chits.
@@ -392,15 +428,7 @@ export function makeStrategicBattle(
     }
   } else {
     // --- Red attacker: field from TO&E de_grenadier_co at west spawn ---
-    const atkFielded: { key: SquadKey; take: number }[] = [];
-    const toe: SquadKey[] = COMPANY_TOE.de_grenadier_co;
-    let atkRemaining = Math.min(attacker.strength, Math.max(companyHeadcount(toe), FIELD_BUDGET - defender.strength));
-    for (let i = 0; atkRemaining > 0; i++) {
-      const key = toe[i] ?? 'de_gruppe'; // past the company's table: more rifle Gruppen
-      const take = Math.min(squadHeadcount(key), atkRemaining);
-      atkFielded.push({ key, take });
-      atkRemaining -= take;
-    }
+    const atkFielded = fieldGerman(Math.min(attacker.strength, Math.max(companyHeadcount(COMPANY_TOE.de_grenadier_co), FIELD_BUDGET - defender.strength)));
     const yBandH = atkFielded.length > 0 ? (yHi - yLo) / atkFielded.length : yHi - yLo;
     atkFielded.forEach(({ key, take }, i) => {
       const anchor = nudgePassable(plan.map, west.x + 7, yLo + yBandH * (i + 0.5));
@@ -479,16 +507,9 @@ export function makeStrategicBattle(
   // --- Field defender ---
   const sited: Sited[] = [];
   if (attackerSide === 'blue') {
-    // Field exactly defender.strength men: TO&E squads in order, the last one
-    // partial if the strength doesn't land on a squad boundary.
-    const fielded: { key: SquadKey; take: number }[] = [];
-    let remaining = defender.strength;
-    for (const key of COMPANY_TOE.de_grenadier_co) {
-      if (remaining <= 0) break;
-      const take = Math.min(squadHeadcount(key), remaining);
-      fielded.push({ key, take });
-      remaining -= take;
-    }
+    // Field exactly defender.strength men (fieldGerman), and never more than
+    // the company's table: a garrison is one company at most.
+    const fielded = fieldGerman(Math.min(defender.strength, companyHeadcount(COMPANY_TOE.de_grenadier_co)));
     const assignedHeadcount = sectorAnchors.map(() => 0);
     const sectorOfSquad = fielded.map(({ take }) => {
       let best = 0;
