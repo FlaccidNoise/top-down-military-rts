@@ -122,14 +122,16 @@ function presetNamed(name: string): Preset {
 // New campaign, and "Start the campaign" after the drill. Chosen by
 // measurement, not taste: scripts/firstcontact.mjs marches the strongest
 // company at an objective on each preset and fights what it meets with both
-// battle commanders. On the sim of 2026-10-10 (main at 227cce7), 12 seeds each:
-//   Skirmish         odds 2.4 to 4.8 : 1, blue won 10, lost 1, 1 undecided,
-//                    median 30 killed of 143. At the weakest garrison instead
-//                    of the nearest (what the tutorial's ring points at):
-//                    won 12 of 12, median 35 killed.
-//   Normandy Bocage  odds 1.5 to 3.5 : 1, blue won 8, lost 2, 2 undecided,
-//                    median 68 killed of 143.
-// River Line and Open Country open at 1.3 : 1 median odds and were not fought.
+// battle commanders. On main at 064e917 (2026-10-10), 12 seeds each:
+//   Skirmish, weakest garrison   odds 2.4 to 5.5 : 1, blue won 12 of 12,
+//                                median 35 killed of 143, 3.5 to 7 minutes.
+//   Skirmish, nearest objective  blue won 10, lost 1, 1 undecided at 25 min.
+//   Normandy Bocage, weakest     odds 1.3 to 5 : 1, blue won 10, lost 2,
+//                                median 38 killed, and up to 89.
+// "Weakest garrison" is the town the tutorial's march step rings (theaterMark
+// in src/main.ts). River Line and Open Country open at 1.3 : 1 median odds at
+// the nearest objective and were not fought. Skirmish also keeps fog, supply
+// and night tempo off, so a first campaign has three fewer rules to meet.
 // Re-run the sweep after a balance pass. DEFAULT_PRESET stays the setup
 // screen's starting point.
 export const FIRST_PRESET = presetNamed('Skirmish');

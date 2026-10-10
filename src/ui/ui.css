@@ -1969,6 +1969,10 @@ html.mobile #theater-hud .th-ev[data-ev] { padding: 6px 0; }
   position: fixed;
   z-index: 8;
   transform: translateX(-50%);
+  /* A fixed box placed by `left` shrinks to the room on its right: half the
+     screen. Size it to its line and let max-width (set inline) do the wrap. */
+  width: max-content;
+  text-wrap: balance; /* two even lines on a phone, not one long and one word */
   box-sizing: border-box;
   padding: 6px 12px;
   font-family: var(--font-hud);

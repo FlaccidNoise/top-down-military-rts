@@ -82,6 +82,10 @@ export const stepView = (page) =>
       ring: t?.ring ?? null,
       occupied: t?.occupied ?? [],
       feed: sel.mode === 'battle' ? g.pings.feed : null,
+      // Barks: a word over a man (src/render/barks.ts), where its middle is drawn.
+      barks: sel.mode === 'battle'
+        ? [...g.barks.speaking].map(([id, b]) => { const m = g.sim.soldiers[id]; const [x, y] = g.cam.worldToScreen(m.x, m.y, innerWidth, innerHeight); return { kind: b.kind, x, y: y - g.cam.scale * 0.9 - 8 }; })
+        : [],
       stage: g.stage(),
       glow: [...document.querySelectorAll('#orderbar .ord.glow')].map((e) => e.dataset.order),
       armed: sel.armedOrder,
@@ -144,6 +148,15 @@ export async function checkStep(h, id, { check, shot }) {
     check(!!v.bubble && gap >= -4, `${tag}: the bubble is clear of the ring (${Math.round(gap)} px from its edge)`);
   }
   check(!v.feed || !v.occupied.some((r) => overlap(v.feed, r)), `${tag}: the ticker is clear of the bubble and the ring${v.feed ? ` (ticker at y ${Math.round(v.feed.top)} to ${Math.round(v.feed.bottom)})` : ' (no lines)'}`);
+  // A bark is a word on the canvas. The bubble is DOM over the canvas and the
+  // ring is drawn after the barks, so neither can be covered by one. What can
+  // happen is a word sitting on the ring's line, and that is checked.
+  if (v.barks.length > 0 && v.ring) {
+    const onLine = v.barks.filter((b) => Math.abs(Math.hypot(b.x - v.ring.x, b.y - v.ring.y) - v.ring.r) < 7);
+    const inside = v.barks.filter((b) => Math.hypot(b.x - v.ring.x, b.y - v.ring.y) < v.ring.r - 7).length;
+    const under = v.barks.filter((b) => v.bubble && b.x > v.bubble.left && b.x < v.bubble.right && b.y > v.bubble.top && b.y < v.bubble.bottom).length;
+    check(onLine.length === 0, `${tag}: no bark sits on the ring's line (${v.barks.length} on screen: ${v.barks.map((b) => b.kind).join(', ')}; ${inside} inside the ring, ${under} behind the bubble${onLine.length ? `; on the line: ${onLine.map((b) => b.kind).join(', ')}` : ''})`);
+  }
   checkViewport(check, tag, v.vp);
   if (v.holds) {
     const held = await page.evaluate(async (t0) => { await new Promise((r) => setTimeout(r, 400)); return window.__game.sim.tick === t0; }, v.tick);
