@@ -387,6 +387,10 @@ export interface Team {
   orderState: OrderState;
   smokeLeft: number; // rifle-team smoke budget, 2/battle
   ambushBonusTick: number; // tick the ambush trigger fired on, -1 = none/consumed
+  // Its side knows of an enemy within GROUND_RANGE of this team. Written by
+  // the spotting sweep (markContactNear) and read by stanceOf, which is on
+  // the LOS hot path and must not go looking for contacts itself.
+  contactNear: boolean;
 }
 
 export interface ShotEvent {
@@ -698,6 +702,11 @@ export const EYE_PRONE = 0.4;
 // A vehicle sights from the commander's cupola and is itself a hull-sized
 // target: a bank that hides a man does not hide a tank.
 export const EYE_VEHICLE = 2.2;
+// Going to ground (stanceOf): a halted man kneels when his side knows of an
+// enemy within GROUND_RANGE of his team, and lies down past GROUND_SUPP — the
+// "under effective fire" line teamUnderFire and the mental ladder both use.
+const GROUND_RANGE = 100;
+const GROUND_SUPP = 0.35;
 export const HULL_VEHICLE = 2.0;
 
 // Stance is DERIVED, never stored: no field on Soldier, no bytes in snapshot().
@@ -717,9 +726,17 @@ export function stanceOf(sim: Sim, s: Soldier): Stance {
   // stance existed; sighting him at 1.6 m while drawing him flat was the one
   // WYSIWYG gap V6 left open.
   if (s.path) return s.suppression > 0.5 ? 'prone' : 'stand';
-  const kind = sim.teams[s.teamId]?.orderState.order?.kind;
+  const team = sim.teams[s.teamId];
+  const kind = team?.orderState.order?.kind;
   if (kind === 'ambush') return 'prone'; // lying up: the reverse-slope ambush
   if (kind === 'defend') return 'crouch'; // dug in on the post
+  // Going to ground (#790). A man who has stopped where the enemy is about
+  // does not stand there: attackers stood upright in 97% of stance samples,
+  // most of them halted in the open in front of a garrison. He lies down
+  // when his team has refused to go on or the fire has reached him, and
+  // kneels when his side merely knows the enemy is near.
+  if (team?.orderState.phase === 'balked' || s.suppression > GROUND_SUPP) return 'prone';
+  if (team?.contactNear) return 'crouch';
   return s.targetId >= 0 && s.suppression > 0.15 ? 'crouch' : 'stand';
 }
 
@@ -1043,6 +1060,7 @@ export class Sim {
       orderState: { order: null, phase: 'idle', reason: '' },
       smokeLeft: 2,
       ambushBonusTick: -1,
+      contactNear: false,
     };
     this.teams.push(team);
     squad.teamIds.push(team.id);
@@ -3608,6 +3626,17 @@ export class Sim {
     return best;
   }
 
+  // The spotting sweep's last act for a side: which of its teams have a known
+  // enemy within GROUND_RANGE. One pass over teams against the side's own
+  // intel, twice a second — so stanceOf answers from a field.
+  private markContactNear(side: Side): void {
+    for (const team of this.teams) {
+      if (this.squads[team.squadId].side !== side) continue;
+      const c = this.centroidOf(team.soldierIds);
+      team.contactNear = c !== null && this.contactWithin(side, c.x, c.y, GROUND_RANGE);
+    }
+  }
+
   // Whether `side` knows of an enemy within `r` of the point: a man it has in
   // sight now, or a last-known contact. The side's own intel, nothing more.
   private contactWithin(side: Side, x: number, y: number, r: number): boolean {
@@ -4129,6 +4158,7 @@ export class Sim {
     for (const [k, c] of contacts) {
       if (this.tick - c.tick > CONTACT_TTL) contacts.delete(k);
     }
+    this.markContactNear(side);
   }
 
   // The UI's only fog-of-war surface — renderer, pickAt, and HUD all ask
@@ -4822,7 +4852,7 @@ export class Sim {
         refKey(v.wallTarget),
         v.passengerTeamIds.join(','),
       ]),
-      teams: this.teams.map((t) => [t.id, t.orderState.phase, t.orderState.order?.kind ?? '', t.smokeLeft, t.ambushBonusTick]),
+      teams: this.teams.map((t) => [t.id, t.orderState.phase, t.orderState.order?.kind ?? '', t.smokeLeft, t.ambushBonusTick, t.contactNear]),
       emplacements: this.emplacements.map((e) => [
         e.id,
         Math.round(e.x * 1e6),
