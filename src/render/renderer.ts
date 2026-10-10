@@ -1058,6 +1058,8 @@ export class Renderer {
       const [, , hw, hh, , reach] = this.fireBox(f);
       const flick = 0.9 + 0.1 * Math.sin(now * 0.011 + f.key);
       add(x, y, (Math.min(reach, Math.hypot(hw, hh)) + 7 + 8 * it) * S, 0.9 * it * flick);
+      // a cook-off pop throws its light much further, for a third of a second
+      if (f.vid >= 0) this.eachPop(f, now, (t) => add(x, y, 22 * S, (1 - t) ** 1.5));
     }
     const n = L.length / 4;
     if (n <= MAX_LIGHTS) return n;
@@ -1462,20 +1464,34 @@ export class Renderer {
       const brew = f.vid >= 0;
       const span = Math.min(reach, Math.hypot(hw, hh)); // radius of what is alight, m
 
+      // How hard a hull is still raging, 1 for the first 14 s and down to 0
+      // as it settles to a smoking hulk. The big column and the flame mass
+      // below ride it; a building has none.
+      const rage = brew ? (it - BREWUP_FLOOR) / (1 - BREWUP_FLOOR) : 0;
       // Plume first: it leaves behind its own flames. A vehicle's is black to
       // the end — burning fuel and rubber never grey the way burning timber
-      // does — and it is only the root of the column: the sim owns the rest
-      // (drawSmoke), because that one blocks sight.
-      const run = (brew ? 0.6 : 1) * PLUME_RUN * (0.5 + 0.5 * it);
-      const puffs = Math.max(3, Math.round(6 * lite));
-      blit(ctx, 'soot', x + (WIND.dx * run * 0.5 + SUN.dx * 1.6) * S, y + (WIND.dy * run * 0.5 + SUN.dy * 1.6) * S, (span * 0.6 + 1.6) * S, 0.14 * it * sun().alphaMul); // its shadow, down-sun
+      // does. While the hull rages this is the column: the sim's own plume
+      // (drawSmoke), the one that blocks sight, takes fifteen seconds to
+      // build, and for those fifteen seconds a dead tank was a few flames
+      // under a wisp. As the rage dies this thins back to the root of the
+      // sim's column and that one takes over.
+      const run = brew ? 5 + 13 * rage : PLUME_RUN * (0.5 + 0.5 * it);
+      // (a hull's column keeps at least seven: fewer over that run are separate balls)
+      const puffs = Math.max(brew ? 7 : 3, Math.round((brew ? 8 + 4 * rage : 6) * lite));
+      const shade = sun().alphaMul;
       for (let i = 0; i < puffs; i++) {
-        const ph = mod(now * 0.0003125 + i / puffs + hash(key + 3000, i, 230), 1);
-        const px = x + WIND.dx * run * ph * S;
-        const py = y + WIND.dy * run * ph * S;
-        const pr = (span * 0.45 + 0.8 + ph * 2.4) * S;
-        const pa = (brew ? 0.85 : 0.7) * (1 - ph * 0.75) * it;
+        const ph = mod(now * (brew ? 0.00021 : 0.0003125) + i / puffs + hash(key + 3000, i, 230), 1);
+        // it opens as it goes, and wanders off the axis a little: a column, not a ruler
+        const wob = (hash(key + 3000, i, 231) - 0.5) * 2.2 * ph;
+        const px = x + (WIND.dx * run * ph - WIND.dy * wob) * S;
+        const py = y + (WIND.dy * run * ph + WIND.dx * wob) * S;
+        const pr = brew ? (1.5 + ph * (2.4 + 3 * rage)) * S : (span * 0.45 + 0.8 + ph * 2.4) * S;
+        const pa = (brew ? 0.9 : 0.7) * (1 - ph * (brew ? 0.6 : 0.75)) * it * Math.min(1, ph * 6);
         const sootF = brew ? 1 : Math.max(0.15, 1 - ph / 0.6);
+        // The column's shadow, under it: the further downwind the higher the
+        // smoke, so the further down-sun its shadow falls. In a plan view
+        // this offset is the column's height.
+        if (i % 2 === 0) blit(ctx, 'soot', px + SUN.dx * (1 + ph * (brew ? 7 : 3)) * S, py + SUN.dy * (1 + ph * (brew ? 7 : 3)) * S, pr * 0.9, 0.16 * pa * shade);
         blit(ctx, 'soot', px, py, pr, pa * sootF);
         blit(ctx, 'smoke', px, py, pr, pa * (1 - sootF));
       }
@@ -1488,11 +1504,28 @@ export class Renderer {
         blit(ctx, 'fire', x + Math.cos(a) * d, y + Math.sin(a) * d, (span * 0.6 + 0.7) * S, 0.42 * it);
       }
 
-      // Licks, over everything the fire has reached. One shell smoulders in a
-      // corner; a fully involved house, or a hull, burns end to end.
       const cs = Math.cos(rot);
       const sn = Math.sin(rot);
       const windAng = Math.atan2(WIND.dy, WIND.dx);
+      // A raging hull is one body of flame, not a set of them: big lobes laid
+      // along the hull and blown off it downwind, each breathing on its own
+      // beat, with one long hot heart under them in the hot batch.
+      if (rage > 0.02) {
+        const lobes = MOBILE ? 4 : 6;
+        for (let i = 0; i < lobes; i++) {
+          const u = ((i + 0.5) / lobes - 0.5) * 2 * hw * 0.9;
+          const w = (hash(key + 700, i, 216) - 0.5) * hh;
+          const breathe = 0.5 + 0.5 * Math.sin(now * 0.006 * (1 + hash(key + 700, i, 217)) + i * 1.7);
+          const blown = (0.5 + 0.9 * breathe) * rage;
+          const [lx, ly] = cam.worldToScreen(cx + u * cs - w * sn + WIND.dx * blown, cy + u * sn + w * cs + WIND.dy * blown, cw, ch);
+          const r = (1.25 + 0.55 * breathe) * (0.6 + 0.4 * rage) * S;
+          blit(ctx, 'fire', lx, ly, r, 0.85 * rage);
+          this.licks.push(lx, ly, r * 0.62, (0.22 + 0.14 * breathe) * rage);
+        }
+      }
+
+      // Licks, over everything the fire has reached. One shell smoulders in a
+      // corner; a fully involved house, or a hull, burns end to end.
       const n = Math.max(3, Math.round(Math.min(LICK_CAP, 4 + span * span * 0.6) * it * lite));
       for (let i = 0; i < n; i++) {
         const hs = hash(key + 1000, i, 212);
@@ -1535,8 +1568,11 @@ export class Renderer {
         if (i & 1) blit(ctx, 'soot', sx + ax * len * 1.8, sy + ay * len * 1.8, r * 1.3, 0.34); // the smoke it sheds
         // hot cores, drawn in the frame's hot batch (drawHot): one at the
         // root, a smaller one up the tongue
-        this.licks.push(sx + ax * len * 0.25, sy + ay * len * 0.25, r * 0.42, 0.5 + 0.3 * flick);
-        this.licks.push(sx + ax * len * 0.8, sy + ay * len * 0.8, r * 0.28, 0.3 + 0.3 * flick);
+        // (dimmer over a raging hull, whose flame mass has its own heart: at
+        // full strength there these were a cluster of white dots on it)
+        const core = 1 - 0.6 * rage;
+        this.licks.push(sx + ax * len * 0.25, sy + ay * len * 0.25, r * 0.42, (0.5 + 0.3 * flick) * core);
+        this.licks.push(sx + ax * len * 0.8, sy + ay * len * 0.8, r * 0.28, (0.3 + 0.3 * flick) * core);
       }
 
       // Cook-off: ammunition going up in the hull, one round or a rack at a
@@ -1592,6 +1628,7 @@ export class Renderer {
           // A round or a rack going: a hard white flash, a jet of flame out of
           // whichever hatch gave way, and sparks thrown clear of the hull.
           const jet = hash(k, 0, 246) * Math.PI * 2;
+          blit(ctx, 'fire', x, y, (6 + 5 * t) * S, 0.34 * (1 - t) ** 1.5); // the ground round it, lit for the length of the pop
           if (t < 0.3) {
             const fa = 1 - t / 0.3;
             blit(ctx, 'flash', x, y, (2 + t * 8) * S, fa);
