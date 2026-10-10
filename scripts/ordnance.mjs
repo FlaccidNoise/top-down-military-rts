@@ -38,6 +38,10 @@ await page.evaluate(() => {
 });
 
 const run = (ms) => page.waitForTimeout(ms);
+// A control the HUD is expected to be showing. The HUD rebuilds on the frame
+// after a selection changes, so "is it there" gets two seconds to become true
+// rather than one instant: a button that never comes still fails.
+const offered = (sel) => page.waitForSelector(sel, { timeout: 2000 }).then(() => true, () => false);
 const clearFx = () => page.evaluate(() => { window.__booms.length = 0; window.__shots.length = 0; });
 // Bursts NEAR a called point. Attribution by position matters: a barrage has a
 // 20 s time of flight, so an un-attributed count credits whichever fire mission
@@ -116,6 +120,9 @@ if (veh) {
     }, veh);
     check(moved > 3, `a right-click drives it (${moved.toFixed(1)} m travelled)`);
   }
+  // The hull stays selected. The next section's first act is a click on the
+  // mortar, which selects its crew and drops the hull — the way a player moves
+  // on. (Escape is not that way: with a hull selected it opens the pause menu.)
 }
 
 // ── 2-3. Mortar HE mission and smoke mission ────────────────────────────────
@@ -135,7 +142,7 @@ if (mortar) {
   check(sel.squads.includes(sel.crewSquad), `clicking the mortar selects its crew squad (${sel.squads.join(',')} vs crew ${sel.crewSquad})`);
 
   // HE mission
-  const hasFire = (await page.$('button[data-ctx="fire"]')) !== null;
+  const hasFire = await offered('button[data-ctx="fire"]');
   check(hasFire, 'the mortar crew panel offers a Fire button');
   if (hasFire) {
     // Re-query at the moment of use: the HUD rebuilds on a sig change, so a
@@ -158,7 +165,7 @@ if (mortar) {
 
   // Smoke mission — re-select: the fire mission may have shifted the panel.
   await clickWorld(mortar.x, mortar.y);
-  const hasSmoke = (await page.$('button[data-ctx="smoke"]')) !== null;
+  const hasSmoke = await offered('button[data-ctx="smoke"]');
   check(hasSmoke, 'the mortar crew panel offers a Smoke mission button');
   if (hasSmoke) {
     const before = await page.evaluate(() => window.__game.sim.smoke.length);
@@ -175,7 +182,7 @@ if (mortar) {
 }
 
 // ── 4. Barrage (artillery) ──────────────────────────────────────────────────
-const hasBarrage = (await page.$('button[data-act="barrage"]')) !== null;
+const hasBarrage = await offered('button[data-act="barrage"]');
 check(hasBarrage, 'the HUD offers a barrage button');
 if (hasBarrage) {
   const left0 = await page.evaluate(() => window.__game.sim.barragesLeft.blue);
@@ -196,7 +203,7 @@ if (hasBarrage) {
 }
 
 // ── 5. Airstrike ────────────────────────────────────────────────────────────
-const hasAir = (await page.$('button[data-act="air"]')) !== null;
+const hasAir = await offered('button[data-act="air"]');
 check(hasAir, 'the HUD offers an airstrike button');
 if (hasAir) {
   const left0 = await page.evaluate(() => window.__game.sim.airstrikesLeft.blue);
