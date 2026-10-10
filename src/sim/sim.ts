@@ -43,11 +43,11 @@ import {
 import type { Building } from './mapgen';
 import {
   ambushThreshold,
-  ASSAULT_DANGER_MULT,
   BALK_REASON,
   CHARGE_BALK_REASON,
   compliance,
   dangerScore,
+  orderVerdict,
   type OrderKind,
   type OrderState,
   type TeamOrder,
@@ -74,6 +74,14 @@ const BOUND_LEG = 15; // meters per bounding rush (spec's "15m legs")
 // ~0.4 vs a ~0.85 threshold) — then owned the team to the far map edge. Under
 // fire, the same ladder re-runs every 2s, staggered by team id.
 const REAUDIT_TICKS = 60;
+// A man who steadies within this long of being pinned or broken has rallied
+// (#766). The crossing never happens in one tick: suppression decays at most
+// 0.0023 a tick and morale climbs 0.00013, so he always passes through
+// 'shaken' first — the old one-tick test fired 0 times in 38 probed battles.
+// Measured time from the last pinned/broken tick to steady: pinned, two
+// thirds inside 30 s and all inside 120 s; broken, all between 60 and 120 s
+// (morale has to climb from 0.25 to 0.55).
+export const RALLY_WINDOW_TICKS = 120 * 30;
 // Melee (decision log 2026-07-23): proximity-triggered close combat.
 const MELEE_ENGAGE = 2.0; // m — an enemy this close (and reachable on foot) locks both into melee
 const MELEE_CONTACT = 0.9; // m — combatants close to here, then hold
@@ -93,7 +101,7 @@ const PATH_BUDGET_PER_TICK = 6;
 const GRENADE_RANGE = 12; // m
 const GRENADE_FUSE_TICKS = 30; // ~1 s
 const GRENADE_COOLDOWN_TICKS = 60;
-const GRENADE_BLAST = { suppRadius: 6, fragRadius: 3, frags: 2, dmg: [20, 55] as [number, number], breach: 2 };
+const GRENADE_BLAST: Blast = { suppRadius: 6, fragRadius: 3, frags: 2, dmg: [20, 55], breach: 2, kind: 'grenade' };
 const GRENADE_SCATTER = 2; // m max
 const ENTRY_LOOKAHEAD = 4; // path waypoints: imminent opening, not any later opening
 const AP_DESTROY_CHANCE = 0.45; // conditional on a penetrating hit
@@ -128,7 +136,8 @@ const CRUSH_SUPPRESSION = 0.25;
 // aiming put back in. 12 is the only energy on the field that clears every row
 // of BREACH_THRESH, so an aimed round always opens the edge it lands on —
 // which is what makes "assault routes you make" a rule rather than a lottery.
-const WALL_SHOT: { suppRadius: number; fragRadius: number; frags: number; dmg: [number, number]; breach: number } = {
+const WALL_SHOT: Blast = {
+  kind: 'at',
   suppRadius: 8,
   fragRadius: 3,
   frags: 1,
@@ -267,6 +276,12 @@ export interface Soldier {
   grenadeCooldownUntil: number; // tick when next grenade throw is allowed
   entryHoldUntil: number; // waits outside an opening until his own grenade bursts (#217)
   captured: boolean; // alive, out of the fight, untargetable (surrendered at melee contact)
+  lastCowedTick: number; // tick he was last pinned or broken. Output only: it times the 'rallied' event and nothing in the sim reads it, so it is not in snapshot()
+  // The last wound that came from somewhere: unit vector away from its source,
+  // and the tick. Output only (the kia/downed events' dx, dy), not in snapshot().
+  hitDx: number;
+  hitDy: number;
+  hitTick: number;
 }
 
 export interface Vehicle {
@@ -365,17 +380,64 @@ export interface ShotEvent {
   hit: boolean;
   kill: boolean;
   weapon?: WeaponKey; // render-only: lets the audio layer pick a per-weapon report. Undefined = vehicle cannon/AP (paired with a boom anyway).
+  // Render-only: the soldier who fired and the soldier fired at, where the sim
+  // has one. A shot from a gun or a hull has no shooterId (it leaves from the
+  // weapon, not from a man); a shot at a point, a wall or a vehicle has no
+  // targetId.
+  shooterId?: number;
+  targetId?: number;
+}
+
+// What went off, so the renderer can tell a grenade from a shell. `r` is the
+// fragment radius in metres, the same number the blast wounded with; a brew-up
+// has none. Render-only, like every drain queue here.
+export type BoomKind = 'grenade' | 'shell' | 'mortar' | 'at' | 'brewup' | 'bomb';
+export interface BoomEvent {
+  x: number;
+  y: number;
+  r?: number;
+  kind: BoomKind;
+}
+
+interface Blast {
+  suppRadius: number;
+  fragRadius: number;
+  frags: number;
+  dmg: [number, number];
+  breach?: number;
+  kind: BoomKind;
 }
 
 // Discrete casualty/morale transitions, emitted the tick they happen so the
 // UI never has to diff sim state (a DOWN followed by KIA in one frame batch
 // would otherwise drop the DOWN).
 export interface UnitEvent {
-  kind: 'downed' | 'kia' | 'broken' | 'surrendered' | 'vehicle-destroyed' | 'ping' | 'pinned' | 'rallied' | 'ambush';
+  kind:
+    | 'downed'
+    | 'kia'
+    | 'broken'
+    | 'surrendered'
+    | 'vehicle-destroyed'
+    | 'ping'
+    | 'pinned'
+    | 'rallied'
+    | 'ambush'
+    // The quiet recoveries (#766): each was a state change nothing announced.
+    | 'took-over' // a crewman finished taking over the gunner's weapon
+    | 'promoted' // a teammate became leader after the leader fell
+    | 'stabilized' // a casualty's bleeding was stopped by a squadmate
+    | 'recovered' // a downed man is back on his feet
+    | 'resupplied'; // a runner handed ammunition to a dry gunner
   x: number;
   y: number;
   side: Side;
   name: string;
+  team?: string; // the quiet recoveries: the team of the man it happened to, for the ticker's team-named line
+  // 'kia' and 'downed': unit vector along the shot that did it, or away from
+  // the blast centre. Absent when the cause had no direction (bled out, hit
+  // inside a hull, a burst on top of him).
+  dx?: number;
+  dy?: number;
   // The man it happened to, where there is one. Output only — the UI fog
   // filter needs soldierVisibleTo, and a point test would leak a concealed
   // man that sightToSoldier's concealment rule hides. Absent on the two
@@ -501,6 +563,10 @@ const WEAPON_RANK: Partial<Record<WeaponKey, number>> = {
 function weaponRank(w: WeaponKey): number {
   return WEAPON_RANK[w] ?? 0;
 }
+
+// Who a leaderless team can best spare for the job, lowest first. Roles not
+// listed are riflemen for this purpose.
+const LEADER_SPARE: Partial<Record<Role, number>> = { bearer: 1, assistant: 2, aidman: 3, gunner: 4 };
 
 // Which crewSkill class a weapon trains (spec: mg/mortar/gun/vehicle — the
 // 'vehicle' class is reserved for a future vehicle-crew succession pass and
@@ -754,6 +820,10 @@ export function sightToSoldier(sim: Sim, x0: number, y0: number, t: Soldier, l0 
 export const SPOT_INTERVAL = 15; // ticks: 0.5 s between spotting sweeps
 export const SPOT_RANGE = 200; // m — beyond every small-arms range
 export const CONTACT_TTL = 45 * 30; // ticks a last-known ghost lingers
+// A side breaks off the battle when its effectives fall below this share of
+// its starting strength, and never while it still has BREAK_FLOOR_MIN men.
+export const BREAK_FRACTION = 0.25;
+export const BREAK_FLOOR_MIN = 2;
 
 export interface Contact {
   kind: 'infantry' | 'vehicle';
@@ -804,7 +874,7 @@ export class Sim {
   private barrages: Barrage[] = [];
   private strafeImpacts: { tick: number; x: number; y: number }[] = [];
   private pendingEvents: ShotEvent[] = [];
-  private pendingBooms: { x: number; y: number }[] = [];
+  private pendingBooms: BoomEvent[] = [];
   private pendingBreaches: BreachEvent[] = [];
   // Append-only, never drained. The map itself is the single source of truth
   // for where the holes are; this is the ordered record of how it got that way.
@@ -922,6 +992,10 @@ export class Sim {
       grenadeCooldownUntil: 0,
       entryHoldUntil: 0,
       captured: false,
+      lastCowedTick: -Infinity,
+      hitDx: 0,
+      hitDy: 0,
+      hitTick: -Infinity,
     };
     s.morale = 0.7 + s.courage * 0.3;
     this.soldiers.push(s);
@@ -1323,6 +1397,7 @@ export class Sim {
       loadsPresent: [...def.loads],
       cooldown: 0,
       heat: 0,
+      magLeft: WEAPONS[def.weapon].ammo.perUnit, // sited with a belt on the gun, as a soldier spawns with a full magazine
       towedBy: -1,
       targetX: x,
       targetY: y,
@@ -1494,7 +1569,7 @@ export class Sim {
       if (this.tick < sh.tick) return true;
           // Mortar/barrage smoke lands at ground level 0, wherever it falls.
       if (sh.smoke) this.smoke.push(smokePuff(sh.x, sh.y, this.map.elevAt(Math.floor(sh.x), Math.floor(sh.y)), 60));
-      else this.explode(sh.x, sh.y, { suppRadius: 10, fragRadius: 5, frags: 2, dmg: [25, 75], breach: 5 }); // 81 mm: opens a head-high enclosure wall, never masonry
+      else this.explode(sh.x, sh.y, { suppRadius: 10, fragRadius: 5, frags: 2, dmg: [25, 75], breach: 5, kind: 'mortar' }); // 81 mm: opens a head-high enclosure wall, never masonry
       return false;
     });
   }
@@ -1659,6 +1734,19 @@ export class Sim {
   }
 
   private fireEmplacementSmallArms(e: Emplacement, def: EmplacementDef, w: WeaponDef, firer: Soldier, degrade: number): void {
+    // A belt is ammo.perUnit bursts, as it is in a soldier's hands
+    // (fireSmallArms spends magLeft, and a reload spends the unit). This path
+    // used to spend a whole belt on every burst (#765): a tripod MG42 with 24
+    // belts fired 24 times and was done, while the same gun carried by one
+    // man fired 250 times on his first belt. The change is timed like his
+    // reload, slowed by the same short-crew degrade as everything else here.
+    if (e.magLeft <= 0) {
+      if (this.consumeEmplacementAmmo(e, firer, w.ammo.type)) {
+        e.magLeft = w.ammo.perUnit;
+        e.cooldown = w.ammo.reload * degrade;
+      }
+      return;
+    }
     const crewTeam = this.teams[e.crewTeamId];
     const order = crewTeam.orderState.order;
     const arc = order?.kind === 'defend' || order?.kind === 'ambush' ? order.arc : undefined;
@@ -1672,12 +1760,12 @@ export class Sim {
     if (order?.kind === 'defend' && crewTeam.ambushBonusTick === this.tick) aim *= 1.3;
     const p = this.shotPreview(e.x, e.y, def.weapon, t, false, aim, 0, EYE_H);
     if (!p.visible) return;
-    if (!this.consumeEmplacementAmmo(e, firer, w.ammo.type)) return;
+    e.magLeft--;
     firer.crewSkill.mg = Math.min(1, (firer.crewSkill.mg ?? 0) + 0.0005);
     const hit = this.rng.next() < p.acc;
-    const kill = hit ? this.wound(t, this.rng.range(w.damage[0], w.damage[1])) : false;
+    const kill = hit ? this.wound(t, this.rng.range(w.damage[0], w.damage[1]), e.x, e.y) : false;
     this.suppressAround(t.x, t.y, t.side, w.suppression, w.suppRadius);
-    this.pendingEvents.push({ fx: e.x, fy: e.y, tx: t.x, ty: t.y, hit, kill, weapon: def.weapon });
+    this.pendingEvents.push({ fx: e.x, fy: e.y, tx: t.x, ty: t.y, hit, kill, weapon: def.weapon, targetId: t.id });
     if (w.heat) {
       const heatMult = firer.role !== 'gunner' ? 1.5 : 1;
       e.heat = Math.min(1.5, e.heat + w.heat.perShot * heatMult);
@@ -1769,6 +1857,33 @@ export class Sim {
     return eligible(s); // the module-scope export above — one predicate, no drift
   }
 
+  // Still on his way: walking a path, or waiting on one. PATH_BUDGET_PER_TICK
+  // defers most of a big commit's searches to later ticks, and every "has
+  // this leg finished" test that read `path` alone took a man still waiting
+  // for his search as a man who had arrived — an order issued to the tenth
+  // team in a tick was declared complete on the next (#763).
+  private marching(id: number): boolean {
+    return this.soldiers[id].path !== null || this.pendingPaths.has(id);
+  }
+
+  // Men who stop where they are — the half that holds while the other rushes,
+  // a team that balks mid-move: halted, and not about to be started again by
+  // a search still queued from before.
+  private halt(ids: number[]): void {
+    for (const id of ids) {
+      this.soldiers[id].path = null;
+      this.pendingPaths.delete(id);
+    }
+  }
+
+  // A leg dispatched inside a running order is a continuation of it, not a
+  // new order: a man who left the bound to reach a casualty, carry belts or
+  // take over a gun is not pulled off it by the next leg. pathTo's task drop
+  // is for real orders.
+  private offTask(ids: number[]): number[] {
+    return ids.filter((id) => !this.soldiers[id].task);
+  }
+
   // The order vocabulary's entry point (spec's "interpret + refuse"): runs
   // compliance, stores the legibility state, and kicks off execution.
   // `used` is the ONE tile-reservation set of the whole player commit —
@@ -1783,11 +1898,12 @@ export class Sim {
     // Assault is the scariest ask: same danger evaluation, weighted up before
     // the ladder runs. Checked ONCE — a charge that steps off is committed
     // (no bounding, no per-leg re-check); pinned/broken men drop out via the
-    // psych model instead.
-    const danger = dangerScore(this, team, { x: order.x, y: order.y }) * (order.kind === 'assault' ? ASSAULT_DANGER_MULT : 1);
-    const verdict = compliance(this, team, danger);
+    // psych model instead. An order that moves nobody is never refused
+    // (orderVerdict).
+    const verdict = orderVerdict(this, team, order).verdict;
     if (verdict === 'balk') {
       team.orderState = { order, phase: 'balked', reason: order.kind === 'assault' ? CHARGE_BALK_REASON : BALK_REASON };
+      if (order.kind === 'sneak') this.sneakBaseline[team.id] = this.woundCount(team); // a refused sneak still holds fire until someone is hit
       return;
     }
     const cautious = verdict === 'cautious';
@@ -1798,7 +1914,7 @@ export class Sim {
     if (effective.kind === 'move' && (cautious || this.teamUnderFire(team))) {
       team.orderState = { order: effective, phase: 'bounding_a', reason };
       const [a, b] = this.teamHalves(team);
-      for (const id of b) this.soldiers[id].path = null;
+      this.halt(b);
       this.dispatchLeg(a, effective, used);
     } else if (effective.kind === 'move' || effective.kind === 'fast' || effective.kind === 'sneak' || effective.kind === 'assault') {
       team.orderState = { order: effective, phase: 'executing', reason };
@@ -1913,13 +2029,15 @@ export class Sim {
     const [a, b] = this.teamHalves(team);
     const activeIds = st.phase === 'bounding_a' ? a : b;
     const otherIds = st.phase === 'bounding_a' ? b : a;
-    const activeAlive = activeIds.filter((id) => this.eligible(this.soldiers[id]));
-    if (activeAlive.some((id) => this.soldiers[id].path)) return; // mid-leg
+    if (activeIds.some((id) => this.eligible(this.soldiers[id]) && this.marching(id))) return; // mid-leg
     const centroid = this.centroidOf(team.soldierIds);
-    if (!centroid || Math.hypot(centroid.x - order.x, centroid.y - order.y) < 3) {
+    const done = (): void => {
       st.order = null;
       st.phase = 'idle';
       st.reason = '';
+    };
+    if (!centroid || Math.hypot(centroid.x - order.x, centroid.y - order.y) < 3) {
+      done();
       return;
     }
     const danger = dangerScore(this, team, { x: order.x, y: order.y });
@@ -1928,8 +2046,21 @@ export class Sim {
       st.reason = BALK_REASON;
       return;
     }
-    st.phase = st.phase === 'bounding_a' ? 'bounding_b' : 'bounding_a';
-    this.dispatchLeg(otherIds, order);
+    const moving = (ids: number[]): boolean => ids.some((id) => this.marching(id));
+    this.dispatchLeg(this.offTask(otherIds), order);
+    if (moving(otherIds)) {
+      st.phase = st.phase === 'bounding_a' ? 'bounding_b' : 'bounding_a';
+      return;
+    }
+    // The other half has nowhere to go — on its spots already, or nobody left
+    // in it — so the half that just rushed goes again. When that half cannot
+    // move either, the team is as far forward as this order takes it. The
+    // centroid test above cannot say so for a team whose cover spots sit off
+    // the order point, and such a team alternated every tick for the rest of
+    // the battle (measured: 23,174 flips in one), re-resolving its spots each
+    // time.
+    this.dispatchLeg(this.offTask(activeIds), order);
+    if (!moving(activeIds)) done();
   }
 
   private woundCount(team: Team): number {
@@ -2102,7 +2233,7 @@ export class Sim {
     return e;
   }
 
-  takeBooms(): { x: number; y: number }[] {
+  takeBooms(): BoomEvent[] {
     const b = this.pendingBooms;
     this.pendingBooms = [];
     return b;
@@ -2164,13 +2295,17 @@ export class Sim {
       else red++;
     }
     if (this.winner === null) {
-      // a side breaks off the battle below a quarter of starting strength
-      const floorOf = (side: Side) => Math.max(2, this.startStrength[side] * 0.25);
-      if (blue < floorOf('blue') && red >= floorOf('red')) this.winner = 'red';
-      else if (red < floorOf('red') && blue >= floorOf('blue')) this.winner = 'blue';
+      if (blue < this.breakFloor('blue') && red >= this.breakFloor('red')) this.winner = 'red';
+      else if (red < this.breakFloor('red') && blue >= this.breakFloor('blue')) this.winner = 'blue';
       else if (blue === 0 && red > 0) this.winner = 'red';
       else if (red === 0 && blue > 0) this.winner = 'blue';
     }
+  }
+
+  // Effectives below which `side` breaks off the battle. Public: the HUD
+  // quotes it.
+  breakFloor(side: Side): number {
+    return Math.max(BREAK_FLOOR_MIN, this.startStrength[side] * BREAK_FRACTION);
   }
 
   // When every eligible member of a squad has arrived, dispatch its next waypoint.
@@ -2187,7 +2322,7 @@ export class Sim {
         // a rescue task counts as busy: it holds path=null for a tick on pickup,
         // and auto-dispatching the next leg would silently cancel the rescue.
         // A melee lock is busy too — pathless for seconds, but hardly "arrived".
-        if (s.path || s.task || s.meleeId >= 0) moving++;
+        if (this.marching(s.id) || s.task || s.meleeId >= 0) moving++;
       }
       if (eligible === 0) {
         this.squadWaypoints[sq.id] = [];
@@ -2220,7 +2355,7 @@ export class Sim {
       const s = this.strafeImpacts.shift()!;
       // breach 0, and that is a decision, not an omission: a 20 mm cannon
       // strafing run chews masonry cosmetically and opens nothing.
-      this.explode(s.x, s.y, { suppRadius: 12, fragRadius: 5, frags: 2, dmg: [25, 70], breach: 0 });
+      this.explode(s.x, s.y, { suppRadius: 12, fragRadius: 5, frags: 2, dmg: [25, 70], breach: 0, kind: 'bomb' });
     }
   }
 
@@ -2270,12 +2405,19 @@ export class Sim {
       const order = team.orderState.order;
       if (!order) continue;
       const st = team.orderState;
-      if (st.phase === 'balked') continue;
+      if (st.phase === 'balked') {
+        // Refusing to walk somewhere does not suspend the fire discipline the
+        // order carries. A team that balked on the way to an ambush is lying
+        // up where it stopped, and skipping its trigger left it holding fire
+        // until it was dead (#764: one team mute for 53,985 of 54,000 ticks).
+        this.checkFireDiscipline(team, order);
+        continue;
+      }
       if (order.kind === 'move' && (st.phase === 'bounding_a' || st.phase === 'bounding_b')) {
         this.continueBounding(team, order, st);
       } else if ((order.kind === 'move' || order.kind === 'fast' || order.kind === 'sneak') && st.phase === 'executing') {
         const eligibleIds = team.soldierIds.filter((id) => this.eligible(this.soldiers[id]));
-        if (eligibleIds.length > 0 && eligibleIds.every((id) => !this.soldiers[id].path)) {
+        if (eligibleIds.length > 0 && eligibleIds.every((id) => !this.marching(id))) {
           st.order = null;
           st.phase = 'idle';
           st.reason = '';
@@ -2289,15 +2431,15 @@ export class Sim {
           if (verdict === 'balk') {
             st.phase = 'balked';
             st.reason = BALK_REASON;
-            for (const id of eligibleIds) this.soldiers[id].path = null;
+            this.halt(eligibleIds);
           } else if (verdict === 'cautious') {
             if (order.kind === 'fast') st.order = { ...order, kind: 'move' };
             const eff = st.order!;
             st.phase = 'bounding_a';
             st.reason = 'moving cautiously';
             const [a, b] = this.teamHalves(team);
-            for (const id of b) this.soldiers[id].path = null;
-            this.dispatchLeg(a, eff);
+            this.halt(b);
+            this.dispatchLeg(this.offTask(a), eff);
           }
         }
       } else if (order.kind === 'assault' && st.phase === 'executing' && (this.tick + team.id) % ASSAULT_REPATH_TICKS === 0) {
@@ -2328,24 +2470,30 @@ export class Sim {
           st.reason = '';
         }
       }
-      if (order.kind === 'sneak') this.checkSneakBreak(team);
-      else if (order.kind === 'ambush') this.checkAmbushTrigger(team, order);
+      this.checkFireDiscipline(team, order);
     }
+  }
+
+  // The two orders that hold fire, and what releases each.
+  private checkFireDiscipline(team: Team, order: TeamOrder): void {
+    if (order.kind === 'sneak') this.checkSneakBreak(team);
+    else if (order.kind === 'ambush') this.checkAmbushTrigger(team, order);
   }
 
   private explode(
     x: number,
     y: number,
-    p: { suppRadius: number; fragRadius: number; frags: number; dmg: [number, number]; breach?: number } = {
+    p: Blast = {
       suppRadius: 15,
       fragRadius: 9,
       frags: 3,
       dmg: [25, 75],
       breach: 4, // 60 mm mortar / unqualified blast
+      kind: 'shell', // the one caller that takes the default is the off-map barrage
     },
     l = 0, // detonation level (floor); all current callers are ground-bursts
   ): void {
-    this.pendingBooms.push({ x, y });
+    this.pendingBooms.push({ x, y, r: p.fragRadius, kind: p.kind });
     for (const s of this.soldiers) {
       if (!s.alive) continue;
       let mult = 1;
@@ -2370,7 +2518,7 @@ export class Sim {
       for (let i = 0; i < frags; i++) {
         const pHit = (1 - d / (p.fragRadius + 1)) * (s.downed || s.mental === 'pinned' ? 0.45 : 0.8) * mult;
         if (this.rng.next() < pHit) {
-          if (this.wound(s, this.rng.range(p.dmg[0], p.dmg[1]))) break;
+          if (this.wound(s, this.rng.range(p.dmg[0], p.dmg[1]), x, y)) break;
         }
       }
     }
@@ -2651,8 +2799,8 @@ export class Sim {
       // real main gun) fall straight through to the pintle MG.
       if (v.gunCooldown <= 0 && v.ammo.he > 0 && this.turretBearingReady(v, def, t.x, t.y)) {
         // Tank HE is the first thing on the field that leaves a hull-wide hole.
-        this.explode(t.x + this.rng.range(-2, 2), t.y + this.rng.range(-2, 2), { suppRadius: 10, fragRadius: 5, frags: 2, dmg: [25, 60], breach: 7 });
-        this.pendingEvents.push({ fx: v.x, fy: v.y, tx: t.x, ty: t.y, hit: true, kill: false });
+        this.explode(t.x + this.rng.range(-2, 2), t.y + this.rng.range(-2, 2), { suppRadius: 10, fragRadius: 5, frags: 2, dmg: [25, 60], breach: 7, kind: 'shell' });
+        this.pendingEvents.push({ fx: v.x, fy: v.y, tx: t.x, ty: t.y, hit: true, kill: false, targetId: t.id });
         v.ammo.he--;
         v.gunCooldown = def.gunCooldown * (0.85 + this.rng.next() * 0.3);
       } else if (v.mgCooldown <= 0) {
@@ -2718,7 +2866,7 @@ export class Sim {
       // A missed AT rocket / tank round hits whatever is behind the tank, and
       // that is usually a wall. Same warhead as a deliberate wall shot, minus
       // the aiming, so it is nearly as good at opening one.
-      this.explode(target.x + this.rng.range(-4, 4), target.y + this.rng.range(-4, 4), { suppRadius: 8, fragRadius: 3, frags: 1, dmg: [20, 50], breach: 8 });
+      this.explode(target.x + this.rng.range(-4, 4), target.y + this.rng.range(-4, 4), { suppRadius: 8, fragRadius: 3, frags: 1, dmg: [20, 50], breach: 8, kind: 'at' });
       return;
     }
     const effPen = pen * this.rng.range(0.75, 1.25);
@@ -2743,7 +2891,7 @@ export class Sim {
     v.alive = false;
     v.burning = true;
     v.path = null;
-    this.pendingBooms.push({ x: v.x, y: v.y });
+    this.pendingBooms.push({ x: v.x, y: v.y, kind: 'brewup' });
     // A brewed-up tank burns for three minutes and throws a 20 m column
     // (PLUME[1]) that screens the street it died in and is visible from
     // anywhere on the map. It is ordinary smoke: stepSmoke ages it, the LOS
@@ -2811,19 +2959,19 @@ export class Sim {
   }
 
   // Shared small-arms resolution used by soldiers and vehicle MGs.
-  private resolveSmallArmsShot(fx: number, fy: number, weapon: WeaponKey, t: Soldier, shooterMoving: boolean, aim: number, l0 = 0, e0 = EYE_H): { fired: boolean; kill: boolean } {
+  private resolveSmallArmsShot(fx: number, fy: number, weapon: WeaponKey, t: Soldier, shooterMoving: boolean, aim: number, l0 = 0, e0 = EYE_H, shooterId?: number): { fired: boolean; kill: boolean } {
     const p = this.shotPreview(fx, fy, weapon, t, shooterMoving, aim, l0, e0);
     if (!p.visible) return { fired: false, kill: false };
     const w: WeaponDef = WEAPONS[weapon];
     const hit = this.rng.next() < p.acc;
     let kill = false;
-    if (hit) kill = this.wound(t, this.rng.range(w.damage[0], w.damage[1]));
+    if (hit) kill = this.wound(t, this.rng.range(w.damage[0], w.damage[1]), fx, fy);
     // Marching fire suppresses at half weight: accuracy already pays the
     // ×0.5 shooter-moving tax (2644), but suppression used to be delivered
     // at 100% while walking — a company advancing at a steady walk got its
     // full stationary suppression output for free (balance 2026-07).
     this.suppressAround(t.x, t.y, t.side, w.suppression * (shooterMoving ? 0.5 : 1), w.suppRadius);
-    this.pendingEvents.push({ fx, fy, tx: t.x, ty: t.y, hit, kill, weapon });
+    this.pendingEvents.push({ fx, fy, tx: t.x, ty: t.y, hit, kill, weapon, shooterId, targetId: t.id });
     return { fired: true, kill };
   }
 
@@ -2837,7 +2985,7 @@ export class Sim {
 
   // Infantry small-arms fire: consumes the shooter's mag and builds barrel heat.
   private fireSmallArms(shooter: Soldier, t: Soldier, shooterMoving: boolean, aim = 1): boolean {
-    const r = this.resolveSmallArmsShot(shooter.x, shooter.y, shooter.weapon, t, shooterMoving, aim, shooter.level, eyeOf(this, shooter));
+    const r = this.resolveSmallArmsShot(shooter.x, shooter.y, shooter.weapon, t, shooterMoving, aim, shooter.level, eyeOf(this, shooter), shooter.id);
     if (!r.fired) return false;
     shooter.magLeft--;
     const w: WeaponDef = WEAPONS[shooter.weapon];
@@ -2876,7 +3024,7 @@ export class Sim {
     s.downed = cons < 0.3 || s.pain >= 0.8 || capacities(s.body).moving < 0.15;
     if (s.downed) {
       if (!wasDowned) {
-        this.pendingUnitEvents.push({ kind: 'downed', x: s.x, y: s.y, side: s.side, name: s.name, id: s.id });
+        this.pendingUnitEvents.push({ kind: 'downed', x: s.x, y: s.y, side: s.side, name: s.name, id: s.id, ...this.hitDir(s, 1) });
         this.dropKit(s);
         s.path = null;
         s.targetId = -1;
@@ -2890,6 +3038,7 @@ export class Sim {
       const r = this.soldiers[s.rescuerId];
       if (r.task?.kind === 'rescue' && r.task.casualtyId === s.id) this.dropTask(r); // he's back up
     }
+    if (wasDowned && !s.captured) this.note('recovered', s);
     if (s.captured) return; // captured men are inert: no movement, no flee, no psych re-trigger, no fire
 
     // psyche: bonded mates nearby steady the nerves
@@ -2913,10 +3062,14 @@ export class Sim {
       : 'steady';
     // Morale drama, one event per crossing. Deterioration into pinned only —
     // a broken man recovering to pinned is good news, not a pin. Rallying
-    // counts from pinned/broken; shaken→steady is too frequent to be drama.
+    // counts from pinned/broken, however long he spent shaken on the way back
+    // up inside RALLY_WINDOW_TICKS; a man who was only ever shaken steadies
+    // too often to be drama.
+    if (s.mental === 'pinned' || s.mental === 'broken') s.lastCowedTick = this.tick;
     if (s.mental === 'pinned' && (wasMental === 'steady' || wasMental === 'shaken')) {
       this.pendingUnitEvents.push({ kind: 'pinned', x: s.x, y: s.y, side: s.side, name: s.name, id: s.id });
-    } else if (s.mental === 'steady' && (wasMental === 'pinned' || wasMental === 'broken')) {
+    } else if (s.mental === 'steady' && wasMental !== 'steady' && this.tick - s.lastCowedTick <= RALLY_WINDOW_TICKS) {
+      s.lastCowedTick = -Infinity; // one rally per pin
       this.pendingUnitEvents.push({ kind: 'rallied', x: s.x, y: s.y, side: s.side, name: s.name, id: s.id });
     }
     if (s.mental === 'broken' && wasMental !== 'broken') {
@@ -3062,12 +3215,7 @@ export class Sim {
           );
           if (i >= 0) {
             const kit = this.droppedKit[i];
-            s.weapon = kit.weapon;
-            s.secondary = undefined;
-            s.ammo = { ...kit.ammo };
-            s.ammoStart = Object.values(kit.ammo).reduce((a: number, n) => a + (n ?? 0), 0);
-            s.magLeft = kit.magLeft;
-            s.heat = 0;
+            this.takeWeapon(s, kit.weapon, kit.ammo, kit.magLeft);
             this.droppedKit.splice(i, 1);
           }
         } else {
@@ -3213,7 +3361,7 @@ export class Sim {
     if (s.ammoStart > 0 && currentUnits / s.ammoStart < 0.3) return;
     const enemySide: Side = s.side === 'blue' ? 'red' : 'blue';
     this.suppressAround(order.x, order.y, enemySide, w.suppression);
-    this.pendingEvents.push({ fx: s.x, fy: s.y, tx: order.x, ty: order.y, hit: false, kill: false, weapon: s.weapon });
+    this.pendingEvents.push({ fx: s.x, fy: s.y, tx: order.x, ty: order.y, hit: false, kill: false, weapon: s.weapon, shooterId: s.id });
     s.magLeft--;
     if (w.heat) s.heat = Math.min(1.5, s.heat + w.heat.perShot);
     s.cooldown = w.cooldown * (0.85 + this.rng.next() * 0.3);
@@ -3439,6 +3587,7 @@ export class Sim {
     if (task.timer <= 0) {
       c.stabilized = true;
       c.bleedRate *= 0.15;
+      this.note('stabilized', c);
       this.dropTask(s);
     }
   }
@@ -3510,6 +3659,7 @@ export class Sim {
       if (give > 0) {
         s.ammo[type] = have - give;
         gunner.ammo[type] = (gunner.ammo[type] ?? 0) + give;
+        this.note('resupplied', gunner);
       }
       gunner.ammoRunnerId = -1;
       task.phase = 'return';
@@ -3533,6 +3683,14 @@ export class Sim {
   // timed 3s riding the reloading busy-timer, inherits remaining ammo.
   private considerPickup(s: Soldier): void {
     if (s.reloading > 0 || s.pickingUp || s.path) return;
+    // A launcher or a mortar ranks 0 because it is not in the small-arms
+    // table, not because it is worse than a carbine — and the man carrying it
+    // traded it for the first dropped rifle he stood next to (#766, measured
+    // in 38 battles: bazooka 13 times, Schreck 8, mortar 22). The swap also
+    // replaces his whole ammo record, so a gun's own gunner keeps his hands
+    // off too: the shells the gun fires are in his pockets.
+    const w: WeaponDef = WEAPONS[s.weapon];
+    if (w.pen !== undefined || w.arc || (s.role === 'gunner' && s.inEmplacement >= 0)) return;
     const myRank = weaponRank(s.weapon);
     for (const kit of this.droppedKit) {
       if (kit.load || kit.side !== s.side || weaponRank(kit.weapon) <= myRank) continue;
@@ -3648,12 +3806,9 @@ export class Sim {
     // swap: crawl to the gun, shoulder it — a timed, exposed action
     task.timer -= DT;
     if (task.timer > 0) return;
-    s.weapon = task.weapon;
-    s.secondary = undefined;
-    s.ammo = { ...task.ammo };
-    s.magLeft = task.magLeft;
-    s.heat = 0;
+    this.takeWeapon(s, task.weapon, task.ammo, task.magLeft);
     s.role = 'gunner';
+    this.note('took-over', s);
     // the predecessor's own dropped copy of this weapon (from dropKit) is
     // now spoken for — clear it so nobody double-claims it via considerPickup
     const i = this.droppedKit.findIndex((k) => !k.load && k.side === s.side && k.weapon === task.weapon && Math.hypot(k.x - task.x, k.y - task.y) <= 2);
@@ -3661,16 +3816,47 @@ export class Sim {
     s.task = null;
   }
 
+  // A man takes up a weapon and the ammunition that came with it, on a
+  // battlefield pickup or a crew hand-over. He lets go of what his old weapon
+  // fed on (unless the new one takes the same) and keeps the rest of what he
+  // carries. Both callers used to replace his whole ammo record (#766): the
+  // assistant who took over the gun lost the belts on his own back, and a
+  // bearer who picked up a better rifle left the gun's shells in the grass.
+  private takeWeapon(s: Soldier, weapon: WeaponKey, ammo: Partial<Record<AmmoKey, number>>, magLeft: number): void {
+    const carried = { ...s.ammo };
+    const own = WEAPONS[s.weapon].ammo.type;
+    if (own !== WEAPONS[weapon].ammo.type) delete carried[own];
+    for (const k of Object.keys(ammo) as AmmoKey[]) carried[k] = (carried[k] ?? 0) + (ammo[k] ?? 0);
+    s.weapon = weapon;
+    s.secondary = undefined;
+    s.ammo = carried;
+    s.ammoStart = Object.values(carried).reduce((a: number, n) => a + (n ?? 0), 0);
+    s.magLeft = magLeft;
+    s.heat = 0;
+  }
+
   // Leader succession (spec: "highest xp teammate becomes leader after
   // 10s" — death only, no travel needed, so no takeOver task).
+  //
+  // Highest xp among the men whose job the team can spare (#766). A role is a
+  // single field, so the man promoted stops being whatever he was: a gunner
+  // loses crewAimMult and his death no longer triggers succession, an aidman
+  // stops treating at aidman speed, an assistant stops speeding the reload.
+  // Promotion took any role on xp alone (measured: gunner 1.7 and aidman 0.8
+  // times a battle). Specialists are now promoted only when nobody else is
+  // left, in the order LEADER_SPARE gives.
   private promoteLeader(team: Team): void {
     let best: Soldier | null = null;
     for (const sid of team.soldierIds) {
       const c = this.soldiers[sid];
-      if (!c.alive || c.downed || c.role === 'leader') continue;
-      if (!best || c.xp > best.xp) best = c;
+      if (!c.alive || c.downed || c.captured || c.role === 'leader') continue;
+      const d = best ? (LEADER_SPARE[c.role] ?? 0) - (LEADER_SPARE[best.role] ?? 0) : -1;
+      if (d < 0 || (d === 0 && c.xp > best!.xp)) best = c;
     }
-    if (best) best.role = 'leader';
+    if (best) {
+      best.role = 'leader';
+      this.note('promoted', best);
+    }
   }
 
   // Any living un-downed soldier or alive vehicle of `side` with LOS to the
@@ -4227,11 +4413,11 @@ export class Sim {
     const dmg: [number, number] = smgFire ? w.damage : clumsy || isSmg ? [20, 50] : [30, 70];
     const hit = this.rng.next() < Math.min(0.9, Math.max(0.05, base * this.aimFactor(s)));
     let kill = false;
-    if (hit) kill = this.wound(t, this.rng.range(dmg[0], dmg[1]));
+    if (hit) kill = this.wound(t, this.rng.range(dmg[0], dmg[1]), s.x, s.y);
     else t.suppression = Math.min(1, t.suppression + 0.1); // a blade past your face
     if (smgFire) {
       s.magLeft--;
-      this.pendingEvents.push({ fx: s.x, fy: s.y, tx: t.x, ty: t.y, hit, kill, weapon: s.weapon }); // hip-fire muzzle flash
+      this.pendingEvents.push({ fx: s.x, fy: s.y, tx: t.x, ty: t.y, hit, kill, weapon: s.weapon, shooterId: s.id, targetId: t.id }); // hip-fire muzzle flash
     }
     this.pendingMeleeEvents.push({ attackerId: s.id, victimId: t.id, x: t.x, y: t.y, hit, kill });
     if (kill) this.seenStatic[s.side].add(`s${t.id}`); // killed at arm's length: the corpse is found, not a ghost
@@ -4265,7 +4451,19 @@ export class Sim {
     if (kill || t.downed || t.captured) s.targetId = -1;
   }
 
-  private wound(t: Soldier, dmg: number): boolean {
+  // `fromX, fromY`: where the hit came from — the muzzle, the blast centre,
+  // the man swinging — when it came from anywhere. It is recorded for the
+  // kia/downed events and read by nothing else.
+  private wound(t: Soldier, dmg: number, fromX?: number, fromY?: number): boolean {
+    t.hitTick = -Infinity;
+    if (fromX !== undefined && fromY !== undefined) {
+      const d = Math.hypot(t.x - fromX, t.y - fromY);
+      if (d > 1e-6) {
+        t.hitDx = (t.x - fromX) / d;
+        t.hitDy = (t.y - fromY) / d;
+        t.hitTick = this.tick;
+      }
+    }
     const part = rollPart(this.rng.next());
     const r = applyHit(t.body, part, dmg);
     t.wounds.push(r.wound);
@@ -4281,9 +4479,22 @@ export class Sim {
     return false;
   }
 
+  // The direction of the wound that did this, when it landed within `age`
+  // ticks. A kill is resolved inside wound(); a man is found downed in his own
+  // update, which can be the tick after the hit.
+  private hitDir(t: Soldier, age: number): { dx?: number; dy?: number } {
+    return this.tick - t.hitTick <= age ? { dx: t.hitDx, dy: t.hitDy } : {};
+  }
+
+  // The quiet recoveries: an output event for the man it happened to, carrying
+  // his team's name for the ticker.
+  private note(kind: UnitEvent['kind'], s: Soldier): void {
+    this.pendingUnitEvents.push({ kind, x: s.x, y: s.y, side: s.side, name: s.name, id: s.id, team: this.teams[s.teamId].name });
+  }
+
   private kill(t: Soldier): void {
     if (t.inVehicle < 0) {
-      this.pendingUnitEvents.push({ kind: 'kia', x: t.x, y: t.y, side: t.side, name: t.name, id: t.id });
+      this.pendingUnitEvents.push({ kind: 'kia', x: t.x, y: t.y, side: t.side, name: t.name, id: t.id, ...this.hitDir(t, 0) });
       this.dropKit(t);
     }
     t.alive = false;
@@ -4421,6 +4632,7 @@ export class Sim {
         Math.round(e.timer * 1e6),
         Math.round(e.cooldown * 1e6),
         Math.round(e.heat * 1e6),
+        e.magLeft,
         e.towedBy,
         e.loadsPresent.length,
         e.hasTarget,

@@ -169,6 +169,41 @@ export function compliance(sim: Sim, team: Team, danger: number): 'comply' | 'ca
   return 'balk';
 }
 
+// The danger ladder is about crossing ground, so it applies only to an order
+// that moves the team (#764). 'fire' and 'smoke' aim at a point and move
+// nobody: scoring the walk to a TARGET refused a base of fire its own fire
+// order and printed WON'T ADVANCE for a team told to shoot. Any other order
+// that asks no man to walk farther than STAY_RADIUS is "stay here and ...":
+// the same samples then all land on the team's own position, so a garrison
+// under observation could not be told to defend where it stood, and an ambush
+// refused that way held its fire for the rest of the battle.
+// Measured per man, not from the centroid: a team strung out over 30 m is not
+// "in place" at its middle, and the men at the ends would cross real ground.
+// 8 m is a shake-out onto nearby cover (formation slots reach 3 m, the cover
+// snap a few more), well short of the 15 m of one bounding leg.
+// A charge is appraised however short it is: 'assault' asks men to close with
+// a defender, and #216's rule — a covered post is not charged on suppression
+// alone — holds at 5 m as it does at 30.
+export const STAY_RADIUS = 8;
+
+export function movesTeam(sim: Sim, team: Team, order: { kind: OrderKind; x: number; y: number }): boolean {
+  if (order.kind === 'fire' || order.kind === 'smoke') return false;
+  if (order.kind === 'assault') return true;
+  for (const id of team.soldierIds) {
+    const s = sim.soldiers[id];
+    if (s.alive && !s.downed && s.mental !== 'broken' && Math.hypot(s.x - order.x, s.y - order.y) > STAY_RADIUS) return true;
+  }
+  return false;
+}
+
+// The verdict orderTeam reaches for an order, in one place: the executor, the
+// order preview and the commander's own forecast all call this, so none of
+// them can drift from what the team will actually do.
+export function orderVerdict(sim: Sim, team: Team, order: { kind: OrderKind; x: number; y: number }): { danger: number; verdict: 'comply' | 'cautious' | 'balk' } {
+  const danger = dangerScore(sim, team, order) * (order.kind === 'assault' ? ASSAULT_DANGER_MULT : 1);
+  return { danger, verdict: movesTeam(sim, team, order) ? compliance(sim, team, danger) : 'comply' };
+}
+
 // Per-weapon-class ambush trigger distance (spec: faust ~30m -> 0.8x pen
 // weapon range, MG opening burst 50-100m -> 60m, else 40m).
 export function ambushThreshold(w: WeaponDef): number {

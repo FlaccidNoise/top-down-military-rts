@@ -178,7 +178,12 @@ describe('melee × fog of war', () => {
 
   it('a sneaking man hidden even from the sweep is revealed by melee contact; his team order survives', () => {
     const { sim, a, b } = pair({ dist: 4 }); // beyond the 2m lock range
-    sim.orderTeam(b.teamId, { kind: 'sneak', x: b.x, y: b.y }); // sneak in place
+    // Refused — the blue man is 4 m away and watching — so he holds where he
+    // is under sneak discipline. The refusal is the fixture: a sneak "in
+    // place" is carried out the moment it is given (#764), and a sneak he
+    // complied with would end when the lock took his path.
+    sim.orderTeam(b.teamId, { kind: 'sneak', x: b.x + 20, y: b.y });
+    expect(sim.teams[b.teamId].orderState.phase).toBe('balked');
     smokeAt(sim, a.x + 1, a.y);
     smokeAt(sim, b.x - 1, b.y);
     for (let i = 0; i < 15; i++) sim.step(); // a full sweep passes...

@@ -33,6 +33,49 @@ describe('EventPings — per-event lines', () => {
   });
 });
 
+// #766: the quiet recoveries. The sim names the man in `name` and his team in
+// `team`; the line is the team's.
+describe('EventPings — recoveries', () => {
+  const rec = (kind: UnitEvent['kind'], side: UnitEvent['side'], team: string): UnitEvent => ({ kind, side, name: 'Pvt. Kelly', team, x: 10, y: 10, id: 3 });
+
+  it('each recovery is one short line, named for the team', () => {
+    const p = new EventPings();
+    p.add([rec('took-over', 'blue', 'Able 1'), rec('promoted', 'blue', 'Able 2'), rec('stabilized', 'blue', 'Baker 1'), rec('recovered', 'blue', 'Baker 2'), rec('resupplied', 'blue', 'HMG')], 0);
+    expect(p.labels()).toEqual(['Able 1 — GUN TAKEN OVER', 'Able 2 — NEW LEADER', 'Baker 1 — MAN STABILIZED', 'Baker 2 — MAN BACK UP', 'HMG — AMMO BROUGHT UP']);
+  });
+
+  it('the enemy side says nothing: every one of these is a casualty report', () => {
+    const p = new EventPings();
+    p.add([rec('promoted', 'red', '3. Gruppe'), rec('stabilized', 'red', '3. Gruppe'), rec('recovered', 'red', '3. Gruppe'), rec('took-over', 'red', 'sMG42'), rec('resupplied', 'red', 'sMG42')], 0);
+    expect(p.labels()).toEqual([]);
+  });
+
+  it('a team patching up several men says so once per cooldown, per kind', () => {
+    const p = new EventPings();
+    p.add([rec('stabilized', 'blue', 'Able 1'), rec('stabilized', 'blue', 'Able 1')], 0);
+    p.add([rec('stabilized', 'blue', 'Able 1')], PIN_COOLDOWN - 1);
+    p.add([rec('recovered', 'blue', 'Able 1')], PIN_COOLDOWN - 1); // another kind is another line
+    p.add([rec('stabilized', 'blue', 'Baker 1')], PIN_COOLDOWN - 1); // and so is another team
+    expect(p.labels()).toEqual(['Able 1 — MAN STABILIZED', 'Able 1 — MAN BACK UP', 'Baker 1 — MAN STABILIZED']);
+    p.add([rec('stabilized', 'blue', 'Able 1')], PIN_COOLDOWN);
+    expect(p.labels()).toHaveLength(4);
+  });
+
+  it('a recovery never takes a slot from a casualty, and yields its own once read', () => {
+    const p = new EventPings();
+    p.add(Array.from({ length: 5 }, (_, i) => ev('kia', 'blue', `Pvt. ${i}`)), 0);
+    p.add([rec('promoted', 'blue', 'Able 1')], 1);
+    expect(p.labels()).not.toContain('Able 1 — NEW LEADER'); // full of casualties: the drama line loses
+
+    const q = new EventPings();
+    q.add([...Array.from({ length: 4 }, (_, i) => ev('kia', 'blue', `Pvt. ${i}`)), rec('promoted', 'blue', 'Able 1')], 0);
+    q.add([ev('kia', 'blue', 'Pvt. 9')], 5);
+    expect(q.labels()).toContain('Able 1 — NEW LEADER'); // inside its dwell: protected
+    q.add([ev('kia', 'blue', 'Pvt. 10')], 60);
+    expect(q.labels()).not.toContain('Able 1 — NEW LEADER'); // past it: the cheap slot again
+  });
+});
+
 describe('EventPings — team pinned-majority aggregate', () => {
   it('fires only past a majority, and only once per crossing', () => {
     const p = new EventPings();

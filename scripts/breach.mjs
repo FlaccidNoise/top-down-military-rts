@@ -183,7 +183,7 @@ for (const c of CASES) {
       // the scorch land BESIDE the opening rather than over the art.
       const bx = mx + (e.horiz ? 0 : -0.6);
       const by = my + (e.horiz ? -0.6 : 0);
-      sim.explode(bx, by, { suppRadius: c.radius, fragRadius: c.radius, frags: 0, dmg: [0, 0], breach: c.energy }, 0);
+      sim.explode(bx, by, { suppRadius: c.radius, fragRadius: c.radius, frags: 0, dmg: [0, 0], breach: c.energy, kind: 'shell' }, 0);
     },
     { e, c, mx, my },
   );

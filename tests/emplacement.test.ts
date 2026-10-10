@@ -3,6 +3,82 @@ import { EMPLACEMENTS, WEAPONS } from '../src/sim/data';
 import { GameMap } from '../src/sim/map';
 import { Sim, sightBetween } from '../src/sim/sim';
 
+// #765. A belt is ammo.perUnit bursts on a tripod as it is in a man's hands.
+// The emplaced path used to spend a whole belt on every burst.
+describe('emplaced MG belts (#765)', () => {
+  const gun = (seed: number) => {
+    const sim = new Sim(new GameMap(200, 44), seed);
+    const e = sim.addEmplacement('blue', 'mg42_lafette', 10.5, 20.5, 0, 'deployed');
+    const crew = sim.teams[e.crewTeamId].soldierIds.map((id) => sim.soldiers[id]);
+    const belts = () => crew.reduce((a, s) => a + (s.ammo.belt_792 ?? 0), 0);
+    const bursts = () => sim.takeEvents().filter((ev) => ev.fx === e.x && ev.fy === e.y).length;
+    const targets = (n: number, x: number) => {
+      const sq = sim.addSquad(
+        'red',
+        'targets',
+        Array.from({ length: n }, (_, i) => ({ name: `T${i}`, weapon: 'kar98k' as const, x: x + (i % 4) * 2, y: 4.5 + Math.floor(i / 4) * 4, ammo: {} })),
+      );
+      for (const id of sq.soldierIds) sim.soldiers[id].magLeft = 0; // dry: nothing comes back at the gun
+    };
+    return { sim, e, belts, bursts, targets };
+  };
+
+  it('a tripod MG42 fires on through one belt: more bursts than its crew carries belts, and none drawn', () => {
+    const { sim, e, belts, bursts, targets } = gun(3);
+    targets(36, 80.5);
+    const carried = belts();
+    expect(carried).toBe(12);
+    let fired = 0;
+    for (let i = 0; i < 30 * 180 && fired <= carried * 2; i++) {
+      sim.step();
+      fired += bursts();
+    }
+    expect(fired).toBeGreaterThan(carried * 2); // 12 was the cap, 24 with the old stockpile
+    expect(belts()).toBe(carried);
+    expect(e.magLeft).toBe(WEAPONS.mg42.ammo.perUnit - fired);
+  });
+
+  it('a spent belt is changed from the crew stock, and the change takes the reload time', () => {
+    const { sim, e, belts, bursts, targets } = gun(4);
+    targets(8, 60.5);
+    const carried = belts();
+    e.magLeft = 1; // staged: the last burst of the belt on the gun
+    let fired = 0;
+    for (let i = 0; i < 300 && fired === 0; i++) {
+      sim.step();
+      fired += bursts();
+    }
+    expect([fired, e.magLeft, belts()]).toEqual([1, 0, carried]);
+    for (let i = 0; i < 300 && e.magLeft === 0; i++) sim.step();
+    expect([e.magLeft, belts()]).toEqual([WEAPONS.mg42.ammo.perUnit, carried - 1]);
+    expect(e.cooldown).toBeGreaterThan(WEAPONS.mg42.ammo.reload - 0.1);
+    let during = 0;
+    for (let i = 0; i < Math.floor(WEAPONS.mg42.ammo.reload * 30) - 5; i++) {
+      sim.step();
+      during += bursts();
+    }
+    expect(during).toBe(0); // silent while the belt goes on
+    for (let i = 0; i < 300 && fired === 1; i++) {
+      sim.step();
+      fired += bursts();
+    }
+    expect(fired).toBeGreaterThan(1); // and back in action after it
+  });
+
+  it('with no belt left to change to, the gun stops when the one on it runs out', () => {
+    const { sim, e, bursts, targets } = gun(5);
+    targets(16, 60.5);
+    for (const id of sim.teams[e.crewTeamId].soldierIds) delete sim.soldiers[id].ammo.belt_792;
+    e.magLeft = 3;
+    let fired = 0;
+    for (let i = 0; i < 30 * 60; i++) {
+      sim.step();
+      fired += bursts();
+    }
+    expect(fired).toBe(3);
+  });
+});
+
 describe('emplacement lifecycle', () => {
   it('packed -> deploying -> deployed -> fires on a visible enemy', () => {
     const sim = new Sim(new GameMap(160, 20), 1);
