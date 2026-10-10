@@ -101,7 +101,7 @@ const PATH_BUDGET_PER_TICK = 6;
 const GRENADE_RANGE = 12; // m
 const GRENADE_FUSE_TICKS = 30; // ~1 s
 const GRENADE_COOLDOWN_TICKS = 60;
-const GRENADE_BLAST = { suppRadius: 6, fragRadius: 3, frags: 2, dmg: [20, 55] as [number, number], breach: 2 };
+const GRENADE_BLAST: Blast = { suppRadius: 6, fragRadius: 3, frags: 2, dmg: [20, 55], breach: 2, kind: 'grenade' };
 const GRENADE_SCATTER = 2; // m max
 const ENTRY_LOOKAHEAD = 4; // path waypoints: imminent opening, not any later opening
 const AP_DESTROY_CHANCE = 0.45; // conditional on a penetrating hit
@@ -136,7 +136,8 @@ const CRUSH_SUPPRESSION = 0.25;
 // aiming put back in. 12 is the only energy on the field that clears every row
 // of BREACH_THRESH, so an aimed round always opens the edge it lands on —
 // which is what makes "assault routes you make" a rule rather than a lottery.
-const WALL_SHOT: { suppRadius: number; fragRadius: number; frags: number; dmg: [number, number]; breach: number } = {
+const WALL_SHOT: Blast = {
+  kind: 'at',
   suppRadius: 8,
   fragRadius: 3,
   frags: 1,
@@ -276,6 +277,11 @@ export interface Soldier {
   entryHoldUntil: number; // waits outside an opening until his own grenade bursts (#217)
   captured: boolean; // alive, out of the fight, untargetable (surrendered at melee contact)
   lastCowedTick: number; // tick he was last pinned or broken. Output only: it times the 'rallied' event and nothing in the sim reads it, so it is not in snapshot()
+  // The last wound that came from somewhere: unit vector away from its source,
+  // and the tick. Output only (the kia/downed events' dx, dy), not in snapshot().
+  hitDx: number;
+  hitDy: number;
+  hitTick: number;
 }
 
 export interface Vehicle {
@@ -374,17 +380,64 @@ export interface ShotEvent {
   hit: boolean;
   kill: boolean;
   weapon?: WeaponKey; // render-only: lets the audio layer pick a per-weapon report. Undefined = vehicle cannon/AP (paired with a boom anyway).
+  // Render-only: the soldier who fired and the soldier fired at, where the sim
+  // has one. A shot from a gun or a hull has no shooterId (it leaves from the
+  // weapon, not from a man); a shot at a point, a wall or a vehicle has no
+  // targetId.
+  shooterId?: number;
+  targetId?: number;
+}
+
+// What went off, so the renderer can tell a grenade from a shell. `r` is the
+// fragment radius in metres, the same number the blast wounded with; a brew-up
+// has none. Render-only, like every drain queue here.
+export type BoomKind = 'grenade' | 'shell' | 'mortar' | 'at' | 'brewup' | 'bomb';
+export interface BoomEvent {
+  x: number;
+  y: number;
+  r?: number;
+  kind: BoomKind;
+}
+
+interface Blast {
+  suppRadius: number;
+  fragRadius: number;
+  frags: number;
+  dmg: [number, number];
+  breach?: number;
+  kind: BoomKind;
 }
 
 // Discrete casualty/morale transitions, emitted the tick they happen so the
 // UI never has to diff sim state (a DOWN followed by KIA in one frame batch
 // would otherwise drop the DOWN).
 export interface UnitEvent {
-  kind: 'downed' | 'kia' | 'broken' | 'surrendered' | 'vehicle-destroyed' | 'ping' | 'pinned' | 'rallied' | 'ambush';
+  kind:
+    | 'downed'
+    | 'kia'
+    | 'broken'
+    | 'surrendered'
+    | 'vehicle-destroyed'
+    | 'ping'
+    | 'pinned'
+    | 'rallied'
+    | 'ambush'
+    // The quiet recoveries (#766): each was a state change nothing announced.
+    | 'took-over' // a crewman finished taking over the gunner's weapon
+    | 'promoted' // a teammate became leader after the leader fell
+    | 'stabilized' // a casualty's bleeding was stopped by a squadmate
+    | 'recovered' // a downed man is back on his feet
+    | 'resupplied'; // a runner handed ammunition to a dry gunner
   x: number;
   y: number;
   side: Side;
   name: string;
+  team?: string; // the quiet recoveries: the team of the man it happened to, for the ticker's team-named line
+  // 'kia' and 'downed': unit vector along the shot that did it, or away from
+  // the blast centre. Absent when the cause had no direction (bled out, hit
+  // inside a hull, a burst on top of him).
+  dx?: number;
+  dy?: number;
   // The man it happened to, where there is one. Output only — the UI fog
   // filter needs soldierVisibleTo, and a point test would leak a concealed
   // man that sightToSoldier's concealment rule hides. Absent on the two
@@ -821,7 +874,7 @@ export class Sim {
   private barrages: Barrage[] = [];
   private strafeImpacts: { tick: number; x: number; y: number }[] = [];
   private pendingEvents: ShotEvent[] = [];
-  private pendingBooms: { x: number; y: number }[] = [];
+  private pendingBooms: BoomEvent[] = [];
   private pendingBreaches: BreachEvent[] = [];
   // Append-only, never drained. The map itself is the single source of truth
   // for where the holes are; this is the ordered record of how it got that way.
@@ -940,6 +993,9 @@ export class Sim {
       entryHoldUntil: 0,
       captured: false,
       lastCowedTick: -Infinity,
+      hitDx: 0,
+      hitDy: 0,
+      hitTick: -Infinity,
     };
     s.morale = 0.7 + s.courage * 0.3;
     this.soldiers.push(s);
@@ -1512,7 +1568,7 @@ export class Sim {
       if (this.tick < sh.tick) return true;
           // Mortar/barrage smoke lands at ground level 0, wherever it falls.
       if (sh.smoke) this.smoke.push(smokePuff(sh.x, sh.y, this.map.elevAt(Math.floor(sh.x), Math.floor(sh.y)), 60));
-      else this.explode(sh.x, sh.y, { suppRadius: 10, fragRadius: 5, frags: 2, dmg: [25, 75], breach: 5 }); // 81 mm: opens a head-high enclosure wall, never masonry
+      else this.explode(sh.x, sh.y, { suppRadius: 10, fragRadius: 5, frags: 2, dmg: [25, 75], breach: 5, kind: 'mortar' }); // 81 mm: opens a head-high enclosure wall, never masonry
       return false;
     });
   }
@@ -1693,9 +1749,9 @@ export class Sim {
     if (!this.consumeEmplacementAmmo(e, firer, w.ammo.type)) return;
     firer.crewSkill.mg = Math.min(1, (firer.crewSkill.mg ?? 0) + 0.0005);
     const hit = this.rng.next() < p.acc;
-    const kill = hit ? this.wound(t, this.rng.range(w.damage[0], w.damage[1])) : false;
+    const kill = hit ? this.wound(t, this.rng.range(w.damage[0], w.damage[1]), e.x, e.y) : false;
     this.suppressAround(t.x, t.y, t.side, w.suppression, w.suppRadius);
-    this.pendingEvents.push({ fx: e.x, fy: e.y, tx: t.x, ty: t.y, hit, kill, weapon: def.weapon });
+    this.pendingEvents.push({ fx: e.x, fy: e.y, tx: t.x, ty: t.y, hit, kill, weapon: def.weapon, targetId: t.id });
     if (w.heat) {
       const heatMult = firer.role !== 'gunner' ? 1.5 : 1;
       e.heat = Math.min(1.5, e.heat + w.heat.perShot * heatMult);
@@ -2163,7 +2219,7 @@ export class Sim {
     return e;
   }
 
-  takeBooms(): { x: number; y: number }[] {
+  takeBooms(): BoomEvent[] {
     const b = this.pendingBooms;
     this.pendingBooms = [];
     return b;
@@ -2285,7 +2341,7 @@ export class Sim {
       const s = this.strafeImpacts.shift()!;
       // breach 0, and that is a decision, not an omission: a 20 mm cannon
       // strafing run chews masonry cosmetically and opens nothing.
-      this.explode(s.x, s.y, { suppRadius: 12, fragRadius: 5, frags: 2, dmg: [25, 70], breach: 0 });
+      this.explode(s.x, s.y, { suppRadius: 12, fragRadius: 5, frags: 2, dmg: [25, 70], breach: 0, kind: 'bomb' });
     }
   }
 
@@ -2413,16 +2469,17 @@ export class Sim {
   private explode(
     x: number,
     y: number,
-    p: { suppRadius: number; fragRadius: number; frags: number; dmg: [number, number]; breach?: number } = {
+    p: Blast = {
       suppRadius: 15,
       fragRadius: 9,
       frags: 3,
       dmg: [25, 75],
       breach: 4, // 60 mm mortar / unqualified blast
+      kind: 'shell', // the one caller that takes the default is the off-map barrage
     },
     l = 0, // detonation level (floor); all current callers are ground-bursts
   ): void {
-    this.pendingBooms.push({ x, y });
+    this.pendingBooms.push({ x, y, r: p.fragRadius, kind: p.kind });
     for (const s of this.soldiers) {
       if (!s.alive) continue;
       let mult = 1;
@@ -2447,7 +2504,7 @@ export class Sim {
       for (let i = 0; i < frags; i++) {
         const pHit = (1 - d / (p.fragRadius + 1)) * (s.downed || s.mental === 'pinned' ? 0.45 : 0.8) * mult;
         if (this.rng.next() < pHit) {
-          if (this.wound(s, this.rng.range(p.dmg[0], p.dmg[1]))) break;
+          if (this.wound(s, this.rng.range(p.dmg[0], p.dmg[1]), x, y)) break;
         }
       }
     }
@@ -2728,8 +2785,8 @@ export class Sim {
       // real main gun) fall straight through to the pintle MG.
       if (v.gunCooldown <= 0 && v.ammo.he > 0 && this.turretBearingReady(v, def, t.x, t.y)) {
         // Tank HE is the first thing on the field that leaves a hull-wide hole.
-        this.explode(t.x + this.rng.range(-2, 2), t.y + this.rng.range(-2, 2), { suppRadius: 10, fragRadius: 5, frags: 2, dmg: [25, 60], breach: 7 });
-        this.pendingEvents.push({ fx: v.x, fy: v.y, tx: t.x, ty: t.y, hit: true, kill: false });
+        this.explode(t.x + this.rng.range(-2, 2), t.y + this.rng.range(-2, 2), { suppRadius: 10, fragRadius: 5, frags: 2, dmg: [25, 60], breach: 7, kind: 'shell' });
+        this.pendingEvents.push({ fx: v.x, fy: v.y, tx: t.x, ty: t.y, hit: true, kill: false, targetId: t.id });
         v.ammo.he--;
         v.gunCooldown = def.gunCooldown * (0.85 + this.rng.next() * 0.3);
       } else if (v.mgCooldown <= 0) {
@@ -2795,7 +2852,7 @@ export class Sim {
       // A missed AT rocket / tank round hits whatever is behind the tank, and
       // that is usually a wall. Same warhead as a deliberate wall shot, minus
       // the aiming, so it is nearly as good at opening one.
-      this.explode(target.x + this.rng.range(-4, 4), target.y + this.rng.range(-4, 4), { suppRadius: 8, fragRadius: 3, frags: 1, dmg: [20, 50], breach: 8 });
+      this.explode(target.x + this.rng.range(-4, 4), target.y + this.rng.range(-4, 4), { suppRadius: 8, fragRadius: 3, frags: 1, dmg: [20, 50], breach: 8, kind: 'at' });
       return;
     }
     const effPen = pen * this.rng.range(0.75, 1.25);
@@ -2820,7 +2877,7 @@ export class Sim {
     v.alive = false;
     v.burning = true;
     v.path = null;
-    this.pendingBooms.push({ x: v.x, y: v.y });
+    this.pendingBooms.push({ x: v.x, y: v.y, kind: 'brewup' });
     // A brewed-up tank burns for three minutes and throws a 20 m column
     // (PLUME[1]) that screens the street it died in and is visible from
     // anywhere on the map. It is ordinary smoke: stepSmoke ages it, the LOS
@@ -2888,19 +2945,19 @@ export class Sim {
   }
 
   // Shared small-arms resolution used by soldiers and vehicle MGs.
-  private resolveSmallArmsShot(fx: number, fy: number, weapon: WeaponKey, t: Soldier, shooterMoving: boolean, aim: number, l0 = 0, e0 = EYE_H): { fired: boolean; kill: boolean } {
+  private resolveSmallArmsShot(fx: number, fy: number, weapon: WeaponKey, t: Soldier, shooterMoving: boolean, aim: number, l0 = 0, e0 = EYE_H, shooterId?: number): { fired: boolean; kill: boolean } {
     const p = this.shotPreview(fx, fy, weapon, t, shooterMoving, aim, l0, e0);
     if (!p.visible) return { fired: false, kill: false };
     const w: WeaponDef = WEAPONS[weapon];
     const hit = this.rng.next() < p.acc;
     let kill = false;
-    if (hit) kill = this.wound(t, this.rng.range(w.damage[0], w.damage[1]));
+    if (hit) kill = this.wound(t, this.rng.range(w.damage[0], w.damage[1]), fx, fy);
     // Marching fire suppresses at half weight: accuracy already pays the
     // ×0.5 shooter-moving tax (2644), but suppression used to be delivered
     // at 100% while walking — a company advancing at a steady walk got its
     // full stationary suppression output for free (balance 2026-07).
     this.suppressAround(t.x, t.y, t.side, w.suppression * (shooterMoving ? 0.5 : 1), w.suppRadius);
-    this.pendingEvents.push({ fx, fy, tx: t.x, ty: t.y, hit, kill, weapon });
+    this.pendingEvents.push({ fx, fy, tx: t.x, ty: t.y, hit, kill, weapon, shooterId, targetId: t.id });
     return { fired: true, kill };
   }
 
@@ -2914,7 +2971,7 @@ export class Sim {
 
   // Infantry small-arms fire: consumes the shooter's mag and builds barrel heat.
   private fireSmallArms(shooter: Soldier, t: Soldier, shooterMoving: boolean, aim = 1): boolean {
-    const r = this.resolveSmallArmsShot(shooter.x, shooter.y, shooter.weapon, t, shooterMoving, aim, shooter.level, eyeOf(this, shooter));
+    const r = this.resolveSmallArmsShot(shooter.x, shooter.y, shooter.weapon, t, shooterMoving, aim, shooter.level, eyeOf(this, shooter), shooter.id);
     if (!r.fired) return false;
     shooter.magLeft--;
     const w: WeaponDef = WEAPONS[shooter.weapon];
@@ -2953,7 +3010,7 @@ export class Sim {
     s.downed = cons < 0.3 || s.pain >= 0.8 || capacities(s.body).moving < 0.15;
     if (s.downed) {
       if (!wasDowned) {
-        this.pendingUnitEvents.push({ kind: 'downed', x: s.x, y: s.y, side: s.side, name: s.name, id: s.id });
+        this.pendingUnitEvents.push({ kind: 'downed', x: s.x, y: s.y, side: s.side, name: s.name, id: s.id, ...this.hitDir(s, 1) });
         this.dropKit(s);
         s.path = null;
         s.targetId = -1;
@@ -2967,6 +3024,7 @@ export class Sim {
       const r = this.soldiers[s.rescuerId];
       if (r.task?.kind === 'rescue' && r.task.casualtyId === s.id) this.dropTask(r); // he's back up
     }
+    if (wasDowned && !s.captured) this.note('recovered', s);
     if (s.captured) return; // captured men are inert: no movement, no flee, no psych re-trigger, no fire
 
     // psyche: bonded mates nearby steady the nerves
@@ -3289,7 +3347,7 @@ export class Sim {
     if (s.ammoStart > 0 && currentUnits / s.ammoStart < 0.3) return;
     const enemySide: Side = s.side === 'blue' ? 'red' : 'blue';
     this.suppressAround(order.x, order.y, enemySide, w.suppression);
-    this.pendingEvents.push({ fx: s.x, fy: s.y, tx: order.x, ty: order.y, hit: false, kill: false, weapon: s.weapon });
+    this.pendingEvents.push({ fx: s.x, fy: s.y, tx: order.x, ty: order.y, hit: false, kill: false, weapon: s.weapon, shooterId: s.id });
     s.magLeft--;
     if (w.heat) s.heat = Math.min(1.5, s.heat + w.heat.perShot);
     s.cooldown = w.cooldown * (0.85 + this.rng.next() * 0.3);
@@ -3515,6 +3573,7 @@ export class Sim {
     if (task.timer <= 0) {
       c.stabilized = true;
       c.bleedRate *= 0.15;
+      this.note('stabilized', c);
       this.dropTask(s);
     }
   }
@@ -3586,6 +3645,7 @@ export class Sim {
       if (give > 0) {
         s.ammo[type] = have - give;
         gunner.ammo[type] = (gunner.ammo[type] ?? 0) + give;
+        this.note('resupplied', gunner);
       }
       gunner.ammoRunnerId = -1;
       task.phase = 'return';
@@ -3734,6 +3794,7 @@ export class Sim {
     if (task.timer > 0) return;
     this.takeWeapon(s, task.weapon, task.ammo, task.magLeft);
     s.role = 'gunner';
+    this.note('took-over', s);
     // the predecessor's own dropped copy of this weapon (from dropKit) is
     // now spoken for — clear it so nobody double-claims it via considerPickup
     const i = this.droppedKit.findIndex((k) => !k.load && k.side === s.side && k.weapon === task.weapon && Math.hypot(k.x - task.x, k.y - task.y) <= 2);
@@ -3778,7 +3839,10 @@ export class Sim {
       const d = best ? (LEADER_SPARE[c.role] ?? 0) - (LEADER_SPARE[best.role] ?? 0) : -1;
       if (d < 0 || (d === 0 && c.xp > best!.xp)) best = c;
     }
-    if (best) best.role = 'leader';
+    if (best) {
+      best.role = 'leader';
+      this.note('promoted', best);
+    }
   }
 
   // Any living un-downed soldier or alive vehicle of `side` with LOS to the
@@ -4335,11 +4399,11 @@ export class Sim {
     const dmg: [number, number] = smgFire ? w.damage : clumsy || isSmg ? [20, 50] : [30, 70];
     const hit = this.rng.next() < Math.min(0.9, Math.max(0.05, base * this.aimFactor(s)));
     let kill = false;
-    if (hit) kill = this.wound(t, this.rng.range(dmg[0], dmg[1]));
+    if (hit) kill = this.wound(t, this.rng.range(dmg[0], dmg[1]), s.x, s.y);
     else t.suppression = Math.min(1, t.suppression + 0.1); // a blade past your face
     if (smgFire) {
       s.magLeft--;
-      this.pendingEvents.push({ fx: s.x, fy: s.y, tx: t.x, ty: t.y, hit, kill, weapon: s.weapon }); // hip-fire muzzle flash
+      this.pendingEvents.push({ fx: s.x, fy: s.y, tx: t.x, ty: t.y, hit, kill, weapon: s.weapon, shooterId: s.id, targetId: t.id }); // hip-fire muzzle flash
     }
     this.pendingMeleeEvents.push({ attackerId: s.id, victimId: t.id, x: t.x, y: t.y, hit, kill });
     if (kill) this.seenStatic[s.side].add(`s${t.id}`); // killed at arm's length: the corpse is found, not a ghost
@@ -4373,7 +4437,19 @@ export class Sim {
     if (kill || t.downed || t.captured) s.targetId = -1;
   }
 
-  private wound(t: Soldier, dmg: number): boolean {
+  // `fromX, fromY`: where the hit came from — the muzzle, the blast centre,
+  // the man swinging — when it came from anywhere. It is recorded for the
+  // kia/downed events and read by nothing else.
+  private wound(t: Soldier, dmg: number, fromX?: number, fromY?: number): boolean {
+    t.hitTick = -Infinity;
+    if (fromX !== undefined && fromY !== undefined) {
+      const d = Math.hypot(t.x - fromX, t.y - fromY);
+      if (d > 1e-6) {
+        t.hitDx = (t.x - fromX) / d;
+        t.hitDy = (t.y - fromY) / d;
+        t.hitTick = this.tick;
+      }
+    }
     const part = rollPart(this.rng.next());
     const r = applyHit(t.body, part, dmg);
     t.wounds.push(r.wound);
@@ -4389,9 +4465,22 @@ export class Sim {
     return false;
   }
 
+  // The direction of the wound that did this, when it landed within `age`
+  // ticks. A kill is resolved inside wound(); a man is found downed in his own
+  // update, which can be the tick after the hit.
+  private hitDir(t: Soldier, age: number): { dx?: number; dy?: number } {
+    return this.tick - t.hitTick <= age ? { dx: t.hitDx, dy: t.hitDy } : {};
+  }
+
+  // The quiet recoveries: an output event for the man it happened to, carrying
+  // his team's name for the ticker.
+  private note(kind: UnitEvent['kind'], s: Soldier): void {
+    this.pendingUnitEvents.push({ kind, x: s.x, y: s.y, side: s.side, name: s.name, id: s.id, team: this.teams[s.teamId].name });
+  }
+
   private kill(t: Soldier): void {
     if (t.inVehicle < 0) {
-      this.pendingUnitEvents.push({ kind: 'kia', x: t.x, y: t.y, side: t.side, name: t.name, id: t.id });
+      this.pendingUnitEvents.push({ kind: 'kia', x: t.x, y: t.y, side: t.side, name: t.name, id: t.id, ...this.hitDir(t, 0) });
       this.dropKit(t);
     }
     t.alive = false;

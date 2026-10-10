@@ -741,7 +741,19 @@ const DRAMA_DWELL = 30;
 const C_BAD = '#d05c50'; // blue's bad news
 const C_WARN = '#e08a3c'; // blue, not yet a casualty — downed, balked, our ambush
 const C_ENEMY = '#ffca6a'; // anything happening to the Germans
-const C_STEADY = '#9fb87a'; // the one line that is neither loss nor alarm
+const C_STEADY = '#9fb87a'; // the lines that are neither loss nor alarm: a rally, a recovery
+// The quiet recoveries (#766): things the men did for each other that changed
+// the fight and that nothing on screen said. One line each, named for the
+// team. Blue only, and on purpose — every one of them is a casualty report in
+// disguise (a new leader means the old one fell), and the German body count
+// is intel the ticker does not hand out.
+const RECOVERY: Partial<Record<UnitEvent['kind'], string>> = {
+  'took-over': 'GUN TAKEN OVER',
+  promoted: 'NEW LEADER',
+  stabilized: 'MAN STABILIZED',
+  recovered: 'MAN BACK UP',
+  resupplied: 'AMMO BROUGHT UP',
+};
 const MAX_KIAS = 12;
 const KIA_CELL = 8; // world meters — casualties inside a cell share one stack
 const KIA_LINE_H = 11;
@@ -757,6 +769,7 @@ export class EventPings {
   private kias: WorldKia[] = [];
   private pin = new Map<number, { majority: boolean; lastPin: number; lastRally: number }>();
   private balk = new Map<number, boolean>();
+  private recovery = new Map<string, number>(); // "team|kind" -> tick it was last announced
 
   add(events: UnitEvent[], tick: number, teams: TeamPulse[] = []): void {
     for (const e of events) {
@@ -778,6 +791,15 @@ export class EventPings {
         if (e.kind === 'kia') {
           this.kias.push({ x: e.x, y: e.y, label: e.name, tick });
           if (this.kias.length > MAX_KIAS) this.kias.shift();
+        }
+      } else if (e.side === 'blue' && RECOVERY[e.kind]) {
+        // Same cooldown as the pin lines, per team and per kind: a squad
+        // patching up three men after a barrage says so once.
+        const team = e.team ?? e.name;
+        const key = `${team}|${e.kind}`;
+        if (tick - (this.recovery.get(key) ?? -PIN_COOLDOWN) >= PIN_COOLDOWN) {
+          this.recovery.set(key, tick);
+          this.push(e.side, team, RECOVERY[e.kind]!, C_STEADY, tick, true);
         }
       }
       // 'pinned' and 'rallied' are deliberately NOT consumed here. One barrage
@@ -837,6 +859,7 @@ export class EventPings {
     this.kias = [];
     this.pin.clear();
     this.balk.clear();
+    this.recovery.clear();
   }
 
   // `drama` is morale and order news. It is worth a slot, but never worth the

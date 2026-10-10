@@ -362,6 +362,58 @@ describe('simulation', () => {
     expect(sim.takeUnitEvents()).toEqual([]); // queue drains
   });
 
+  // #766 and the FX lane's fields. Everything below is output only.
+  it('a kill carries the direction of the shot; a man who bleeds out carries none', () => {
+    const sim = new Sim(new GameMap(40, 20), 5);
+    sim.addSquad('blue', 'a', [{ name: 'A', weapon: 'garand', x: 5.5, y: 10.5 }]);
+    sim.addSquad('red', 'b', [{ name: 'B', weapon: 'kar98k', x: 25.5, y: 10.5, ammo: {} }]);
+    const [a, b] = sim.soldiers;
+    b.magLeft = 0;
+    const shots: { shooterId?: number; targetId?: number }[] = [];
+    const events: UnitEvent[] = [];
+    for (let i = 0; i < 30 * 120 && b.alive; i++) {
+      sim.step();
+      shots.push(...sim.takeEvents());
+      events.push(...sim.takeUnitEvents());
+    }
+    expect(b.alive).toBe(false);
+    expect(shots.length).toBeGreaterThan(0);
+    for (const sh of shots) expect([sh.shooterId, sh.targetId]).toEqual([a.id, b.id]);
+    const kia = events.find((e) => e.kind === 'kia')!;
+    expect(kia.dx).toBeCloseTo(1, 6); // due east, the way the round was going
+    expect(kia.dy).toBeCloseTo(0, 6);
+    for (const e of events.filter((e) => e.kind === 'downed' && e.dx !== undefined)) expect(Math.hypot(e.dx!, e.dy!)).toBeCloseTo(1, 6);
+
+    const lone = new Sim(new GameMap(10, 10), 1);
+    lone.addSquad('blue', 'a', [{ name: 'A', weapon: 'garand', x: 2.5, y: 2.5 }]);
+    lone.soldiers[0].wounds.push({ part: 0, dmg: 10 });
+    lone.soldiers[0].bloodLoss = 1;
+    lone.step();
+    const bled = lone.takeUnitEvents().find((e) => e.kind === 'kia')!;
+    expect(bled.dx).toBeUndefined();
+    expect(bled.dy).toBeUndefined();
+  });
+
+  it('a blast throws its casualties away from the burst, and says what burst', () => {
+    const sim = new Sim(new GameMap(40, 20), 6);
+    sim.addSquad('red', 'b', [{ name: 'B', weapon: 'kar98k', x: 23.5, y: 10.5 }]);
+    const b = sim.soldiers[0];
+    sim.callBarrage('blue', 20.5, 10.5);
+    const events: UnitEvent[] = [];
+    const booms = [];
+    for (let i = 0; i < 30 * 60; i++) {
+      sim.step();
+      booms.push(...sim.takeBooms());
+      events.push(...sim.takeUnitEvents());
+    }
+    expect(booms.length).toBeGreaterThan(0);
+    for (const boom of booms) expect([boom.kind, boom.r]).toEqual(['shell', 9]);
+    const hit = events.filter((e) => (e.kind === 'kia' || e.kind === 'downed') && e.dx !== undefined);
+    expect(hit.length).toBeGreaterThan(0); // the barrage got him
+    expect(b.wounds.length).toBeGreaterThan(0);
+    for (const e of hit) expect(Math.hypot(e.dx!, e.dy!)).toBeCloseTo(1, 6);
+  });
+
   it('waypoint queue dispatches legs in order; a direct order cancels it', () => {
     const sim = new Sim(new GameMap(60, 20), 1);
     sim.addSquad('blue', 'a', [{ name: 'A', weapon: 'garand', x: 2.5, y: 10.5 }]);
@@ -924,6 +976,68 @@ describe('casualty chain v2: succession, two-man carry, aidman', () => {
     for (let i = 0; i < 400 && assistant.role !== 'gunner'; i++) sim2.step();
     expect(assistant.role).toBe('gunner');
     expect(assistant.ammo.belt_792).toBe(belts);
+  });
+
+  it('the quiet recoveries are announced: stabilized, back up, new leader, gun taken over, ammo brought up', () => {
+    const collect = (sim: Sim, ticks: number, until: (kinds: Set<string>) => boolean) => {
+      const out: UnitEvent[] = [];
+      const kinds = new Set<string>();
+      for (let i = 0; i < ticks && !until(kinds); i++) {
+        sim.step();
+        for (const e of sim.takeUnitEvents()) {
+          out.push(e);
+          kinds.add(e.kind);
+        }
+      }
+      return out;
+    };
+
+    // A man in shock is treated where he lies, and comes round as the pain eases.
+    const aid = new Sim(new GameMap(20, 20), 49);
+    aid.addSquad('blue', 'Able', [
+      { name: 'C', weapon: 'garand', x: 10.5, y: 10.5 },
+      { name: 'R', weapon: 'garand', x: 10.5, y: 10.5 },
+    ]);
+    const [c, r] = aid.soldiers;
+    r.bonds[c.id] = 1;
+    r.courage = 1;
+    c.wounds.push({ part: 0, dmg: 10 }); // pain only eases on a wounded man
+    c.pain = 0.9;
+    const aidEvents = collect(aid, 30 * 90, (k) => k.has('stabilized') && k.has('recovered'));
+    const team = aid.teams[c.teamId].name;
+    expect(aidEvents.filter((e) => e.kind === 'stabilized').map((e) => [e.id, e.team, e.side])).toEqual([[c.id, team, 'blue']]);
+    expect(aidEvents.filter((e) => e.kind === 'recovered').map((e) => [e.id, e.team])).toEqual([[c.id, team]]);
+
+    // The leader falls; ten seconds on a teammate has the job.
+    const led = new Sim(new GameMap(20, 20), 52);
+    led.addSquad('blue', 'a', [
+      { name: 'L', weapon: 'garand', x: 10.5, y: 10.5 },
+      { name: 'N', weapon: 'garand', x: 10.5, y: 10.5 },
+    ]);
+    led.soldiers[0].role = 'leader';
+    led.soldiers[0].wounds.push({ part: 0, dmg: 100 });
+    led.soldiers[0].bloodLoss = 1;
+    expect(collect(led, 400, (k) => k.has('promoted')).filter((e) => e.kind === 'promoted').map((e) => e.id)).toEqual([led.soldiers[1].id]);
+
+    // The gunner falls; the assistant takes the gun over.
+    const gun = new Sim(new GameMap(60, 20), 46);
+    const e = gun.addEmplacement('blue', 'mg42_lafette', 10.5, 10.5, 0, 'deployed');
+    const crew = gun.teams[e.crewTeamId].soldierIds.map((id) => gun.soldiers[id]);
+    const gunner = crew.find((s) => s.role === 'gunner')!;
+    const assistant = crew.find((s) => s.role === 'assistant')!;
+    gunner.wounds.push({ part: 0, dmg: 100 });
+    gunner.bloodLoss = 1;
+    expect(collect(gun, 400, (k) => k.has('took-over')).filter((x) => x.kind === 'took-over').map((x) => x.id)).toEqual([assistant.id]);
+
+    // A dry gunner gets belts from his bearer.
+    const dry = new Sim(new GameMap(20, 20), 70);
+    dry.addSquad('blue', 'g', [
+      { name: 'Gunner', weapon: 'mg42', x: 5.5, y: 5.5, ammo: { belt_792: 1 } },
+      { name: 'Bearer', weapon: 'kar98k', x: 6.5, y: 5.5, ammo: { belt_792: 4 } },
+    ]);
+    dry.soldiers[1].bonds[dry.soldiers[0].id] = 1;
+    dry.soldiers[1].courage = 0.8;
+    expect(collect(dry, 600, (k) => k.has('resupplied')).filter((x) => x.kind === 'resupplied').map((x) => x.id)).toEqual([dry.soldiers[0].id]);
   });
 
   it('an MG42 gunner killed on an emplacement is served by the assistant within ~10s, with a worse-aim penalty during the interim', () => {

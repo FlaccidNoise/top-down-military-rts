@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { EDGE, GameMap } from '../src/sim/map';
-import { Sim } from '../src/sim/sim';
+import { Sim, type BoomEvent } from '../src/sim/sim';
 
 // Open ground; soldiers get zeroed ammo unless a test needs live rounds.
 const flat = () => new GameMap(30, 20);
@@ -98,8 +98,11 @@ describe('grenades', () => {
     forceAssault(sim, a.teamId, 12.5, 10.5);
     expect(stepUntil(sim, () => a.grenadesLeft < 2, 300)).toBe(true);
     // Now step until the grenade explodes (30 ticks fuse)
-    let booms: { x: number; y: number }[] = [];
+    let booms: BoomEvent[] = [];
     expect(stepUntil(sim, () => { booms = booms.concat(sim.takeBooms()); return booms.length > 0; }, 60)).toBe(true);
+    // The renderer scales a blast off `r`: a grenade must not arrive as a shell.
+    expect(booms[0].kind).toBe('grenade');
+    expect(booms[0].r).toBe(3);
   });
 
   it('determinism: two same-seed runs produce identical snapshots with a grenade thrown', () => {
