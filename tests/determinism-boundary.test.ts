@@ -162,9 +162,11 @@ describe('spec sub-streams', () => {
 });
 
 describe('presets', () => {
-  it('ship 17 knobs — the surface the customize screen and the share codec build against', () => {
+  // 16 since jtbug #782: the 'Enemy doctrine' knob was read by nothing (red
+  // always got RED_V2) and is gone. A knob comes back with the doctrine it sets.
+  it('ship 16 knobs — the surface the customize screen and the share codec build against', () => {
     expect(Object.keys(DEFAULT_PRESET.theater).length).toBe(9);
-    expect(Object.keys(DEFAULT_PRESET.campaign).length).toBe(8);
+    expect(Object.keys(DEFAULT_PRESET.campaign).length).toBe(7);
     expect(PRESETS.map((p) => p.name)).toEqual(['Normandy Bocage', 'River Line', 'Open Country', 'Skirmish']);
   });
 

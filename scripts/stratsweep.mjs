@@ -16,6 +16,29 @@
 // Dev server must already be running: npm run dev -- --port 5312 --strictPort
 // Output: <out>/<device>-<state>.png and <out>/index.html (contact sheet).
 //
+// USING IT AS A GATE. The shots are deterministic: two runs of the same tree
+// differ in 0 of 36. So the protocol is: shoot the tree you trust into a
+// baseline directory, make the change, shoot again with --diff <baseline>.
+// The run lists every shot that changed and exits non-zero. Open each listed
+// shot and decide whether the change is the one you meant. Before trusting a
+// baseline, confirm the port serves YOUR tree (another session's dev server
+// on the same port is a silent false pass).
+//
+// The states, and what each is there to catch:
+//   start     the first thing a new player sees: boot framing, the strip
+//   selected  a company selected: the halo, the card, the next line
+//   preview   pointing at an objective (real hover / real held touch): the
+//             route, the first fight on it, the chip
+//   fit       the Fit control: the whole theater inside the clear rectangle
+//   march     two companies on the road: arrows, the Halt button
+//   contact   the contact card with the map centred on the fight
+//   battle    a battle in progress: the burst and its ring, engaged counters
+//   night     02:00: the night wash
+//   events    a capture and a retreat, frozen mid-animation
+//   supply    depots, a cut marked where it happens, an isolated enemy
+//   stack     three counters on one town with every pip lit
+//   fog       recon 'contacts': the enemy as last-seen reports only
+//
 // WHAT IS STAGED. The camera is whatever the game boots with, unless a state
 // says otherwise: boot framing is one of the things this gate looks at.
 // Selection, orders and the clock are staged through the game's own modules.

@@ -630,6 +630,7 @@ export class TheaterView {
           : { sx, sy: sy - r - 5, text: n.name, rank: n.rank, id: n.id, px: n.rank === 0 ? 12 : 10, r });
       }
     }
+    const placed: { x0: number; y0: number; x1: number; y1: number }[] = this.counters.map(counterRect);
     // Depots: where each side's supply starts. A crate beside the place.
     if (this.supplyOn) {
       for (const side of ['blue', 'red'] as const) {
@@ -637,6 +638,7 @@ export class TheaterView {
           const p = this.theater.nodes[n].pos;
           const [sx, sy] = this.toScreen(p.x, p.y, w, h);
           depot(ctx, sx - 17, sy - 3, OWNER_RIM[side]);
+          placed.push({ x0: sx - 25, y0: sy - 11, x1: sx - 9, y1: sy + 5 }); // names keep off the crate
         }
       }
       for (const c of cuts) {
@@ -646,7 +648,6 @@ export class TheaterView {
       }
     }
 
-    const placed: { x0: number; y0: number; x1: number; y1: number }[] = this.counters.map(counterRect);
     ctx.textAlign = 'center';
     // A halo, not a drop shadow: a name has to read over rooftops and forest
     // alike, and the map has no single background to tune against.

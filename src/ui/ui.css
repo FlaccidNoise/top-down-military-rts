@@ -1335,10 +1335,13 @@ html.mobile .hp-x { min-width: 44px; min-height: 44px; }
 /* ---- portrait guidance ----
    Shown by CSS alone, so there is no resize plumbing to get wrong. The copy
    names the reason rather than scolding, and the escape hatch is real: the
-   phone layout does work in portrait, it just shows a third of the frontage. */
+   phone layout does work in portrait, it just shows a third of the frontage.
+   It is about the BATTLEFIELD, so it shows at battle entry (html.in-battle):
+   it used to greet the player before the main menu, about a map he had not
+   seen, and the theater works in portrait. */
 #rotate { display: none; }
 @media (orientation: portrait) {
-  html.mobile #rotate:not(.dismissed) {
+  html.mobile.in-battle #rotate:not(.dismissed) {
     display: flex;
     position: fixed;
     inset: 0;
@@ -1704,6 +1707,11 @@ html.mobile #theater-hud .th-ev[data-ev] { padding: 6px 0; }
     padding: 8px 10px;
     border-radius: 0;
     background: #11150e; /* solid: it stands in front of the column, not on the map */
+    /* Above the bar's dimmed speed chips: opacity makes them a stacking
+       context, and they painted through the card. */
+    position: relative;
+    inset: auto; /* the desktop rule's left and bottom would now be offsets */
+    z-index: 1;
   }
   #theater-hud .th-contact .fc { flex-direction: column; align-items: stretch; gap: 2px; }
   #theater-hud .th-contact .fc-vs { display: none; }

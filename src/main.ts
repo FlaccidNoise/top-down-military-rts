@@ -1938,6 +1938,7 @@ function frame(now: number): void {
     }
   }
   hud.root.style.display = mode === 'battle' ? '' : 'none';
+  document.documentElement.classList.toggle('in-battle', mode === 'battle'); // gates the portrait guidance (ui.css)
   stratHud.root.style.display = mode === 'strategic' && !S().v2 ? '' : 'none';
   theaterHud.root.style.display = mode === 'strategic' && S().v2 ? '' : 'none';
   if (mode === 'menu') {
