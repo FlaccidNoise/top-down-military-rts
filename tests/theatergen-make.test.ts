@@ -201,6 +201,6 @@ describe('TheaterGenError', () => {
 // Re-recorded 2026-10-10 with GEN_VERSION 3 (jtbug #793: objectives spread
 // over towns, one bridge, and villages or junctions in open country. Nodes,
 // edges, regions and rivers did not move: objectiveNodes did).
-const PIN_1 = 3550743288;
-const PIN_2 = 842259899;
-const PIN_3 = 1551319621;
+const PIN_1 = 3436257875;
+const PIN_2 = 2093796486;
+const PIN_3 = 3898719029;

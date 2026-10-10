@@ -27,6 +27,8 @@ const RED_GARRISON_BAND: Record<number, [number, number]> = {
   4: [90, 180],
 };
 const PICKETS = 3;
+const CROSSING_BAND = 0.25;
+const OUTPOST_BAND = 0.25;
 const RED_MOBILE_COUNT: Record<number, number> = { 0: 0, 1: 1, 2: 2, 3: 2, 4: 3 };
 const RED_MOBILE_STRENGTH: Record<number, [number, number]> = {
   0: [0, 0],
@@ -112,7 +114,15 @@ export function makeDisposition(
         pos: { kind: 'node', nodeId: n.id },
         path: [],
         dwellMin: 0,
-        strength: Math.round(rng.range(band[0], band[1])),
+        // The river line is thin and the towns behind it are not. A garrison
+        // on a crossing draws from the lowest CROSSING_BAND of the band, a
+        // picket or an objective in open country from the lowest OUTPOST_BAND,
+        // and only a town off the river from all of it. So the first fight a
+        // company meets is one it can win. The tutorial's guided first battle
+        // (one company attacking) is the measure: against garrisons from the
+        // whole band it was lost at 61, 66, 85, 87 and 92 men and won at 52 to
+        // 79, a coin toss from about 60 up.
+        strength: Math.round(rng.range(band[0], band[0] + (band[1] - band[0]) * (n.crossing !== null ? CROSSING_BAND : n.kind === 'town' ? 1 : OUTPOST_BAND))),
         companyIndex: -1,
         role: 'garrison',
         engagedIn: null,

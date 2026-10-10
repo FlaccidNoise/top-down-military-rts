@@ -77,7 +77,7 @@ function mainRiverXAt(polyline: Vec[], y: number): number {
 
 const OBJ_BRIDGES = 1;
 const OBJ_OPEN = 1;
-const OBJ_TOTAL = 3;
+const OBJ_TOTAL = 4;
 const OBJ_SPACING_M = 3000;
 
 export function makeTheater(seed: number, cfg: TheaterConfig): TheaterResult {

@@ -79,7 +79,7 @@ function runWar(seed: number, maxDays = CAMP.warDays + 1): WarResult {
 }
 
 describe('goal-driven AI, headless wars over generated theaters', () => {
-  const SEEDS = [1, 2, 3, 4, 5, 6, 7, 8];
+  const SEEDS = Array.from({ length: 16 }, (_, i) => i + 1); // the pin set: eight seeds can all fall one way
   const results = SEEDS.map((s) => runWar(s));
 
   it('100% termination: every war decides by the deadline', () => {
@@ -195,6 +195,21 @@ describe('battle variety (jtbug #793)', () => {
     expect(Math.max(...shares), JSON.stringify([...mix])).toBeLessThanOrEqual(0.4);
     expect(shares.filter((s) => s > 0.08).length, JSON.stringify([...mix])).toBeGreaterThanOrEqual(4);
   }, 30_000);
+
+  it('the river line is thin: only a town off the river is held from the whole band', () => {
+    // The redStrength 2 band is 36 to 109 men.
+    const at = (frac: number): number => Math.round(36 + (109 - 36) * frac);
+    for (let seed = 1; seed <= 32; seed++) {
+      const w = makeHeadlessWorld(seed, CFG, CAMP);
+      const t = w.front.theater;
+      for (const f of w.front.forces.filter((x) => x.role === 'garrison')) {
+        const n = t.nodes[f.homeNode!];
+        const cap = n.crossing === null && n.kind === 'town' ? at(1) : at(0.25);
+        expect(f.strength, `seed ${seed} ${n.name}`).toBeLessThanOrEqual(cap);
+        expect(f.strength).toBeGreaterThanOrEqual(36);
+      }
+    }
+  });
 
   it('objectives and garrisons are not all crossings: every theater has an objective off the river line', () => {
     for (let seed = 1; seed <= 16; seed++) {
