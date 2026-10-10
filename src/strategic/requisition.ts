@@ -7,6 +7,7 @@ import { fillReplacements, replacementRoom, type Campaign } from '../campaign/ca
 import type { VehicleKey } from '../sim/data';
 import { REINFORCE_CYCLE_DAYS, REINFORCE_PER_COMPANY } from './front';
 import { DETECT_FORCE_M, SCREEN_DETECT_MULT } from './intel';
+import { refitBlock, refitMult } from './refit';
 import type { Force, FrontV2 } from './theater/force';
 
 export type RequisitionCard = 'replacements' | 'armour' | 'barrage' | 'recon';
@@ -29,6 +30,8 @@ export const reconRunning = (front: Pick<FrontV2, 'day'>, f: Pick<Force, 'reconU
 
 // The men one card can bring: the whole cycle's draft, to one company.
 export const draftSize = (c: Campaign): number => REINFORCE_PER_COMPANY * c.companies.length;
+// More of it reaches a billeted company (refit.ts).
+export const draftFor = (front: FrontV2, c: Campaign, f: Force): number => Math.round(draftSize(c) * refitMult(front, f));
 
 export interface CardOffer {
   id: RequisitionCard;
@@ -50,8 +53,8 @@ export function requisitionOffer(front: FrontV2, c: Campaign, forceId: number, f
   return [
     {
       id: 'replacements', glyph: '✚', name: 'Replacements',
-      effect: `Up to ${draftSize(c)} men.`,
-      blocked: none ?? (replacementRoom(c, f!.companyIndex) === 0 ? 'Full strength.' : null),
+      effect: `Up to ${f ? draftFor(front, c, f) : draftSize(c)} men.`,
+      blocked: none ?? (replacementRoom(c, f!.companyIndex) === 0 ? 'Full strength.' : refitBlock(front, f!) === 'contact' ? 'In contact.' : refitBlock(front, f!) === 'supply' ? 'Out of supply.' : null),
     },
     { id: 'armour', glyph: '▣', name: 'Armour', effect: `A tank joins ${REQ_ARMOR_ATTACKS} attacks.`, blocked: none },
     { id: 'barrage', glyph: '✸', name: 'Barrage', effect: `+${REQ_BARRAGES} per battle, ${days}.`, blocked: null },
@@ -76,7 +79,7 @@ export function applyRequisition(front: FrontV2, c: Campaign, card: RequisitionC
   switch (card) {
     case 'replacements': {
       // The even fill's own seed and its own function, aimed at one company.
-      const n = fillReplacements(c, front.day * 31 + 7, draftSize(c), f!.companyIndex);
+      const n = fillReplacements(c, front.day * 31 + 7, draftFor(front, c, f!), f!.companyIndex);
       text = `${n} replacements join ${f!.name}`;
       break;
     }

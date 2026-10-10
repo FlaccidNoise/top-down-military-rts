@@ -63,7 +63,7 @@ export function paceMult(f: Pick<Force, 'fatigue' | 'posture'>, clockMin: number
 }
 
 // A friendly, in-supply settlement node is a billet: recovery runs double.
-function billeted(front: FrontV2, f: Force): boolean {
+export function billeted(front: FrontV2, f: Force): boolean {
   if (f.pos.kind !== 'node') return false;
   const n = front.theater.nodes[f.pos.nodeId];
   return (

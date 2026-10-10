@@ -10,6 +10,7 @@ import { fmtEta } from '../render/theater-view';
 import { MOBILE } from '../render/view';
 
 import { minutesToReinforcement, REINFORCE_CYCLE_DAYS } from '../strategic/front';
+import { refitNote } from '../strategic/refit';
 import { requisitionDue, requisitionNotes } from '../strategic/requisition';
 import type { WarGoals } from '../strategic/goals';
 import { DETECT_FORCE_M, SCREEN_DETECT_MULT } from '../strategic/intel';
@@ -281,7 +282,7 @@ export class TheaterHud {
     const sig = [
       front.day, hh, mm, held, need, objectives.length, lastDay, paused, speedIdx, selectedForce,
       sel ? `${sel.strength}:${sel.path.length}:${sel.engagedIn}:${sel.untracedMin}:${Math.round(sel.fatigue * 100)}:${sel.posture}:${sel.dugMin}:${sel.armorAttacks}:${sel.reconUntilDay}` : '',
-      requisitionDue(front), front.requisition?.barrageUntilDay ?? 0, target,
+      requisitionDue(front), front.requisition?.barrageUntilDay ?? 0, target, sel ? refitNote(front, sel) : '',
       front.events.length, lastEvent?.text ?? '', supplyOn, reconOn, contacts, inContact, marching,
       garrisons.map((g) => `${g.holder}:${g.own}:${g.foe}`).join('/'),
     ].join('|');
@@ -358,7 +359,7 @@ export class TheaterHud {
           b.classList.toggle('active', k === sel.posture);
           b.title = postureEffect(k, reconOn);
         });
-        this.postFx.textContent = [postureEffect(sel.posture, reconOn, sel), ...requisitionNotes(front, sel)].join(' · ');
+        this.postFx.textContent = [postureEffect(sel.posture, reconOn, sel), refitNote(front, sel), ...requisitionNotes(front, sel)].join(' · ');
       }
       this.fatFill.className = `th-fat-fill th-fat-${sel.fatigue >= 0.66 ? 'high' : sel.fatigue >= 0.33 ? 'mid' : 'low'}`;
       this.fatFill.style.width = `${Math.round(sel.fatigue * 100)}%`;

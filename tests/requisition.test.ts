@@ -200,11 +200,12 @@ describe('the cycle and the save', () => {
     for (const f of old.front.forces) {
       delete f.armorAttacks;
       delete f.reconUntilDay;
+      delete f.owedMen;
     }
     store.set('ccg-save-v4', JSON.stringify(old));
     const g = loadGameV2();
     if (g.status !== 'ok') throw new Error(`reload: ${g.status}`);
     expect(g.front.requisition).toBeUndefined();
-    expect(g.front.forces.every((f) => f.armorAttacks === 0 && f.reconUntilDay === 0)).toBe(true);
+    expect(g.front.forces.every((f) => f.armorAttacks === 0 && f.reconUntilDay === 0 && f.owedMen === 0)).toBe(true);
   });
 });

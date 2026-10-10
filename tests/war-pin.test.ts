@@ -10,13 +10,13 @@
 // and paste its `PIN seed N {status, day, logLen}` lines into PINNED below,
 // recording the commit here. Never hand-edit a tuple.
 //
-// Recorded 2026-10-10 at the jtbug #793 "thin river line" commit (a garrison
-// on a crossing or in an outpost is held from the lowest quarter of the band,
-// only a town off the river from all of it, and a theater has four
-// objectives), on top of 1e420ef, warsweep-v2 seeds 1..16, recon contacts
-// (the DEFAULT_PRESET value), no doctrine override. Gates green: 0 hung, 6/16
-// blue wins, red retook objectives on 16/16 seeds, 0.49 red attacks per day.
-// AI blue is destroyed before the deadline on 1 seed.
+// Recorded 2026-10-10 at the jtbug #793 "refit" commit (replacements reach a
+// company that is supplied and out of contact, a billeted one takes half as
+// much again, an undelivered draft waits at the depot for two cycles), on top
+// of merge 7a9e73c, warsweep-v2 seeds 1..16, recon contacts (the
+// DEFAULT_PRESET value), no doctrine override. Gates green: 0 hung, 4/16 blue
+// wins, red retook objectives on 16/16 seeds, 0.45 red attacks per day. AI
+// blue is destroyed before the deadline on 2 seeds (3, 9).
 import { beforeAll, describe, expect, it } from 'vitest';
 import { DEFAULT_PRESET } from '../src/campaign/presets';
 import { makeHeadlessWorld, runHeadlessWar } from '../src/strategic/headless';
@@ -42,22 +42,22 @@ const runWar = (seed: number): Tuple => {
 };
 
 const PINNED: Tuple[] = [
-  { status: 'lost', day: 15, logLen: 53 },
-  { status: 'lost', day: 15, logLen: 63 },
-  { status: 'won', day: 14, logLen: 72 },
-  { status: 'lost', day: 15, logLen: 31 },
-  { status: 'won', day: 13, logLen: 53 },
-  { status: 'lost', day: 15, logLen: 69 },
-  { status: 'won', day: 13, logLen: 45 },
-  { status: 'lost', day: 6, logLen: 31 },
-  { status: 'lost', day: 15, logLen: 59 },
   { status: 'lost', day: 15, logLen: 48 },
   { status: 'lost', day: 15, logLen: 66 },
-  { status: 'lost', day: 15, logLen: 28 },
-  { status: 'lost', day: 15, logLen: 56 },
-  { status: 'won', day: 12, logLen: 47 },
-  { status: 'won', day: 3, logLen: 19 },
-  { status: 'won', day: 14, logLen: 54 },
+  { status: 'lost', day: 7, logLen: 28 },
+  { status: 'won', day: 6, logLen: 23 },
+  { status: 'lost', day: 15, logLen: 60 },
+  { status: 'lost', day: 15, logLen: 16 },
+  { status: 'lost', day: 15, logLen: 42 },
+  { status: 'lost', day: 15, logLen: 58 },
+  { status: 'lost', day: 6, logLen: 26 },
+  { status: 'won', day: 9, logLen: 35 },
+  { status: 'lost', day: 15, logLen: 80 },
+  { status: 'won', day: 11, logLen: 51 },
+  { status: 'lost', day: 15, logLen: 40 },
+  { status: 'lost', day: 15, logLen: 55 },
+  { status: 'lost', day: 15, logLen: 19 },
+  { status: 'won', day: 4, logLen: 21 },
 ];
 
 describe('war pin (S59)', () => {

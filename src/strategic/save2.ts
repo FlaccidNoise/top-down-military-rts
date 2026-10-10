@@ -137,7 +137,7 @@ export function loadGameV2(): LoadV2 {
     ...p.front,
     // Saves written before the realism wave carry no supply/fatigue fields:
     // normalize to fresh, exactly what addForce defaults a new force to.
-    forces: p.front.forces.map((f) => ({ ...f, untracedMin: f.untracedMin ?? 0, fatigue: f.fatigue ?? 0, lastEdgeId: f.lastEdgeId ?? null, repulsedAtMin: f.repulsedAtMin ?? null, establishment: f.establishment ?? f.strength, homeNode: f.homeNode === undefined ? garrisonPost(f) : f.homeNode, posture: f.posture ?? 'march', dugMin: f.dugMin ?? 0, armorAttacks: f.armorAttacks ?? 0, reconUntilDay: f.reconUntilDay ?? 0 })),
+    forces: p.front.forces.map((f) => ({ ...f, untracedMin: f.untracedMin ?? 0, fatigue: f.fatigue ?? 0, lastEdgeId: f.lastEdgeId ?? null, repulsedAtMin: f.repulsedAtMin ?? null, establishment: f.establishment ?? f.strength, homeNode: f.homeNode === undefined ? garrisonPost(f) : f.homeNode, posture: f.posture ?? 'march', dugMin: f.dugMin ?? 0, armorAttacks: f.armorAttacks ?? 0, reconUntilDay: f.reconUntilDay ?? 0, owedMen: f.owedMen ?? 0 })),
   };
   repairDefiles(front);
   return { status: 'ok', seed: p.seed, cfg: p.theaterCfg, campaignCfg: p.campaignCfg, campaign: p.campaign, front, ai: p.ai };

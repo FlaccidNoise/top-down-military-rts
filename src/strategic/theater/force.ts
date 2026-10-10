@@ -46,11 +46,13 @@ export interface Force {
   // stays for, and the day a recon detachment leaves.
   armorAttacks: number;
   reconUntilDay: number;
+  // Replacements the depot holds for this company until it can refit (refit.ts).
+  owedMen: number;
 }
 
 // Creation shape: the realism fields default to fresh at the ONE chokepoint
 // (addForce), so disposition and test literals never carry boilerplate zeros.
-type ForceDefaulted = 'untracedMin' | 'fatigue' | 'lastEdgeId' | 'repulsedAtMin' | 'establishment' | 'homeNode' | 'posture' | 'dugMin' | 'armorAttacks' | 'reconUntilDay';
+type ForceDefaulted = 'untracedMin' | 'fatigue' | 'lastEdgeId' | 'repulsedAtMin' | 'establishment' | 'homeNode' | 'posture' | 'dugMin' | 'armorAttacks' | 'reconUntilDay' | 'owedMen';
 export type ForceInit = Omit<Force, 'id' | ForceDefaulted> & Partial<Pick<Force, ForceDefaulted>>;
 
 export const garrisonPost = (f: Pick<Force, 'role' | 'pos'>): number | null => (f.role === 'garrison' && f.pos.kind === 'node' ? f.pos.nodeId : null);
@@ -119,7 +121,7 @@ export function addForce(front: FrontV2, f: ForceInit): Force {
   if (front.forces.length >= MAX_FORCES) {
     throw new Error(`addForce: MAX_FORCES (${MAX_FORCES}) reached — the force cap is asserted here and in makeDisposition, never at generation`);
   }
-  const force: Force = { untracedMin: 0, fatigue: 0, lastEdgeId: null, repulsedAtMin: null, establishment: f.strength, homeNode: garrisonPost(f), posture: 'march', dugMin: 0, armorAttacks: 0, reconUntilDay: 0, ...f, id: front.nextForceId++ };
+  const force: Force = { untracedMin: 0, fatigue: 0, lastEdgeId: null, repulsedAtMin: null, establishment: f.strength, homeNode: garrisonPost(f), posture: 'march', dugMin: 0, armorAttacks: 0, reconUntilDay: 0, owedMen: 0, ...f, id: front.nextForceId++ };
   front.forces.push(force);
   return force;
 }
