@@ -14,6 +14,14 @@ function mean(xs: number[]): number {
   return xs.reduce((a, b) => a + b, 0) / xs.length;
 }
 
+// One turn of the event loop. Every test in this file is synchronous, and
+// vitest awaits between tests on microtasks only, so the worker never reads
+// its message port for as long as the file runs. Its own heartbeat
+// (onTaskUpdate) times out at 60 s, the run reports "Errors 1 error" and exits
+// 1 with every test green. The two soak tests below are most of that time and
+// hand the loop back between battles. Nothing in a sim depends on it.
+const breathe = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
+
 // Honesty audit (spec: ai-commander.md "log every commander decision's
 // input set; assert no reads outside belief state + briefing"). Pragmatic,
 // code-review-level check: the commander is side-generalized (cfg.side),
@@ -802,7 +810,7 @@ describe('AI commander doctrine', () => {
   // man in the open crawls into cover instead of being shot where he stands
   // (movement design §2.2). It is the tail that stretched, not the fight:
   // blue is at 129 of 138 by 5k either way.
-  it('existing campaign battles still produce a winner within 80k ticks', { timeout: 150_000 }, () => {
+  it('existing campaign battles still produce a winner within 80k ticks', { timeout: 150_000 }, async () => {
     const c = newCampaign(1);
     const front = newFront(c, makeDefaultSector());
     const able = front.chits.find((ch) => ch.side === 'blue')!;
@@ -836,6 +844,7 @@ describe('AI commander doctrine', () => {
     let steps = 0;
     while (sim.winner === null && steps < 80000) {
       if (steps % 1000 === 0) pressBlue(); // keep pushing toward red's current mass
+      if (steps % 10000 === 0) await breathe();
       commander.update(sim);
       sim.step();
       steps++;
@@ -956,10 +965,12 @@ describe('night intel A/B', () => {
     return { dists: spotDist, uniq: everSeen.size };
   };
 
-  it('at 02:00 the intel picture collapses to the cap; at 14:00 it does not (seeds 11, 42)', () => {
+  it('at 02:00 the intel picture collapses to the cap; at 14:00 it does not (seeds 11, 42)', async () => {
     for (const seed of [11, 42]) {
       const day = runBattle(seed, 14 * 60);
+      await breathe();
       const night = runBattle(seed, 2 * 60);
+      await breathe();
       // measured: seed 11 day 28 distinct / max 193.5 m, night 20 / 24.9 m;
       //           seed 42 day 24 distinct / max 126.9 m, night 17 / 24.6 m.
       expect(night.dists.length).toBeGreaterThan(0); // liveness: night spotting fires under natural dynamics
