@@ -1,4 +1,5 @@
 import type { WeaponKey } from '../sim/data';
+import type { BoomKind } from '../sim/sim';
 import { EDGE, type GameMap } from '../sim/map';
 import { WIND_SPEED } from '../sim/wind';
 import { SUN, sun, WIND as LIGHT_WIND } from './light';
@@ -23,6 +24,11 @@ export type FxKind =
   | 'fire'
   | 'ringTan'
   | 'ringDark'
+  | 'shock'
+  | 'dirt'
+  | 'pall'
+  | 'blood'
+  | 'brass'
   | 'spark'
   | 'leaf'
   | 'chunk0'
@@ -46,6 +52,88 @@ export const WIND = { dx: LIGHT_WIND.dx, dy: LIGHT_WIND.dy, speed: WIND_SPEED };
 // for sub-pixel detail.
 export function fxDetail(scale: number): 0 | 1 | 2 {
   return scale >= 24 ? 2 : scale >= 10 ? 1 : 0;
+}
+
+// The legibility floor. The men are drawn 1.35x life size (dudes.ts
+// DUDE_SCALE) so a squad still reads at the 14 px/m the game is played at; a
+// flash, a tracer or a bullet strike drawn at true metric size beside them is
+// a 4 px spark, and the loudest thing in a firefight was the suppression ring.
+// Below FX_FLOOR px/m an effect's own SIZE stops shrinking with the zoom. Its
+// ANCHOR never moves: a round still leaves the muzzle and lands where the sim
+// put it, only the flash and the dust around those two points are drawn as if
+// the camera were closer. Under 8 px/m the floor itself eases down, so the
+// whole-map view twinkles instead of wearing flashes the size of houses.
+export const FX_FLOOR = 20;
+export function fxScale(scale: number): number {
+  return Math.max(scale, Math.min(FX_FLOOR, 10 + scale * 1.25));
+}
+
+// The same idea for a blast, which is already metres across: it only needs
+// help when the whole map is on screen and a shell would otherwise be a 3 px
+// dot. Below this zoom a blast is drawn as if the camera stopped here.
+export const BLAST_FLOOR = 5;
+export function blastScale(scale: number): number {
+  return Math.max(scale, BLAST_FLOOR);
+}
+
+
+// One row per kind: the same layers in the same order, in different
+// proportions, which is what makes a grenade and a mortar round two different
+// things instead of one disc at two sizes. Lengths are metres AT the kind's
+// reference radius; blastOf() scales them from there.
+//
+//   grenade  a sharp crack and a dirt puff. Almost no fire, gone in two seconds.
+//   mortar   the fountain: a ragged mass of thrown earth and dust that hangs.
+//   shell    more fire, a darker edge, more smoke than dust.
+//   at       a white-hot point and a shower of sparks. No earth: it hit steel.
+//   bomb     an air attack's strike. They land ten in a row four metres apart,
+//            so each is a heavy shell's worth and the run is the event.
+//   brewup   fuel and ammunition: a long rolling fireball that goes black.
+//
+// `ref` is the frag radius the sim sends for that kind today (sim.ts explode
+// callers), so the common case draws at exactly the tuned size: grenade 3,
+// 81 mm mortar 5, tank HE 5 and barrage 9 around a shell ref of 7, AT 3,
+// strafe 5. A brew-up carries no radius at all.
+export interface BlastSpec {
+  ref: number; // frag radius the row is tuned at, m
+  flash: number; // white flash, peak radius
+  fire: number; // fireball radius
+  burn: number; // ms the fireball lasts
+  rim: number; // 0..1, how dark the roiling soot edge is
+  ring: number; // shockwave reach
+  spokes: number; // lobes of thrown earth in the burst
+  throw: number; // how far the furthest of it goes
+  debris: number; // ballistic chunks
+  sparks: number; // hot ballistic sparks
+  dust: number; // 0..1, tan dust left hanging
+  smoke: number; // 0..1, dark smoke left hanging
+  hang: number; // ms the dust and smoke stay
+  shake: number; // camera trauma at the reference radius
+  crater: number; // scorch decal multiplier
+}
+
+export const BLAST: Record<BoomKind, BlastSpec> = {
+  grenade: { ref: 3, flash: 1.6, fire: 0.85, burn: 110, rim: 0.35, ring: 3.4, spokes: 8, throw: 2.4, debris: 4, sparks: 0, dust: 0.8, smoke: 0.3, hang: 2600, shake: 0.3, crater: 0.45 },
+  mortar: { ref: 5, flash: 3, fire: 1.7, burn: 200, rim: 0.55, ring: 8, spokes: 16, throw: 5, debris: 10, sparks: 0, dust: 0.8, smoke: 0.35, hang: 5500, shake: 0.62, crater: 1 },
+  shell: { ref: 7, flash: 3.8, fire: 2.4, burn: 280, rim: 0.75, ring: 10, spokes: 12, throw: 4.5, debris: 14, sparks: 5, dust: 0.55, smoke: 0.8, hang: 6000, shake: 0.78, crater: 1.25 },
+  at: { ref: 3, flash: 3.2, fire: 1.3, burn: 150, rim: 0.45, ring: 4, spokes: 0, throw: 0, debris: 4, sparks: 22, dust: 0.15, smoke: 0.6, hang: 3000, shake: 0.45, crater: 0.5 },
+  bomb: { ref: 5, flash: 4.2, fire: 2.6, burn: 320, rim: 0.8, ring: 10, spokes: 16, throw: 6, debris: 12, sparks: 6, dust: 0.75, smoke: 0.7, hang: 7000, shake: 0.85, crater: 1.3 },
+  brewup: { ref: 6, flash: 6, fire: 4.2, burn: 650, rim: 0.95, ring: 9, spokes: 0, throw: 0, debris: 12, sparks: 26, dust: 0.1, smoke: 1, hang: 9000, shake: 0.95, crater: 1.3 },
+};
+
+// The recipe for a boom, and how big to draw it. The sim names every blast
+// (sim.ts BoomEvent.kind) and sizes most (`r`, the frag radius; a brew-up has
+// none). Neither is trusted to be there: the harness stages a bare `{x, y}`,
+// and cosmetic code must not throw on a kind it has never heard of. A boom
+// with no usable kind is the mortar row; one with no usable radius is drawn at
+// its kind's reference size. Size goes as r^0.6 so a kind keeps its character
+// across the radii the sim sends it at.
+export function blastOf(b: { r?: number; kind?: BoomKind }): { kind: BoomKind; spec: BlastSpec; k: number } {
+  const kind = b.kind !== undefined && b.kind in BLAST ? b.kind : 'mortar';
+  const spec = BLAST[kind];
+  // Written so NaN fails it and falls to 1, the same rule as audio.ts place().
+  const k = b.r !== undefined && b.r > 0 ? Math.min(1.6, Math.max(0.45, Math.pow(b.r / spec.ref, 0.6))) : 1;
+  return { kind, spec, k };
 }
 
 // Every additive draw batches into one call per frame, so the composite mode
@@ -98,16 +186,17 @@ export interface FlashSpec {
   life: number; // ms
   tracerW: number; // px, the always-drawn faint thread
   tracerCol: string;
-  extra?: 'double' | 'backblast' | 'wash';
+  extra?: 'backblast' | 'wash';
   tracerOdds: number; // fraction of rounds that carry a visible tracer
+  cone: number; // rad — how far a burst's later rounds stray off the first
 }
 
 export const FLASH: Record<FlashClass, FlashSpec> = {
-  rifle: { r: 0.3, spikes: 2, len: 1.35, spread: 0.42, life: 50, tracerW: 1, tracerCol: '255,240,210', tracerOdds: 0.2 },
-  smg: { r: 0.22, spikes: 3, len: 1, spread: 0.8, life: 38, tracerW: 1, tracerCol: '255,236,200', tracerOdds: 0.2 },
-  mg: { r: 0.42, spikes: 3, len: 1.8, spread: 0.3, life: 70, tracerW: 2, tracerCol: '255,214,140', extra: 'double', tracerOdds: 0.34 },
-  rocket: { r: 0.7, spikes: 0, len: 0, spread: 0, life: 90, tracerW: 2, tracerCol: '255,222,170', extra: 'backblast', tracerOdds: 1 },
-  cannon: { r: 0.85, spikes: 2, len: 1.5, spread: 0.5, life: 110, tracerW: 2, tracerCol: '255,226,180', extra: 'wash', tracerOdds: 1 },
+  rifle: { r: 0.42, spikes: 2, len: 1.35, spread: 0.42, life: 60, tracerW: 1, tracerCol: '255,240,210', tracerOdds: 0.2, cone: 0.02 },
+  smg: { r: 0.32, spikes: 3, len: 1, spread: 0.8, life: 45, tracerW: 1, tracerCol: '255,236,200', tracerOdds: 0.2, cone: 0.045 },
+  mg: { r: 0.6, spikes: 3, len: 1.8, spread: 0.3, life: 75, tracerW: 2, tracerCol: '255,214,140', tracerOdds: 0.34, cone: 0.028 },
+  rocket: { r: 0.7, spikes: 0, len: 0, spread: 0, life: 90, tracerW: 2, tracerCol: '255,222,170', extra: 'backblast', tracerOdds: 1, cone: 0 },
+  cannon: { r: 1.2, spikes: 2, len: 1.5, spread: 0.5, life: 120, tracerW: 2, tracerCol: '255,226,180', extra: 'wash', tracerOdds: 1, cone: 0 },
 };
 
 // Undefined weapon is a vehicle cannon / AP round (sim.ts pairs those with a
@@ -269,6 +358,46 @@ export function hazeBand(): HTMLCanvasElement {
   return c;
 }
 
+// The vignette: the corners of the frame pulled down a little, so the eye
+// rests in the middle where the fight is. Baked once as a square and stretched
+// to the view. Clear out to VIGNETTE_CLEAR of the half-diagonal — the middle
+// of the picture is not touched at all — then easing to VIGNETTE_ALPHA in the
+// very corners; the middle of a screen edge gets about a third of that.
+export const VIGNETTE_CLEAR = 0.5;
+export const VIGNETTE_ALPHA = 0.3;
+let vignetteCache: HTMLCanvasElement | null = null;
+export function vignette(): HTMLCanvasElement {
+  if (vignetteCache) return vignetteCache;
+  const px = 256;
+  const [c, g] = newCanvas(px);
+  const grad = g.createRadialGradient(px / 2, px / 2, 0, px / 2, px / 2, (px / 2) * Math.SQRT2);
+  grad.addColorStop(0, 'rgba(16,14,10,0)');
+  grad.addColorStop(VIGNETTE_CLEAR, 'rgba(16,14,10,0)');
+  grad.addColorStop(0.78, `rgba(16,14,10,${VIGNETTE_ALPHA * 0.3})`);
+  grad.addColorStop(1, `rgba(16,14,10,${VIGNETTE_ALPHA})`);
+  g.fillStyle = grad;
+  g.fillRect(0, 0, px, px);
+  vignetteCache = c;
+  return c;
+}
+
+// A pool of light, as alpha: what the night grade is cut away by (renderer.ts
+// gradeWorld). Not in the particle atlas — it is never blitted onto the scene,
+// only erased out of the grade's own low-resolution canvas.
+let lightCache: HTMLCanvasElement | null = null;
+export function lightPool(): HTMLCanvasElement {
+  if (lightCache) return lightCache;
+  const [c, g] = newCanvas(64);
+  radial(g, 32, 32, 32, [
+    [0, 'rgba(255,255,255,1)'],
+    [0.3, 'rgba(255,255,255,0.8)'],
+    [0.65, 'rgba(255,255,255,0.3)'],
+    [1, 'rgba(255,255,255,0)'],
+  ]);
+  lightCache = c;
+  return c;
+}
+
 function radial(g: Ctx, cx: number, cy: number, r: number, stops: [number, string][]): void {
   const grad = g.createRadialGradient(cx, cy, 0, cx, cy, r);
   for (const [o, col] of stops) grad.addColorStop(o, col);
@@ -418,6 +547,39 @@ function bake(kind: FxKind, px: number): HTMLCanvasElement {
       break;
     case 'ringDark':
       ring(g, px, '30,24,16');
+      break;
+    case 'shock':
+      // The pressure front itself: pale, and a third the width of the dust
+      // rings, so it reads as an edge travelling over the ground and not as
+      // more dust. Pale because the ground under it is mid-value everywhere.
+      radial(g, h, h, h, [
+        [0, 'rgba(236,230,214,0)'],
+        [0.8, 'rgba(236,230,214,0)'],
+        [0.92, 'rgba(236,230,214,1)'],
+        [1, 'rgba(236,230,214,0)'],
+      ]);
+      break;
+    case 'dirt':
+      puff(g, px, '70,55,38', 5);
+      break;
+    case 'brass':
+      // A spent case, lying along +x: dark outline, brass body, one highlight.
+      g.fillStyle = '#3a2f18';
+      g.fillRect(h * 0.16, h * 0.68, h * 1.68, h * 0.64);
+      g.fillStyle = '#b3924a';
+      g.fillRect(h * 0.24, h * 0.76, h * 1.52, h * 0.48);
+      g.fillStyle = 'rgba(238,218,156,0.75)';
+      g.fillRect(h * 0.36, h * 0.8, h * 1, h * 0.14);
+      break;
+    case 'blood':
+      // The mist off a hit. Dark, and well short of pure red: on this palette
+      // a saturated red is the UI's colour for bad news, and this is paint.
+      puff(g, px, '88,14,12', 7);
+      break;
+    case 'pall':
+      // Paler and warmer than 'smoke' on purpose: sim smoke blocks sight and
+      // battle pall does not, and the two must never be one colour (pall.ts).
+      puff(g, px, '214,206,188', 6);
       break;
     case 'spark':
       radial(g, h, h, h, [

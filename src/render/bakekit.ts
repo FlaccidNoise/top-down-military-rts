@@ -1,4 +1,5 @@
 import { tier } from './dudes';
+import { hullDpr } from './view';
 
 // Shared primitives for the hard-surface bakes (vehicles.ts, emplacements.ts).
 // Everything here is bake-only and hairline-clamped: it is drawn once into a
@@ -121,7 +122,7 @@ export function teamRing(g: Ctx, x: number, y: number, r: number, band: number, 
 }
 
 function rimStyle(g: Ctx, band: number, color: string): void {
-  const strong = band <= 12;
+  const strong = band / hullDpr() <= 12; // by zoom, not by device pixels (dudes.ts haloMult)
   g.globalAlpha = strong ? 1 : 0.35;
   g.strokeStyle = color;
   g.lineWidth = strong ? 0.16 : 0.07;

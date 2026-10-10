@@ -641,6 +641,7 @@ function bootBattle(staged: { sim: Sim; commander: RedCommander; blueCommander: 
   cam.x = boot.x;
   cam.y = boot.y;
   cam.scale = boot.scale;
+  zoomGoal = 0; // a wheel zoom still in flight belongs to the last battle's camera
   needsBootFrame = true;
   mode = 'battle';
   paused = true;
@@ -1626,8 +1627,53 @@ canvas.addEventListener('wheel', (e) => {
   // scroll = zoom (trackpad two-finger scroll, pinch, and mouse wheel alike);
   // ~1.003^px: a trackpad flick ramps fast, a mouse notch (dy≈100) ≈1.35×
   const dy = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;
-  cam.zoom(Math.pow(1.003, -dy), e.clientX, e.clientY, view.w, view.h);
+  // The wheel sets where the zoom is GOING; the frame loop eases the camera
+  // there (easeCamera). A notch applied in one step is a jump cut.
+  zoomGoal = Math.min(cam.maxScale, Math.max(cam.minScale, (zoomGoal || cam.scale) * Math.pow(1.003, -dy)));
+  zoomAtX = e.clientX;
+  zoomAtY = e.clientY;
 });
+
+// Camera feel: eased wheel zoom and pan inertia. Wall-clock on purpose — this
+// is about the player's hand, not the battle, so it runs the same paused.
+// Nothing here is in play unless the player is driving it: a zoom is only in
+// flight after a wheel event and a pan only has velocity after a key, so code
+// that sets cam.x / cam.scale directly (boot framing, touch, the harness) is
+// never fought over the camera.
+let zoomGoal = 0; // px/m the wheel is asking for; 0 = no zoom in flight
+let zoomAtX = 0; // the screen point the zoom holds still
+let zoomAtY = 0;
+let panVx = 0; // px/s
+let panVy = 0;
+const ZOOM_EASE_MS = 70;
+const PAN_RISE_MS = 60; // to speed
+const PAN_COAST_MS = 110; // to rest
+
+function easeCamera(dtReal: number): void {
+  if (zoomGoal > 0) {
+    // Geometric, so a zoom-in and the zoom-out that undoes it feel alike.
+    const k = 1 - Math.exp(-dtReal / ZOOM_EASE_MS);
+    const next = Math.abs(zoomGoal / cam.scale - 1) < 0.002 ? zoomGoal : cam.scale * Math.pow(zoomGoal / cam.scale, k);
+    cam.zoom(next / cam.scale, zoomAtX, zoomAtY, view.w, view.h);
+    if (next === zoomGoal) zoomGoal = 0;
+  }
+  let tx = 0;
+  let ty = 0;
+  if (panHeld.size > 0 && !menu.isOpen) {
+    for (const [dx, dy] of panHeld.values()) { tx += dx; ty += dy; }
+    const mag = Math.hypot(tx, ty);
+    if (mag > 0) {
+      tx = (tx / mag) * PAN_PX_PER_SEC;
+      ty = (ty / mag) * PAN_PX_PER_SEC;
+    }
+  }
+  const k = 1 - Math.exp(-dtReal / (tx !== 0 || ty !== 0 ? PAN_RISE_MS : PAN_COAST_MS));
+  panVx += (tx - panVx) * k;
+  panVy += (ty - panVy) * k;
+  if (tx === 0 && ty === 0 && Math.hypot(panVx, panVy) < 4) panVx = panVy = 0;
+  cam.x += (panVx / cam.scale) * (dtReal / 1000);
+  cam.y += (panVy / cam.scale) * (dtReal / 1000);
+}
 
 // WASD camera pan: held-key set keyed by event.code so a keyup always clears
 // (actionForEvent's shift-exactness would miss shift-state changes mid-hold).
@@ -1765,6 +1811,14 @@ function cycleFloorFocus(): void {
     stratPaused = p;
     paused = p;
   },
+  // Step the render clock by hand. fxNow stops with the sim, and every staged
+  // harness scene is paused so nothing in it moves — which also meant a staged
+  // transient never aged and the VFX gate only ever shot the age-0 frame
+  // (#780). Stepping it here ages the effects and nothing else: the sim does
+  // not tick, and a capture lands on an exact age instead of a wall-clock guess.
+  advanceFx: (ms: number) => {
+    fxNow += ms;
+  },
   selectSquad: (i: number) => selectSquad(i),
   selectVehicle: (i: number) => selectVehicle(i),
   getCampaign: () => S().campaign,
@@ -1789,21 +1843,24 @@ const DT_MS = DT * 1000;
 // battle — the hold ring, the debrief delay, coachmarks.
 let fxNow = 0;
 
+// The hold: on the biggest events — a tank kill, an air strike or a heavy
+// shell inside the view — the battle stops for three frames on the flash. The
+// sim is not stepped and the fx clock does not run, so the frame is held; then
+// both carry on from where they were. It delays sim.step() calls and changes
+// no sim result. Skipped when the frame that would start it is already late:
+// a hold on top of a hitch is a stall.
+const HOLD_MS = 55; // three frames at 60 Hz
+const HOLD_COOLDOWN_MS = 4000; // a barrage is twelve rounds — one beat, not twelve
+const HOLD_LATE_MS = 20; // a frame longer than this is already behind
+let holdUntil = 0;
+let heldAt = -1e9;
+
 function frame(now: number): void {
   const dtReal = Math.min(now - last, 250);
   last = now;
-  if (!(mode === 'battle' ? paused : stratPaused)) fxNow += dtReal;
-  if (mode === 'battle' && panHeld.size > 0 && !menu.isOpen) {
-    let pdx = 0;
-    let pdy = 0;
-    for (const [dx, dy] of panHeld.values()) { pdx += dx; pdy += dy; }
-    const mag = Math.hypot(pdx, pdy);
-    if (mag > 0) {
-      const step = (PAN_PX_PER_SEC / cam.scale) * (dtReal / 1000) / mag;
-      cam.x += pdx * step;
-      cam.y += pdy * step;
-    }
-  }
+  const held = mode === 'battle' && now < holdUntil;
+  if (!(mode === 'battle' ? paused : stratPaused) && !held) fxNow += dtReal;
+  if (mode === 'battle') easeCamera(dtReal);
   hud.root.style.display = mode === 'battle' ? '' : 'none';
   stratHud.root.style.display = mode === 'strategic' && !S().v2 ? '' : 'none';
   theaterHud.root.style.display = mode === 'strategic' && S().v2 ? '' : 'none';
@@ -1877,8 +1934,8 @@ function frame(now: number): void {
     S().stratView.draw(ctx, S().front, selectedChit, stratPaused, SPEEDS[speedIdx], view.w, view.h);
     if (touchHold) drawHoldRing(ctx, touchHold, now);
   } else {
-    acc += dtReal;
-    if (!paused) {
+    if (!held) acc += dtReal;
+    if (!paused && !held) {
       // Catch-up guard. dtReal is capped at 250ms, which is up to 7 sim steps
       // in one frame — on a phone that already missed its budget that
       // guarantees it misses the next one worse, and the UI locks. Let the
@@ -1915,6 +1972,10 @@ function frame(now: number): void {
     renderer.addEvents(shots, fxNow);
     renderer.addMeleeEvents(melee, fxNow);
     renderer.addBooms(booms, fxNow);
+    if (dtReal <= HOLD_LATE_MS && now - heldAt > HOLD_COOLDOWN_MS && renderer.holdWorthy(booms, cam)) {
+      holdUntil = now + HOLD_MS;
+      heldAt = now;
+    }
     renderer.addBreaches(breaches, fxNow);
     renderer.addPlanes(sim.takePlanes(), fxNow);
     audio.addShots(shots, cam, cw, chh);
@@ -2062,6 +2123,7 @@ function frame(now: number): void {
       cam.x = b.x;
       cam.y = b.y;
       cam.scale = b.scale;
+      zoomGoal = 0;
       // Same frame, same reason: the touch bar the coachmark points at only
       // exists once the HUD has rendered once.
       if (MOBILE) {
