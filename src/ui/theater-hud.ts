@@ -9,7 +9,8 @@ import { COUNTER_H, COUNTER_W, drawCounter, POSTURE_GLYPH, type PlacedCounter } 
 import { fmtEta } from '../render/theater-view';
 import { MOBILE } from '../render/view';
 
-import { minutesToReinforcement, REINFORCE_CYCLE_DAYS, REINFORCE_PER_COMPANY } from '../strategic/front';
+import { minutesToReinforcement, REINFORCE_CYCLE_DAYS } from '../strategic/front';
+import { requisitionDue, requisitionNotes } from '../strategic/requisition';
 import type { WarGoals } from '../strategic/goals';
 import { DETECT_FORCE_M, SCREEN_DETECT_MULT } from '../strategic/intel';
 import { DIG_DEF_MULT, REST_COMBAT_MULT } from '../strategic/theater/combat';
@@ -39,6 +40,7 @@ export interface TheaterHudCallbacks {
 // replaces the grey sentence that sat in the empty event log.
 const NEXT = {
   contact: 'Answer the contact.',
+  requisition: 'Pick a requisition.',
   select: MOBILE ? 'Tap a company.' : 'Click a company.',
   order: MOBILE ? 'Hold a town to march there.' : 'Right-click a town to march there.',
   play: 'Press Play.',
@@ -274,7 +276,8 @@ export class TheaterHud {
     });
     const sig = [
       front.day, hh, mm, held, need, objectives.length, lastDay, paused, speedIdx, selectedForce,
-      sel ? `${sel.strength}:${sel.path.length}:${sel.engagedIn}:${sel.untracedMin}:${Math.round(sel.fatigue * 100)}:${sel.posture}:${sel.dugMin}` : '',
+      sel ? `${sel.strength}:${sel.path.length}:${sel.engagedIn}:${sel.untracedMin}:${Math.round(sel.fatigue * 100)}:${sel.posture}:${sel.dugMin}:${sel.armorAttacks}:${sel.reconUntilDay}` : '',
+      requisitionDue(front), front.requisition?.barrageUntilDay ?? 0,
       front.events.length, lastEvent?.text ?? '', supplyOn, reconOn, contacts, inContact, marching,
       garrisons.map((g) => `${g.holder}:${g.own}:${g.foe}`).join('/'),
     ].join('|');
@@ -296,7 +299,7 @@ export class TheaterHud {
 
     // What next: one line, the objectives, the replacements clock.
     this.next.textContent = inContact
-      ? NEXT.contact
+      ? document.getElementById('req') ? NEXT.requisition : NEXT.contact
       : sel && sel.path.length === 0 && sel.engagedIn === null
         ? NEXT.order
         : marching
@@ -323,8 +326,8 @@ export class TheaterHud {
     });
     const mins = minutesToReinforcement(front);
     const h = Math.ceil(mins / 60);
-    this.reinf.textContent = `Replacements in ${h >= 48 ? `${Math.floor(h / 24)}d ${h % 24}h` : `${h}h`}`;
-    this.reinf.title = `Up to ${REINFORCE_PER_COMPANY} men per company every ${REINFORCE_CYCLE_DAYS} days.`;
+    this.reinf.textContent = requisitionDue(front) ? 'Requisition due' : `Requisition in ${h >= 48 ? `${Math.floor(h / 24)}d ${h % 24}h` : `${h}h`}`;
+    this.reinf.title = `Every ${REINFORCE_CYCLE_DAYS} days: replacements, armour, a barrage or recon.`;
 
     this.force.hidden = !sel;
     if (sel) {
@@ -349,7 +352,7 @@ export class TheaterHud {
           b.classList.toggle('active', k === sel.posture);
           b.title = postureEffect(k, reconOn);
         });
-        this.postFx.textContent = postureEffect(sel.posture, reconOn, sel);
+        this.postFx.textContent = [postureEffect(sel.posture, reconOn, sel), ...requisitionNotes(front, sel)].join(' · ');
       }
       this.fatFill.className = `th-fat-fill th-fat-${sel.fatigue >= 0.66 ? 'high' : sel.fatigue >= 0.33 ? 'mid' : 'low'}`;
       this.fatFill.style.width = `${Math.round(sel.fatigue * 100)}%`;

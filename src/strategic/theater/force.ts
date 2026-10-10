@@ -5,6 +5,7 @@
 // chitEtaMinutes lockstep rule carried over.
 import type { Side } from '../../sim/sim';
 import type { NetPos, Theater, TheaterEdge } from '../theater';
+import type { Requisition } from '../requisition';
 
 export type ForceRole = 'line' | 'garrison' | 'reserve';
 // How a force carries itself (jtbug #786). March, forced march and screen are
@@ -41,11 +42,15 @@ export interface Force {
   posture: Posture;
   // Minutes spent digging in at this spot. The position is done at DIG_IN_MIN.
   dugMin: number;
+  // Requisition cards (requisition.ts): attacks an attached armour section
+  // stays for, and the day a recon detachment leaves.
+  armorAttacks: number;
+  reconUntilDay: number;
 }
 
 // Creation shape: the realism fields default to fresh at the ONE chokepoint
 // (addForce), so disposition and test literals never carry boilerplate zeros.
-type ForceDefaulted = 'untracedMin' | 'fatigue' | 'lastEdgeId' | 'repulsedAtMin' | 'establishment' | 'homeNode' | 'posture' | 'dugMin';
+type ForceDefaulted = 'untracedMin' | 'fatigue' | 'lastEdgeId' | 'repulsedAtMin' | 'establishment' | 'homeNode' | 'posture' | 'dugMin' | 'armorAttacks' | 'reconUntilDay';
 export type ForceInit = Omit<Force, 'id' | ForceDefaulted> & Partial<Pick<Force, ForceDefaulted>>;
 
 export const garrisonPost = (f: Pick<Force, 'role' | 'pos'>): number | null => (f.role === 'garrison' && f.pos.kind === 'node' ? f.pos.nodeId : null);
@@ -101,6 +106,8 @@ export interface FrontV2 {
   // S53: per-side contact maps, present when the campaign runs recon:
   // 'contacts' (lazily initialized by updateIntelMinute, persisted in v4).
   intel?: Record<Side, StratContact[]>;
+  // The player's requisition state. Absent = nothing due, nothing running.
+  requisition?: Requisition;
 }
 
 export function pushEvent(front: FrontV2, e: TheaterEvent): void {
@@ -112,7 +119,7 @@ export function addForce(front: FrontV2, f: ForceInit): Force {
   if (front.forces.length >= MAX_FORCES) {
     throw new Error(`addForce: MAX_FORCES (${MAX_FORCES}) reached — the force cap is asserted here and in makeDisposition, never at generation`);
   }
-  const force: Force = { untracedMin: 0, fatigue: 0, lastEdgeId: null, repulsedAtMin: null, establishment: f.strength, homeNode: garrisonPost(f), posture: 'march', dugMin: 0, ...f, id: front.nextForceId++ };
+  const force: Force = { untracedMin: 0, fatigue: 0, lastEdgeId: null, repulsedAtMin: null, establishment: f.strength, homeNode: garrisonPost(f), posture: 'march', dugMin: 0, armorAttacks: 0, reconUntilDay: 0, ...f, id: front.nextForceId++ };
   front.forces.push(force);
   return force;
 }

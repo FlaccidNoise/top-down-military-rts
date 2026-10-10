@@ -46,6 +46,7 @@ import { ContactIntel, OmniscientIntel, type IntelView } from './strategic/intel
 import { Commander2, RED_V2 } from './strategic/planner';
 import { addForce, pushEvent, type CoarseBattle, type FrontV2, type MoveReject } from './strategic/theater/force';
 import { firstContactOnMarch, orderHalt, orderMove, previewMove, setPosture } from './strategic/theater/step';
+import { applyRequisition, requisitionDue, requisitionOffer, type RequisitionCard } from './strategic/requisition';
 import { battleCatchUpMin, openBattle, retreatForce, stepWar } from './strategic/theater/war';
 import { syncStrengthsV2 } from './strategic/theater/sync';
 import type { Contact } from './strategic/theater/contact';
@@ -416,7 +417,12 @@ const stratHud = new StratHud({
   setSpeed: (i) => { speedIdx = i; },
 });
 const theaterHud = new TheaterHud({
-  togglePause: () => { stratPaused = !stratPaused; tutorial?.notify('speed-changed'); },
+  togglePause: () => {
+    const v2 = S().v2;
+    if (v2 && requisitionDue(v2.front) && !v2.pending) return v2.view.flash('Pick a requisition first');
+    stratPaused = !stratPaused;
+    tutorial?.notify('speed-changed');
+  },
   setSpeed: (i) => { speedIdx = i; tutorial?.notify('speed-changed'); },
   openMenu: () => { openPauseMenu(); },
   fitAll: () => { S().v2?.view.fitAll(view.w, view.h); },
@@ -852,11 +858,10 @@ function stepTheaterMinuteV2(v2: SessionV2): void {
   if (v2.front.day > prevDay) {
     advanceDays(S().campaign, v2.front.day - prevDay);
     if (v2.front.day % REINFORCE_CYCLE_DAYS === 0) {
-      const arrived = fillReplacements(S().campaign, v2.front.day * 31 + 7, REINFORCE_PER_COMPANY);
-      if (arrived > 0) {
-        v2.view.flash(`+${arrived} replacements arrived`);
-        pushEvent(v2.front, { min: v2.front.clockMin, kind: 'replacements', text: `${arrived} replacements arrive`, forceIds: [] });
-      }
+      // The cycle no longer fills by itself: it raises a choice, and the
+      // clock holds until the player has made it (showRequisitionV2).
+      v2.front.requisition = { barrageUntilDay: 0, ...v2.front.requisition, due: true };
+      stratPaused = true;
     }
     syncStrengthsV2(S().campaign, v2.front);
     prevDay = v2.front.day;
@@ -874,6 +879,38 @@ function stepTheaterMinuteV2(v2: SessionV2): void {
 // The contact decision. A card in the theater HUD, not a screen over it: the
 // map stays up and is centred on the fight, because where the fight is, what
 // stands near it and what ground it is on are the decision.
+// The requisition sheet: one card in place of the even fill. It shares the
+// contact card's panel, so it is a side card on a desktop and a bottom sheet
+// on a phone. Cards that go to a company go to the one picked in the row.
+function showRequisitionV2(forceId = -1): void {
+  const v2 = S().v2!;
+  const fog = v2.campaignCfg.recon === 'contacts';
+  const companies = v2.front.forces.filter((f) => f.side === 'blue' && f.strength > 0);
+  const chosen = companies.find((f) => f.id === forceId) ?? companies.find((f) => f.id === v2.selectedForce) ?? companies[0];
+  const cards = requisitionOffer(v2.front, S().campaign, chosen?.id ?? -1, fog);
+  theaterHud.showContact(`
+    <h1>REQUISITION <span class="fc-place">Day ${v2.front.day}</span></h1>
+    <p class="fc-kind" id="req">Pick one.</p>
+    ${companies.length > 0 ? `<div class="rq-for">${companies.map((f) => `<button class="hbtn rq-co${f === chosen ? ' active' : ''}" data-co="${f.id}">${f.name}</button>`).join('')}</div>` : ''}
+    <div class="rq-cards">${cards
+      .map((o) => `<button class="hbtn rq-card" data-card="${o.id}"${o.blocked ? ' disabled' : ''}><i>${o.glyph}</i><b>${o.name}</b><span>${o.blocked ?? o.effect}</span></button>`)
+      .join('')}</div>`);
+  theaterHud.contact.querySelectorAll<HTMLElement>('[data-co]').forEach((b) => {
+    b.onclick = () => showRequisitionV2(Number(b.dataset.co));
+  });
+  theaterHud.contact.querySelectorAll<HTMLElement>('[data-card]').forEach((b) => {
+    b.onclick = () => {
+      const r = applyRequisition(v2.front, S().campaign, b.dataset.card as RequisitionCard, chosen?.id ?? -1, fog);
+      if (!r.ok) return v2.view.flash(r.reason);
+      syncStrengthsV2(S().campaign, v2.front);
+      v2.view.flash(r.text);
+      pushEvent(v2.front, { min: v2.front.clockMin, kind: 'replacements', text: r.text, forceIds: chosen ? [chosen.id] : [] });
+      theaterHud.hideContact();
+      save();
+    };
+  });
+}
+
 function showContactModalV2(c: Contact): void {
   const v2 = S().v2!;
   const atk = v2.front.forces.find((f) => f.id === c.attackerId)!;
@@ -2029,9 +2066,13 @@ function frame(now: number): void {
   if (mode === 'strategic' && S().v2) {
     const v2 = S().v2!;
     hud.updateIdle('strategic', v2.selectedForce >= 0 || stratPaused);
-    if (!stratPaused && !v2.pending && !opEnded) {
+    // A requisition waits behind a contact and behind nothing else: the
+    // clock holds until it is answered, and a loaded save shows it again.
+    const reqDue = requisitionDue(v2.front) && !v2.pending && !opEnded;
+    if (reqDue && !document.getElementById('req')) showRequisitionV2();
+    if (!stratPaused && !v2.pending && !reqDue && !opEnded) {
       stratAcc += (dtReal / 1000) * SPEEDS[speedIdx];
-      while (stratAcc >= 1 && !v2.pending) {
+      while (stratAcc >= 1 && !v2.pending && !requisitionDue(v2.front)) {
         stratAcc -= 1;
         stepTheaterMinuteV2(v2);
         if (v2.pending) showContactModalV2(v2.pending);

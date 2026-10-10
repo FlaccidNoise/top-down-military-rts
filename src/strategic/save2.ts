@@ -9,6 +9,7 @@ import type { Campaign } from '../campaign/campaign';
 import { GEN_VERSION, type CampaignConfig, type TheaterConfig } from '../campaign/spec';
 import { makeTheater } from './theatergen';
 import type { OperationalPlan } from './planner';
+import type { Requisition } from './requisition';
 import { garrisonPost, type CoarseBattle, type Force, type FrontV2, type StratContact, type TheaterEvent } from './theater/force';
 
 // §4.8: a reloaded commander must NOT forget its axes — a goal-driven
@@ -42,6 +43,7 @@ export interface SaveV4 {
     events: TheaterEvent[];
     defileQueues: Record<number, number[]>;
     intel?: Record<'blue' | 'red', StratContact[]>; // S53: absent when omniscient
+    requisition?: Requisition; // absent: nothing due, nothing running
   };
   ai?: AiSave; // §4.8: absent on saves written before commander persistence
 }
@@ -81,6 +83,7 @@ export function saveGameV2(
       events: front.events,
       defileQueues: front.defileQueues,
       intel: front.intel,
+      requisition: front.requisition,
     },
   };
   try {
@@ -134,7 +137,7 @@ export function loadGameV2(): LoadV2 {
     ...p.front,
     // Saves written before the realism wave carry no supply/fatigue fields:
     // normalize to fresh, exactly what addForce defaults a new force to.
-    forces: p.front.forces.map((f) => ({ ...f, untracedMin: f.untracedMin ?? 0, fatigue: f.fatigue ?? 0, lastEdgeId: f.lastEdgeId ?? null, repulsedAtMin: f.repulsedAtMin ?? null, establishment: f.establishment ?? f.strength, homeNode: f.homeNode === undefined ? garrisonPost(f) : f.homeNode, posture: f.posture ?? 'march', dugMin: f.dugMin ?? 0 })),
+    forces: p.front.forces.map((f) => ({ ...f, untracedMin: f.untracedMin ?? 0, fatigue: f.fatigue ?? 0, lastEdgeId: f.lastEdgeId ?? null, repulsedAtMin: f.repulsedAtMin ?? null, establishment: f.establishment ?? f.strength, homeNode: f.homeNode === undefined ? garrisonPost(f) : f.homeNode, posture: f.posture ?? 'march', dugMin: f.dugMin ?? 0, armorAttacks: f.armorAttacks ?? 0, reconUntilDay: f.reconUntilDay ?? 0 })),
   };
   repairDefiles(front);
   return { status: 'ok', seed: p.seed, cfg: p.theaterCfg, campaignCfg: p.campaignCfg, campaign: p.campaign, front, ai: p.ai };
