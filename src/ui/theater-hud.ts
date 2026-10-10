@@ -5,14 +5,16 @@
 // overlay per the hybrid doctrine. The DOM is built ONCE and update() patches
 // text and classes: a rebuilt button is a new element between mousedown and
 // mouseup, and at 60x that swallowed every click on the clock row (jtbug #761).
-import { COUNTER_H, COUNTER_W, drawCounter, type PlacedCounter } from '../render/theater-counters';
+import { COUNTER_H, COUNTER_W, drawCounter, POSTURE_GLYPH, type PlacedCounter } from '../render/theater-counters';
 import { fmtEta } from '../render/theater-view';
 import { MOBILE } from '../render/view';
 
 import { minutesToReinforcement, REINFORCE_CYCLE_DAYS, REINFORCE_PER_COMPANY } from '../strategic/front';
 import type { WarGoals } from '../strategic/goals';
-import { pathDestination, type Force, type ForceRole, type FrontV2, type TheaterEvent } from '../strategic/theater/force';
-import { forceEtaMinutes } from '../strategic/theater/step';
+import { DETECT_FORCE_M, SCREEN_DETECT_MULT } from '../strategic/intel';
+import { DIG_DEF_MULT, REST_COMBAT_MULT } from '../strategic/theater/combat';
+import { pathDestination, type Force, type ForceRole, type FrontV2, type Posture, type TheaterEvent } from '../strategic/theater/force';
+import { DIG_IN_MIN, dugIn, FORCED_FATIGUE_MULT, FORCED_PACE_MULT, forceEtaMinutes, REST_RECOVER_MULT, SCREEN_PACE_MULT } from '../strategic/theater/step';
 import { supplyTierOf } from '../strategic/theater/supply';
 import { SPEED_LABELS } from './strat-hud';
 
@@ -25,6 +27,8 @@ export interface TheaterHudCallbacks {
   fitAll(): void;
   /** Halt the selected company where it stands. */
   halt(): void;
+  /** Change the selected company's posture. */
+  posture(p: Posture): void;
   /** Centre the map on where a logged event happened. */
   focus(e: TheaterEvent): void;
   /** Centre the map on a place. */
@@ -51,6 +55,7 @@ const KEY: [Swatch, string][] = [
   [{ counter: { side: 'red', role: 'reserve', strength: 108 } }, 'Reserve'],
   [{ counter: { side: 'red', role: 'line', strength: 60, ghost: true, conf: 0.6 } }, 'Last seen, fading'],
   [{ counter: { side: 'blue', letter: 'B', strength: 60, frac: 0.45, supply: 'low', fatigue: 0.7 } }, 'Bar: strength. Dots: supply, fatigue'],
+  [{ counter: { side: 'blue', letter: 'C', strength: 120, posture: 'dig' } }, 'Corner mark: posture'],
   [{ css: 'k-obj' }, 'Objective to take'],
   [{ css: 'k-obj k-held' }, 'Objective held'],
   [{ css: 'k-front' }, 'Front line'],
@@ -65,6 +70,30 @@ const KEY: [Swatch, string][] = [
   [{ css: 'k-cut' }, 'Your supply is cut here'],
   [{ counter: { side: 'red', role: 'garrison', strength: 40, frac: 0.6, supply: 'out', tag: 'ISOLATED' } }, 'Enemy cut off from supply'],
 ];
+
+const POSTURES: [Posture, string][] = [['march', 'March'], ['forced', 'Forced'], ['rest', 'Rest'], ['dig', 'Dig in'], ['screen', 'Screen']];
+const pct = (mult: number): string => `${mult >= 1 ? '+' : '−'}${Math.round(Math.abs(mult - 1) * 100)}%`;
+
+// What a posture does, in five words at most. Every number is read from the
+// constant that owns it. With `f`, the line is that force's own state (how
+// much digging is left). `fog` is whether sight means anything in this war.
+export function postureEffect(p: Posture, fog: boolean, f?: Pick<Force, 'posture' | 'dugMin'>): string {
+  switch (p) {
+    case 'march':
+      return 'Normal pace.';
+    case 'forced':
+      return `${pct(FORCED_PACE_MULT)} pace, ${FORCED_FATIGUE_MULT}× fatigue.`;
+    case 'rest':
+      return `Recovers ${REST_RECOVER_MULT}× faster, fights ${pct(REST_COMBAT_MULT)}.`;
+    case 'dig':
+      if (f && dugIn(f)) return `Dug in: defence ×${DIG_DEF_MULT}.`;
+      return f ? `Digging: ${fmtEta(DIG_IN_MIN - f.dugMin)} left.` : `${fmtEta(DIG_IN_MIN)} to dig: defence ×${DIG_DEF_MULT}.`;
+    case 'screen':
+      return fog
+        ? `Sees ${(DETECT_FORCE_M * SCREEN_DETECT_MULT) / 1000} km, slow, evades.`
+        : `${pct(SCREEN_PACE_MULT)} pace, evades stronger enemy.`;
+  }
+}
 
 export class TheaterHud {
   readonly root: HTMLDivElement;
@@ -91,6 +120,8 @@ export class TheaterHud {
   private readonly fatFill: HTMLElement;
   private readonly sup: HTMLElement;
   private readonly halt: HTMLElement;
+  private readonly post: HTMLElement;
+  private readonly postFx: HTMLElement;
   private readonly log: HTMLElement;
   /** The contact card. main.ts fills it; a panel here, so the camera frames around it. */
   readonly contact: HTMLElement;
@@ -129,6 +160,8 @@ export class TheaterHud {
           <b class="th-name"></b><span class="th-stat"></span><span class="th-state"></span>
           <span class="th-fat"><span class="th-fat-label">fatigue</span><span class="th-fat-track"><span class="th-fat-fill"></span></span></span>
           <span class="th-sup" hidden></span>
+          <span class="th-post" hidden>${POSTURES.map(([k, word]) => `<button class="hbtn th-pb" data-post="${k}"><i>${POSTURE_GLYPH[k]}</i>${word}</button>`).join('')}</span>
+          <span class="th-postfx" hidden></span>
           <button class="hbtn th-halt" data-th="halt" hidden>■ Halt</button>
         </div>
         <div class="panel th-log" hidden></div>
@@ -153,6 +186,8 @@ export class TheaterHud {
     this.fatFill = q('.th-fat-fill');
     this.sup = q('.th-sup');
     this.halt = q('.th-halt');
+    this.post = q('.th-post');
+    this.postFx = q('.th-postfx');
     this.log = q('.th-log');
     this.contact = q('.th-contact');
     this.drawKey();
@@ -165,6 +200,8 @@ export class TheaterHud {
       const hit = (sel: string): HTMLElement | null => (e.target as HTMLElement).closest<HTMLElement>(sel);
       if (hit('[data-th="menu"]')) return this.cb.openMenu();
       if (hit('[data-th="halt"]')) return this.cb.halt();
+      const post = hit('[data-post]');
+      if (post) return this.cb.posture(post.dataset.post as Posture);
       if (hit('[data-th="fit"]')) return this.cb.fitAll();
       if (hit('[data-th="key"]')) return this.setKey(this.key.hidden);
       const place = hit('[data-obj]');
@@ -202,7 +239,7 @@ export class TheaterHud {
       g.scale(dpr, dpr);
       const role: ForceRole = 'line';
       drawCounter(g, {
-        id: 0, side: 'blue', letter: null, role, strength: 0, frac: 1, supply: null, fatigue: 0, selected: false, engaged: false,
+        id: 0, side: 'blue', letter: null, role, strength: 0, frac: 1, supply: null, fatigue: 0, posture: 'march', selected: false, engaged: false,
         conf: 1, ghost: false, tag: null, ax: 0, ay: 0, drop: 0, x: 5, y: s.counter.tag ? 14 : 6, ...s.counter,
       });
     });
@@ -236,7 +273,7 @@ export class TheaterHud {
     });
     const sig = [
       front.day, hh, mm, held, need, objectives.length, lastDay, paused, speedIdx, selectedForce,
-      sel ? `${sel.strength}:${sel.path.length}:${sel.engagedIn}:${sel.untracedMin}:${Math.round(sel.fatigue * 100)}` : '',
+      sel ? `${sel.strength}:${sel.path.length}:${sel.engagedIn}:${sel.untracedMin}:${Math.round(sel.fatigue * 100)}:${sel.posture}:${sel.dugMin}` : '',
       front.events.length, lastEvent?.text ?? '', supplyOn, reconOn, contacts, inContact, marching,
       garrisons.map((g) => `${g.holder}:${g.own}:${g.foe}`).join('/'),
     ].join('|');
@@ -302,6 +339,17 @@ export class TheaterHud {
         this.setState('th-mov', `moving → ${front.theater.nodes[dest].name} · ETA ${fmtEta(eta)}`);
       } else this.setState('th-hold', 'holding');
       this.halt.hidden = sel.side !== 'blue' || sel.engagedIn !== null || sel.path.length === 0;
+      const mine = sel.side === 'blue' && sel.engagedIn === null;
+      this.post.hidden = !mine;
+      this.postFx.hidden = !mine;
+      if (mine) {
+        this.post.querySelectorAll<HTMLElement>('[data-post]').forEach((b) => {
+          const k = b.dataset.post as Posture;
+          b.classList.toggle('active', k === sel.posture);
+          b.title = postureEffect(k, reconOn);
+        });
+        this.postFx.textContent = postureEffect(sel.posture, reconOn, sel);
+      }
       this.fatFill.className = `th-fat-fill th-fat-${sel.fatigue >= 0.66 ? 'high' : sel.fatigue >= 0.33 ? 'mid' : 'low'}`;
       this.fatFill.style.width = `${Math.round(sel.fatigue * 100)}%`;
       const tier = supplyTierOf(sel.untracedMin);

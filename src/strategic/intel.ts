@@ -50,6 +50,8 @@ export const STRAT_CONTACT_TTL = 360; // minutes: conf decays linearly to 0
 export const INTEL_EVAL_MIN = 15; // detection sweep cadence
 export const DETECT_FORCE_M = 3000; // graph metres from a live own force
 export const DETECT_NODE_M = 1500; // graph metres from an owned node
+export const SCREEN_DETECT_MULT = 2; // a screening force sees this much farther
+const reachOf = (f: Force): number => (f.posture === 'screen' ? DETECT_FORCE_M * SCREEN_DETECT_MULT : DETECT_FORCE_M);
 
 export function contactConf(c: StratContact, clockMin: number): number {
   return Math.max(0, 1 - (clockMin - c.seenMin) / STRAT_CONTACT_TTL);
@@ -57,7 +59,8 @@ export function contactConf(c: StratContact, clockMin: number): number {
 
 // Multi-source Dijkstra in metres over the foot graph. One field serves both
 // radii: forces seed at cost 0, owned nodes at (FORCE - NODE), and anything
-// under DETECT_FORCE_M in the field is seen. Pure, zero rng, <= 60 nodes.
+// under DETECT_FORCE_M in the field is seen. A screening force seeds below
+// zero by its extra reach. Pure, zero rng, <= 60 nodes.
 function detectionDist(front: FrontV2, side: Side): Map<number, number> {
   const t = front.theater;
   const dist = new Map<number, number>();
@@ -66,11 +69,12 @@ function detectionDist(front: FrontV2, side: Side): Map<number, number> {
   };
   for (const f of front.forces) {
     if (f.side !== side || f.strength <= 0) continue;
-    if (f.pos.kind === 'node') seed(f.pos.nodeId, 0);
+    const head = DETECT_FORCE_M - reachOf(f);
+    if (f.pos.kind === 'node') seed(f.pos.nodeId, head);
     else {
       const e = t.edges[f.pos.edgeId];
-      seed(e.a, f.pos.s);
-      seed(e.b, e.lengthM - f.pos.s);
+      seed(e.a, head + f.pos.s);
+      seed(e.b, head + e.lengthM - f.pos.s);
     }
   }
   for (const n of t.nodes) {
@@ -113,7 +117,7 @@ function isDetected(front: FrontV2, side: Side, dist: Map<number, number>, g: Fo
   // Same-edge / incident geometry the endpoint field can overshoot.
   for (const f of front.forces) {
     if (f.side !== side || f.strength <= 0) continue;
-    if (graphGap(t, f.pos, g.pos) <= DETECT_FORCE_M) return true;
+    if (graphGap(t, f.pos, g.pos) <= reachOf(f)) return true;
   }
   return false;
 }

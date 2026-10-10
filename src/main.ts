@@ -43,7 +43,7 @@ import { DEPLOY_ATK_DEPTH, DEPLOY_DEF_LINE, DEPLOY_DEF_DEFAULT } from './strateg
 import { ContactIntel, OmniscientIntel, type IntelView } from './strategic/intel';
 import { Commander2, RED_V2 } from './strategic/planner';
 import { addForce, pushEvent, type CoarseBattle, type FrontV2, type MoveReject } from './strategic/theater/force';
-import { firstContactOnMarch, orderHalt, orderMove, previewMove } from './strategic/theater/step';
+import { firstContactOnMarch, orderHalt, orderMove, previewMove, setPosture } from './strategic/theater/step';
 import { battleCatchUpMin, openBattle, retreatForce, stepWar } from './strategic/theater/war';
 import { syncStrengthsV2 } from './strategic/theater/sync';
 import type { Contact } from './strategic/theater/contact';
@@ -431,6 +431,12 @@ const theaterHud = new TheaterHud({
     if (!v2) return;
     const r = orderHalt(v2.front, v2.selectedForce);
     v2.view.flash(r.ok ? `${v2.front.forces.find((f) => f.id === v2.selectedForce)!.name} halts` : MOVE_REJECT_TEXT[r.reason]);
+  },
+  posture: (p) => {
+    const v2 = S().v2;
+    if (!v2) return;
+    const r = setPosture(v2.front, v2.selectedForce, p);
+    if (!r.ok) v2.view.flash(MOVE_REJECT_TEXT[r.reason]);
   },
 });
 const tooltip = new Tooltip(hud.root);

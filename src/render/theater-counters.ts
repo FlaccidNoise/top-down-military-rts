@@ -9,7 +9,7 @@
 // point fan out in a row. The layout is the hit-test: what the player sees is
 // what a click lands on.
 import type { Side } from '../sim/sim';
-import type { ForceRole } from '../strategic/theater/force';
+import type { ForceRole, Posture } from '../strategic/theater/force';
 import type { SupplyTier } from '../strategic/theater/supply';
 
 export const COUNTER_W = 34;
@@ -27,6 +27,7 @@ export interface CounterSpec {
   frac: number; // strength / establishment, 0..1
   supply: SupplyTier | null; // null = supply rules off, or not known
   fatigue: number;
+  posture: Posture; // 'march' draws no mark
   selected: boolean;
   engaged: boolean;
   // 1 for a force seen now. Under fog an enemy is a last-seen report: hollow,
@@ -162,6 +163,9 @@ export function drawLeader(ctx: CanvasRenderingContext2D, c: PlacedCounter): voi
   ctx.restore();
 }
 
+// One glyph per posture: the counter's corner mark and the card's button.
+export const POSTURE_GLYPH: Record<Posture, string> = { march: '→', forced: '»', rest: 'z', dig: '∪', screen: '◉' };
+
 export function drawCounter(ctx: CanvasRenderingContext2D, c: PlacedCounter): void {
   const { x, y } = c;
   ctx.save();
@@ -222,6 +226,23 @@ export function drawCounter(ctx: CanvasRenderingContext2D, c: PlacedCounter): vo
   };
   if (c.supply === 'low' || c.supply === 'out') pip(x + 1, PIP[c.supply === 'low' ? 'warn' : 'bad']);
   if (c.fatigue >= 0.33) pip(x + COUNTER_W - 1, PIP[c.fatigue >= 0.66 ? 'bad' : 'warn']);
+
+  // Posture: a plate on the bottom right corner.
+  if (c.posture !== 'march') {
+    const px = x + COUNTER_W - 8;
+    const py = y + COUNTER_H - 7;
+    ctx.beginPath();
+    ctx.roundRect(px, py, 12, 11, 2);
+    ctx.fillStyle = 'rgba(14, 12, 8, 0.95)';
+    ctx.fill();
+    ctx.strokeStyle = TEXT;
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    ctx.fillStyle = TEXT;
+    ctx.font = 'bold 10px ui-monospace, monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText(POSTURE_GLYPH[c.posture], px + 6, py + 9);
+  }
 
   if (c.tag) {
     ctx.font = 'bold 8px ui-monospace, monospace';

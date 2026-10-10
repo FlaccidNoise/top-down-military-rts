@@ -18,8 +18,10 @@ import { forceById, retreatForce, throwBack } from './theater/war';
 import { edgeById } from './theater/force';
 import { syncStrengthsV2 } from './theater/sync';
 import { SUPPLY_AMMO_MULT, supplyTierOf } from './theater/supply';
-import { FATIGUE_STAMINA_SLOPE } from './theater/step';
+import { dugIn, FATIGUE_STAMINA_SLOPE } from './theater/step';
 import { FOUGHT_BATTLE_FATIGUE } from './theater/war';
+
+export const DIG_BARRAGES = 1;
 
 export interface TheaterBattle {
   sim: Sim;
@@ -97,6 +99,10 @@ export function makeTheaterBattle(c: Campaign, front: FrontV2, battle: CoarseBat
       if (s.side === f.side) s.stamina = Math.min(s.stamina, cap);
     }
   }
+  // Postures (jtbug #786): a dug-in defender has registered its supporting
+  // fire, so it fights with DIG_BARRAGES more barrages. A counter set after
+  // staging: no rng, and a force that is not dug in stages as before.
+  if (dugIn(def)) staged.sim.barragesLeft[def.side] += DIG_BARRAGES;
   const siteName =
     battle.site.kind === 'node'
       ? front.theater.nodes[battle.site.nodeId].name

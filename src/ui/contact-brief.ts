@@ -8,6 +8,7 @@ import { fmtEta } from '../render/theater-view';
 import { BATTLE_CLASS_TO_MAPKIND, battleSiteOf, type BattleClass } from '../strategic/theater';
 import { graphGap, type Contact } from '../strategic/theater/contact';
 import { CONTACT_M, type Force, type FrontV2 } from '../strategic/theater/force';
+import { dugIn } from '../strategic/theater/step';
 import { supplyTierOf } from '../strategic/theater/supply';
 import { battleDuration, RETREAT_SETBACK_M } from '../strategic/theater/war';
 
@@ -63,7 +64,9 @@ export function contactBrief(front: FrontV2, c: Contact, opts: BriefOpts): Conta
   const { battleClass } = battleSiteOf(front.theater, c.site, approach ?? undefined);
 
   const state = (f: Force): string =>
-    f.side === 'red' && opts.fog ? 'condition unknown' : [opts.supply ? supplyWord(f) : null, fatigueWord(f.fatigue)].filter(Boolean).join(' · ');
+    f.side === 'red' && opts.fog
+      ? 'condition unknown'
+      : [opts.supply ? supplyWord(f) : null, fatigueWord(f.fatigue), f === def && dugIn(f) ? 'dug in' : f.posture === 'rest' ? 'at rest' : null].filter(Boolean).join(' · ');
 
   // Odds in plain words: the man reading this should not have to divide.
   const own = playerAttacks ? atk : def;

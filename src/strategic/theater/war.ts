@@ -23,7 +23,7 @@ import {
 } from './force';
 import { CONTACT_M, detectContacts, graphGap, haltAtContact, type Contact } from './contact';
 import { stepMovement } from './step';
-import { effStrength } from './combat';
+import { defStrength, effStrength } from './combat';
 import { updateSupplyMinute } from './supply';
 import { updateIntelMinute } from '../intel';
 
@@ -133,7 +133,7 @@ export function battleSides(front: FrontV2, battle: CoarseBattle): BattleSides {
     atkStrength: attackers.reduce((a, f) => a + f.strength, 0),
     defStrength: defenders.reduce((a, f) => a + f.strength, 0),
     atkEff: attackers.reduce((a, f) => a + effStrength(f), 0),
-    defEff: defenders.reduce((a, f) => a + effStrength(f), 0),
+    defEff: defenders.reduce((a, f) => a + defStrength(f), 0),
   };
 }
 
@@ -199,6 +199,7 @@ export function retreatForce(
   opts: { trapped?: 'overrun' | 'stay' } = {},
 ): void {
   const t = front.theater;
+  f.dugMin = 0; // wherever it ends up, the position is lost
   const enemies = front.forces.filter((g) => g.side !== f.side && g.strength > 0);
   const nearEnemy = (n: number): number => {
     let best = Infinity;
@@ -333,7 +334,11 @@ export function resolveBattleV2(
   // Winner occupies the site NODE; a mid-edge fight leaves positions alone.
   if (battle.site.kind === 'node') {
     const nodeId = battle.site.nodeId;
-    for (const w of winners) if (w.strength > 0) w.pos = { kind: 'node', nodeId };
+    for (const w of winners) {
+      if (w.strength <= 0 || (w.pos.kind === 'node' && w.pos.nodeId === nodeId)) continue;
+      w.pos = { kind: 'node', nodeId };
+      w.dugMin = 0;
+    }
     const winnerSide = winners[0]?.side;
     if (winnerSide && front.controlByNode[nodeId] !== winnerSide) {
       front.controlByNode[nodeId] = winnerSide;
@@ -371,6 +376,21 @@ export function resolveBattleV2(
 
 function siteName(t: FrontV2['theater'], site: CoarseBattle['site']): string {
   return site.kind === 'node' ? t.nodes[site.nodeId].name : edgeById(t, site.edgeId).kind === 'rail' ? 'the line' : 'the road';
+}
+
+// A screening force does not fight a stronger enemy: it falls back in front
+// of it, by the same graph retreat as a beaten force, with no losses. The
+// enemy's march goes on. True when the contact ended that way. A screen with
+// nowhere to go stays and fights.
+function screenFallsBack(front: FrontV2, c: Contact): boolean {
+  const pair = [forceById(front, c.attackerId), forceById(front, c.defenderId)];
+  for (const [f, other] of [pair, [pair[1], pair[0]]]) {
+    if (f.posture !== 'screen' || other.strength <= f.strength) continue;
+    const was = f.pos;
+    retreatForce(front, f, other.pos.kind === 'edge' ? other.pos.edgeId : other.lastEdgeId, { trapped: 'stay' });
+    if (f.pos !== was) return true;
+  }
+  return false;
 }
 
 export interface StepOptions {
@@ -413,6 +433,7 @@ export function stepWar(front: FrontV2, campaign: Campaign, opts: StepOptions = 
   const contacts = detectContacts(front);
   const pending: Contact[] = [];
   for (const c of contacts) {
+    if (screenFallsBack(front, c)) continue;
     if ((opts.autoBattle ?? (() => true))(c)) openBattle(front, c);
     else {
       haltAtContact(front, c);

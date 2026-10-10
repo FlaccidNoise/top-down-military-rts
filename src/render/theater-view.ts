@@ -938,6 +938,7 @@ export class TheaterView {
         strength: f.strength, frac: f.strength / Math.max(1, f.establishment),
         supply: this.supplyOn ? supplyTierOf(f.untracedMin) : null,
         fatigue: f.side === 'blue' ? f.fatigue : 0,
+        posture: f.posture,
         // An enemy the trace does not reach. The lever the supply rules
         // offer: cut a garrison off, then fight it on short ammunition.
         tag: this.supplyOn && f.side === 'red' && f.untracedMin > 0 ? 'ISOLATED' : null,
@@ -954,7 +955,7 @@ export class TheaterView {
           // A report this fresh saw the force itself: its supply state is known.
           supply: this.supplyOn && conf > FRESH_CONF ? supplyTierOf(f.untracedMin) : null,
           tag: this.supplyOn && conf > FRESH_CONF && f.untracedMin > 0 ? 'ISOLATED' : null,
-          fatigue: 0, selected: false, engaged: false, conf, ghost: true, ...at(c.pos),
+          fatigue: 0, posture: 'march', selected: false, engaged: false, conf, ghost: true, ...at(c.pos),
         });
       }
     }

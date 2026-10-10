@@ -29,7 +29,7 @@ describe('counters', () => {
   });
 
   const spec = (id: number, side: 'blue' | 'red', ax: number, ay: number, selected = false): CounterSpec => ({
-    id, side, letter: side === 'blue' ? 'A' : null, role: 'line', strength: 100, frac: 1, supply: null, fatigue: 0,
+    id, side, letter: side === 'blue' ? 'A' : null, role: 'line', strength: 100, frac: 1, supply: null, fatigue: 0, posture: 'march',
     selected, engaged: false, conf: 1, ghost: false, tag: null, ax, ay, drop: 12,
   });
   const overlap = (a: PlacedCounter, b: PlacedCounter): boolean => {
