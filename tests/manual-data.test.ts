@@ -1,7 +1,8 @@
 // @ts-expect-error no @types/node in this project; node:fs still resolves fine at runtime under vitest
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { MANUAL, manualText } from '../src/ui/manual-data';
+import { buildManual, controlRows, MANUAL, manualText } from '../src/ui/manual-data';
+import { DEFAULTS, formatBinding, type ActionId } from '../src/ui/keymap';
 import { MIN_WAR_DAYS } from '../src/campaign/spec';
 import { PRESETS } from '../src/campaign/presets';
 import { CONTACT_TTL, DT, hideFloorOf, SPOT_INTERVAL, SPOT_RANGE } from '../src/sim/sim';
@@ -57,9 +58,48 @@ describe('MANUAL — shape', () => {
     }
   });
 
-  it('gives the touch chapter a touch key on every entry', () => {
+  it('gives the controls chapter a desktop and a touch binding on every entry', () => {
     const touch = MANUAL.find((c) => c.id === 'touch')!;
-    for (const e of touch.entries) expect(e.keys?.touch, e.heading).toBeTruthy();
+    for (const e of touch.entries) {
+      expect(e.keys?.desktop, e.heading).toBeTruthy();
+      expect(e.keys?.touch, e.heading).toBeTruthy();
+    }
+  });
+
+  it('keeps every entry short: a manual is consulted, not read', () => {
+    const controls = MANUAL.find((c) => c.id === 'touch')!;
+    for (const e of controls.entries) expect(e.body.split(/\s+/).length, e.heading).toBeLessThanOrEqual(30);
+  });
+});
+
+// The controls card behind the ? control is the one place the HUD states a
+// binding. It is the Controls chapter and nothing else, read with the player's
+// own bindings.
+describe('controlRows — the controls card', () => {
+  it('is the Controls chapter, row for row', () => {
+    const chapter = MANUAL.find((c) => c.id === 'touch')!;
+    expect(controlRows().map((r) => r.action)).toEqual(chapter.entries.map((e) => e.heading));
+  });
+
+  it('names every rebindable battle key the old legend carried', () => {
+    const desktop = controlRows().map((r) => r.desktop).join(' | ');
+    const want: ActionId[] = ['squad1', 'squad9', 'order1', 'order8', 'barrage', 'airstrike', 'pause', 'cancel', 'menu', 'floorFocus', 'battleSpeed', 'mute', 'panUp'];
+    for (const a of want) expect(desktop, a).toContain(formatBinding(DEFAULTS[a]));
+  });
+
+  it('follows a rebind: the card states the key the player bound', () => {
+    const rebound = { ...DEFAULTS, pause: { code: 'KeyZ' }, barrage: { code: 'KeyQ' } };
+    const rows = controlRows(rebound);
+    expect(rows.find((r) => r.action === 'Pause')!.desktop).toBe('Z');
+    expect(rows.find((r) => r.action === 'Barrage and airstrike')!.desktop).toContain('Q');
+    expect(controlRows().find((r) => r.action === 'Pause')!.desktop).toBe('Space');
+  });
+
+  it('the manual follows the same rebind, in prose and in key tables', () => {
+    const rebound = buildManual({ ...DEFAULTS, pause: { code: 'KeyZ' } });
+    const clock = rebound.find((c) => c.id === 'theater')!.entries.find((e) => e.heading === 'The clock')!;
+    expect(clock.body).toContain('Pause with Z');
+    expect(clock.keys!.desktop).toContain('Z pauses');
   });
 });
 

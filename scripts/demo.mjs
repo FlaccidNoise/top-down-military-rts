@@ -79,7 +79,7 @@ const framing = await page.evaluate(() => {
   const cw = innerWidth;
   const ch = innerHeight;
   const blue = g.sim.soldiers.filter((s) => s.alive && s.side === 'blue');
-  const panels = [...document.querySelectorAll('#squads, #topbar, #obj-strip, #hint')].map((e) => ({
+  const panels = [...document.querySelectorAll('#squads, #topbar, #orderbar')].map((e) => ({
     id: e.id,
     r: e.getBoundingClientRect(),
   }));

@@ -203,7 +203,7 @@ button.hbtn.active { background: var(--chip-active-bg); border-color: var(--ambe
 #orderbar {
   position: absolute;
   left: 50%;
-  bottom: 56px;
+  bottom: var(--sp-2);
   transform: translateX(-50%);
   display: flex;
   flex-direction: column;
@@ -310,7 +310,7 @@ button.hbtn.active { background: var(--chip-active-bg); border-color: var(--ambe
 .hp-nm { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .hp-hp { flex: none; font-size: var(--fs-sm); opacity: 0.7; }
 
-/* ---- banners & hint ---- */
+/* ---- banner ---- */
 #banner {
   position: absolute;
   top: 16%;
@@ -326,22 +326,6 @@ button.hbtn.active { background: var(--chip-active-bg); border-color: var(--ambe
   text-shadow: 0 2px var(--sp-2) rgba(0, 0, 0, 0.8);
 }
 #banner small { display: block; font-size: var(--fs-md); letter-spacing: 2px; color: var(--paper); margin-top: 6px; }
-#hint {
-  position: absolute;
-  bottom: var(--sp-2);
-  left: 50%;
-  transform: translateX(-50%);
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 3px 18px;
-  max-width: 94vw;
-  color: rgba(var(--paper-rgb), 0.55);
-  background: rgba(var(--ink-rgb), 0.55);
-  border-radius: 3px;
-  padding: 3px 10px;
-}
-#hint .hg { white-space: nowrap; }
 
 /* ---- pause menu ---- */
 #pausemenu {
@@ -390,6 +374,18 @@ button.hbtn.active { background: var(--chip-active-bg); border-color: var(--ambe
   margin: var(--sp-4) 0 6px;
   border-bottom: 1px solid var(--border-soft);
   padding-bottom: 3px;
+}
+/* The controls card: the player's own platform leads, the other is dimmed. */
+#pausemenu .pm-controls { width: 100%; border-collapse: collapse; margin-top: var(--sp-4); }
+#pausemenu .pm-controls th,
+#pausemenu .pm-controls td { text-align: left; vertical-align: top; padding: 5px var(--sp-3) 5px 0; border-bottom: 1px solid var(--border-soft); }
+#pausemenu .pm-controls th { color: var(--amber-bright); font-weight: var(--fw-label); white-space: nowrap; }
+#pausemenu .pm-controls tr:first-child th { color: var(--muted); font-weight: var(--fw-reg); font-size: var(--fs-sm); letter-spacing: 1px; text-transform: uppercase; }
+#pausemenu .pm-controls .pm-other { color: var(--muted); }
+/* A portrait phone has room for one column of bindings: its own. The manual's
+   Controls chapter carries both. */
+@media (max-width: 620px) {
+  #pausemenu .pm-controls .pm-other { display: none; }
 }
 #pausemenu .pm-row { display: flex; justify-content: space-between; align-items: center; padding: 3px 0; gap: var(--sp-3); }
 #pausemenu .pm-bind { min-width: 70px; text-align: center; }
@@ -1258,7 +1254,6 @@ html.mobile #squads.open { display: flex; }
 html.mobile .ctxrow .hbtn { min-height: 44px; padding: 6px 12px; font-size: var(--fs-md); }
 
 /* ---- desktop-shaped chrome that a phone cannot carry ---- */
-html.mobile #hint { display: none; }
 html.mobile #banner { font-size: 22px; letter-spacing: 4px; }
 html.mobile #banner small { font-size: var(--fs-sm); letter-spacing: 1px; }
 html.mobile #topbar {

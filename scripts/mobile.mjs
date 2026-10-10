@@ -73,7 +73,7 @@ function framing(page) {
       const r = e.getBoundingClientRect();
       return r.width > 0 && r.height > 0 ? r : null;
     };
-    const panels = ['squads', 'topbar', 'obj-strip', 'hint', 'touchbar'].map((id) => ({ id, r: box(id) })).filter((p) => p.r);
+    const panels = ['squads', 'topbar', 'touchbar'].map((id) => ({ id, r: box(id) })).filter((p) => p.r);
     const clear = { left: 0, top: 0, right: cw, bottom: ch };
     for (const p of panels) {
       if (p.r.width > cw * 0.7) {

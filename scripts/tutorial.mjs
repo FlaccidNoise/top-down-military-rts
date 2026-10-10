@@ -216,7 +216,7 @@ const theaterTargets = (page) =>
     const W = innerWidth, H = innerHeight;
     // The coachmark is DOM too: a click that lands on the bubble teaching the
     // move never reaches the map underneath it.
-    const blocked = [...document.querySelectorAll('#theater-hud .panel, #squads, #hint, #obj-strip, #touchbar, .coach, #briefing')]
+    const blocked = [...document.querySelectorAll('#theater-hud .panel, #squads, #orderbar, #topbar .panel, #touchbar, .coach, #briefing')]
       .map((e) => e.getBoundingClientRect())
       .filter((r) => r.width > 0 && r.height > 0);
     const clear = (x, y) =>
@@ -281,9 +281,9 @@ async function selectCompany(page) {
   const box = await page.evaluate(() => {
     const g = window.__game, s = g.sim, W = innerWidth, H = innerHeight;
     const r = (id) => { const b = document.getElementById(id)?.getBoundingClientRect(); return b && b.width > 0 && b.height > 0 ? b : null; };
-    const sq = r('squads'), hint = r('hint'), strip = r('obj-strip');
+    const sq = r('squads'), bar = r('orderbar'), strip = r('topbar');
     const L = (sq ? sq.right : 0) + 14, T = (strip ? strip.bottom : 0) + 14;
-    const B = (hint ? hint.top : H) - 14, R = W - 14;
+    const B = (bar ? bar.top : H) - 14, R = W - 14;
     const blue = s.soldiers.filter((m) => m.alive && m.side === 'blue' && m.inVehicle < 0);
     if (!blue.length) return null;
     let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
@@ -830,7 +830,7 @@ async function mobileLeg() {
         overflow: document.documentElement.scrollWidth <= innerWidth,
       };
     });
-    check(manual.chapter === 'Touch Controls', `the manual carries a Touch Controls chapter (${manual.chapter})`);
+    check(manual.chapter === 'Controls', `the manual carries a Controls chapter (${manual.chapter})`);
     check(manual.entries > 0, `the touch chapter renders its entries (${manual.entries})`);
     check(manual.scrolledTo, 'tapping the rail entry scrolls the touch chapter to the top of the page');
     check(manual.touchColumn, 'key tables show a Touch column beside Desktop');

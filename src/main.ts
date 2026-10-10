@@ -378,6 +378,7 @@ const hud = new Hud({
   cancel: () => { escapeLadder(); },
   cycleFloor: () => { cycleFloorFocus(); },
   openMenu: () => { openPauseMenu(); },
+  openControls: () => { openPauseMenu('controls'); },
 });
 // Two stacked fixed bottom layers (touch bar + roster sheet) have to agree on
 // one height, and the bar's own height changes when the order-chip row comes
@@ -429,13 +430,13 @@ menu.setKeymap(loadKeymap(localStorage));
  * nothing left to cancel all come through here, and each stops the clock it
  * found running — the theater's, or the battle's.
  */
-function openPauseMenu(): void {
+function openPauseMenu(view: 'menu' | 'controls' = 'menu'): void {
   if (menu.isOpen) { menu.close(); return; }
   pauseBeforeMenu = mode === 'strategic' ? stratPaused : paused;
   if (mode === 'strategic') stratPaused = true;
   else paused = true;
   menu.setKeymap(loadKeymap(localStorage));
-  menu.open();
+  menu.open(view);
 }
 
 // The tutorial driver teaches over the live game. It does not exist at all on
@@ -604,19 +605,20 @@ function showContactModal(e: Engagement): void {
 // blue spawns on a west-attack map.
 function viewportInset(): { left: number; top: number; bottom: number } {
   // Zero-area rects mean the element is hidden — during strategic mode the
-  // battle HUD is still in the DOM but collapsed, and a hidden #hint would
-  // otherwise read as an 800px bottom inset and collapse the viewport to
-  // nothing. Only elements that actually occupy space may inset the view.
+  // battle HUD is still in the DOM but collapsed, and a hidden bottom layer
+  // would otherwise read as an 800px bottom inset and collapse the viewport
+  // to nothing. Only elements that actually occupy space may inset the view.
   const box = (id: string) => {
     const r = document.getElementById(id)?.getBoundingClientRect();
     return r && r.width > 0 && r.height > 0 ? r : null;
   };
   const squads = box('squads');
   const strip = box('obj-strip');
-  // Both bottom-edge layers, whichever exists: #hint on desktop, #touchbar on
-  // a phone. They are mutually exclusive today, but taking the max means the
-  // camera never frames blue behind whichever one is actually on screen.
-  const bottoms = ['hint', 'orderbar', 'touchbar'].map((id) => box(id)).filter((r) => r !== null);
+  // Both bottom-edge layers, whichever exists: the order bar on desktop (only
+  // with a squad selected), #touchbar on a phone, which holds its own order
+  // rows. Taking the max means the map the player is told about never runs
+  // under whichever one is actually on screen.
+  const bottoms = ['orderbar', 'touchbar'].map((id) => box(id)).filter((r) => r !== null);
   return {
     left: squads ? squads.right : 0,
     top: strip ? strip.bottom : 0,

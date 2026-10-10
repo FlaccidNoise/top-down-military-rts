@@ -53,6 +53,8 @@ export interface HudCallbacks {
   /** F's floor-focus cycle, which a phone has no key for. */
   cycleFloor(): void;
   openMenu(): void;
+  /** The controls card: every binding in one table, behind the ? control. */
+  openControls(): void;
 }
 
 export interface HudState {
@@ -139,14 +141,11 @@ export class Hud {
           <button class="hbtn" data-act="air" title="${fb(b.airstrike)}"></button>
           <button class="hbtn" data-act="speed" aria-label="Battle speed"></button>
           <button class="hbtn" data-act="pause" title="${fb(b.pause)}"></button>
+          <button class="hbtn" data-act="help" title="Controls" aria-label="Controls">?</button>
         </div>
       </div>
       <div id="squads"></div>
-      <div id="banner"></div>
-      <div id="hint">
-        <span class="hg">scroll zoom · WASD pan · drag box-select · ⇧click add · right-click move · right-drag formation · F floor view · ⎇right-click floors</span>
-        <span class="hg">${fb(b.squad1)}-${fb(b.squad9)} squad · ${fb(b.order1)}-${fb(b.order8)} order kind, right-click issues · ${fb(b.barrage)} barrage · ${fb(b.airstrike)} airstrike · ${fb(b.pause)} pause · ${fb(b.cancel)} widen/cancel · ${fb(b.menu)} menu</span>
-      </div>`;
+      <div id="banner"></div>`;
     document.body.appendChild(this.root);
 
     this.ml = document.createElement('div');
@@ -166,6 +165,7 @@ export class Hud {
       else if (act === 'air') cb.callAirstrike();
       else if (act === 'speed') cb.cycleSpeed();
       else if (act === 'pause') cb.togglePause();
+      else if (act === 'help') cb.openControls();
     });
     this.q('#squads').addEventListener('click', (e) => {
       const t = e.target as HTMLElement;
@@ -260,6 +260,7 @@ export class Hud {
     bar.id = 'touchbar';
     bar.innerHTML =
       '<div class="tb-over">' +
+      '<button class="hbtn" data-tb="help">? Controls</button>' +
       '<button class="hbtn" data-tb="select">▭ Select</button>' +
       '<button class="hbtn" data-tb="add">＋ Add</button>' +
       '<button class="hbtn" data-tb="floor">⬒ Floors</button>' +
@@ -295,6 +296,7 @@ export class Hud {
         case 'speed': cb.cycleSpeed(); break;
         case 'pause': cb.togglePause(); break;
         case 'menu': cb.openMenu(); break;
+        case 'help': cb.openControls(); break;
         case 'more': this.overOpen = !this.overOpen; break;
       }
       // One pick and the overflow folds away: it sits over the map.
@@ -368,7 +370,6 @@ export class Hud {
     this.renderGoal(sim);
     this.renderSquads(sim, st);
     this.renderOrderBar(sim, st);
-    this.renderHint();
     if (this.tb) this.renderTouchbar(sim, st);
 
     const cancelKey = formatBinding(this.km.bindings.cancel);
@@ -424,14 +425,6 @@ export class Hud {
       this.ml.style.display = 'block';
       this.idleShown = true;
     }
-  }
-
-  private renderHint(): void {
-    const fb = formatBinding;
-    const b = this.km.bindings;
-    this.q('#hint').innerHTML =
-      `<span class="hg">scroll zoom · ${fb(b.panUp)}${fb(b.panLeft)}${fb(b.panDown)}${fb(b.panRight)} pan · drag box-select · ⇧click add · right-click move · right-drag formation · F floor view · ⎇right-click floors</span>` +
-      `<span class="hg">${fb(b.squad1)}-${fb(b.squad9)} squad · ${fb(b.order1)}-${fb(b.order8)} order kind, right-click issues · ${fb(b.barrage)} barrage · ${fb(b.airstrike)} airstrike · ${fb(b.pause)} pause · ${fb(b.cancel)} widen/cancel · ${fb(b.menu)} menu</span>`;
   }
 
   private renderOrderBar(sim: Sim, st: HudState): void {
