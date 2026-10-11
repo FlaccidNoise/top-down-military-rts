@@ -7,13 +7,15 @@
 //   npx vite-node scripts/warsweep2.mjs -- --recon contacts   # the FOW arm
 //   npx vite-node scripts/warsweep2.mjs -- --blue-odds 0.25   # doctrine candidate
 //   npx vite-node scripts/warsweep2.mjs -- --gate             # non-zero exit on gate failure
+//   npx vite-node scripts/warsweep2.mjs -- --preset Skirmish  # another preset (the pin is the default one)
+//   npx vite-node scripts/warsweep2.mjs -- --red 3            # the preset at another enemy strength (0-4)
 //
 // Measured baseline (V2 playable core, 2026-07-27): red retook >= 1 objective
 // on 7/8 seeds; V1 grid baseline ZERO on every seed. Gates (--gate): 100%
 // termination, both winners occur, > 1 distinct tuple, red retakes on a
 // majority of seeds. Prints `PIN seed N {status, day, logLen}` — the source
 // line tests/war-pin.test.ts is refrozen from (S59).
-import { DEFAULT_PRESET } from '../src/campaign/presets';
+import { DEFAULT_PRESET, PRESETS } from '../src/campaign/presets';
 import { makeHeadlessWorld, runHeadlessWar } from '../src/strategic/headless';
 import { BLUE_V2, RED_V2 } from '../src/strategic/planner';
 import { forceById } from '../src/strategic/theater/war';
@@ -25,18 +27,24 @@ const arg = (name, dflt) => {
 const has = (name) => process.argv.includes(`--${name}`);
 
 const SEEDS = Number(arg('seeds', 16));
-const RECON = arg('recon', DEFAULT_PRESET.campaign.recon);
+const PRESET_NAME = arg('preset', DEFAULT_PRESET.name);
+const PRESET = PRESETS.find((p) => p.name === PRESET_NAME);
+if (!PRESET) {
+  console.error(`warsweep-v2: no preset named "${PRESET_NAME}". Use one of: ${PRESETS.map((p) => p.name).join(', ')}`);
+  process.exit(2);
+}
+const RECON = arg('recon', PRESET.campaign.recon);
 const BLUE_ODDS = arg('blue-odds', null);
 const RED_ODDS = arg('red-odds', null);
 const GATE = has('gate');
 
-const CAMP = { ...DEFAULT_PRESET.campaign, recon: RECON };
+const CAMP = { ...PRESET.campaign, recon: RECON, redStrength: Number(arg('red', PRESET.campaign.redStrength)) };
 const doctrines = {};
 if (BLUE_ODDS !== null) doctrines.blue = { ...BLUE_V2, attackOdds: Number(BLUE_ODDS) };
 if (RED_ODDS !== null) doctrines.red = { ...RED_V2, attackOdds: Number(RED_ODDS) };
 
 const runWar = (seed) => {
-  const w = makeHeadlessWorld(seed, DEFAULT_PRESET.theater, CAMP, undefined, doctrines);
+  const w = makeHeadlessWorld(seed, PRESET.theater, CAMP, undefined, doctrines);
   const objectives = [...w.front.theater.objectiveNodes];
   const wasBlue = new Set(); // objectives blue held at any point
   let redRetakes = 0; // blue-held objective flipped back to red
@@ -47,9 +55,16 @@ const runWar = (seed) => {
   const lastOrder = new Map();
   const commitSamples = [];
   let knownBattles = new Set();
+  const redMarched = new Set(); // red forces that were ever on the road
+  const redDug = new Set(); // red forces that ever took the Dig in posture
 
   const run = runHeadlessWar(w, 60 * 24 * 45, (r, world) => {
     battles += r.resolved.length;
+    for (const f of world.front.forces) {
+      if (f.side !== 'red') continue;
+      if (f.path.length > 0) redMarched.add(f.id);
+      if (f.posture === 'dig') redDug.add(f.id);
+    }
     // New battles this minute: initiated by whichever side attacks.
     for (const b of world.front.battles) {
       if (knownBattles.has(b.id)) continue;
@@ -96,6 +111,9 @@ const runWar = (seed) => {
     redAttacks,
     attacksPerDay: redAttacks / Math.max(1, days),
     redRetakes,
+    redForces: w.front.forces.filter((f) => f.side === 'red').length,
+    redMarched: redMarched.size,
+    redDug: redDug.size,
     committedFrac,
     stallMin,
     redOrders,
@@ -104,10 +122,10 @@ const runWar = (seed) => {
   };
 };
 
-console.log(`warsweep-v2: seeds 1..${SEEDS} · recon ${RECON}` +
+console.log(`warsweep-v2: ${PRESET.name} · seeds 1..${SEEDS} · recon ${RECON} · red strength ${CAMP.redStrength}` +
   (doctrines.blue ? ` · blue attackOdds ${doctrines.blue.attackOdds}` : '') +
   (doctrines.red ? ` · red attackOdds ${doctrines.red.attackOdds}` : ''));
-console.log('seed  result  day  logLen  battles  redAtk  atk/day  retakes  commit%  stall(red)');
+console.log('seed  result  day  logLen  battles  redAtk  atk/day  retakes  marched  dug  commit%  stall(red)');
 const rows = [];
 for (let s = 1; s <= SEEDS; s++) {
   const r = runWar(s);
@@ -116,7 +134,7 @@ for (let s = 1; s <= SEEDS; s++) {
   console.log(
     `${String(r.seed).padStart(4)}  ${r.status.padEnd(6)}  ${String(r.day).padStart(3)}  ${String(r.logLen).padStart(6)}  ` +
     `${String(r.battles).padStart(7)}  ${String(r.redAttacks).padStart(6)}  ${r.attacksPerDay.toFixed(2).padStart(7)}  ` +
-    `${String(r.redRetakes).padStart(7)}  ${(r.committedFrac * 100).toFixed(0).padStart(6)}%  ${stall}`,
+    `${String(r.redRetakes).padStart(7)}  ${`${r.redMarched}/${r.redForces}`.padStart(7)}  ${String(r.redDug).padStart(3)}  ${(r.committedFrac * 100).toFixed(0).padStart(6)}%  ${stall}`,
   );
 }
 for (const r of rows) console.log(`PIN seed ${r.seed} {status: '${r.status}', day: ${r.day}, logLen: ${r.logLen}}`);
