@@ -32,6 +32,9 @@ export interface DoctrineV2 {
   attackOdds: number; // floor to order an attack
   suicideOdds: number; // absolute veto floor — deadline pressure never crosses it
   deadlinePressure: number; // OQ14: attackOdds decays toward suicideOdds as the deadline nears
+  // A hunt may cross the line for an enemy this many march minutes from the
+  // hunter. 0 = it counterattacks on its own ground only.
+  spoilMinutes: number;
 }
 
 export const RED_V2: DoctrineV2 = {
@@ -44,8 +47,11 @@ export const RED_V2: DoctrineV2 = {
   attackOdds: 0.35,
   suicideOdds: 0.12,
   deadlinePressure: 0.15,
+  spoilMinutes: 240,
 };
-export const BLUE_V2: DoctrineV2 = { ...RED_V2, attackOdds: 0.3, deadlinePressure: 0.18 };
+export const BLUE_V2: DoctrineV2 = { ...RED_V2, attackOdds: 0.3, deadlinePressure: 0.18, spoilMinutes: 0 };
+// No spoiling attack on the first day: the other side gets a day to form up.
+export const SPOIL_FROM_DAY = 2;
 
 export interface Axis {
   objective: number; // node id
@@ -493,14 +499,20 @@ export class Commander2 {
       for (const c of intel.contacts()) {
         const defEff = defendersNear(c.pos);
         const ends = c.pos.kind === 'node' ? [c.pos.nodeId] : [t.edges[c.pos.edgeId].a, t.edges[c.pos.edgeId].b];
-        // A counterattack, not a pursuit: only an enemy at one of our nodes or
-        // on a road out of one. Across the line it is left alone.
-        if (!ends.some((n) => intel.control(n) === this.side)) continue;
+        // A counterattack: an enemy at one of our nodes or on a road out of
+        // one. Across the line it is a SPOILING ATTACK, and only for a side
+        // whose doctrine has one, from SPOIL_FROM_DAY, on an enemy within
+        // spoilMinutes of the hunter: red goes for a company forming up near
+        // its ground and does not chase one across the map (jtbug #799: an
+        // idle player was never attacked in a whole war, 12 seeds of 12).
+        const ours = ends.some((n) => intel.control(n) === this.side);
+        const reachMin = ours ? Infinity : front.day >= SPOIL_FROM_DAY ? this.doctrine.spoilMinutes : 0;
+        if (reachMin === 0) continue;
         for (const dest of ends) {
           if (t.nodes[dest].kind === 'ford') continue;
           const reach = free
             .map((g) => ({ g, min: firstFight(g, dest) ? safeMarchMin(g, dest) : null }))
-            .filter((r): r is { g: Force; min: number } => r.min !== null)
+            .filter((r): r is { g: Force; min: number } => r.min !== null && r.min <= reachMin)
             .sort((p, q) => p.min - q.min || p.g.id - q.g.id);
           let eff = 0;
           const ids: number[] = [];

@@ -421,8 +421,14 @@ async function firstRun(device) {
     // The first battle is for whatever stands on the road: the ringed town, or
     // a garrison on the way to it. Only the first is an objective taken.
     const took = await page.evaluate(() => { const v2 = window.__game.getV2(); return v2.front.theater.objectiveNodes.filter((n) => v2.front.controlByNode[n] === 'blue').map((n) => v2.front.theater.nodes[n].name); });
+    // A red column on its way to reinforce the town can arrive as it falls,
+    // and it counterattacks at once (jtbug #799). The contact card then owns
+    // the screen and the lesson waits: the step is not raised over a card.
+    const counter = await page.evaluate(() => ({ pending: !!window.__game.getV2().pending, fight: document.getElementById('fight')?.textContent ?? null }));
     if (took.length === 0) {
       check((await stepView(page)).step === null, `${device}: the battle was for a town on the way, no objective is held yet, and no Dig in step shows`);
+    } else if (counter.pending) {
+      check(counter.fight === 'Defend' && (await stepView(page)).step === null, `${device}: ${took.join(', ')} is taken and red counterattacks at once: the card offers Defend and no Dig in step is raised over it (button "${counter.fight}")`);
     } else {
       digInLegs.push(device);
       await waitStep(h, 'dig-in', 8000);
@@ -442,8 +448,9 @@ async function firstRun(device) {
       const { STEPS, TUTORIAL_STORAGE_KEY } = await import('/src/ui/tutorial.ts');
       return { saved: JSON.parse(localStorage.getItem(TUTORIAL_STORAGE_KEY) ?? 'null'), want: STEPS.filter((s) => s.scene === 'campaign').map((s) => s.id) };
     });
-    // Dig in waits for an objective: a run that took none has not met it.
-    if (took.length === 0) state.want = state.want.filter((id) => id !== 'dig-in');
+    // Dig in waits for an objective, and for a counterattack to be answered: a
+    // run that took none, or was counterattacked at once, has not met it.
+    if (took.length === 0 || counter.pending) state.want = state.want.filter((id) => id !== 'dig-in');
     const missing = state.want.filter((id) => !(state.saved?.done ?? []).includes(id));
     check(state.saved?.skipped === false && state.saved?.drilled === true && missing.length === 0, `${device}: every campaign step is retired in storage${missing.length ? `: missing ${missing.join(', ')}` : ` (${state.want.length}/${state.want.length})`}`);
 

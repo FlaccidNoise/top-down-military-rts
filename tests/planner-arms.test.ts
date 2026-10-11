@@ -6,7 +6,7 @@ import { newCampaign } from '../src/campaign/campaign';
 import { DEFAULT_PRESET } from '../src/campaign/presets';
 import { makeWarGoals } from '../src/strategic/goals';
 import { OmniscientIntel } from '../src/strategic/intel';
-import { BLUE_V2, Commander2, RED_V2, SORTIE_COVER_MIN, type PlannerReport } from '../src/strategic/planner';
+import { BLUE_V2, Commander2, RED_V2, SORTIE_COVER_MIN, SPOIL_FROM_DAY, type PlannerReport } from '../src/strategic/planner';
 import type { Theater } from '../src/strategic/theater';
 import { addForce, type Force, type ForceRole, type FrontV2 } from '../src/strategic/theater/force';
 import { DIG_IN_MIN } from '../src/strategic/theater/step';
@@ -216,12 +216,32 @@ describe('counterattack', () => {
     expect(whys(evalOnce(fr, 'red'))).toEqual([`${group.id}:hunt>1`, `${reserve.id}:reinforce>3`]);
   });
 
-  it('the same enemy across the line is left alone', () => {
+  // A weak blue company on the A-B road, across the line from red's group at D.
+  const acrossTheLine = (day: number): { fr: FrontV2; group: Force } => {
     const fr = world(theater(3), ['blue', 'blue', 'red', 'red', 'red']);
+    fr.day = day;
     put(fr, 'blue', 'line', { kind: 'edge', edgeId: 0, s: 1000, dir: -1 }, 30);
-    put(fr, 'red', 'line', { kind: 'node', nodeId: 3 }, 100);
+    const group = put(fr, 'red', 'line', { kind: 'node', nodeId: 3 }, 100);
     put(fr, 'red', 'reserve', { kind: 'node', nodeId: 4 }, 100);
-    expect(evalOnce(fr, 'red').orders.map((o) => o.why)).not.toContain('hunt');
+    return { fr, group };
+  };
+
+  it('the same enemy across the line is left alone on the first day', () => {
+    expect(evalOnce(acrossTheLine(1).fr, 'red').orders.map((o) => o.why)).not.toContain('hunt');
+  });
+
+  it('from the second day red crosses the line for it: a spoiling attack (jtbug #799)', () => {
+    const { fr, group } = acrossTheLine(SPOIL_FROM_DAY);
+    // On A: the march there is the one that meets it.
+    expect(whys(evalOnce(fr, 'red'))).toContain(`${group.id}:hunt>0`);
+  });
+
+  it('not for one beyond its reach, and blue has no spoiling attack', () => {
+    const { fr } = acrossTheLine(SPOIL_FROM_DAY);
+    // B is 80 march minutes from D.
+    const short = new Commander2('red', { ...RED_V2, spoilMinutes: 60 }, makeWarGoals(fr.theater, CAMP), CAMP.warDays);
+    expect(short.evaluate(fr, new OmniscientIntel(fr, 'red'))!.orders.map((o) => o.why)).not.toContain('hunt');
+    expect(BLUE_V2.spoilMinutes).toBe(0);
   });
 });
 

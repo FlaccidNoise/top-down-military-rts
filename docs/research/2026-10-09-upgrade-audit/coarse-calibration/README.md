@@ -97,19 +97,30 @@ With the calibration alone AI blue won 15 of 16 wars. Red's field force was the 
 - More battlegroups of about a company each gave a graded ladder. That is what shipped: 2, 3, 4 and 5 groups at enemy strength 1 to 4, garrisons unchanged above strength 1.
 - A hold-to-win clock (blue must hold its objectives 6, 12 or 24 hours) was prototyped and dropped: it moved no outcome, the wins came half a day to three days later.
 
-`scripts/warsweep2.mjs`, 32 seeds, AI both sides, after the calibration, the reinforce arm and the new table:
+`scripts/warsweep2.mjs`, 32 seeds, AI both sides, after the calibration, the reinforce arm, the new table and red's spoiling attack:
 
 | Preset | Enemy strength | Blue wins | Red attacks a day | AI blue destroyed |
 |---|---|---|---|---|
-| Skirmish (first campaign) | 1 | 91% | 0.40 | 1 of 32 |
-| Normandy Bocage | 4 | 56% | 1.38 | 12 of 32 |
-| River Line | 4 | 63% | 1.39 | 11 of 32 |
-| Open Country | 4 | 81% | 1.62 | 6 of 32 |
+| Skirmish (first campaign) | 1 | 88% | 0.47 | 1 of 32 |
+| Normandy Bocage | 4 | 53% | 1.39 | 15 of 32 |
+| River Line | 4 | 53% | 1.51 | 15 of 32 |
+| Open Country | 4 | 81% | 1.65 | 6 of 32 |
 
-At enemy strength 3 Normandy Bocage is 84%, 0.79 and 5, and River Line 78%, 1.03 and 7. Before this work Normandy Bocage ran at strength 2 with two battlegroups: 25% on the old math (AI blue ran out of days against towns worth x7), 0.45 attacks a day.
+At enemy strength 3 Normandy Bocage is 75%, 0.90 and 8, and River Line 63%, 1.20 and 12. At 2 Normandy Bocage is 91%, 0.66 and 2. Without the spoiling attack the strength-4 rows were 56%, 63%, 81% and 91% for Skirmish. Before this work Normandy Bocage ran at strength 2 with two battlegroups: 25% on the old math (AI blue ran out of days against towns worth x7), 0.45 attacks a day.
 
 Every red win in these sweeps is AI blue destroyed. None is the deadline: blue either takes its objectives in about a week or loses its companies.
 
-An idle player is never attacked: `scripts/firstcontact.mjs --pick none`, 12 seeds on Skirmish and on Normandy Bocage, no contact in a whole war. Red counterattacks on its own ground and does not cross the line (pursuit across it was measured and rejected on 2026-10-10).
+## The spoiling attack
+
+Before it an idle player was never attacked: `scripts/firstcontact.mjs --pick none`, 12 seeds on Skirmish and on Normandy Bocage, no contact in a whole war. Red counterattacked on its own ground only.
+
+From the second day red's hunt now crosses the line for a company within 240 march minutes of the hunters (`RED_V2.spoilMinutes`, `SPOIL_FROM_DAY`). The same sweep after it:
+
+- Normandy Bocage: contact in 12 of 12 wars, every one on Day 2 near 05:30. Fought with the AI defending: blue held 7, lost 4, 1 undecided at the cap. A company that held lost a median 76 of 143.
+- Skirmish: no contact in 12 of 12. Two battlegroups of 60 to 90 do not make the odds against a full company, so the first campaign stays quiet until the player moves.
+
+Where the company stands decides it. Red attacking won 0 of 6 against a town, a forest or a bridge at even strength, and 3 of 5 against a village and 4 of 6 on a road.
+
+To switch it off: `spoilMinutes: 0` in `RED_V2` (`src/strategic/planner.ts`), then refreeze the pin.
 
 Not confirmed: any of it against a human. Every number here is AI against AI, and the player fights his battles where the AI's are rolled.

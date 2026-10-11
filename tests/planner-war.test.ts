@@ -130,9 +130,11 @@ describe('the planner neither dithers nor grinds (jtbug #762)', () => {
   // The destroyed bound was the jtbug #786 target (at most 2 of 16) while the
   // default preset fielded two red battlegroups. By the owner's call for a
   // red that attacks (2026-10-11, jtbug #797 and #799) it fields five on the
-  // calibrated battle math, and AI blue is destroyed on 5 seeds under fog and
-  // 10 with full knowledge. The bounds are those counts and one more: they
-  // hold the planner where it was measured, they are not a design target.
+  // calibrated battle math, and from the second day it crosses the line for
+  // a company near its ground. AI blue is destroyed on 11 of these 16 seeds
+  // under fog and 13 with full knowledge (15 of 32 under fog: these sixteen
+  // run against blue). The bounds are those counts and one more: they hold
+  // the planner where it was measured, they are not a design target.
   //
   // A march, once ordered, is finished: only the withdraw arm turns a force
   // round. So every mid-road turn-round must come with a withdraw order, in
@@ -165,17 +167,17 @@ describe('the planner neither dithers nor grinds (jtbug #762)', () => {
     return { most: Math.max(...per), unexplained, destroyed, per };
   };
 
-  it('with full knowledge: single-digit mid-march turn-rounds in every war, all of them withdrawals; blue destroyed on at most eleven seeds', () => {
+  it('with full knowledge: single-digit mid-march turn-rounds in every war, all of them withdrawals; blue destroyed on at most fourteen seeds', () => {
     const r = turnRounds('omniscient');
     expect(r.most, `turn-rounds per seed: ${r.per}`).toBeLessThan(10);
     expect(r.unexplained).toBe(0);
-    expect(r.destroyed).toBeLessThanOrEqual(11);
+    expect(r.destroyed).toBeLessThanOrEqual(14);
   }, 30_000);
 
-  it('under fog: every mid-march turn-round is a withdrawal; blue destroyed on at most six seeds', () => {
+  it('under fog: every mid-march turn-round is a withdrawal; blue destroyed on at most twelve seeds', () => {
     const r = turnRounds('contacts');
     expect(r.unexplained, `turn-rounds per seed: ${r.per}`).toBe(0);
-    expect(r.destroyed).toBeLessThanOrEqual(6);
+    expect(r.destroyed).toBeLessThanOrEqual(12);
   }, 30_000);
 });
 

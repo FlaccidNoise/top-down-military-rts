@@ -25,12 +25,13 @@ export class DispositionError extends Error {
 // the lever: three of 140-200 men destroyed AI blue on 12 of 16 seeds, because
 // each one beats a company alone (jtbug #797, #799).
 //
-// Measured after the #797 calibration, scripts/warsweep2.mjs, 32 seeds, AI
-// both sides (blue wins · red attacks a day · AI blue destroyed):
-//   Skirmish        1   91% · 0.40 · 1
-//   Normandy Bocage 4   56% · 1.38 · 12     at 3: 84% · 0.79 · 5
-//   River Line      4   63% · 1.39 · 11     at 3: 78% · 1.03 · 7
-//   Open Country    4   81% · 1.62 · 6
+// Measured after the #797 calibration and with red's spoiling attack (#799),
+// scripts/warsweep2.mjs, 32 seeds, AI both sides (blue wins · red attacks a
+// day · AI blue destroyed):
+//   Skirmish        1   88% · 0.47 · 1
+//   Normandy Bocage 4   53% · 1.39 · 15     at 3: 75% · 0.90 · 8
+//   River Line      4   53% · 1.51 · 15     at 3: 63% · 1.20 · 12
+//   Open Country    4   81% · 1.65 · 6
 // The three standard presets run at 4 by the owner's call for a red that
 // attacks (2026-10-11). 3 is the softer war and is on the setup screen.
 const RED_GARRISON_BAND: Record<number, [number, number]> = {
