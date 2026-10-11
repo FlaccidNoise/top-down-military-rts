@@ -123,22 +123,28 @@ export const BATTLE_CLASS_TO_MAPKIND: Record<BattleClass, MapKind> = {
   'ford-assault': 'river', // preserves the viaFord map override
 };
 
-// The calibrated siege multiplier follows BattleClass so the town→bourg
-// retirement cannot silently cheapen settlement fights. hamlet 3.0 = OQ8.
+// The break-even ratio of each BattleClass: the attacker:defender ratio at
+// which an attack on that ground wins one time in two (bridge.ts coarseOdds).
+// Fitted to fought battles (jtbug #797, scripts/coarsefit.mjs, 12 battles a
+// cell at 1:1, 1.5:1, 2:1 and 3:1). A town was 7.0 here and a village 3.0:
+// fought, the battle AI takes a town at 2:1 twelve times in twelve. Under 1
+// means the attacker has the edge at even numbers: it brings the armour and
+// the mortars, and a village or a road gives the defender little to answer
+// them with.
 export const COARSE_DEF_MULT: Record<BattleClass, number> = {
-  settlement: 7.0,
-  hamlet: 3.0,
-  forest: 1.5,
-  farmland: 1.0,
+  settlement: 1.3,
+  hamlet: 0.85,
+  forest: 1.45,
+  farmland: 1.3,
   marsh: 1.0,
-  roadside: 1.0,
+  roadside: 0.8,
   'bridge-assault': 1.0,
-  'ford-assault': 1.0,
+  'ford-assault': 1.33,
 };
 
-// Attacker multiplier on crossing-assault classes — today's
-// attacker-cell-is-river semantics re-rooted onto the BattleClass.
-export const CROSSING_ASSAULT_MULT = 2.0;
+// What a crossing multiplies the break-even ratio by. A bridge fits at 1.35
+// and a ford at 1.8 (its class carries the other 1.33).
+export const CROSSING_ASSAULT_MULT = 1.35;
 
 // R4: one site identity for the tactical seed, the coarse salt and the AI.
 // 32-bit FNV-1a over a prefix-disjoint string; edge positions quantise to

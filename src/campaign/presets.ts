@@ -33,7 +33,7 @@ export const PRESETS: readonly Preset[] = [
       warDays: 14,
       victory: 'objectives',
       blueCompanies: 3,
-      redStrength: 2,
+      redStrength: 4,
       supply: true,
       recon: 'contacts',
       nightTempo: true,
@@ -56,7 +56,7 @@ export const PRESETS: readonly Preset[] = [
       warDays: 21,
       victory: 'objectives',
       blueCompanies: 3,
-      redStrength: 3,
+      redStrength: 4,
       supply: true,
       recon: 'contacts',
       nightTempo: true,
@@ -79,7 +79,7 @@ export const PRESETS: readonly Preset[] = [
       warDays: 21,
       victory: 'majority',
       blueCompanies: 4,
-      redStrength: 3,
+      redStrength: 4,
       supply: true,
       recon: 'contacts',
       nightTempo: true,
@@ -122,18 +122,18 @@ function presetNamed(name: string): Preset {
 // New campaign, and "Start the campaign" after the drill. Chosen by
 // measurement, not taste: scripts/firstcontact.mjs marches the strongest
 // company at an objective on each preset and fights what it meets with both
-// battle commanders. On main at 064e917 (2026-10-10), 12 seeds each:
-//   Skirmish, weakest garrison   odds 2.4 to 5.5 : 1, blue won 12 of 12,
-//                                median 35 killed of 143, 3.5 to 7 minutes.
-//   Skirmish, nearest objective  blue won 10, lost 1, 1 undecided at 25 min.
-//   Normandy Bocage, weakest     odds 1.3 to 5 : 1, blue won 10, lost 2,
-//                                median 38 killed, and up to 89.
+// battle commanders. On main at the jtbug #797 commit (2026-10-11: the
+// calibrated battle math and red's five battlegroups), 12 seeds each:
+//   Skirmish, weakest garrison   odds 4.2 to 5.5 : 1, blue won 11, lost 1,
+//                                median 26 killed of 143, 2 to 5 minutes.
+//   Skirmish, nearest objective  odds from 1.6 : 1, blue won 12.
+//   Normandy Bocage, weakest     odds 1.2 to 5 : 1, blue won 12, median 34
+//                                killed. Nearest objective: blue won 12.
 // "Weakest garrison" is the town the tutorial's march step rings (theaterMark
-// in src/main.ts). River Line and Open Country open at 1.3 : 1 median odds at
-// the nearest objective and were not fought. Skirmish also keeps fog, supply
-// and night tempo off, so a first campaign has three fewer rules to meet.
-// Re-run the sweep after a balance pass. DEFAULT_PRESET stays the setup
-// screen's starting point.
+// in src/main.ts). Skirmish stays first for what it leaves out: fog, supply
+// and night tempo are off, and red fields two battlegroups where the standard
+// presets field five. Once a campaign has been finished, New campaign starts
+// DEFAULT_PRESET (src/main.ts). Re-run the sweep after a balance pass.
 export const FIRST_PRESET = presetNamed('Skirmish');
 
 // Copies both configs: the customize screen edits the returned spec in place.

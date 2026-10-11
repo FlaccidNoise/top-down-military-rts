@@ -306,8 +306,8 @@ describe('planner: march safety and reorganisation (jtbug #762)', () => {
   it('a march through a defended town is an attack decision on that town, not an advance', () => {
     const fr = front(PLAN);
     const a = mk(fr, 'blue', 0, 'Able', 100, 0);
-    const w = mk(fr, 'red', 2, 'Wache', 100); // holds the village on the road; the objective beyond is open
-    // Even numbers against a defended village are under the attack floor.
+    const w = mk(fr, 'red', 2, 'Wache', 150); // holds the village on the road; the objective beyond is open
+    // Two against three at a defended village is under the attack floor.
     // Before the fix the planner saw an open objective and ordered 'advance'.
     const held = blueOrders(fr);
     expect(held.orders).toEqual([]);

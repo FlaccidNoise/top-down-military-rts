@@ -113,14 +113,9 @@ describe('constants', () => {
     expect(MOVE_MPM.road / (MOVE_MPM.road * REGION_PACE_MULT.forest)).toBe(2);
   });
 
-  it('COARSE_DEF_MULT: settlement keeps the calibrated x7 siege, hamlet is the OQ8 x3.0', () => {
-    expect(COARSE_DEF_MULT.settlement).toBe(7.0);
-    expect(COARSE_DEF_MULT.hamlet).toBe(3.0);
-    expect(COARSE_DEF_MULT.forest).toBe(1.5);
-    for (const k of ['farmland', 'marsh', 'roadside', 'bridge-assault', 'ford-assault'] as const) {
-      expect(COARSE_DEF_MULT[k]).toBe(1.0);
-    }
-    expect(CROSSING_ASSAULT_MULT).toBe(2.0);
+  it('COARSE_DEF_MULT is the break-even ratio fitted to fought battles (jtbug #797): a town 1.3, not the old x7 siege', () => {
+    expect(COARSE_DEF_MULT).toEqual({ settlement: 1.3, hamlet: 0.85, forest: 1.45, farmland: 1.3, marsh: 1.0, roadside: 0.8, 'bridge-assault': 1.0, 'ford-assault': 1.33 });
+    expect(CROSSING_ASSAULT_MULT).toBe(1.35);
   });
 
   it('BATTLE_CLASS_TO_MAPKIND is exactly the section-6 table', () => {

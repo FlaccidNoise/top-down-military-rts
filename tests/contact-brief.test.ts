@@ -103,7 +103,7 @@ describe('contact brief', () => {
   it('a dug-in garrison denies the walkover its numbers would give', () => {
     const { front, c } = atContact();
     const def = front.forces.find((f) => f.id === c.defenderId)!;
-    def.strength = 25;
+    def.strength = 27; // 5:1 against 138 as it stands, short of it behind earthworks
     def.posture = 'march';
     expect(contactBrief(front, c, OPTS).trivial).toBe(true);
     def.posture = 'dig';

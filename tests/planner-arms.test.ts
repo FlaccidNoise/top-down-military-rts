@@ -78,8 +78,10 @@ describe('garrison sortie', () => {
     expect(prey.pos).toMatchObject({ kind: 'edge', edgeId: 0 });
   });
 
-  it('stays in against an equal', () => {
-    const { fr } = setup(100);
+  it('stays in against a stronger enemy', () => {
+    // On a road an equal is a fight the attacker wins three times in four
+    // (jtbug #797): the garrison stays in for one it would lose.
+    const { fr } = setup(140);
     expect(evalOnce(fr, 'red').orders).toEqual([]);
   });
 
@@ -96,7 +98,7 @@ describe('the reserve is called in for an attack that fails alone', () => {
   it('one group does not go, two go together', () => {
     // Blue holds the objective C in strength. Red's line group and reserve stand at D.
     const fr = world(theater(2), ['blue', 'blue', 'blue', 'red', 'red']);
-    put(fr, 'blue', 'line', { kind: 'node', nodeId: 2 }, 200);
+    put(fr, 'blue', 'line', { kind: 'node', nodeId: 2 }, 100);
     const line = put(fr, 'red', 'line', { kind: 'node', nodeId: 3 }, 90);
     const reserve = put(fr, 'red', 'reserve', { kind: 'node', nodeId: 3 }, 90);
     const red = commander(fr, 'red');
@@ -107,7 +109,7 @@ describe('the reserve is called in for an attack that fails alone', () => {
 
   it('the reserve stays back when the line group clears the odds alone', () => {
     const fr = world(theater(2), ['blue', 'blue', 'blue', 'red', 'red']);
-    put(fr, 'blue', 'line', { kind: 'node', nodeId: 2 }, 100);
+    put(fr, 'blue', 'line', { kind: 'node', nodeId: 2 }, 60);
     const line = put(fr, 'red', 'line', { kind: 'node', nodeId: 3 }, 90);
     const reserve = put(fr, 'red', 'reserve', { kind: 'node', nodeId: 3 }, 90);
     const red = commander(fr, 'red');
@@ -143,7 +145,7 @@ describe('postures', () => {
   it('a dug-in defender is weighed as dug in: the same attack then needs the reserve', () => {
     const attack = (dug: boolean): string[] => {
       const fr = world(theater(2), ['blue', 'blue', 'blue', 'red', 'red']);
-      const def = put(fr, 'blue', 'line', { kind: 'node', nodeId: 2 }, 130);
+      const def = put(fr, 'blue', 'line', { kind: 'node', nodeId: 2 }, 77);
       if (dug) {
         def.posture = 'dig';
         def.dugMin = DIG_IN_MIN;

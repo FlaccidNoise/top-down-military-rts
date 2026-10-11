@@ -10,7 +10,7 @@ import { makeTheater } from '../src/strategic/theatergen';
 import { makeDisposition } from '../src/strategic/theatergen/disposition';
 import { validateTheater } from '../src/strategic/theatergen/validate';
 import { coarseOdds } from '../src/strategic/bridge';
-import { battleSiteOf, type Theater } from '../src/strategic/theater';
+import { battleSiteOf, COARSE_DEF_MULT, type Theater } from '../src/strategic/theater';
 import { addForce, type FrontV2 } from '../src/strategic/theater/force';
 import { openBattle, resolveBattleV2, stepWar, battleSides } from '../src/strategic/theater/war';
 import {
@@ -114,9 +114,12 @@ describe('supply trace', () => {
 
 describe('supply in the coarse resolver (§4.4 parity)', () => {
   it('the win score reads EFFECTIVE strength — resolver truth equals coarseOdds on eff inputs', () => {
-    // Find a seed whose winner roll separates the raw odds (0.5) from the
-    // starved odds (1/3): if resolveBattleV2 regresses to raw strength the
-    // expected outcome flips and this test goes red.
+    // Find a seed whose winner roll separates the raw odds (100 against 100)
+    // from the starved odds (50 against 100): if resolveBattleV2 regresses to
+    // raw strength the expected outcome flips and this test goes red.
+    const starved = coarseOdds(50, 100, COARSE_DEF_MULT.farmland);
+    const raw = coarseOdds(100, 100, COARSE_DEF_MULT.farmland);
+    expect(raw - starved).toBeGreaterThan(0.1);
     let seed = -1;
     for (let s = 1; s < 400; s++) {
       const fr = lineFront();
@@ -125,7 +128,7 @@ describe('supply in the coarse resolver (§4.4 parity)', () => {
       const battle = openBattle(fr, { attackerId: atk.id, defenderId: def.id, site: def.pos, gapM: 0 });
       const { siteKey } = battleSiteOf(fr.theater, battle.site);
       const roll = mulberry32((s ^ (battle.startMin * 7919 + siteKey)) >>> 0).next();
-      if (roll > 1 / 3 + 0.02 && roll < 0.5 - 0.02) {
+      if (roll > starved + 0.02 && roll < raw - 0.02) {
         seed = s;
         break;
       }
@@ -137,11 +140,11 @@ describe('supply in the coarse resolver (§4.4 parity)', () => {
     campaign.seed = seed;
     const atk = soldier(fr, 'blue', 2);
     const def = soldier(fr, 'red', 2);
-    atk.untracedMin = 720; // out: eff 50 vs 100 -> odds 1/3; raw odds 0.5
+    atk.untracedMin = 720; // out: eff 50 vs 100
     const battle = openBattle(fr, { attackerId: atk.id, defenderId: def.id, site: def.pos, gapM: 0 });
     const sides = battleSides(fr, battle);
     expect(sides.atkEff).toBe(50);
-    expect(coarseOdds(sides.atkEff, sides.defEff, 1)).toBeCloseTo(1 / 3, 5);
+    expect(coarseOdds(sides.atkEff, sides.defEff, COARSE_DEF_MULT.farmland)).toBe(starved);
     const out = resolveBattleV2(fr, campaign, battle);
     expect(out.attackerWon).toBe(false); // roll > eff odds; raw would have won
   });

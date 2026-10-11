@@ -1,5 +1,6 @@
 import { applyBattleResults, fitRoster, squadMembers, type BattleRecord, type Campaign, type RosterEntry } from '../campaign/campaign';
 import { ANY_SECTOR, RedCommander } from '../sim/ai';
+import { COARSE_DEF_MULT, CROSSING_ASSAULT_MULT } from './theater';
 import { EMPLACEMENTS, SQUADS, TEAMS, WEAPONS, type EmplacementKey, type SquadKey, type VehicleKey, type WeaponDef } from '../sim/data';
 import { BREACH_LIP, BREACH_WIDE, EDGE, type GameMap } from '../sim/map';
 import { generateMap, type Building, type MapKind, type Vec } from '../sim/mapgen';
@@ -883,9 +884,31 @@ export function trivialMismatchWinner(attacker: Chit, defender: Chit): 'attacker
 // The planner's belief and the resolver's truth are ONE formula (§4.4):
 // coarseOdds is what the AI weighs an attack with and exactly what the
 // resolver rolls against — they cannot drift.
+//
+// Calibrated against fought battles (jtbug #797, scripts/coarsefit.mjs: 374
+// decided battles through makeTheaterBattle on main ba4cc08, blue attacking,
+// 12 a cell, the AI on both sides). `terrainMult` is the BREAK-EVEN RATIO of
+// a class: the attacker:defender ratio at which the attack wins one time in
+// two. COARSE_STEEPNESS is how fast the chance moves off that ratio. A fought
+// battle is close to a threshold: on farmland the attacker won 4 of 12 at
+// 1:1, 6 at 1.5:1 and 23 of 24 at 2:1 and 3:1. The old form,
+// atk / (atk + def x mult), is this one at steepness 1, and no multiplier
+// fits it to both ends (log-likelihood -171 against -123 at 5; the best
+// steepness is between 5 and 6, and 4 costs 3).
+export const COARSE_STEEPNESS = 5;
 export function coarseOdds(atkEff: number, defEff: number, terrainMult: number): number {
-  return Math.max(0.05, Math.min(0.95, atkEff / (atkEff + defEff * terrainMult)));
+  return Math.max(0.05, Math.min(0.95, 1 / (1 + Math.pow((defEff * terrainMult) / Math.max(1e-9, atkEff), COARSE_STEEPNESS))));
 }
+
+// Losses, fitted to the same battles. The loser loses about three quarters
+// of its men (75-77% in every class: that is where a fought battle ends). The
+// winner's losses follow the LOSER's strength, not its own: a quarter of the
+// men the loser brought to as many again (p10 0.26, median 0.57, p90 1.03),
+// never more than WINNER_LOSS_CAP of its own. The old band, 2-6% of the
+// winner's own strength, made every coarse win nearly free.
+export const LOSER_LOSS: [number, number] = [0.7, 0.82];
+export const WINNER_LOSS_PER_ENEMY: [number, number] = [0.25, 0.9];
+export const WINNER_LOSS_CAP = 0.7;
 
 // The tuned Lanchester core — THE asset (2026-07 calibration, 16 seeds,
 // wars 1-15 days, both outcomes). One implementation, two callers: the grid
@@ -915,11 +938,10 @@ export function coarseOutcome(
   const attackerWins = forcedWinner ? forcedWinner === 'attacker' : winnerRoll < clampedScore;
   const winnerStrength = attackerWins ? atkStrength : defStrength;
   const loserStrength = attackerWins ? defStrength : atkStrength;
-  // Each side bleeds in proportion to its OWN strength: a small garrison
-  // that repels a big assault isn't mauled by the effort of winning (2-6%),
-  // but losing a battle is a rout (50-80%).
-  const winnerLosses = Math.max(0, Math.floor(winnerStrength * (0.02 + rng.next() * 0.04)));
-  const loserLosses = Math.max(1, Math.floor(loserStrength * (0.5 + rng.next() * 0.3)));
+  // Draw order frozen: winner roll, winner losses, loser losses.
+  const span = (band: [number, number], r: number): number => band[0] + r * (band[1] - band[0]);
+  const winnerLosses = Math.max(0, Math.floor(Math.min(winnerStrength * WINNER_LOSS_CAP, loserStrength * span(WINNER_LOSS_PER_ENEMY, rng.next()))));
+  const loserLosses = Math.max(1, Math.floor(loserStrength * span(LOSER_LOSS, rng.next())));
   return {
     attackerWins,
     atkLosses: attackerWins ? winnerLosses : loserLosses,
@@ -949,14 +971,12 @@ export function resolveCoarse(
 
   const defCell = front.sector.cells[e.cell];
   const atkCell = front.sector.cells[attacker.cell];
-  // Coarse balance knobs (tuned 2026-07 across 16 campaign seeds: wars run
-  // 1-15 days with both 'won' and 'lost' outcomes): a bourg garrison is a
-  // fortress (repeated full-strength assaults to crack), woods give cover,
-  // and an assault across a defended river/bridge crossing is costlier.
-  let terrainMult = 1.0;
-  if (defCell.terrain === 'bourg') terrainMult *= 7.0;
-  if (defCell.terrain === 'woods') terrainMult *= 1.5;
-  if (atkCell.terrain === 'river' || atkCell.terrain === 'bridge') terrainMult *= 2.0; // assault across a defended crossing
+  // The grid's ground on the theater's scale (jtbug #797): the break-even
+  // ratio of the class a cell stands for, and the crossing factor for an
+  // assault out of a river or bridge cell. They were 7, 1.5 and 2 on the old
+  // odds form, where a bourg was a fortress.
+  let terrainMult = defCell.terrain === 'bourg' ? COARSE_DEF_MULT.settlement : defCell.terrain === 'woods' ? COARSE_DEF_MULT.forest : COARSE_DEF_MULT.farmland;
+  if (atkCell.terrain === 'river' || atkCell.terrain === 'bridge') terrainMult *= CROSSING_ASSAULT_MULT; // assault across a defended crossing
   if (lightAt(front.clockMin) < 0.25) terrainMult *= nightMult;
 
   const { attackerWins, atkLosses, defLosses } = coarseOutcome(attacker.strength, defender.strength, terrainMult, rng, forcedWinner);

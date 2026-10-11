@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { advanceDays, newCampaign, squadMembers } from '../src/campaign/campaign';
 import { Front, findPath, formatClock, chitEtaMinutes, operationStatus, OP_START_MIN, OP_DEADLINE_DAYS } from '../src/strategic/front';
 import { cellIndex, makeDefaultSector, parseSector } from '../src/strategic/sector';
-import { applyEngagementOutcome, makeStrategicBattle, newFront, resolveCoarse, syncStrengths, trivialMismatchWinner } from '../src/strategic/bridge';
+import { applyEngagementOutcome, LOSER_LOSS, makeStrategicBattle, newFront, resolveCoarse, syncStrengths, trivialMismatchWinner, WINNER_LOSS_CAP } from '../src/strategic/bridge';
 import { loadGame, saveGame } from '../src/strategic/save';
 import { StrategicView } from '../src/render/strategic';
 import type { Sim } from '../src/sim/sim';
@@ -456,10 +456,10 @@ describe('bridge', () => {
     const a = run();
     expect(a).toEqual(run()); // same seed, same forced outcome, same losses
     expect(a.attackerWon).toBe(true);
-    expect(a.ableStrength).toBeGreaterThanOrEqual(138 - Math.ceil(138 * 0.06)); // winner bleeds 2-6% of its own strength
-    expect(a.ableStrength).toBeLessThanOrEqual(138 - Math.floor(138 * 0.02));
-    expect(a.wacheStrength).toBeGreaterThanOrEqual(500 - Math.ceil(500 * 0.8)); // loser bleeds 50-80%
-    expect(a.wacheStrength).toBeLessThanOrEqual(500 - Math.floor(500 * 0.5));
+    // The winner's losses follow the loser's strength, and 500 men cost more than the cap: it loses the cap.
+    expect(a.ableStrength).toBe(138 - Math.floor(138 * WINNER_LOSS_CAP));
+    expect(a.wacheStrength).toBeGreaterThanOrEqual(500 - Math.ceil(500 * LOSER_LOSS[1]));
+    expect(a.wacheStrength).toBeLessThanOrEqual(500 - Math.floor(500 * LOSER_LOSS[0]));
   });
 });
 

@@ -16,26 +16,40 @@ export class DispositionError extends Error {
   }
 }
 
-// Red garrison strength bands by redStrength knob (0-4): the §2.5 "stated
-// band". Mobile red (line + reserve) scales from the same knob — a goal-
-// driven red with only garrisons cannot attack.
+// Red by the redStrength knob (0-4). The GARRISON band is what one company
+// meets when it attacks, so it stays where one company can win a fought
+// battle (see the note on the tutorial's first battle below): levels 2 to 4
+// share a band. What the knob buys above that is the FIELD force: more
+// battlegroups of about a company each, which is what attacks, retakes a town
+// and marches into a threatened one. Big battlegroups were tried and are not
+// the lever: three of 140-200 men destroyed AI blue on 12 of 16 seeds, because
+// each one beats a company alone (jtbug #797, #799).
+//
+// Measured after the #797 calibration, scripts/warsweep2.mjs, 32 seeds, AI
+// both sides (blue wins · red attacks a day · AI blue destroyed):
+//   Skirmish        1   91% · 0.40 · 1
+//   Normandy Bocage 4   56% · 1.38 · 12     at 3: 84% · 0.79 · 5
+//   River Line      4   63% · 1.39 · 11     at 3: 78% · 1.03 · 7
+//   Open Country    4   81% · 1.62 · 6
+// The three standard presets run at 4 by the owner's call for a red that
+// attacks (2026-10-11). 3 is the softer war and is on the setup screen.
 const RED_GARRISON_BAND: Record<number, [number, number]> = {
   0: [0, 0],
   1: [25, 60],
   2: [36, 109], // the newFront-era band the war pin tuned against
-  3: [60, 140],
-  4: [90, 180],
+  3: [36, 109],
+  4: [36, 109],
 };
 const PICKETS = 3;
 const CROSSING_BAND = 0.25;
 const OUTPOST_BAND = 0.25;
-const RED_MOBILE_COUNT: Record<number, number> = { 0: 0, 1: 1, 2: 2, 3: 2, 4: 3 };
+const RED_MOBILE_COUNT: Record<number, number> = { 0: 0, 1: 2, 2: 3, 3: 4, 4: 5 };
 const RED_MOBILE_STRENGTH: Record<number, [number, number]> = {
   0: [0, 0],
   1: [60, 90],
-  2: [90, 130],
-  3: [110, 160],
-  4: [140, 200],
+  2: [80, 120],
+  3: [80, 120],
+  4: [80, 120],
 };
 
 export interface Disposition {
@@ -146,7 +160,7 @@ export function makeDisposition(
     for (let i = 0; i < mobiles && redRear.length > 0; i++) {
       forces.push({
         side: 'red',
-        name: i === mobiles - 1 && mobiles > 1 ? 'Reserve-Kampfgruppe' : `Kampfgruppe ${['Ost', 'Nord', 'Süd'][i]}`,
+        name: i === mobiles - 1 && mobiles > 1 ? 'Reserve-Kampfgruppe' : `Kampfgruppe ${['Ost', 'Nord', 'Süd', 'West'][i]}`,
         pos: { kind: 'node', nodeId: i === mobiles - 1 && mobiles > 1 ? (theater.sources.red[0] ?? redRear[0].id) : redRear[i % redRear.length].id },
         path: [],
         dwellMin: 0,

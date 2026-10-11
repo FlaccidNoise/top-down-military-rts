@@ -14,7 +14,11 @@ export const FATIGUE_COMBAT_SLOPE = 0.3;
 // Postures (jtbug #786): a force caught at rest fights below strength, and a
 // dug-in force is that much harder to shift when it DEFENDS.
 export const REST_COMBAT_MULT = 0.8;
-export const DIG_DEF_MULT = 1.5;
+// Fitted (jtbug #797): a dug-in defender has one more barrage in a fought
+// battle, and over the same 95 battles at 1.5:1 and 2:1 that turned 75
+// attacker wins into 64. On the calibrated odds curve that is this much on
+// the break-even ratio (best fit 1.18). It was 1.5.
+export const DIG_DEF_MULT = 1.2;
 
 export function combatMult(f: Force): number {
   const supplyMult = SUPPLY_COMBAT_MULT[supplyTierOf(f.untracedMin)];
