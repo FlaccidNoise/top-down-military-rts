@@ -1,7 +1,7 @@
 # HANDOFF — 2026-07-28 (playtest-feedback wave: orders, audio, armour, mapgen)
 
 ## 2026-10-11: FIRST HUMAN PLAYTEST — one battle math, a red that attacks (jtbug #797, #799, #800, #801)
-Owner played the wave: "no real strategy on the strategy map", "I never see the enemy do anything". Then decided #797: yes, and a harder campaign with a red that attacks and counterattacks. main is at 457f6d2. NOT deployed. Decision record: INDEX.md, 2026-10-11 (Gameplay). Numbers and what was rejected: `docs/research/2026-10-09-upgrade-audit/coarse-calibration/README.md`.
+Owner played the wave: "no real strategy on the strategy map", "I never see the enemy do anything". Then decided #797: yes, and a harder campaign with a red that attacks and counterattacks. main is at 8ef1caa (code). NOT deployed. Decision record: INDEX.md, 2026-10-11 (Gameplay). Numbers and what was rejected: `docs/research/2026-10-09-upgrade-audit/coarse-calibration/README.md`.
 - **Diagnosis**: every New campaign was Skirmish. One mobile red force or none, no red attack in 10 of 16 wars, garrisons too thin for a counterattack reserve, and the war ends the minute blue holds 3 of 4.
 - **#797 applied (39b9217)**: the coarse resolver is refitted to 672 fought battles. Steepness 5, a town's break-even 1.3 (was x7), dig-in x1.2, the winner loses 0.25 to 0.9 of the men the loser brought.
 - **Red's strength is its field force**: 2, 3, 4, 5 battlegroups of about a company at enemy strength 1-4. Garrisons stop growing at strength 2, so one company can still take a town fought. Standard presets run at 4, Skirmish at 1.
@@ -11,12 +11,13 @@ Owner played the wave: "no real strategy on the strategy map", "I never see the 
 - **Crash fixed (b13b1bf, #801)**: a beaten crossing assault thrown back along a road that does not touch the crossing.
 - **AI against AI, 32 seeds** (blue wins · red attacks a day): Skirmish 88% · 0.47, Normandy Bocage 53% · 1.39, River Line 53% · 1.51, Open Country 81% · 1.65. The 16 pin seeds run against blue: 5/16.
 - **What a player now meets on Normandy Bocage**: red attacks at dawn on Day 2 in 12 of 12 wars if he has not moved. The AI defending holds 7 of 12 and loses a median 76 of 143 when it holds. A relief column that arrives as a town falls counterattacks at once.
-- **OPEN, #800**: the defend stance has no flank or reposition move. Not started.
+- **Fog (8ef1caa, #803)**: the theater log named every red battlegroup and where it went. Under fog it now names an enemy only while he is a contact.
+- **OPEN, #800**: the defend stance has no flank or reposition move. Not started, on purpose: every defender gain lowers the attacker's win rate, and the campaign just got harder. Do it after the owner replays.
 - **OPEN, #802**: the legacy grid war was not retuned. AI blue wins every seed there.
-- **Known limits**: a fought battle fields a red attacker at about 130 men whatever it brings, so the coarse game credits red's mass and a fought battle does not. The spoiling attack lands at the same hour in every war. Every red win in the sweeps is AI blue destroyed, none is the deadline. The theater log prints red's moves under fog.
-- **Gates at 457f6d2**: check, `npm test` 1845, tutorial.mjs every leg, stratsweep 0/36 against the baseline re-shot at 39b9217 (old one kept as `.screenshots/stratsweep-pre-39b9217`), ordnance and clicks at 39b9217. The battle art sweep was not run: nothing drawn in a battle changed.
+- **Known limits**: a fought battle fields a red attacker at about 130 men whatever it brings, so the coarse game credits red's mass and a fought battle does not. The spoiling attack lands at the same hour in every war. Every red win in the sweeps is AI blue destroyed, none is the deadline.
+- **Gates**: at 457f6d2 check, `npm test` 1845, tutorial.mjs every leg. At 8ef1caa check, test:quick 1536, stratsweep 0/36 against the baseline re-shot at 39b9217 (old one kept as `.screenshots/stratsweep-pre-39b9217`), ordnance and clicks at 39b9217. The battle art sweep was not run: nothing drawn in a battle changed.
 - **Unverified**: all of it against a human. A real phone. Audio by ear.
-- Preview: port 5360 serves the build of 457f6d2.
+- Preview: port 5360 serves the build of 8ef1caa.
 
 ## 2026-10-10: UPGRADE WAVE ON MAIN (jtbug #759) — battle FX, readable theater, strategic depth, drill and landing flow, soldier behaviour
 Audit and plan: `docs/plans/2026-10-09-upgrade-audit.md`. Decisions: INDEX.md, three 2026-10-10 entries (Architecture, Gameplay, UI). Four lanes, each landed by fast-forward after the orchestrator re-ran the gates on the lane tree. NOT deployed: the live site is still the 2026-07-28 build.
