@@ -111,6 +111,7 @@ function firstContact(preset, seed) {
   const tb = makeTheaterBattle(campaign, front, openBattle(front, contact));
   const { sim } = tb;
   const t0 = performance.now();
+  const moved = { 'fell-back': 0, counterattack: 0 }; // what the defence did that a player can see
   while (sim.winner === null && sim.tick < CAP_TICKS) {
     tb.commander.update(sim);
     tb.blueCommander.update(sim);
@@ -120,12 +121,12 @@ function firstContact(preset, seed) {
     sim.takeMeleeEvents();
     sim.takeBreaches();
     sim.takePlanes();
-    sim.takeUnitEvents();
+    for (const e of sim.takeUnitEvents()) if (e.kind in moved && e.side === def.side) moved[e.kind]++;
   }
   return {
     ...met, outcome: sim.winner ?? 'undecided', battleClass: tb.battleClass, battleMin: Math.round(sim.tick / 30 / 6) / 10,
     blueStart: sim.startStrength.blue, blueLeft: effective(sim, 'blue'), blueKia: sim.soldiers.filter((s) => s.side === 'blue' && !s.alive).length,
-    redStart: sim.startStrength.red, redLeft: effective(sim, 'red'), wallS: Math.round((performance.now() - t0) / 100) / 10,
+    redStart: sim.startStrength.red, redLeft: effective(sim, 'red'), fellBack: moved['fell-back'], counterattacks: moved.counterattack, wallS: Math.round((performance.now() - t0) / 100) / 10,
   };
 }
 

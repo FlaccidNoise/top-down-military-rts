@@ -1,7 +1,7 @@
 // @ts-expect-error no @types/node in this project; node:fs still resolves fine at runtime under vitest
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { AI_MEMORY_TICKS, RedCommander } from '../src/sim/ai';
+import { AI_MEMORY_TICKS, ANY_SECTOR, RedCommander } from '../src/sim/ai';
 import { newCampaign } from '../src/campaign/campaign';
 import { WEAPONS } from '../src/sim/data';
 import { COMPANY_TOE, squadHeadcount } from '../src/sim/toe';
@@ -1160,7 +1160,7 @@ describe('the commander spends the barrages it holds (#790)', () => {
 describe('a defence that moves (#794)', () => {
   const A = { x: 100, y: 30 }; // the forward post
   const B = { x: 130, y: 30 }; // one bound back: the approach is from the west
-  const stage = (cfg: { fallback?: boolean; reserve?: boolean; green?: boolean } = {}) => {
+  const stage = (cfg: { fallback?: boolean; reserve?: boolean; green?: boolean; resSector?: number } = {}) => {
     const sim = new Sim(new GameMap(200, 60), 5);
     const xp = cfg.green ? 0 : 40;
     const line = sim.addSquad('red', 'Line', Array.from({ length: 6 }, (_, i) => ({ name: `L${i}`, weapon: 'kar98k' as const, x: 100.5, y: 27.5 + i, xp })));
@@ -1173,7 +1173,7 @@ describe('a defence that moves (#794)', () => {
       stance: 'defend',
       approach: { x: 5, y: 30 },
       posts: { [line.id]: A, [res.id]: { x: 150, y: 30 } },
-      sectorOf: { [line.id]: 0, [res.id]: 0 },
+      sectorOf: { [line.id]: 0, [res.id]: cfg.resSector ?? 0 },
       ...(cfg.fallback === false ? {} : { fallback: { [line.id]: [B] } }),
       ...(cfg.reserve ? { reserve: [res.id] } : {}),
     });
@@ -1240,6 +1240,17 @@ describe('a defence that moves (#794)', () => {
     none.run(600);
     expect(none.said).toEqual([]);
     expect(none.at(none.line)).toBeLessThan(105);
+  });
+
+  it('a reserve goes for a post lost in its own sector or, briefed ANY_SECTOR, in any; not for one in another sector (#800)', () => {
+    for (const [resSector, goes] of [[ANY_SECTOR, true], [1, false]] as const) {
+      const { sim, enemy, run, said, line } = stage({ reserve: true, resSector });
+      run(100);
+      line.soldierIds.forEach((id) => (sim.soldiers[id].alive = false));
+      enemy(101.5, 30.5);
+      run(1500);
+      expect(said, `reserve sector ${resSector}`).toEqual(goes ? ['counterattack@100'] : []);
+    }
   });
 
   it('the sector reserve goes for a post the attacker has just taken, once, and not for an old loss', () => {
@@ -1353,6 +1364,27 @@ describe('a defence that moves (#794)', () => {
       expect(new Set(sectors).size).toBe(sectors.length);
       for (const id of reserve) expect(fb[id]).toBeUndefined();
     }
+  });
+
+  it('a garrison too thin for a sector reserve holds one rifle squad back for all sectors (#800)', () => {
+    const stageAt = (strength?: number) => {
+      const c = newCampaign(3);
+      const front = newFront(c, makeDefaultSector());
+      const able = front.chits.find((ch) => ch.side === 'blue')!;
+      const garrison = front.chits.find((ch) => ch.name === 'Garnison St-Aubin')!;
+      if (strength !== undefined) garrison.strength = strength;
+      return makeStrategicBattle(c, front, { attackerId: able.id, defenderId: garrison.id, cell: garrison.cell }, 3).commander['cfg'];
+    };
+    for (const strength of [36, 45, 55]) {
+      const cfg = stageAt(strength);
+      expect(cfg.reserve, `${strength} men`).toHaveLength(1);
+      expect(cfg.sectorOf![cfg.reserve![0]], `${strength} men`).toBe(ANY_SECTOR);
+      expect(cfg.fallback![cfg.reserve![0]]).toBeUndefined();
+    }
+    // A full garrison keeps its sector reserves and gets no other.
+    const full = stageAt();
+    expect(full.reserve!.length).toBeGreaterThan(0);
+    for (const id of full.reserve!) expect(full.sectorOf![id]).not.toBe(ANY_SECTOR);
   });
 });
 

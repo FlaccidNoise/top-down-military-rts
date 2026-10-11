@@ -47,11 +47,14 @@ export interface CommanderConfig {
   // squad goes when its post is lost or flanked, one bound at a time, nearest
   // first; a squad with no entry stands (a dug-in gun). `reserve`: the squads
   // held back as local reserve. `sectorOf`: squad -> sector, since a reserve
-  // counterattacks inside its own.
+  // counterattacks inside its own (ANY_SECTOR: a small garrison's one reserve
+  // answers a post lost anywhere).
   fallback?: Record<number, { x: number; y: number }[]>;
   reserve?: number[];
   sectorOf?: Record<number, number>;
 }
+
+export const ANY_SECTOR = -1;
 
 interface ThreatContact {
   x: number;
@@ -996,7 +999,7 @@ export class RedCommander {
     if (!this.cfg.reserve?.includes(squad.id) || this.reserveSent.has(squad.id)) return false;
     if (fit < squad.soldierIds.length * RESERVE_FIT) return false;
     const sector = this.cfg.sectorOf?.[squad.id];
-    const target = this.lostPosts.find((p) => p.sector === sector && sim.tick - p.tick <= COUNTERATTACK_WINDOW_TICKS && this.threatConfNear(p.x, p.y, 12) > 0);
+    const target = this.lostPosts.find((p) => (sector === ANY_SECTOR || p.sector === sector) && sim.tick - p.tick <= COUNTERATTACK_WINDOW_TICKS && this.threatConfNear(p.x, p.y, 12) > 0);
     if (!target) return false;
     this.reserveSent.add(squad.id);
     this.postNow.set(squad.id, target);

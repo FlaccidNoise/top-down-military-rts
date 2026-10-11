@@ -1,5 +1,5 @@
 import { applyBattleResults, fitRoster, squadMembers, type BattleRecord, type Campaign, type RosterEntry } from '../campaign/campaign';
-import { RedCommander } from '../sim/ai';
+import { ANY_SECTOR, RedCommander } from '../sim/ai';
 import { EMPLACEMENTS, SQUADS, TEAMS, WEAPONS, type EmplacementKey, type SquadKey, type VehicleKey, type WeaponDef } from '../sim/data';
 import { BREACH_LIP, BREACH_WIDE, EDGE, type GameMap } from '../sim/map';
 import { generateMap, type Building, type MapKind, type Vec } from '../sim/mapgen';
@@ -166,8 +166,12 @@ const ARMOR_CLEAR = 3;
 // bounding leg) farther from the approach than its own, then the objectives
 // of the sectors behind it, nearest first, FALLBACK_DEPTH of them. A dug-in
 // gun has none: it stays. A sector with two or more rifle squads holds the
-// one sited deepest as its local reserve. All of it is a choice among points
-// already computed: it draws nothing and moves nobody at T+0.
+// one sited deepest as its local reserve. A garrison too thin for that (one
+// rifle squad to a sector: anything under about 60 men) holds its deepest
+// rifle squad back for all of them, when that leaves two in the line. Without
+// it the garrisons a first campaign meets could never counterattack (jtbug
+// #800). All of it is a choice among points already computed: it draws
+// nothing and moves nobody at T+0.
 const FALLBACK_BOUND = 15;
 const FALLBACK_DEPTH = 2;
 const RIFLE_SQUADS = new Set<SquadKey>(['de_gruppe', 'us_rifle']);
@@ -199,6 +203,13 @@ function defenceBrief(sited: Sited[], sectorAnchors: Vec[][], sectorObjectives: 
     reserve.push(deepest.id);
     delete fallback[deepest.id]; // it is what is behind the others
   });
+  const rifles = sited.filter((s) => !s.emplaced && RIFLE_SQUADS.has(s.key));
+  if (reserve.length === 0 && rifles.length >= 3) {
+    const deepest = rifles.reduce((best, s) => (back(s.anchor) >= back(best.anchor) ? s : best));
+    reserve.push(deepest.id);
+    sectorOf[deepest.id] = ANY_SECTOR;
+    delete fallback[deepest.id];
+  }
   return { fallback, reserve, sectorOf };
 }
 
