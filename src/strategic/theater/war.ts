@@ -194,7 +194,13 @@ function clearOfEnemies(front: FrontV2, f: Force, pos: NetPos): boolean {
 // A beaten crossing assault is thrown back down its approach. When that
 // landing is not clear (a short road, an enemy on it) the force falls back
 // through the node behind it instead, by the same graph retreat as any loser.
+//
+// `approach` is the road the attacker last WALKED, and that is not always a
+// road into the site: an attacker standing on the next node, inside contact
+// range, never walked one (jtbug #801). Then there is no approach to be thrown
+// back down, and it falls back by the graph retreat.
 export function throwBack(front: FrontV2, f: Force, approach: TheaterEdge, siteNode: number): void {
+  if (approach.a !== siteNode && approach.b !== siteNode) return retreatForce(front, f, approach.id);
   const landing = clearLanding(front, f, approach, siteNode);
   if (landing) {
     f.pos = landing;

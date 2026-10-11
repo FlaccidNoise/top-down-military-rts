@@ -3,7 +3,7 @@ import { newCampaign } from '../src/campaign/campaign';
 import { makeTheater } from '../src/strategic/theatergen';
 import { orderMove, stepMovement } from '../src/strategic/theater/step';
 import { addForce, CONTACT_M, type Force, type FrontV2 } from '../src/strategic/theater/force';
-import { battleDuration, joinBattle, openBattle, resolveBattleV2, RETREAT_SETBACK_M, retreatForce, stepWar } from '../src/strategic/theater/war';
+import { battleDuration, joinBattle, openBattle, resolveBattleV2, RETREAT_SETBACK_M, retreatForce, stepWar, throwBack } from '../src/strategic/theater/war';
 import { graphGap } from '../src/strategic/theater/contact';
 import type { WarGoals } from '../src/strategic/goals';
 import { OmniscientIntel } from '../src/strategic/intel';
@@ -245,6 +245,22 @@ describe('a retreat lands clear of every enemy (jtbug #762)', () => {
     expect(a.strength).toBeGreaterThan(0);
     expect(a.pos).toMatchObject({ kind: 'edge', edgeId: 4 }); // out through node 0
     for (const foe of [w, ...parked]) expect(gapTo(fr, a, foe)).toBeGreaterThan(CONTACT_M);
+  });
+});
+
+describe('a thrown-back assault whose approach is not a road into the crossing (jtbug #801)', () => {
+  // The attacker stood on a node and never walked a road into the site, so
+  // the battle carries the road it walked before that.
+  it('falls back by the graph retreat: no throw, and not onto a road it was never on', () => {
+    for (const blocked of [false, true]) {
+      const fr = front();
+      fr.controlByNode = ['blue', 'blue', 'red', 'red'];
+      const loser = mk(fr, 'blue', 0, 'Able');
+      // With the landing blocked the old code threw; with it clear it put the force on e2.
+      if (blocked) for (const s of [300, 800, 1300, 1800, 2300, 2800]) addForce(fr, { side: 'red', name: `R${s}`, pos: { kind: 'edge', edgeId: 2, s, dir: 1 }, path: [], dwellMin: 0, strength: 50, companyIndex: -1, role: 'line', engagedIn: null, queuedAt: null });
+      expect(() => throwBack(fr, loser, FIX.edges[2], 1)).not.toThrow();
+      expect(loser.pos.kind === 'edge' ? loser.pos.edgeId : -1, `blocked ${blocked}`).not.toBe(2);
+    }
   });
 });
 
