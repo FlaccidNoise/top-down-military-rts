@@ -1,6 +1,6 @@
 // The planner's arms beyond the axis attack (jtbug #786): garrison sortie,
 // the reserve called in, the supply cut and its relief, the counterattack on
-// own ground. Hand-built theaters, so each arm is the only thing that can fire.
+// own ground, the march into a threatened objective. Hand-built theaters, so each arm is the only thing that can fire.
 import { describe, expect, it } from 'vitest';
 import { newCampaign } from '../src/campaign/campaign';
 import { DEFAULT_PRESET } from '../src/campaign/presets';
@@ -209,8 +209,9 @@ describe('counterattack', () => {
     const fr = world(theater(3), ['blue', 'blue', 'red', 'red', 'red']);
     put(fr, 'blue', 'line', { kind: 'edge', edgeId: 1, s: 500, dir: -1 }, 30);
     const group = put(fr, 'red', 'line', { kind: 'node', nodeId: 3 }, 100);
-    put(fr, 'red', 'reserve', { kind: 'node', nodeId: 4 }, 100);
-    expect(whys(evalOnce(fr, 'red'))).toEqual([`${group.id}:hunt>1`]);
+    const reserve = put(fr, 'red', 'reserve', { kind: 'node', nodeId: 4 }, 100);
+    // The reserve covers the objective the hunter leaves open.
+    expect(whys(evalOnce(fr, 'red'))).toEqual([`${group.id}:hunt>1`, `${reserve.id}:reinforce>3`]);
   });
 
   it('the same enemy across the line is left alone', () => {
@@ -219,6 +220,46 @@ describe('counterattack', () => {
     put(fr, 'red', 'line', { kind: 'node', nodeId: 3 }, 100);
     put(fr, 'red', 'reserve', { kind: 'node', nodeId: 4 }, 100);
     expect(evalOnce(fr, 'red').orders.map((o) => o.why)).not.toContain('hunt');
+  });
+});
+
+describe('reinforce (jtbug #799)', () => {
+  // Red holds the objective C with a handful. Blue stands at A, 80 minutes out.
+  const setup = (blueStrength: number, redAt: number): { fr: FrontV2; group: Force } => {
+    const fr = world(theater(2), ['blue', 'blue', 'red', 'red', 'red']);
+    put(fr, 'red', 'garrison', { kind: 'node', nodeId: 2 }, 10);
+    put(fr, 'blue', 'line', { kind: 'node', nodeId: 0 }, blueStrength);
+    return { fr, group: put(fr, 'red', 'line', { kind: 'node', nodeId: redAt }, 90) };
+  };
+
+  it('a free group marches into the objective the enemy is closing on, forced', () => {
+    const { fr, group } = setup(150, 3);
+    expect(whys(evalOnce(fr, 'red'))).toEqual([`${group.id}:reinforce>2`]);
+    expect(group.posture).toBe('forced');
+  });
+
+  it('a group already there stays and digs in', () => {
+    const { fr, group } = setup(150, 2);
+    expect(evalOnce(fr, 'red').orders).toEqual([]);
+    expect(group.posture).toBe('dig');
+  });
+
+  it('it does not go when the enemy would be there first', () => {
+    const { fr } = setup(150, 4);
+    fr.forces.find((f) => f.side === 'blue')!.pos = { kind: 'node', nodeId: 1 };
+    expect(evalOnce(fr, 'red').orders.map((o) => o.why)).not.toContain('reinforce');
+  });
+
+  it('it does not feed a defence that is lost with it there', () => {
+    const { fr } = setup(5000, 3);
+    expect(evalOnce(fr, 'red').orders.map((o) => o.why)).not.toContain('reinforce');
+  });
+
+  it('no enemy near, no reinforcement', () => {
+    const fr = world(theater(2), ['blue', 'blue', 'red', 'red', 'red']);
+    put(fr, 'red', 'garrison', { kind: 'node', nodeId: 2 }, 10);
+    put(fr, 'red', 'line', { kind: 'node', nodeId: 3 }, 90);
+    expect(evalOnce(fr, 'red').orders.map((o) => o.why)).not.toContain('reinforce');
   });
 });
 
@@ -239,7 +280,7 @@ describe('a march is finished', () => {
     // A better target appears mid-march: a blue company whose line runs through B.
     put(fr, 'blue', 'line', { kind: 'node', nodeId: 0 }, 20);
     fr.clockMin += 60;
-    expect(red.evaluate(fr, intel)!.orders).toEqual([]);
+    expect(red.evaluate(fr, intel)!.orders.filter((o) => o.forceId === raider.id)).toEqual([]);
     expect(orders).toEqual(['probe']);
   });
 });

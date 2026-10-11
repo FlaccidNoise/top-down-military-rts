@@ -206,7 +206,9 @@ describe('where supply is cut', () => {
 
 describe('the replacements clock', () => {
   it('counts down to the minute the replacements land', () => {
-    const w = makeHeadlessWorld(5, DEFAULT_PRESET.theater, DEFAULT_PRESET.campaign);
+    // No enemy: the clock is under test, not the war. With one, whether a
+    // company is out of contact on the day the draft lands follows the balance.
+    const w = makeHeadlessWorld(5, DEFAULT_PRESET.theater, { ...DEFAULT_PRESET.campaign, redStrength: 0 });
     // Leave gaps in the ranks so that an arrival shows as new men on the roll.
     for (const cs of Object.values(w.campaign.soldiers).slice(0, 6)) cs.status = 'kia';
     let saidBefore = -1;

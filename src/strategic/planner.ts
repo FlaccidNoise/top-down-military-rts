@@ -77,6 +77,12 @@ export const RAID_REST_FATIGUE = 0.5;
 // Massed forces step off so they arrive within this many minutes of each
 // other: the nearer one waits for the farther.
 export const MASS_SYNC_MIN = 60;
+// An enemy this many march minutes from an objective of ours is closing on
+// it: a free mobile force that can be there first goes in (jtbug #799).
+export const REINFORCE_MIN = 240;
+// It does not go into a defence the enemy still wins at these odds or better
+// with it there: that feeds him a second company.
+export const REINFORCE_LOST_ODDS = 0.8;
 
 // What an enemy is worth on the defence: a dug-in one is harder to shift.
 // Intel carries headcount and earthworks. The enemy's supply and fatigue are
@@ -85,7 +91,7 @@ export const MASS_SYNC_MIN = 60;
 const holds = (c: EnemyContact): number => c.strength * (c.dug ? DIG_DEF_MULT : 1);
 // Orders that cannot wait go at a forced march. A sortie is one: the post is
 // open until the garrison is back.
-const URGENT = new Set(['withdraw', 'relieve', 'commit-reserve', 'sortie']);
+const URGENT = new Set(['withdraw', 'relieve', 'commit-reserve', 'sortie', 'reinforce']);
 // Side marches onto ground intel believes is open. Under fog that belief is
 // six hours old at best, so they go as a screen: it sees twice as far, and it
 // falls back from a garrison it did not know of instead of being routed by
@@ -510,6 +516,39 @@ export class Commander2 {
       return (quarry = best && { dest: best.dest, ids: best.ids });
     };
 
+    // Reinforce: the objective of ours the enemy will reach soonest, when what
+    // holds it (and what is already marching there) would lose it and `f`
+    // gets there first by a safe march with no fight on the way. A force that
+    // already stands on such an objective gets its own node back: it stays. One decision per objective per hour, so two free forces do not
+    // both march on the same town.
+    const ownObjectives = [...new Set([...controlNodes(this.goals.blue), ...controlNodes(this.goals.red)])].filter((n) => intel.control(n) === this.side).sort((a, b) => a - b);
+    const sentTo = new Map<number, number>(); // objective -> strength ordered there this eval
+    const reinforce = (f: Force): number | null => {
+      let best: { dest: number; eta: number } | null = null;
+      for (const n of ownObjectives) {
+        let eta = Infinity;
+        let threat = 0;
+        for (const c of intel.contacts()) {
+          const min = route(t, anchorNode(t, c.pos), n)?.minutes ?? Infinity;
+          if (min > REINFORCE_MIN) continue;
+          threat += c.strength;
+          eta = Math.min(eta, min);
+        }
+        if (threat === 0) continue;
+        const held = own
+          .filter((g) => g.id !== f.id && (g.path.length > 0 ? pathNodes(t, g.pos, g.path).at(-1) === n : g.pos.kind === 'node' && g.pos.nodeId === n))
+          .reduce((a, g) => a + effStrength(g), sentTo.get(n) ?? 0);
+        const mult = siteMult({ kind: 'node', nodeId: n });
+        if (coarseOdds(threat, held, mult) < 0.5) continue;
+        if (f.pos.kind === 'node' && f.pos.nodeId === n) return n;
+        if (coarseOdds(threat, held + effStrength(f), mult) >= REINFORCE_LOST_ODDS) continue;
+        const min = safeMarchMin(f, n);
+        if (min === null || min >= eta || firstFight(f, n)) continue;
+        if (!best || eta < best.eta) best = { dest: n, eta };
+      }
+      return best && best.dest;
+    };
+
     for (const f of own) {
       if (f.engagedIn !== null || f.queuedAt !== null) continue;
       // A march, once ordered, is finished: the ladder below is asked only of
@@ -582,16 +621,25 @@ export class Commander2 {
         if (c === 'go' || c === 'wait') continue;
       }
       // Off the objective and nothing to fight: open ground. The reserve
-      // stays where it can answer.
-      if (!reserve) openGround();
+      // stays where it can answer. A cut goes before the defence of an
+      // objective (the reserve covers what the raider leaves), a probe after.
+      const r = reserve ? null : raid(f);
+      if (r && r.why !== 'probe' && order(f, r.dest, r.why)) continue;
+      const threatened = reinforce(f);
+      if (threatened !== null) {
+        if (!(f.pos.kind === 'node' && f.pos.nodeId === threatened) && order(f, threatened, 'reinforce')) sentTo.set(threatened, (sentTo.get(threatened) ?? 0) + effStrength(f));
+        continue;
+      }
+      if (r) order(f, r.dest, r.why);
     }
 
-    // Postures for whoever stands. A garrison at its post and a force on its
-    // objective dig in. A tired force with no enemy near rests.
+    // Postures for whoever stands. A garrison at its post, a force on its
+    // axis objective and a force on any objective of ours dig in. A tired
+    // force with no enemy near rests.
     for (const f of own) {
       if (f.engagedIn !== null || f.path.length > 0) continue;
       const at = f.pos.kind === 'node' ? f.pos.nodeId : -1;
-      const post = f.role === 'garrison' ? at === f.homeNode : at >= 0 && at === axisOf(f)?.objective;
+      const post = f.role === 'garrison' ? at === f.homeNode : at >= 0 && (at === axisOf(f)?.objective || ownObjectives.includes(at));
       setPosture(front, f.id, post ? 'dig' : f.fatigue >= RAID_REST_FATIGUE && threatAt(f.pos) === 0 ? 'rest' : 'march');
     }
 
