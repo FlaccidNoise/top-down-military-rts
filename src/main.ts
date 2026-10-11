@@ -1062,11 +1062,16 @@ function pollDrill(d: NonNullable<typeof drill>): void {
 }
 
 // A campaign with nothing to set up: the preset a first battle is reliably
-// winnable on (FIRST_PRESET, measured by scripts/firstcontact.mjs).
+// winnable on (FIRST_PRESET, measured by scripts/firstcontact.mjs). A player
+// who has seen a campaign to its end, won or lost, is past that one: for him
+// New campaign starts the standard preset (jtbug #799: the owner's every New
+// campaign was the easiest war in the game).
+const VETERAN_KEY = 'rts.veteran.v1';
 const urlWar = new URLSearchParams(location.search).get('war'); // ?war=N pins that campaign's seed, so a gate run can be replayed
 function startFirstCampaign(): void {
   const seed = urlWar !== null && Number.isFinite(Number(urlWar)) && urlWar !== '' ? Number(urlWar) : campSeed();
-  startCampaignV2({ kind: 'fresh', seed, theaterCfg: FIRST_PRESET.theater, campaignCfg: FIRST_PRESET.campaign });
+  const preset = localStorage.getItem(VETERAN_KEY) === '1' ? DEFAULT_PRESET : FIRST_PRESET;
+  startCampaignV2({ kind: 'fresh', seed, theaterCfg: preset.theater, campaignCfg: preset.campaign });
 }
 
 function showDrillEnd(): void {
@@ -1596,6 +1601,7 @@ function startCampaignV2(
 
 function showOperationEnd(status: 'won' | 'lost'): void {
   opEnded = true;
+  try { localStorage.setItem(VETERAN_KEY, '1'); } catch { /* quota */ }
   const sess = S();
   const day = sess.v2 ? sess.v2.front.day : sess.front.day;
   const kia = Object.values(S().campaign.soldiers).filter((s) => s.status === 'kia').length;

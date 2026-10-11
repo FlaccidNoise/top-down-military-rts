@@ -8,7 +8,7 @@
 // player reads a manual that lies. tests/manual-data.test.ts holds a tripwire
 // that greps this file for raw literals of the tracked constants.
 import { MIN_WAR_DAYS } from '../campaign/spec';
-import { FIRST_PRESET, PRESETS } from '../campaign/presets';
+import { DEFAULT_PRESET, FIRST_PRESET, PRESETS } from '../campaign/presets';
 import type { OrderKind } from '../sim/orders';
 import { CONTACT_TTL, DT, hideFloorOf, SPOT_INTERVAL, SPOT_RANGE, spotCapOf } from '../sim/sim';
 import { GARRISON_RADIUS, TRIVIAL_RATIO } from '../strategic/bridge';
@@ -140,7 +140,7 @@ export function buildManual(bindings: Record<ActionId, Binding> = DEFAULTS): Man
       entries: [
         {
           heading: 'The menu',
-          body: `New campaign starts at once on the ${FIRST_PRESET.name} preset. Custom operation opens the setup screen. Training replays the drill.`,
+          body: `New campaign starts at once: on the ${FIRST_PRESET.name} preset until you have finished a campaign, on ${DEFAULT_PRESET.name} after. Custom operation opens the setup screen. Training replays the drill.`,
         },
         {
           heading: 'The seed',

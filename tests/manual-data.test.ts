@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { buildManual, controlRows, MANUAL, manualText } from '../src/ui/manual-data';
 import { DEFAULTS, formatBinding, type ActionId } from '../src/ui/keymap';
 import { MIN_WAR_DAYS } from '../src/campaign/spec';
-import { FIRST_PRESET, PRESETS } from '../src/campaign/presets';
+import { DEFAULT_PRESET, FIRST_PRESET, PRESETS } from '../src/campaign/presets';
 import { CONTACT_TTL, DT, hideFloorOf, SPOT_INTERVAL, SPOT_RANGE } from '../src/sim/sim';
 import { GARRISON_RADIUS, TRIVIAL_RATIO } from '../src/strategic/bridge';
 import { DEPLOY_ATK_DEPTH, DEPLOY_DEF_DEFAULT, DEPLOY_DEF_LINE } from '../src/strategic/deploy';
@@ -73,6 +73,7 @@ describe('MANUAL — shape', () => {
   it('says where a new campaign starts and how to set one up, in the words on the menu', () => {
     const menu = MANUAL.find((c) => c.id === 'operation')!.entries.find((e) => e.heading === 'The menu')!;
     expect(menu.body).toContain(`on the ${FIRST_PRESET.name} preset`);
+    expect(menu.body).toContain(DEFAULT_PRESET.name); // where it starts once a campaign has been finished
     for (const label of ['New campaign', 'Custom operation', 'Training']) expect(menu.body, label).toContain(label);
   });
 });
