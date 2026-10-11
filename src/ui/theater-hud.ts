@@ -81,6 +81,25 @@ const KEY: [Swatch, string][] = [
 const POSTURES: [Posture, string][] = [['march', 'March'], ['forced', 'Forced'], ['rest', 'Rest'], ['dig', 'Dig in'], ['screen', 'Screen']];
 const pct = (mult: number): string => `${mult >= 1 ? '+' : '−'}${Math.round(Math.abs(mult - 1) * 100)}%`;
 
+// The log's lines, newest first. Under fog (recon 'contacts') an enemy
+// force's march, arrival or retreat is news only while that force is a
+// current contact: the log used to name every battlegroup and where it went
+// (jtbug #803). A place taken by an enemy nobody saw is still news, with no
+// force named. Without fog the log is the war's own.
+export const LOG_LINES = 8;
+export function loggedEvents(front: FrontV2, fog: boolean): TheaterEvent[] {
+  if (!fog) return front.events.slice(-LOG_LINES).reverse();
+  const contacts = new Set((front.intel?.blue ?? []).map((c) => c.forceId));
+  const unseen = (id: number): boolean => front.forces.find((f) => f.id === id)?.side === 'red' && !contacts.has(id);
+  const out: TheaterEvent[] = [];
+  for (let i = front.events.length - 1; i >= 0 && out.length < LOG_LINES; i--) {
+    const e = front.events[i];
+    if (e.forceIds.length === 0 || !e.forceIds.every(unseen)) out.push(e);
+    else if (e.kind === 'capture' && e.nodeId !== undefined) out.push({ ...e, text: `${front.theater.nodes[e.nodeId].name} is in enemy hands` });
+  }
+  return out;
+}
+
 // What a posture does, in five words at most. Every number is read from the
 // constant that owns it. With `f`, the line is that force's own state (how
 // much digging is left). `fog` is whether sight means anything in this war.
@@ -378,7 +397,7 @@ export class TheaterHud {
     const logSig = `${front.events.length}|${lastEvent?.min ?? ''}|${lastEvent?.text ?? ''}`;
     if (logSig !== this.lastLogSig) {
       this.lastLogSig = logSig;
-      this.logged = front.events.slice(-8).reverse();
+      this.logged = loggedEvents(front, reconOn);
       this.log.hidden = this.logged.length === 0;
       this.log.innerHTML = this.logged
         .map((e, i) => {

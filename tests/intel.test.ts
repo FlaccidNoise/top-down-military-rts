@@ -25,6 +25,7 @@ import { Commander2, RED_V2 } from '../src/strategic/planner';
 import { makeWarGoals } from '../src/strategic/goals';
 import { loadGameV2, saveGameV2 } from '../src/strategic/save2';
 import { lineFront, place } from './lib/line-theater';
+import { loggedEvents } from '../src/ui/theater-hud';
 
 describe('detection sweep', () => {
   it('sees a force within 3000 graph metres of an own force, not beyond', () => {
@@ -171,5 +172,40 @@ describe('intel persistence (save v4)', () => {
     if (loaded.status !== 'ok') return;
     expect(loaded.front.intel).toEqual(front.intel);
     expect(contactConf(loaded.front.intel!.blue[0], loaded.front.clockMin)).toBeCloseTo(1 - 60 / STRAT_CONTACT_TTL, 5);
+  });
+});
+
+describe('the theater log under fog (jtbug #803)', () => {
+  const setup = () => {
+    const fr = lineFront();
+    const able = place(fr, 'blue', 0);
+    const seen = place(fr, 'red', 2);
+    const unseen = place(fr, 'red', 3);
+    fr.intel = { blue: [{ forceId: seen.id, pos: seen.pos, strength: seen.strength, seenMin: 0, moving: false, dug: false }], red: [] };
+    const ev = (kind: FrontV2['events'][number]['kind'], text: string, forceIds: number[], nodeId?: number): void => {
+      fr.events.push({ min: fr.clockMin, kind, text, forceIds, nodeId });
+    };
+    ev('arrival', 'Able arrives at N1', [able.id], 1);
+    ev('arrival', 'Seen arrives at N2', [seen.id], 2);
+    ev('arrival', 'Unseen arrives at N3', [unseen.id], 3);
+    ev('capture', 'Unseen takes N1', [unseen.id], 1);
+    ev('battle-resolved', 'Able holds N1', [able.id, unseen.id], 1);
+    return fr;
+  };
+
+  it('without fog the log is every event, newest first', () => {
+    expect(loggedEvents(setup(), false).map((e) => e.text)).toEqual(['Able holds N1', 'Unseen takes N1', 'Unseen arrives at N3', 'Seen arrives at N2', 'Able arrives at N1']);
+  });
+
+  it('under fog an unseen enemy is not named: its march is dropped and a place it took is reported without it', () => {
+    expect(loggedEvents(setup(), true).map((e) => e.text)).toEqual(['Able holds N1', 'N1 is in enemy hands', 'Seen arrives at N2', 'Able arrives at N1']);
+  });
+
+  it('the dropped lines do not use up the log: it reaches back for eight it can show', () => {
+    const fr = setup();
+    const unseen = fr.forces[2];
+    for (let i = 0; i < 20; i++) fr.events.push({ min: fr.clockMin, kind: 'arrival', text: `Unseen march ${i}`, forceIds: [unseen.id] });
+    expect(loggedEvents(fr, true)).toHaveLength(4);
+    expect(loggedEvents(fr, false)).toHaveLength(8);
   });
 });
