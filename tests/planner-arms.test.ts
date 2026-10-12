@@ -6,7 +6,7 @@ import { newCampaign } from '../src/campaign/campaign';
 import { DEFAULT_PRESET } from '../src/campaign/presets';
 import { makeWarGoals } from '../src/strategic/goals';
 import { OmniscientIntel } from '../src/strategic/intel';
-import { BLUE_V2, Commander2, RED_V2, SORTIE_COVER_MIN, SPOIL_FROM_DAY, type PlannerReport } from '../src/strategic/planner';
+import { BLUE_V2, Commander2, GIVE_UP_MIN, RED_V2, redDoctrine, SORTIE_COVER_MIN, SPOIL_FROM_DAY, type PlannerReport } from '../src/strategic/planner';
 import type { Theater } from '../src/strategic/theater';
 import { addForce, type Force, type ForceRole, type FrontV2 } from '../src/strategic/theater/force';
 import { DIG_IN_MIN } from '../src/strategic/theater/step';
@@ -91,6 +91,76 @@ describe('garrison sortie', () => {
     expect(4000 / 50).toBeLessThan(SORTIE_COVER_MIN);
     put(fr, 'blue', 'line', { kind: 'node', nodeId: 0 }, 100);
     expect(evalOnce(fr, 'red').orders).toEqual([]);
+  });
+});
+
+// #808. A garrison stood and died at any odds. C and E are objectives, a
+// road joins them that does not pass D, and a blue company stands at D:
+// 40 minutes from C, and 40 from E.
+describe('a garrison gives up a post it cannot hold', () => {
+  const setup = (cfg: { small?: number; need?: number; doctrine?: typeof RED_V2 } = {}) => {
+    const t = theater(2, [[2, 4, 3000]]);
+    t.objectiveNodes = [2, 3, 4];
+    const fr = world(t, ['blue', 'blue', 'red', 'blue', 'red']);
+    const small = put(fr, 'red', 'garrison', { kind: 'node', nodeId: 2 }, cfg.small ?? 30);
+    const big = put(fr, 'red', 'garrison', { kind: 'node', nodeId: 4 }, 160); // holds E against the company, and is not strong enough to sortie on it
+    const blue = put(fr, 'blue', 'line', { kind: 'node', nodeId: 3 }, 150);
+    const goals = { ...makeWarGoals(t, CAMP), blue: [{ kind: 'control' as const, nodeIds: [2, 3, 4], need: cfg.need ?? 3 }] };
+    const red = new Commander2('red', cfg.doctrine ?? RED_V2, goals, CAMP.warDays);
+    const intel = new OmniscientIntel(fr, 'red');
+    return { fr, small, big, blue, red, intel, first: () => whys(red.evaluate(fr, intel)!) };
+  };
+
+  it('30 men against a company 40 minutes off fall back on the next objective, by a forced march, and dig in there', () => {
+    expect(2000 / 50).toBeLessThan(GIVE_UP_MIN);
+    const { fr, small, red, intel, first } = setup();
+    expect(first()).toEqual([`${small.id}:give-up>4`]);
+    expect(small.posture).toBe('forced');
+    const campaign = newCampaign(1, 1);
+    const seen: string[] = [];
+    for (let m = 0; m < 400; m++) {
+      for (const o of red.evaluate(fr, intel)?.orders ?? []) seen.push(o.why);
+      stepWar(fr, campaign, { autoBattle: () => true });
+    }
+    expect(small.pos).toEqual({ kind: 'node', nodeId: 4 });
+    expect(small.strength).toBe(30); // it met nobody
+    expect(small.posture).toBe('dig');
+    expect(seen).not.toContain('return'); // the company still stands 40 minutes from its post
+  });
+
+  it('it goes home when no enemy is closing on the post any more', () => {
+    const { fr, small, blue, red, intel } = setup();
+    const campaign = newCampaign(1, 1);
+    const seen: string[] = [];
+    for (let m = 0; m < 900; m++) {
+      if (m === 400) blue.strength = 0;
+      for (const o of red.evaluate(fr, intel)?.orders ?? []) seen.push(o.why);
+      stepWar(fr, campaign, { autoBattle: () => true });
+    }
+    expect(seen).toContain('return');
+    expect(small.pos).toEqual({ kind: 'node', nodeId: 2 });
+  });
+
+  it('a garrison that can make a fight of it stands', () => {
+    expect(setup({ small: 120 }).first()).toEqual([]);
+  });
+
+  it('it stands on the last objective the enemy needs', () => {
+    // Blue holds D and needs two of the three: C would give him the war.
+    expect(setup({ need: 2 }).first()).toEqual([]);
+  });
+
+  it('with nowhere to go it stands', () => {
+    const { fr, big, first } = setup();
+    fr.controlByNode[4] = 'blue'; // the other objective is lost
+    big.strength = 0;
+    expect(first()).toEqual([]);
+  });
+
+  it('at enemy strength 0 and 1 a garrison never leaves: a first campaign has a first battle', () => {
+    expect(redDoctrine(4)).toBe(RED_V2);
+    expect(redDoctrine(2).giveUpOdds).toBeGreaterThan(0);
+    for (const strength of [0, 1]) expect(setup({ doctrine: redDoctrine(strength) }).first()).toEqual([]);
   });
 });
 

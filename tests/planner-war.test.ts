@@ -167,9 +167,13 @@ describe('the planner neither dithers nor grinds (jtbug #762)', () => {
     return { most: Math.max(...per), unexplained, destroyed, per };
   };
 
-  it('with full knowledge: single-digit mid-march turn-rounds in every war, all of them withdrawals; blue destroyed on at most fourteen seeds', () => {
+  // With garrisons that give up a post (jtbug #808) seed 9 is a 14-day war
+  // that ends among remnants of 1 to 22 men turning away from each other:
+  // 11 turn-rounds, every one a withdrawal. The bound is that count and one
+  // more. It was single digits before.
+  it('with full knowledge: at most twelve mid-march turn-rounds in every war, all of them withdrawals; blue destroyed on at most fourteen seeds', () => {
     const r = turnRounds('omniscient');
-    expect(r.most, `turn-rounds per seed: ${r.per}`).toBeLessThan(10);
+    expect(r.most, `turn-rounds per seed: ${r.per}`).toBeLessThanOrEqual(12);
     expect(r.unexplained).toBe(0);
     expect(r.destroyed).toBeLessThanOrEqual(14);
   }, 30_000);

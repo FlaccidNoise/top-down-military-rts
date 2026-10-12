@@ -17,7 +17,7 @@
 // line tests/war-pin.test.ts is refrozen from (S59).
 import { DEFAULT_PRESET, PRESETS } from '../src/campaign/presets';
 import { makeHeadlessWorld, runHeadlessWar } from '../src/strategic/headless';
-import { BLUE_V2, RED_V2 } from '../src/strategic/planner';
+import { BLUE_V2, RED_V2, redDoctrine } from '../src/strategic/planner';
 import { forceById } from '../src/strategic/theater/war';
 
 const arg = (name, dflt) => {
@@ -36,12 +36,14 @@ if (!PRESET) {
 const RECON = arg('recon', PRESET.campaign.recon);
 const BLUE_ODDS = arg('blue-odds', null);
 const RED_ODDS = arg('red-odds', null);
+const GIVE_UP = arg('give-up', null); // red's giveUpOdds: 0 = garrisons never leave
 const GATE = has('gate');
 
 const CAMP = { ...PRESET.campaign, recon: RECON, redStrength: Number(arg('red', PRESET.campaign.redStrength)) };
 const doctrines = {};
 if (BLUE_ODDS !== null) doctrines.blue = { ...BLUE_V2, attackOdds: Number(BLUE_ODDS) };
-if (RED_ODDS !== null) doctrines.red = { ...RED_V2, attackOdds: Number(RED_ODDS) };
+if (RED_ODDS !== null) doctrines.red = { ...redDoctrine(CAMP.redStrength), attackOdds: Number(RED_ODDS) };
+if (GIVE_UP !== null) doctrines.red = { ...(doctrines.red ?? redDoctrine(CAMP.redStrength)), giveUpOdds: Number(GIVE_UP) };
 
 const runWar = (seed) => {
   const w = makeHeadlessWorld(seed, PRESET.theater, CAMP, undefined, doctrines);

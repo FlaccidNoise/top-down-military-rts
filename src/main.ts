@@ -49,7 +49,7 @@ import { DispositionError, makeDisposition } from './strategic/theatergen/dispos
 import { makeWarGoals, warStatus, type WarGoals } from './strategic/goals';
 import { DEPLOY_ATK_DEPTH, DEPLOY_DEF_LINE, DEPLOY_DEF_DEFAULT } from './strategic/deploy';
 import { ContactIntel, OmniscientIntel, type IntelView } from './strategic/intel';
-import { Commander2, RED_V2 } from './strategic/planner';
+import { Commander2, redDoctrine } from './strategic/planner';
 import { addForce, pushEvent, type CoarseBattle, type FrontV2, type MoveReject } from './strategic/theater/force';
 import { firstContactOnMarch, orderHalt, orderMove, previewMove, setPosture } from './strategic/theater/step';
 import { applyRequisition, requisitionDue, requisitionOffer, type RequisitionCard } from './strategic/requisition';
@@ -1555,7 +1555,7 @@ function startCampaignV2(
         campaignCfg: camp,
         front,
         goals,
-        red: new Commander2('red', RED_V2, goals, camp.warDays, { nightTempo: camp.nightTempo, fog: camp.recon === 'contacts' }),
+        red: new Commander2('red', redDoctrine(camp.redStrength), goals, camp.warDays, { nightTempo: camp.nightTempo, fog: camp.recon === 'contacts' }),
         // OQ6 (A): identical fog and detection — red reads ghosts when the
         // campaign runs contacts, exactly as the player's map does.
         redIntel: camp.recon === 'contacts' ? new ContactIntel(front, 'red') : new OmniscientIntel(front, 'red'),

@@ -35,6 +35,10 @@ export interface DoctrineV2 {
   // A hunt may cross the line for an enemy this many march minutes from the
   // hunter. 0 = it counterattacks on its own ground only.
   spoilMinutes: number;
+  // A garrison gives up its post, before the fight, to an enemy that would
+  // take it at these odds or better against everything that holds it or is
+  // marching to it. 0 = a garrison never leaves.
+  giveUpOdds: number;
 }
 
 export const RED_V2: DoctrineV2 = {
@@ -48,8 +52,14 @@ export const RED_V2: DoctrineV2 = {
   suicideOdds: 0.12,
   deadlinePressure: 0.15,
   spoilMinutes: 240,
+  giveUpOdds: 0.9,
 };
 export const BLUE_V2: DoctrineV2 = { ...RED_V2, attackOdds: 0.3, deadlinePressure: 0.18, spoilMinutes: 0 };
+// Red's doctrine at a campaign's enemy strength (0-4). At 0 and 1, which is
+// Skirmish and so a first campaign, a garrison stands at any odds: the first
+// battle a new player is pointed at is a town he outnumbers four to one, and
+// a garrison that left it would leave him nothing to fight.
+export const redDoctrine = (redStrength: number): DoctrineV2 => (redStrength <= 1 ? { ...RED_V2, giveUpOdds: 0 } : RED_V2);
 // No spoiling attack on the first day: the other side gets a day to form up.
 export const SPOIL_FROM_DAY = 2;
 
@@ -90,6 +100,11 @@ export const REINFORCE_MIN = 240;
 // with it there: that feeds him a second company.
 export const REINFORCE_LOST_ODDS = 0.8;
 
+// A garrison decides whether to give up its post when the enemy is this many
+// march minutes from it: near enough that he is coming for it and not making
+// a show of it, far enough to get away clear.
+export const GIVE_UP_MIN = 90;
+
 // What an enemy is worth on the defence: a dug-in one is harder to shift.
 // Intel carries headcount and earthworks. The enemy's supply and fatigue are
 // not read: with them red sortied four times as often on a worn blue company
@@ -97,7 +112,7 @@ export const REINFORCE_LOST_ODDS = 0.8;
 const holds = (c: EnemyContact): number => c.strength * (c.dug ? DIG_DEF_MULT : 1);
 // Orders that cannot wait go at a forced march. A sortie is one: the post is
 // open until the garrison is back.
-const URGENT = new Set(['withdraw', 'relieve', 'commit-reserve', 'sortie', 'reinforce']);
+const URGENT = new Set(['withdraw', 'relieve', 'commit-reserve', 'sortie', 'reinforce', 'give-up']);
 // Side marches onto ground intel believes is open. Under fog that belief is
 // six hours old at best, so they go as a screen: it sees twice as far, and it
 // falls back from a garrison it did not know of instead of being routed by
@@ -561,6 +576,43 @@ export class Commander2 {
       return best && best.dest;
     };
 
+    // Give up a post (#808). A garrison stood and died at any odds: over 32
+    // wars blue attacked a garrison at its post 312 times, 158 of them at
+    // odds of 0.9 or better, and those garrisons (a median 13 men against
+    // 60) ended on 2. It now leaves before the fight when the enemy inside
+    // GIVE_UP_MIN of the post would take it at giveUpOdds or better against
+    // all that holds it or is marching to it. It goes to the nearest
+    // objective of its side it can reach clear that is not being given up
+    // too, and adds itself to the defence there. It stands when the post is
+    // the last one the enemy needs, and when there is nowhere to go. Returns
+    // the node to fall back on, or null to stand.
+    const enemyGoal = this.goals[enemy].find((c): c is Extract<WinCondition, { kind: 'control' }> => c.kind === 'control');
+    const closingOn = (n: number, withinMin: number): number => {
+      let threat = 0;
+      for (const c of intel.contacts()) if ((route(t, anchorNode(t, c.pos), n)?.minutes ?? Infinity) <= withinMin) threat += c.strength;
+      return threat;
+    };
+    const closing = (n: number): boolean => this.doctrine.giveUpOdds > 0 && closingOn(n, REINFORCE_MIN) > 0;
+    // Whether the enemy inside GIVE_UP_MIN of our node `n` would take it from
+    // what holds it or is marching to it.
+    const doomed = (n: number): boolean => {
+      if (this.doctrine.giveUpOdds <= 0) return false;
+      const threat = closingOn(n, GIVE_UP_MIN);
+      if (threat === 0) return false;
+      const held = own.filter((g) => (g.path.length > 0 ? pathNodes(t, g.pos, g.path).at(-1) === n : g.pos.kind === 'node' && g.pos.nodeId === n)).reduce((a, g) => a + effStrength(g) * (g.path.length > 0 ? 1 : DIG_DEF_MULT), 0);
+      return coarseOdds(threat, held, siteMult({ kind: 'node', nodeId: n })) >= this.doctrine.giveUpOdds;
+    };
+    const giveUp = (f: Force, home: number): number | null => {
+      if (!doomed(home)) return null;
+      if (enemyGoal && enemyGoal.nodeIds.includes(home) && enemyGoal.nodeIds.filter((n) => intel.control(n) === enemy).length + 1 >= enemyGoal.need) return null;
+      const rear = ownObjectives
+        .filter((n) => n !== home && !doomed(n))
+        .map((n) => ({ n, min: firstFight(f, n) ? null : safeMarchMin(f, n) }))
+        .filter((x): x is { n: number; min: number } => x.min !== null)
+        .sort((a, b) => a.min - b.min || a.n - b.n)[0];
+      return rear ? rear.n : null;
+    };
+
     for (const f of own) {
       if (f.engagedIn !== null || f.queuedAt !== null) continue;
       // A march, once ordered, is finished: the ladder below is asked only of
@@ -570,10 +622,20 @@ export class Commander2 {
       const marching = f.path.length > 0;
       if (f.role === 'garrison') {
         if (f.homeNode === null || marching) continue;
+        const atHome = f.pos.kind === 'node' && f.pos.nodeId === f.homeNode;
+        const rear = atHome ? giveUp(f, f.homeNode) : null;
+        if (rear !== null) {
+          order(f, rear, 'give-up');
+          continue;
+        }
         const dest = reorganising(f) ? null : prey(f, f.homeNode);
         if (dest !== null) order(f, dest, 'sortie');
-        // Home again once the way is open: never a fight to get there.
-        else if (!(f.pos.kind === 'node' && f.pos.nodeId === f.homeNode) && safeMarchMin(f, f.homeNode) !== null && !firstFight(f, f.homeNode)) order(f, f.homeNode, 'return');
+        // Home again once the way is open: never a fight to get there. A
+        // garrison that gave its post up (it stands on another objective of
+        // ours) stays while any enemy is inside REINFORCE_MIN of the post,
+        // the reach the reinforce arm reads: going back the hour he stepped
+        // away, it left and came back up to 11 times in a war.
+        else if (!atHome && !(f.pos.kind === 'node' && ownObjectives.includes(f.pos.nodeId) && closing(f.homeNode)) && safeMarchMin(f, f.homeNode) !== null && !firstFight(f, f.homeNode)) order(f, f.homeNode, 'return');
         continue;
       }
 
@@ -651,7 +713,7 @@ export class Commander2 {
     for (const f of own) {
       if (f.engagedIn !== null || f.path.length > 0) continue;
       const at = f.pos.kind === 'node' ? f.pos.nodeId : -1;
-      const post = f.role === 'garrison' ? at === f.homeNode : at >= 0 && (at === axisOf(f)?.objective || ownObjectives.includes(at));
+      const post = at >= 0 && (f.role === 'garrison' ? at === f.homeNode || ownObjectives.includes(at) : at === axisOf(f)?.objective || ownObjectives.includes(at));
       setPosture(front, f.id, post ? 'dig' : f.fatigue >= RAID_REST_FATIGUE && threatAt(f.pos) === 0 ? 'rest' : 'march');
     }
 
