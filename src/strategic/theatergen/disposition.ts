@@ -25,15 +25,18 @@ export class DispositionError extends Error {
 // the lever: three of 140-200 men destroyed AI blue on 12 of 16 seeds, because
 // each one beats a company alone (jtbug #797, #799).
 //
-// Measured after the #797 calibration and with red's spoiling attack (#799),
-// scripts/warsweep2.mjs, 32 seeds, AI both sides (blue wins · red attacks a
-// day · AI blue destroyed):
-//   Skirmish        1   88% · 0.47 · 1
-//   Normandy Bocage 4   53% · 1.39 · 15     at 3: 75% · 0.90 · 8
-//   River Line      4   53% · 1.51 · 15     at 3: 63% · 1.20 · 12
-//   Open Country    4   81% · 1.65 · 6
-// The three standard presets run at 4 by the owner's call for a red that
-// attacks (2026-10-11). 3 is the softer war and is on the setup screen.
+// Measured 2026-10-11 with garrisons that give up a post and the varied
+// spoiling hour (#808), scripts/warsweep2.mjs, 128 seeds, AI both sides (blue
+// wins · red attacks a day · AI blue destroyed):
+//   Skirmish        1   84% · 0.38 · 6
+//   Normandy Bocage 3   61% · 1.29 · 46     at 4: 38% · 1.61 · 76
+//   River Line      3   67% · 1.13 · 41     at 4: 49% · 1.49 · 65
+//   Open Country    4   82% · 1.31 · 22     at 3: 95% · 1.03 · 5
+// Normandy Bocage and River Line run at 3 by the owner's call after his
+// replay ("drop the enemy strength, keep adding to the AI", jtbug #805).
+// Open Country stays at 4: at 3 AI blue loses 6 wars in 128. These are AI
+// against AI. A battle the player fights is harder than its line here says:
+// every red force at the site is on the field (#807).
 const RED_GARRISON_BAND: Record<number, [number, number]> = {
   0: [0, 0],
   1: [25, 60],

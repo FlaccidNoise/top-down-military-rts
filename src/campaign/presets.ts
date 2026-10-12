@@ -79,7 +79,7 @@ export const PRESETS: readonly Preset[] = [
       warDays: 21,
       victory: 'majority',
       blueCompanies: 4,
-      redStrength: 3,
+      redStrength: 4,
       supply: true,
       recon: 'contacts',
       nightTempo: true,
