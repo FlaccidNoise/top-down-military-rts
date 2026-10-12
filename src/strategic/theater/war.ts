@@ -431,6 +431,37 @@ export function supportersOf(front: FrontV2, site: NetPos, principals: readonly 
     .sort((a, b) => a.id - b.id);
 }
 
+// Who fights a contact the player answers in person (jtbug #807): the two
+// forces that met, and every free force of the AI's side inside contact
+// range of the site. A fought battle used to field the two that met and no
+// more, so a garrison and the battlegroup that had marched in to hold the
+// town with it were beaten one after the other, the second by a company
+// that had not moved, and nothing red did to mass counted against a player.
+// The player's own companies in range still lend their fire and do not
+// field: a battle is fought with one roster.
+export function contactStack(front: FrontV2, c: Pick<Contact, 'attackerId' | 'defenderId' | 'site'>): { attackers: Force[]; defenders: Force[] } {
+  const atk = forceById(front, c.attackerId);
+  const def = forceById(front, c.defenderId);
+  const more = supportersOf(front, c.site, [atk.id, def.id]).filter((f) => f.side === 'red');
+  return { attackers: [atk, ...more.filter((f) => f.side === atk.side)], defenders: [def, ...more.filter((f) => f.side === def.side)] };
+}
+
+// The walkover test for that contact: the one a battle reads once the stack
+// has joined it.
+export function stackWalkover(front: FrontV2, c: Pick<Contact, 'attackerId' | 'defenderId' | 'site'>): 'attacker' | 'defender' | null {
+  const { attackers, defenders } = contactStack(front, c);
+  const sum = (fs: Force[], of: (f: Force) => number): number => fs.reduce((a, f) => a + of(f), 0);
+  return walkover(sum(attackers, effStrength), sum(defenders, effStrength), sum(defenders, defStrength));
+}
+
+// Open the battle for a contact the player fights: the stack joins it now.
+export function openFoughtBattle(front: FrontV2, c: Contact): CoarseBattle {
+  const { attackers, defenders } = contactStack(front, c);
+  const battle = openBattle(front, c);
+  for (const f of [...attackers.slice(1), ...defenders.slice(1)]) joinBattle(front, battle, f);
+  return battle;
+}
+
 export interface StepOptions {
   nightMult?: number;
   // Return true to open a timed coarse battle for this contact; false to

@@ -12,7 +12,7 @@ import { dugIn } from '../strategic/theater/step';
 import { supplyTierOf } from '../strategic/theater/supply';
 import { SUPPORT_BARRAGES } from '../strategic/bridge2';
 import { previewMove } from '../strategic/theater/step';
-import { battleDuration, contactWalkover, RETREAT_SETBACK_M, siteDefence, supportersOf } from '../strategic/theater/war';
+import { battleDuration, contactStack, RETREAT_SETBACK_M, siteDefence, stackWalkover, supportersOf } from '../strategic/theater/war';
 
 const FIGHT: Record<BattleClass, string> = {
   settlement: 'Town fight',
@@ -60,8 +60,13 @@ export function contactBrief(front: FrontV2, c: Contact, opts: BriefOpts): Conta
   const atk = front.forces.find((f) => f.id === c.attackerId)!;
   const def = front.forces.find((f) => f.id === c.defenderId)!;
   const playerAttacks = atk.side === 'blue';
-  // The test openBattle makes: the offer here is the forced winner there.
-  const winner = contactWalkover(atk, def);
+  // Every enemy force at the site fights (contactStack): the card counts
+  // them all, under fog too, because the company is in contact with them.
+  const stack = contactStack(front, c);
+  const men = (fs: Force[]): number => fs.reduce((a, f) => a + f.strength, 0);
+  // The test the battle makes once the stack has joined it: the offer here
+  // is the forced winner there.
+  const winner = stackWalkover(front, c);
   const trivial = winner !== null;
 
   // The same approach openBattle records, so the class named here is the
@@ -77,10 +82,11 @@ export function contactBrief(front: FrontV2, c: Contact, opts: BriefOpts): Conta
   // Odds in plain words: the man reading this should not have to divide.
   const own = playerAttacks ? atk : def;
   const foe = playerAttacks ? def : atk;
-  const ratio = Math.max(own.strength, foe.strength) / Math.max(1, Math.min(own.strength, foe.strength));
+  const ownMen = men(playerAttacks ? stack.attackers : stack.defenders);
+  const foeMen = men(playerAttacks ? stack.defenders : stack.attackers);
+  const ratio = Math.max(ownMen, foeMen) / Math.max(1, Math.min(ownMen, foeMen));
   const rtxt = ratio < 2 ? ratio.toFixed(1) : Math.round(ratio).toString();
-  const odds =
-    ratio < 1.1 ? 'Even match.' : own.strength > foe.strength ? `You outnumber them ${rtxt}:1.` : `They outnumber you ${rtxt}:1.`;
+  const odds = ratio < 1.1 ? 'Even match.' : ownMen > foeMen ? `You outnumber them ${rtxt}:1.` : `They outnumber you ${rtxt}:1.`;
 
   // Why this is a walkover, or why numbers alone are not one. A few words:
   // the weakest thing about the loser first, then the ground.
@@ -98,14 +104,13 @@ export function contactBrief(front: FrontV2, c: Contact, opts: BriefOpts): Conta
   };
   let why = '';
   if (trivial) why = `${because(playerWins ? foe : own, playerWins)} ${playerWins ? 'A walkover: auto-resolve offered.' : 'They would walk over you.'}`.trim();
-  else if (foe === def && dugIn(def) && own.strength >= foe.strength * TRIVIAL_RATIO) why = 'No walkover: they are dug in.';
+  else if (foe === def && dugIn(def) && ownMen >= foeMen * TRIVIAL_RATIO) why = 'No walkover: they are dug in.';
 
   // Who else is inside contact range of the site and free: the list staging
   // reads. Each of ours lends its fire to a fought battle. Under fog only our
   // own are named: an enemy the player has not seen is not on this card.
-  const near = supportersOf(front, c.site, [atk.id, def.id]);
-  const ours = near.filter((f) => f.side === 'blue');
-  const theirs = opts.fog ? [] : near.filter((f) => f.side === 'red');
+  const ours = supportersOf(front, c.site, [atk.id, def.id]).filter((f) => f.side === 'blue');
+  const theirs = (playerAttacks ? stack.defenders : stack.attackers).slice(1);
   const lend = (n: number): string => `+${n * SUPPORT_BARRAGES} barrage${n * SUPPORT_BARRAGES === 1 ? '' : 's'}`;
   // Nobody in range yet: the nearest company that could be, and how long it
   // needs. That is the choice: go now, or stand down and come back with it.
@@ -121,18 +126,18 @@ export function contactBrief(front: FrontV2, c: Contact, opts: BriefOpts): Conta
   };
   const join = [
     ours.length > 0 ? `${ours.map((f) => f.name).join(', ')} in range: ${lend(ours.length)}.` : (coming() ?? 'None in range to join.'),
-    theirs.length > 0 ? `Enemy in range: ${theirs.map((f) => f.name).join(', ')}.` : null,
+    theirs.length > 0 ? `With them: ${theirs.map((f) => f.name).join(', ')}.` : null,
   ]
     .filter(Boolean)
     .join(' ');
 
-  const facts = [join, `Costs ${fmtEta(battleDuration(atk.strength, def.strength, trivial))}.`];
+  const facts = [join, `Costs ${fmtEta(battleDuration(men(stack.attackers), men(stack.defenders), trivial))}.`];
   if (playerAttacks) facts.push(`Stand down: fall back ${RETREAT_SETBACK_M / 1000} km, no losses.`);
 
   return {
     title: c.site.kind === 'node' ? front.theater.nodes[c.site.nodeId].name : 'On the road',
     kind: `${FIGHT[battleClass]} · map: ${GROUND[BATTLE_CLASS_TO_MAPKIND[battleClass]]}`,
-    sides: [atk, def].map((f) => ({ name: f.name, side: f.side, men: `${f.strength} men`, state: state(f) })),
+    sides: [stack.attackers, stack.defenders].map((fs) => ({ name: fs.length > 1 ? `${fs[0].name} +${fs.length - 1}` : fs[0].name, side: fs[0].side, men: `${men(fs)} men`, state: state(fs[0]) })),
     odds: why ? `${odds} ${why}` : odds,
     forced: playerAttacks ? null : 'They chose this fight. A defender cannot stand down.',
     facts,

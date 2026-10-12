@@ -9,7 +9,7 @@ import { REINFORCE_CYCLE_DAYS } from './front';
 import { cycleRefit } from './refit';
 import { makeWarGoals, warStatus, type WarGoals, type WarState } from './goals';
 import { ContactIntel, OmniscientIntel, type IntelView } from './intel';
-import { BLUE_V2, Commander2, redDoctrine, type DoctrineV2, type OperationalPlan, type PlannerReport } from './planner';
+import { BLUE_V2, Commander2, redDoctrine, spoilDelayMin, type DoctrineV2, type OperationalPlan, type PlannerReport } from './planner';
 import { makeTheater } from './theatergen';
 import { makeDisposition } from './theatergen/disposition';
 import { addForce, type FrontV2 } from './theater/force';
@@ -79,7 +79,7 @@ export function makeHeadlessWorld(
     for (const f of d.forces) addForce(front, f);
   }
   const goals = makeWarGoals(front.theater, campaignCfg);
-  const kernel = { nightTempo: campaignCfg.nightTempo, fog: campaignCfg.recon === 'contacts' };
+  const kernel = { nightTempo: campaignCfg.nightTempo, fog: campaignCfg.recon === 'contacts', spoilDelayMin: spoilDelayMin(seed) };
   const red = new Commander2('red', doctrines?.red ?? redDoctrine(campaignCfg.redStrength), goals, campaignCfg.warDays, kernel);
   const blue = new Commander2('blue', doctrines?.blue ?? BLUE_V2, goals, campaignCfg.warDays, kernel);
   for (const [cmd, side] of [

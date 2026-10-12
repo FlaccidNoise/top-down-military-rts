@@ -15,7 +15,7 @@ import { barrageRunning, REQ_ARMOR, REQ_BARRAGES } from './requisition';
 import type { Chit, Front } from './front';
 import { battleSiteOf, BATTLE_CLASS_TO_MAPKIND, type BattleClass } from './theater';
 import { pushEvent, type CoarseBattle, type FrontV2 } from './theater/force';
-import { forceById, retreatForce, supportersOf, throwBack } from './theater/war';
+import { battleSides, forceById, retreatForce, supportersOf, throwBack } from './theater/war';
 import { edgeById } from './theater/force';
 import { syncStrengthsV2 } from './theater/sync';
 import { SUPPLY_AMMO_MULT, supplyTierOf } from './theater/supply';
@@ -25,7 +25,8 @@ import { FOUGHT_BATTLE_FATIGUE } from './theater/war';
 export const DIG_BARRAGES = 1;
 // Concentration (jtbug #786): each friendly company inside contact range of a
 // fought battle lends this many barrages: its mortars, firing from where it
-// stands. The battle still fields the two principals only.
+// stands. It does not field. A force that JOINED the battle (openFoughtBattle:
+// the AI's forces at the site) fields with its principal, as one force.
 export const SUPPORT_BARRAGES = 1;
 
 export interface TheaterBattle {
@@ -49,6 +50,10 @@ export function makeTheaterBattle(c: Campaign, front: FrontV2, battle: CoarseBat
   const kind = BATTLE_CLASS_TO_MAPKIND[battleClass];
   const seed = (battle.startMin * 7919 + siteKey) >>> 0; // un-xor'd tactical form (R4)
 
+  // A side's whole stack stages as one force (makeStrategicBattle caps what
+  // it fields: the men past the cap sit the battle out, as they did for one
+  // force too strong for the field).
+  const sides = battleSides(front, battle);
   const chitOf = (f: typeof atk, id: number, cell: number): Chit => ({
     id,
     side: f.side,
@@ -56,7 +61,7 @@ export function makeTheaterBattle(c: Campaign, front: FrontV2, battle: CoarseBat
     cell,
     path: [],
     progress: 0,
-    strength: f.strength,
+    strength: f === atk ? sides.atkStrength : sides.defStrength,
     companyIndex: f.companyIndex,
   });
   const adapter = {
@@ -141,40 +146,52 @@ export function applyTheaterOutcome(
 ): { record: BattleRecord; redLosses: number; nodeTaken: number | null; breaches: BreachEvent[] } {
   const atk = forceById(front, battle.attackerId);
   const def = forceById(front, battle.defenderId);
+  const sides = battleSides(front, battle);
   const attackerWon = sim.winner === atk.side;
   const record = applyBattleResults(c, sim, sim.winner === 'blue');
+  // Red's dead and downed come off the red forces that fought, in proportion
+  // to what each brought (the coarse resolver's rule).
   const redLosses = sim.soldiers.filter((s) => s.side === 'red' && (!s.alive || s.downed)).length;
-  const redForce = atk.side === 'red' ? atk : def;
-  redForce.strength = Math.max(0, redForce.strength - redLosses);
+  const reds = atk.side === 'red' ? sides.attackers : sides.defenders;
+  const brought = reds.reduce((a, f) => a + f.strength, 0);
+  let remaining = redLosses;
+  reds.forEach((f, i) => {
+    const share = i === reds.length - 1 ? remaining : Math.min(remaining, Math.round((redLosses * f.strength) / Math.max(1, brought)));
+    f.strength = Math.max(0, f.strength - share);
+    remaining -= share;
+  });
 
   // S51: a fought battle wears harder than a coarse one.
-  atk.fatigue = Math.min(1, atk.fatigue + FOUGHT_BATTLE_FATIGUE);
-  def.fatigue = Math.min(1, def.fatigue + FOUGHT_BATTLE_FATIGUE);
-
-  atk.engagedIn = null;
-  def.engagedIn = null;
+  for (const f of [...sides.attackers, ...sides.defenders]) {
+    f.fatigue = Math.min(1, f.fatigue + FOUGHT_BATTLE_FATIGUE);
+    f.engagedIn = null;
+  }
   const idx = front.battles.indexOf(battle);
   if (idx >= 0) front.battles.splice(idx, 1);
 
-  const winner = attackerWon ? atk : def;
-  const loser = attackerWon ? def : atk;
+  const winners = attackerWon ? sides.attackers : sides.defenders;
+  const losers = attackerWon ? sides.defenders : sides.attackers;
   let nodeTaken: number | null = null;
   if (battle.site.kind === 'node') {
     const nodeId = battle.site.nodeId;
-    if (winner.strength > 0) winner.pos = { kind: 'node', nodeId };
-    if (front.controlByNode[nodeId] !== winner.side) {
-      front.controlByNode[nodeId] = winner.side;
+    for (const w of winners) if (w.strength > 0) w.pos = { kind: 'node', nodeId };
+    if (front.controlByNode[nodeId] !== winners[0].side) {
+      front.controlByNode[nodeId] = winners[0].side;
       nodeTaken = nodeId;
       pushEvent(front, {
         min: front.clockMin,
         kind: 'capture',
         text: `${front.theater.nodes[nodeId].name} taken`,
-        forceIds: [winner.id],
+        forceIds: winners.map((f) => f.id),
         nodeId,
       });
     }
   }
-  if (loser.strength > 0) {
+  for (const loser of losers) {
+    if (loser.strength <= 0) {
+      pushEvent(front, { min: front.clockMin, kind: 'overrun', text: `${loser.name} is destroyed`, forceIds: [loser.id] });
+      continue;
+    }
     loser.repulsedAtMin = front.clockMin;
     const beatenAssault = !attackerWon && (battleClass === 'bridge-assault' || battleClass === 'ford-assault');
     if (beatenAssault && battle.approachEdgeId !== null && battle.site.kind === 'node') {
@@ -182,14 +199,12 @@ export function applyTheaterOutcome(
     } else {
       retreatForce(front, loser, battle.approachEdgeId);
     }
-  } else {
-    pushEvent(front, { min: front.clockMin, kind: 'overrun', text: `${loser.name} is destroyed`, forceIds: [loser.id] });
   }
   pushEvent(front, {
     min: front.clockMin,
     kind: 'battle-resolved',
     text: `${attackerWon ? 'Attack succeeds' : 'Defence holds'}${battle.site.kind === 'node' ? ` at ${front.theater.nodes[battle.site.nodeId].name}` : ''}`,
-    forceIds: [atk.id, def.id],
+    forceIds: [...sides.attackers, ...sides.defenders].map((f) => f.id),
     nodeId: battle.site.kind === 'node' ? battle.site.nodeId : undefined,
   });
   syncStrengthsV2(c, front);

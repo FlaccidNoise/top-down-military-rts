@@ -10,13 +10,12 @@
 // and paste its `PIN seed N {status, day, logLen}` lines into PINNED below,
 // recording the commit here. Never hand-edit a tuple.
 //
-// Recorded 2026-10-11 at the commit that set enemy strength 3 on the three
-// standard presets (owner's call after his replay, jtbug #805), with garrisons
-// that give up a post (jtbug #808), on the calibrated resolver and four red
+// Recorded 2026-10-11 at the commit that varied the hour red's spoiling
+// attacks may start by the war's seed (jtbug #808), at enemy strength 3 with
+// garrisons that give up a post, on the calibrated resolver and four red
 // battlegroups, warsweep-v2 seeds 1..16, recon contacts (the DEFAULT_PRESET
-// value), no doctrine override. Gates green: 0 hung, 11/16 blue wins (79/128
-// over 128 seeds), red retook objectives on 15/16 seeds, 1.08 red attacks per
-// day. AI blue is destroyed before the deadline on 4 seeds.
+// value), no doctrine override. Gates green: 0 hung, 78/128 blue wins over
+// 128 seeds, 12/16 on these sixteen, 1.06 red attacks per day.
 import { beforeAll, describe, expect, it } from 'vitest';
 import { DEFAULT_PRESET } from '../src/campaign/presets';
 import { makeHeadlessWorld, runHeadlessWar } from '../src/strategic/headless';
@@ -47,11 +46,11 @@ const PINNED: Tuple[] = [
   { status: 'won', day: 6, logLen: 30 },
   { status: 'won', day: 8, logLen: 37 },
   { status: 'lost', day: 2, logLen: 11 },
-  { status: 'lost', day: 3, logLen: 10 },
+  { status: 'won', day: 7, logLen: 38 },
   { status: 'won', day: 7, logLen: 24 },
-  { status: 'won', day: 7, logLen: 44 },
-  { status: 'won', day: 9, logLen: 37 },
-  { status: 'won', day: 10, logLen: 45 },
+  { status: 'won', day: 8, logLen: 40 },
+  { status: 'won', day: 9, logLen: 44 },
+  { status: 'won', day: 12, logLen: 44 },
   { status: 'won', day: 12, logLen: 58 },
   { status: 'won', day: 7, logLen: 37 },
   { status: 'lost', day: 2, logLen: 6 },

@@ -13,7 +13,7 @@ import { lightAt } from '../sim/solar';
 import type { Side } from '../sim/sim';
 import { coarseOdds } from './bridge';
 import type { NetPos, Theater } from './theater';
-import { anchorNode, CONTACT_M, incidentFoot, otherEnd, pathNodes, route, type Force, type FrontV2 } from './theater/force';
+import { anchorNode, CONTACT_M, incidentFoot, otherEnd, pathNodes, pushEvent, route, type Force, type FrontV2 } from './theater/force';
 import { posSupplied, traceSupply } from './theater/supply';
 import { forceEtaMinutes, orderMove, planMove, setPosture } from './theater/step';
 import { siteDefence, THREAT_M, walkover } from './theater/war';
@@ -62,6 +62,11 @@ export const BLUE_V2: DoctrineV2 = { ...RED_V2, attackOdds: 0.3, deadlinePressur
 export const redDoctrine = (redStrength: number): DoctrineV2 => (redStrength <= 1 ? { ...RED_V2, giveUpOdds: 0 } : RED_V2);
 // No spoiling attack on the first day: the other side gets a day to form up.
 export const SPOIL_FROM_DAY = 2;
+// How long after midnight of that day a side's spoiling attacks may start, by
+// the war's seed: 0, 6, 12, 18 or 24 hours. Without it red set out at 00:00 on
+// Day 2 in every war and struck at dawn, about 05:30, and a player who had
+// seen one war knew the hour (jtbug #808).
+export const spoilDelayMin = (seed: number): number => ((Math.imul(seed, 0x9e3779b1) >>> 0) % 5) * 360;
 
 export interface Axis {
   objective: number; // node id
@@ -173,7 +178,7 @@ export class Commander2 {
     public readonly doctrine: DoctrineV2,
     private readonly goals: WarGoals,
     private readonly deadlineDay: number,
-    private readonly opts: { nightTempo?: boolean; fog?: boolean } = {},
+    private readonly opts: { nightTempo?: boolean; fog?: boolean; spoilDelayMin?: number } = {},
   ) {}
 
   // Estimated effective enemy strength within contact range of a node.
@@ -521,7 +526,7 @@ export class Commander2 {
         // its ground and does not chase one across the map (jtbug #799: an
         // idle player was never attacked in a whole war, 12 seeds of 12).
         const ours = ends.some((n) => intel.control(n) === this.side);
-        const reachMin = ours ? Infinity : front.day >= SPOIL_FROM_DAY ? this.doctrine.spoilMinutes : 0;
+        const reachMin = ours ? Infinity : front.clockMin >= (SPOIL_FROM_DAY - 1) * 1440 + (this.opts.spoilDelayMin ?? 0) ? this.doctrine.spoilMinutes : 0;
         if (reachMin === 0) continue;
         for (const dest of ends) {
           if (t.nodes[dest].kind === 'ford') continue;
@@ -625,7 +630,7 @@ export class Commander2 {
         const atHome = f.pos.kind === 'node' && f.pos.nodeId === f.homeNode;
         const rear = atHome ? giveUp(f, f.homeNode) : null;
         if (rear !== null) {
-          order(f, rear, 'give-up');
+          if (order(f, rear, 'give-up')) pushEvent(front, { min: front.clockMin, kind: 'retreat', text: `${f.name} gives up ${t.nodes[f.homeNode].name} and falls back on ${t.nodes[rear].name}`, forceIds: [f.id], nodeId: f.homeNode });
           continue;
         }
         const dest = reorganising(f) ? null : prey(f, f.homeNode);

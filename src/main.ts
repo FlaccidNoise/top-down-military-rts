@@ -49,12 +49,12 @@ import { DispositionError, makeDisposition } from './strategic/theatergen/dispos
 import { makeWarGoals, warStatus, type WarGoals } from './strategic/goals';
 import { DEPLOY_ATK_DEPTH, DEPLOY_DEF_LINE, DEPLOY_DEF_DEFAULT } from './strategic/deploy';
 import { ContactIntel, OmniscientIntel, type IntelView } from './strategic/intel';
-import { Commander2, redDoctrine } from './strategic/planner';
+import { Commander2, redDoctrine, spoilDelayMin } from './strategic/planner';
 import { addForce, pushEvent, type CoarseBattle, type FrontV2, type MoveReject } from './strategic/theater/force';
 import { firstContactOnMarch, orderHalt, orderMove, previewMove, setPosture } from './strategic/theater/step';
 import { applyRequisition, requisitionDue, requisitionOffer, type RequisitionCard } from './strategic/requisition';
 import { resultOfWin, resultTarget } from './strategic/result';
-import { battleCatchUpMin, openBattle, retreatForce, stepWar } from './strategic/theater/war';
+import { battleCatchUpMin, openBattle, openFoughtBattle, retreatForce, stepWar } from './strategic/theater/war';
 import { syncStrengthsV2 } from './strategic/theater/sync';
 import type { Contact } from './strategic/theater/contact';
 import { BATTLE_CLASS_TO_MAPKIND } from './strategic/theater';
@@ -1110,7 +1110,7 @@ function openMainMenu(): void {
 // V2: a pending theater contact becomes a fought battle.
 function startTheaterBattle(c: Contact): void {
   const v2 = S().v2!;
-  const b = openBattle(v2.front, c);
+  const b = openFoughtBattle(v2.front, c);
   const tb = makeTheaterBattle(S().campaign, v2.front, b);
   v2.battle = { b, tb };
   v2.pending = null;
@@ -1555,7 +1555,7 @@ function startCampaignV2(
         campaignCfg: camp,
         front,
         goals,
-        red: new Commander2('red', redDoctrine(camp.redStrength), goals, camp.warDays, { nightTempo: camp.nightTempo, fog: camp.recon === 'contacts' }),
+        red: new Commander2('red', redDoctrine(camp.redStrength), goals, camp.warDays, { nightTempo: camp.nightTempo, fog: camp.recon === 'contacts', spoilDelayMin: spoilDelayMin(seed) }),
         // OQ6 (A): identical fog and detection — red reads ghosts when the
         // campaign runs contacts, exactly as the player's map does.
         redIntel: camp.recon === 'contacts' ? new ContactIntel(front, 'red') : new OmniscientIntel(front, 'red'),

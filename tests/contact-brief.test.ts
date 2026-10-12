@@ -10,7 +10,7 @@ import { makeHeadlessWorld } from '../src/strategic/headless';
 import type { Contact } from '../src/strategic/theater/contact';
 import { SUPPLY_OUT_MIN } from '../src/strategic/theater/supply';
 import { DIG_IN_MIN } from '../src/strategic/theater/step';
-import { battleDuration, openBattle, RETREAT_SETBACK_M } from '../src/strategic/theater/war';
+import { battleDuration, openBattle, RETREAT_SETBACK_M, openFoughtBattle } from '../src/strategic/theater/war';
 import { newCampaign } from '../src/campaign/campaign';
 import { makeTheaterBattle, SUPPORT_BARRAGES } from '../src/strategic/bridge2';
 import { briefWords, contactBrief, SUPPORT_WAIT_MIN } from '../src/ui/contact-brief';
@@ -81,6 +81,30 @@ describe('contact brief', () => {
     const alone = makeTheaterBattle(newCampaign(1, 3), { ...front, forces: front.forces.filter((f) => f !== other) }, openBattle(front, c)).sim.barragesLeft.blue;
     const battle = front.battles[front.battles.length - 1];
     expect(makeTheaterBattle(newCampaign(1, 3), front, battle).sim.barragesLeft.blue).toBe(alone + SUPPORT_BARRAGES);
+  });
+
+  it('counts and names every enemy force at the site, under fog too: they all fight (jtbug #807)', () => {
+    const { front, c } = atContact();
+    const atk = front.forces.find((f) => f.id === c.attackerId)!;
+    const def = front.forces.find((f) => f.id === c.defenderId)!;
+    const other = front.forces.find((f) => f.side === 'red' && f !== def)!;
+    def.strength = 40;
+    other.strength = 60;
+    other.pos = { ...def.pos };
+    other.path = [];
+    const b = contactBrief(front, c, { ...OPTS, fog: true });
+    const red = b.sides.find((s) => s.side === 'red')!;
+    expect(red.men).toBe('100 men');
+    expect(red.name).toBe(`${def.name} +1`);
+    expect(b.facts[0]).toContain(`With them: ${other.name}.`);
+    expect(b.odds).toBe(`You outnumber them ${(atk.strength / 100).toFixed(1)}:1.`);
+    // A walkover against the one force is not one against both, and the battle agrees.
+    def.strength = 10;
+    other.strength = 10;
+    expect(contactBrief(front, c, OPTS).trivial).toBe(true);
+    other.strength = 60;
+    expect(contactBrief(front, c, OPTS).trivial).toBe(false);
+    expect(openFoughtBattle(front, c).forced).toBeNull();
   });
 
   // Isolation as a weapon (jtbug #786): the same garrison, the same company.

@@ -5,7 +5,7 @@ import { SPEC_TAG, specStream } from '../src/campaign/spec';
 import { makeTheater } from '../src/strategic/theatergen';
 import { makeDisposition } from '../src/strategic/theatergen/disposition';
 import { addForce, type FrontV2 } from '../src/strategic/theater/force';
-import { battleCatchUpMin, openBattle, stepWar } from '../src/strategic/theater/war';
+import { battleCatchUpMin, openBattle, openFoughtBattle, stepWar } from '../src/strategic/theater/war';
 import { orderMove } from '../src/strategic/theater/step';
 import { applyTheaterOutcome, makeTheaterBattle } from '../src/strategic/bridge2';
 
@@ -55,6 +55,56 @@ describe('makeTheaterBattle', () => {
     const s1 = stage(a);
     const s2 = stage(b);
     expect(s1.sim.soldiers.map((s) => [s.x, s.y, s.weapon])).toEqual(s2.sim.soldiers.map((s) => [s.x, s.y, s.weapon]));
+  });
+
+  // jtbug #807. A fought battle fielded the two forces that met and no more:
+  // a second red force in the same town watched, and was fought afterwards.
+  describe('every red force at the site fights in a battle the player plays', () => {
+    const stack = (seed: number) => {
+      const w = build(seed);
+      const blue = w.front.forces.find((f) => f.side === 'blue')!;
+      const [garrison, other] = w.front.forces.filter((f) => f.side === 'red');
+      garrison.strength = 40;
+      other.strength = 50;
+      other.pos = { ...garrison.pos };
+      other.path = [];
+      blue.pos = { ...garrison.pos };
+      const c = { attackerId: blue.id, defenderId: garrison.id, site: garrison.pos, gapM: 0 };
+      return { ...w, blue, garrison, other, c };
+    };
+    const reds = (tb: ReturnType<typeof makeTheaterBattle>): number => tb.sim.soldiers.filter((s) => s.side === 'red').length;
+
+    it('they join the battle and stage as one force', () => {
+      const alone = stack(1);
+      const lone = reds(makeTheaterBattle(alone.campaign, alone.front, openBattle(alone.front, alone.c)));
+      const { front, campaign, garrison, other, c } = stack(1);
+      const battle = openFoughtBattle(front, c);
+      expect(battle.joined).toEqual([other.id]);
+      expect(other.engagedIn).toBe(battle.id);
+      expect(reds(makeTheaterBattle(campaign, front, battle))).toBeGreaterThanOrEqual(lone + 45); // 90 men in place of 40, and their gun crews
+      expect(garrison.strength).toBe(40); // staging takes nothing from a force
+    });
+
+    it('their losses are shared by what each brought, and beaten they all leave the town', () => {
+      const { front, campaign, blue, garrison, other, c } = stack(3);
+      const battle = openFoughtBattle(front, c);
+      const tb = makeTheaterBattle(campaign, front, battle);
+      const fallen = tb.sim.soldiers.filter((s) => s.side === 'red').slice(0, 45);
+      fallen.forEach((s) => (s.alive = false));
+      tb.sim.winner = 'blue';
+      const out = applyTheaterOutcome(campaign, front, battle, tb.battleClass, tb.sim);
+      expect(out.redLosses).toBe(45);
+      expect(garrison.strength).toBe(20); // 40 of 90 brought: 20 of 45 lost
+      expect(other.strength).toBe(25);
+      const nodeId = battle.site.kind === 'node' ? battle.site.nodeId : -1;
+      expect(front.controlByNode[nodeId]).toBe('blue');
+      expect(blue.pos).toEqual({ kind: 'node', nodeId });
+      for (const f of [garrison, other]) {
+        expect(f.engagedIn).toBeNull();
+        expect(f.pos).not.toEqual({ kind: 'node', nodeId });
+        expect(f.repulsedAtMin).toBe(front.clockMin);
+      }
+    });
   });
 
   it('applyTheaterOutcome: winner paints and occupies, loser routes, roster reconciles', () => {

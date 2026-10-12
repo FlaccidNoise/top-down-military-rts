@@ -30,7 +30,7 @@ import { warStatus } from '../src/strategic/goals';
 import { makeHeadlessWorld } from '../src/strategic/headless';
 import { orderMove, previewMove } from '../src/strategic/theater/step';
 import { syncStrengthsV2 } from '../src/strategic/theater/sync';
-import { openBattle, stepWar } from '../src/strategic/theater/war';
+import { openFoughtBattle, stepWar } from '../src/strategic/theater/war';
 
 const arg = (name, dflt) => {
   const i = process.argv.indexOf(`--${name}`);
@@ -108,7 +108,7 @@ function firstContact(preset, seed) {
   };
   if (!FIGHT) return { ...met, outcome: 'contact' };
 
-  const tb = makeTheaterBattle(campaign, front, openBattle(front, contact));
+  const tb = makeTheaterBattle(campaign, front, openFoughtBattle(front, contact));
   const { sim } = tb;
   const t0 = performance.now();
   const moved = { 'fell-back': 0, counterattack: 0, shifted: 0 }; // what the defence did that a player can see

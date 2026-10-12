@@ -6,7 +6,7 @@ import { newCampaign } from '../src/campaign/campaign';
 import { DEFAULT_PRESET } from '../src/campaign/presets';
 import { makeWarGoals } from '../src/strategic/goals';
 import { OmniscientIntel } from '../src/strategic/intel';
-import { BLUE_V2, Commander2, GIVE_UP_MIN, RED_V2, redDoctrine, SORTIE_COVER_MIN, SPOIL_FROM_DAY, type PlannerReport } from '../src/strategic/planner';
+import { BLUE_V2, Commander2, GIVE_UP_MIN, RED_V2, redDoctrine, SORTIE_COVER_MIN, SPOIL_FROM_DAY, spoilDelayMin, type PlannerReport } from '../src/strategic/planner';
 import type { Theater } from '../src/strategic/theater';
 import { addForce, type Force, type ForceRole, type FrontV2 } from '../src/strategic/theater/force';
 import { DIG_IN_MIN } from '../src/strategic/theater/step';
@@ -116,6 +116,8 @@ describe('a garrison gives up a post it cannot hold', () => {
     const { fr, small, red, intel, first } = setup();
     expect(first()).toEqual([`${small.id}:give-up>4`]);
     expect(small.posture).toBe('forced');
+    // The log says so. Under fog the HUD shows the line only while the garrison is a contact.
+    expect(fr.events.at(-1)).toMatchObject({ kind: 'retreat', forceIds: [small.id], text: `${small.name} gives up ${fr.theater.nodes[2].name} and falls back on ${fr.theater.nodes[4].name}` });
     const campaign = newCampaign(1, 1);
     const seen: string[] = [];
     for (let m = 0; m < 400; m++) {
@@ -290,6 +292,7 @@ describe('counterattack', () => {
   const acrossTheLine = (day: number): { fr: FrontV2; group: Force } => {
     const fr = world(theater(3), ['blue', 'blue', 'red', 'red', 'red']);
     fr.day = day;
+    fr.clockMin = (day - 1) * 1440 + 30; // half past midnight on that day
     put(fr, 'blue', 'line', { kind: 'edge', edgeId: 0, s: 1000, dir: -1 }, 30);
     const group = put(fr, 'red', 'line', { kind: 'node', nodeId: 3 }, 100);
     put(fr, 'red', 'reserve', { kind: 'node', nodeId: 4 }, 100);
@@ -304,6 +307,19 @@ describe('counterattack', () => {
     const { fr, group } = acrossTheLine(SPOIL_FROM_DAY);
     // On A: the march there is the one that meets it.
     expect(whys(evalOnce(fr, 'red'))).toContain(`${group.id}:hunt>0`);
+  });
+
+  it('the hour it may start is the war\'s own: not before its delay has run, and from then on (jtbug #808)', () => {
+    const { fr, group } = acrossTheLine(SPOIL_FROM_DAY);
+    const late = new Commander2('red', RED_V2, makeWarGoals(fr.theater, CAMP), CAMP.warDays, { spoilDelayMin: 360 });
+    const intel = new OmniscientIntel(fr, 'red');
+    expect(late.evaluate(fr, intel)!.orders.map((o) => o.why)).not.toContain('hunt');
+    fr.clockMin += 360;
+    expect(whys(late.evaluate(fr, intel)!)).toContain(`${group.id}:hunt>0`);
+    // Five start hours over the seeds, a quarter of a day apart, and a seed keeps its own.
+    const delays = Array.from({ length: 200 }, (_, seed) => spoilDelayMin(seed + 1));
+    expect([...new Set(delays)].sort((a, b) => a - b)).toEqual([0, 360, 720, 1080, 1440]);
+    expect(spoilDelayMin(7)).toBe(spoilDelayMin(7));
   });
 
   it('not for one beyond its reach, and blue has no spoiling attack', () => {
