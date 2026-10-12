@@ -1,5 +1,18 @@
 # HANDOFF — 2026-07-28 (playtest-feedback wave: orders, audio, armour, mapgen)
 
+## 2026-10-11 (night): ENEMY AI COMPETENCE, first two moves (jtbug #805, #800, #808)
+Owner direction after the replay: make the enemy AI as smart as it can be. Decision record: INDEX.md, top Gameplay entry. main is at 6df0996 (code). NOT deployed, NOT pushed.
+- **Rule (orchestrator's wording)**: no AI is left simple to hold a win rate. Strength numbers carry difficulty. One exception on purpose: Skirmish garrisons stand, so a first campaign has a first battle.
+- **Theater, 6df0996 (#808)**: a garrison gives up a post it cannot hold (odds 0.9 against it, enemy inside 90 minutes) and falls back on the next objective. AI blue wins over 128 wars: Normandy Bocage 62 to 49, River Line 60 to 59, Open Country 111 to 108. Half of a player's 3 to 1 first fights on Normandy Bocage become an empty town.
+- **Battle, daac385 (#800)**: an idle defending squad shifts to an empty briefed position that can engage the attack. Defence holds 10 of 18 before and after. Small.
+- **Measure on 128 seeds.** At 32, three variants of one rule read 12, 14 and 17 blue wins and the order reversed at 128.
+- **A defender that walks toward a company dies.** The first shift design cost the defence 3 of 18 battles. Move defenders only between prepared positions.
+- **`--give-up N` on warsweep2** sets red's giveUpOdds (0 = the old garrison). In zsh pass flags as separate words: an unsplit `$f` holding "--give-up 0" is silently ignored.
+- **Difficulty moved and was NOT retuned**: AI blue on Normandy Bocage 48% to 38% over 128 wars. Enemy strength 3 gives 60%. Owner has not replayed.
+- **Next, in order of what I expect to pay**: #807 (red's attack reads one axis and wins 0 of 6 against a town, forest or bridge), #808 remainder (read the player's concentration, vary the spoiling hour), #806 (a commander that can leave a lost battle: needs a new battle end state).
+- Gates at 6df0996: check, test:quick 1542, doctrine 54, perf, sim, strategic-command, drill-sweep, warsweep2 --gate, tutorial.mjs every leg. The battle art sweep was not re-run: nothing drawn changed after 8c25ba0.
+- Preview: port 5360 serves the build of 6df0996.
+
 ## 2026-10-11 (late): OWNER REPLAYED 8ef1caa — difficulty confirmed, soldier flicker fixed (jtbug #804)
 - **Verdict**: "pretty fun to play", "the Normandy Bocage difficulty was pretty good". He saw red march on a town he was dug in at and try to counterattack. Skirmish "still okay". Fought battles: 128 against 31 a walkover, 128 against about 104 "barely won". No crash. He liked the FX and smoke hiding the result of an airstrike.
 - **No tuning**: enemy strength 4 and the spoiling attack both stay. No sweep re-run, pin unchanged.
@@ -7,8 +20,7 @@
 - **Fixed, #804**: marching soldiers flickered. `drawSoldier` measured movement per frame, the sim steps at 30 Hz, so a frame with no step drew the standing pose (every other frame at 60 Hz). Movement is now read once per sim step (`RState.tick`). Gate: `scripts/gait.mjs` (1428 of 1428 samples at rest before, 0 after). Battle art sweep 0/147 against the 4f59e33 baseline (copy kept as `.screenshots/sweep-pre-804`), check, test:quick 1536.
 - **Still raw**: a man's POSITION is the sim position, so it advances at 30 Hz on any display. Judder, not flicker. Not built.
 - **Side effect**: a paused battle now holds a marching man mid-stride. Before, he dropped to his standing pose.
-- **OPEN, #800**: the defender flank move waits on the owner's yes or no.
-- Preview: port 5360 serves the build of 8c25ba0 (`index-CL_iZSqq.js`). The gait gate needs a dev server, so the fix is NOT checked on the production bundle beyond it loading.
+- The gait gate needs a dev server, so the fix is NOT checked on the production bundle beyond it loading.
 
 ## 2026-10-11: FIRST HUMAN PLAYTEST — one battle math, a red that attacks (jtbug #797, #799, #800, #801)
 Owner played the wave: "no real strategy on the strategy map", "I never see the enemy do anything". Then decided #797: yes, and a harder campaign with a red that attacks and counterattacks. main is at 8ef1caa (code). NOT deployed. Decision record: INDEX.md, 2026-10-11 (Gameplay). Numbers and what was rejected: `docs/research/2026-10-09-upgrade-audit/coarse-calibration/README.md`.
