@@ -9,7 +9,7 @@ import { OmniscientIntel } from '../src/strategic/intel';
 import { BLUE_V2, Commander2, GIVE_UP_MIN, RED_V2, redDoctrine, SORTIE_COVER_MIN, SPOIL_FROM_DAY, spoilDelayMin, type PlannerReport } from '../src/strategic/planner';
 import type { Theater } from '../src/strategic/theater';
 import { addForce, type Force, type ForceRole, type FrontV2 } from '../src/strategic/theater/force';
-import { DIG_IN_MIN } from '../src/strategic/theater/step';
+import { DIG_IN_MIN, orderMove } from '../src/strategic/theater/step';
 import { stepWar } from '../src/strategic/theater/war';
 import { lineTheater } from './lib/line-theater';
 
@@ -128,6 +128,18 @@ describe('a garrison gives up a post it cannot hold', () => {
     expect(small.strength).toBe(30); // it met nobody
     expect(small.posture).toBe('dig');
     expect(seen).not.toContain('return'); // the company still stands 40 minutes from its post
+  });
+
+  it('the company that walks into the empty town is told the garrison pulled out', () => {
+    const { fr, blue, red, intel } = setup();
+    const campaign = newCampaign(1, 1);
+    for (let m = 0; m < 300; m++) {
+      if (m === 120) orderMove(fr, blue.id, 2);
+      red.evaluate(fr, intel);
+      stepWar(fr, campaign, { autoBattle: () => true });
+    }
+    expect(fr.controlByNode[2]).toBe('blue');
+    expect(fr.events.filter((e) => e.kind === 'capture').map((e) => e.text)).toEqual([`${blue.name} takes ${fr.theater.nodes[2].name}: the garrison has pulled out`]);
   });
 
   it('it goes home when no enemy is closing on the post any more', () => {

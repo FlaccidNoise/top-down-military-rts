@@ -103,10 +103,13 @@ function enemyAt(front: FrontV2, nodeId: number, side: Side): boolean {
 function paintCapture(front: FrontV2, f: Force, nodeId: number): void {
   if (front.controlByNode[nodeId] !== f.side && !enemyAt(front, nodeId, f.side)) {
     front.controlByNode[nodeId] = f.side; // entry-paint, unconditional (OQ11)
+    // A garrison that gave the place up (jtbug #808) is alive somewhere else:
+    // the empty town says so, whether or not anybody saw it go.
+    const left = front.forces.some((g) => g.side !== f.side && g.homeNode === nodeId && g.strength > 0);
     pushEvent(front, {
       min: front.clockMin,
       kind: 'capture',
-      text: `${f.name} takes ${front.theater.nodes[nodeId].name}`,
+      text: `${f.name} takes ${front.theater.nodes[nodeId].name}${left ? ': the garrison has pulled out' : ''}`,
       forceIds: [f.id],
       nodeId,
     });
