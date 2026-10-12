@@ -1,5 +1,15 @@
 # HANDOFF — 2026-07-28 (playtest-feedback wave: orders, audio, armour, mapgen)
 
+## 2026-10-11 (late): OWNER REPLAYED 8ef1caa — difficulty confirmed, soldier flicker fixed (jtbug #804)
+- **Verdict**: "pretty fun to play", "the Normandy Bocage difficulty was pretty good". He saw red march on a town he was dug in at and try to counterattack. Skirmish "still okay". Fought battles: 128 against 31 a walkover, 128 against about 104 "barely won". No crash. He liked the FX and smoke hiding the result of an airstrike.
+- **No tuning**: enemy strength 4 and the spoiling attack both stay. No sweep re-run, pin unchanged.
+- **Not answered**: whether the map asks a NEW player for decisions (he knows the game too well to say), the Day 2 dawn attack by name, the fog log.
+- **Fixed, #804**: marching soldiers flickered. `drawSoldier` measured movement per frame, the sim steps at 30 Hz, so a frame with no step drew the standing pose (every other frame at 60 Hz). Movement is now read once per sim step (`RState.tick`). Gate: `scripts/gait.mjs` (1428 of 1428 samples at rest before, 0 after). Battle art sweep 0/147 against the 4f59e33 baseline (copy kept as `.screenshots/sweep-pre-804`), check, test:quick 1536.
+- **Still raw**: a man's POSITION is the sim position, so it advances at 30 Hz on any display. Judder, not flicker. Not built.
+- **Side effect**: a paused battle now holds a marching man mid-stride. Before, he dropped to his standing pose.
+- **OPEN, #800**: the defender flank move waits on the owner's yes or no.
+- Preview: port 5360 serves the build of 8c25ba0 (`index-CL_iZSqq.js`). The gait gate needs a dev server, so the fix is NOT checked on the production bundle beyond it loading.
+
 ## 2026-10-11: FIRST HUMAN PLAYTEST — one battle math, a red that attacks (jtbug #797, #799, #800, #801)
 Owner played the wave: "no real strategy on the strategy map", "I never see the enemy do anything". Then decided #797: yes, and a harder campaign with a red that attacks and counterattacks. main is at 8ef1caa (code). NOT deployed. Decision record: INDEX.md, 2026-10-11 (Gameplay). Numbers and what was rejected: `docs/research/2026-10-09-upgrade-audit/coarse-calibration/README.md`.
 - **Diagnosis**: every New campaign was Skirmish. One mobile red force or none, no red attack in 10 of 16 wars, garrisons too thin for a counterattack reserve, and the war ends the minute blue holds 3 of 4.
@@ -17,7 +27,6 @@ Owner played the wave: "no real strategy on the strategy map", "I never see the 
 - **Known limits**: a fought battle fields a red attacker at about 130 men whatever it brings, so the coarse game credits red's mass and a fought battle does not. The spoiling attack lands at the same hour in every war. Every red win in the sweeps is AI blue destroyed, none is the deadline.
 - **Gates**: at 457f6d2 check, `npm test` 1845, tutorial.mjs every leg. At 8ef1caa check, test:quick 1536, stratsweep 0/36 against the baseline re-shot at 39b9217 (old one kept as `.screenshots/stratsweep-pre-39b9217`), ordnance and clicks at 39b9217. The battle art sweep was not run: nothing drawn in a battle changed.
 - **Unverified**: all of it against a human. A real phone. Audio by ear.
-- Preview: port 5360 serves the build of 8ef1caa.
 
 ## 2026-10-10: UPGRADE WAVE ON MAIN (jtbug #759) — battle FX, readable theater, strategic depth, drill and landing flow, soldier behaviour
 Audit and plan: `docs/plans/2026-10-09-upgrade-audit.md`. Decisions: INDEX.md, three 2026-10-10 entries (Architecture, Gameplay, UI). Four lanes, each landed by fast-forward after the orchestrator re-ran the gates on the lane tree. NOT deployed: the live site is still the 2026-07-28 build.
