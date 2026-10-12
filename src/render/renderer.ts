@@ -45,8 +45,12 @@ interface ShotGeom {
 interface RState {
   facing: number;
   phase: number; // gait cycles (1 per stride pair)
-  px: number;
+  px: number; // where the sim had him at step `tick`
   py: number;
+  tick: number; // the sim step px/py were read at, -1 before the first draw
+  dx: number; // what that step moved him by
+  dy: number;
+  moved: number;
   smx: number; // last blood-smear deposit position (dragged casualties)
   smy: number;
   wasAlive: boolean; // latches the permanent death blood-pool stamp to a single transition
@@ -2032,6 +2036,10 @@ export class Renderer {
         phase: 0,
         px: s.x,
         py: s.y,
+        tick: -1,
+        dx: 0,
+        dy: 0,
+        moved: 0,
         smx: s.x,
         smy: s.y,
         wasAlive: true,
@@ -2116,13 +2124,25 @@ export class Renderer {
     const pad = SPRITE_SPAN * cam.scale;
     if (x < -pad || y < -pad || x > cw + pad || y > ch + pad) return;
 
-    const dx = s.x - st.px;
-    const dy = s.y - st.py;
-    // >2m in one frame is a sim teleport (vehicle bailout), not movement —
-    // don't let it fake a walk frame or wrench the facing
-    const moved = Math.hypot(dx, dy) > 2 ? 0 : Math.hypot(dx, dy);
-    st.px = s.x;
-    st.py = s.y;
+    // Movement is read once per sim STEP, never per frame (#804). The sim
+    // steps at 30 Hz and the screen draws at 60 or 120, so a frame with no
+    // step would see a marching man as standing and draw his rest pose. On
+    // such a frame he is drawn as the last step left him, and `gone` is 0 so
+    // the gait phase does not advance twice for one stride.
+    const stepped = this.sim.tick !== st.tick;
+    if (stepped) {
+      st.dx = s.x - st.px;
+      st.dy = s.y - st.py;
+      // >2m in one frame is a sim teleport (vehicle bailout), not movement —
+      // don't let it fake a walk frame or wrench the facing
+      const d = Math.hypot(st.dx, st.dy);
+      st.moved = d > 2 ? 0 : d;
+      st.px = s.x;
+      st.py = s.y;
+      st.tick = this.sim.tick;
+    }
+    const { dx, dy, moved } = st;
+    const gone = stepped ? moved : 0;
 
     const band = bandFor(cam.scale);
     // What you see is what blocks sight: the prone and kneel poses are the
@@ -2153,7 +2173,7 @@ export class Renderer {
       // stanceOf returns 'prone' for a man advancing under >0.5 suppression
       // (V8), so LOS sights him at 0.4 m exactly as he is drawn.
       pose = 'crawl';
-      st.phase += moved * 0.9;
+      st.phase += gone * 0.9;
       frame = Math.floor((st.phase % 1) * CRAWL_FRAMES);
     } else if (stance === 'prone') pose = 'prone';
     else if (moved > 1e-4) {
@@ -2161,7 +2181,7 @@ export class Renderer {
       const kind = this.sim.teams[s.teamId]?.orderState.order?.kind;
       const running = s.fleeing || kind === 'fast' || kind === 'assault';
       pose = running ? 'run' : 'walk';
-      st.phase += moved * (running ? RUN_CADENCE : 1.4);
+      st.phase += gone * (running ? RUN_CADENCE : 1.4);
       frame = Math.floor((st.phase % 1) * WALK_FRAMES);
     } else [pose, frame] = restPose(stance === 'crouch', s.reloading > 0 && !s.pickingUp, s.targetId >= 0, s.id);
 
