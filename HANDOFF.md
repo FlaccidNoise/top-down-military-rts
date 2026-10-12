@@ -1,17 +1,21 @@
 # HANDOFF — 2026-07-28 (playtest-feedback wave: orders, audio, armour, mapgen)
 
-## 2026-10-11 (night): ENEMY AI COMPETENCE, first two moves (jtbug #805, #800, #808)
-Owner direction after the replay: make the enemy AI as smart as it can be. Decision record: INDEX.md, top Gameplay entry. main is at 6df0996 (code). NOT deployed, NOT pushed.
+## 2026-10-11 (night): ENEMY AI COMPETENCE, strength 3, DEPLOYED (jtbug #805, #800, #806, #807, #808)
+Owner after his replay: make the enemy AI as smart as it can be. Then: drop the enemy strength, keep adding to the AI, tune until content, push it to live. Decision record: INDEX.md, the two top Gameplay entries. Deploy state: see the last line of this section.
 - **Rule (orchestrator's wording)**: no AI is left simple to hold a win rate. Strength numbers carry difficulty. One exception on purpose: Skirmish garrisons stand, so a first campaign has a first battle.
-- **Theater, 6df0996 (#808)**: a garrison gives up a post it cannot hold (odds 0.9 against it, enemy inside 90 minutes) and falls back on the next objective. AI blue wins over 128 wars: Normandy Bocage 62 to 49, River Line 60 to 59, Open Country 111 to 108. Half of a player's 3 to 1 first fights on Normandy Bocage become an empty town.
-- **Battle, daac385 (#800)**: an idle defending squad shifts to an empty briefed position that can engage the attack. Defence holds 10 of 18 before and after. Small.
+- **Strength**: Normandy Bocage and River Line at 3, Open Country at 4, Skirmish at 1. AI blue over 128 wars: 61%, 67%, 82%, 84%.
+- **Fought battles field the whole red stack (3dee6a2, #807)**: this was the gap that mattered. A fought battle fielded two forces, so red's reinforce arm, massed hunts and garrison fall-back did nothing against a player. `openFoughtBattle` in theater/war.ts, `makeTheaterBattle` and `applyTheaterOutcome` in bridge2.ts, the card in ui/contact-brief.ts. Blue's extra companies still only lend barrages.
+- **Garrison gives up a post it cannot hold (6df0996, #808)**: odds 0.9 against it, enemy inside 90 minutes, falls back on the next objective, home when nothing is inside 240. At strength 3 a first march finds the town given up in 7 of 12.
+- **Spoiling hour varies by seed (3dee6a2)**: 0 to 24 hours after midnight of Day 2.
+- **Defender shift (daac385, #800)**: an idle squad moves to an empty briefed position that can engage the attack. Small: defence holds 10 of 18 before and after.
+- **Not built, #806**: a commander that leaves a lost battle. It breaks the one-battle-math decision unless coarsefit is re-run. Read the bug before starting.
 - **Measure on 128 seeds.** At 32, three variants of one rule read 12, 14 and 17 blue wins and the order reversed at 128.
-- **A defender that walks toward a company dies.** The first shift design cost the defence 3 of 18 battles. Move defenders only between prepared positions.
-- **`--give-up N` on warsweep2** sets red's giveUpOdds (0 = the old garrison). In zsh pass flags as separate words: an unsplit `$f` holding "--give-up 0" is silently ignored.
-- **Difficulty moved and was NOT retuned**: AI blue on Normandy Bocage 48% to 38% over 128 wars. Enemy strength 3 gives 60%. Owner has not replayed.
-- **Next, in order of what I expect to pay**: #807 (red's attack reads one axis and wins 0 of 6 against a town, forest or bridge), #808 remainder (read the player's concentration, vary the spoiling hour), #806 (a commander that can leave a lost battle: needs a new battle end state).
-- Gates at 6df0996: check, test:quick 1542, doctrine 54, perf, sim, strategic-command, drill-sweep, warsweep2 --gate, tutorial.mjs every leg. The battle art sweep was not re-run: nothing drawn changed after 8c25ba0.
-- Preview: port 5360 serves the build of 6df0996.
+- **A defender that walks toward a company dies.** Move defenders only between prepared positions.
+- **In zsh pass sweep flags as separate words**: an unsplit `$f` holding "--give-up 0" is silently ignored and both arms run the default.
+- **Seen, not touched**: on 4 of 32 Normandy Bocage seeds an idle player is never attacked (red's 240-minute reach does not get to him). Men past the field cap sit a battle out untouched.
+- **Next**: #807 remainder (the attack stance: one axis, a 20 m flank, no probe), #808 remainder (read the player's concentration), #806.
+- Gates at 63837af: check, `npm test` 1861, warsweep2 --gate, tutorial.mjs every leg, gait, clicks, ordnance. stratsweep 3/36 differ from the 39b9217 baseline (the three night shots: one red battlegroup crosses the line where two did). Baseline re-shot, old one kept as `.screenshots/stratsweep-pre-63837af`. The battle art sweep was not re-run after 8c25ba0: nothing drawn in a battle changed.
+- **Unverified**: all of it against a human. The owner asked for the deploy without a replay.
 
 ## 2026-10-11 (late): OWNER REPLAYED 8ef1caa — difficulty confirmed, soldier flicker fixed (jtbug #804)
 - **Verdict**: "pretty fun to play", "the Normandy Bocage difficulty was pretty good". He saw red march on a town he was dug in at and try to counterattack. Skirmish "still okay". Fought battles: 128 against 31 a walkover, 128 against about 104 "barely won". No crash. He liked the FX and smoke hiding the result of an airstrike.
