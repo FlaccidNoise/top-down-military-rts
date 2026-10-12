@@ -1160,7 +1160,7 @@ describe('the commander spends the barrages it holds (#790)', () => {
 describe('a defence that moves (#794)', () => {
   const A = { x: 100, y: 30 }; // the forward post
   const B = { x: 130, y: 30 }; // one bound back: the approach is from the west
-  const stage = (cfg: { fallback?: boolean; reserve?: boolean; green?: boolean; resSector?: number } = {}) => {
+  const stage = (cfg: { fallback?: boolean; reserve?: boolean; green?: boolean; resSector?: number; lineArmed?: boolean } = {}) => {
     const sim = new Sim(new GameMap(200, 60), 5);
     const xp = cfg.green ? 0 : 40;
     const line = sim.addSquad('red', 'Line', Array.from({ length: 6 }, (_, i) => ({ name: `L${i}`, weapon: 'kar98k' as const, x: 100.5, y: 27.5 + i, xp })));
@@ -1180,13 +1180,14 @@ describe('a defence that moves (#794)', () => {
     const run = (ticks: number): void => {
       for (let i = 0; i < ticks; i++) {
         for (const m of sim.soldiers) {
+          m.morale = 1;
+          if (cfg.lineArmed && m.id === line.soldierIds[0] && sim.tick < 170) continue; // one rifle for the first two evals: the fight is on, and the enemy body outlasts it
           m.ammo = {};
           m.magLeft = 0;
-          m.morale = 1;
         }
         commander.update(sim);
         sim.step();
-        said.push(...sim.takeUnitEvents().filter((e) => e.kind === 'fell-back' || e.kind === 'counterattack').map((e) => `${e.kind}@${Math.round(e.x)}`));
+        said.push(...sim.takeUnitEvents().filter((e) => e.kind === 'fell-back' || e.kind === 'counterattack' || e.kind === 'shifted').map((e) => `${e.kind}@${Math.round(e.x)}`));
       }
     };
     const at = (sq: { soldierIds: number[] }): number => mean(sq.soldierIds.map((id) => sim.soldiers[id]).filter((m) => m.alive).map((m) => m.x));
@@ -1240,6 +1241,49 @@ describe('a defence that moves (#794)', () => {
     none.run(600);
     expect(none.said).toEqual([]);
     expect(none.at(none.line)).toBeLessThan(105);
+  });
+
+  // An enemy body 55 m in front of the line squad, which can fight it from
+  // its post, and 105 m from the rear squad, whose rifles reach 88 m. The line
+  // squad's fallback point B is 85 m from it and nobody holds it. No barrage:
+  // the commander's one would kill the body before anybody moved.
+  const withBody = (cfg: Parameters<typeof stage>[0], ys = [22.5, 24.5, 26.5, 28.5, 31.5, 33.5, 35.5, 37.5]) => {
+    const st = stage(cfg);
+    st.sim.barragesLeft.red = 0;
+    return { ...st, body: ys.map((y) => st.enemy(45.5, y)) };
+  };
+
+  it('once the fight is on, a squad with nothing to shoot at goes to a briefed position it can fight from, and back when that is quiet too (#800)', () => {
+    const { sim, run, said, at, res, body } = withBody({ lineArmed: true });
+    run(1500);
+    expect(said).toEqual(['shifted@150']);
+    expect(Math.abs(at(res) - B.x)).toBeLessThan(8);
+    expect(sim.teams[res.teamIds[0]].orderState.order?.kind).toBe('defend');
+    body.forEach((e) => (e.alive = false));
+    run(4000);
+    expect(said).toEqual(['shifted@150']);
+    expect(Math.abs(at(res) - 150)).toBeLessThan(8);
+  });
+
+  it('no squad shifts before the fight is on, for a lone scout, as the reserve, or under strength (#800)', () => {
+    const waiting = withBody({}); // nobody on the field has a round: no man ever has a target
+    waiting.run(1500);
+    expect(waiting.body.filter((e) => e.alive)).toHaveLength(8);
+    expect(waiting.said).toEqual([]);
+
+    const scout = withBody({ lineArmed: true }, [30.5]);
+    scout.run(1500);
+    expect(scout.said).toEqual([]);
+
+    const held = withBody({ lineArmed: true, reserve: true });
+    held.run(1500);
+    expect(held.said).toEqual([]);
+
+    const weak = withBody({ lineArmed: true });
+    weak.res.soldierIds.slice(0, 3).forEach((id) => (weak.sim.soldiers[id].alive = false));
+    weak.run(1500);
+    expect(weak.body.filter((e) => e.alive && !e.downed).length).toBeGreaterThanOrEqual(4);
+    expect(weak.said).toEqual([]);
   });
 
   it('a reserve goes for a post lost in its own sector or, briefed ANY_SECTOR, in any; not for one in another sector (#800)', () => {

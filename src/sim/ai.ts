@@ -238,6 +238,40 @@ const WITHDRAW_SMOKE_TICKS = 45 * 30;
 // ASSAULT_RANGE if the charge is one its men will make.
 const COUNTERATTACK_WINDOW_TICKS = 120 * 30;
 const RESERVE_FIT = 0.5;
+// SHIFT (#800). Probed before it: 31% of a garrison never fired, most of them
+// with no line of sight to any attacker, while the posts the attack came for
+// were shot off one at a time. Once the fight is on (a man of the side has a
+// target), a squad on foot (no gun to serve), not the reserve, at SHIFT_FIT of
+// its strength, with nothing to shoot at for QUIET, shifts onto the attack's
+// main body: MASS spotted enemies inside MASS_RADIUS of one another, which
+// the squad cannot engage from its post and which is not about to walk into
+// it (farther than STANDOFF). It goes to another position of its own
+// briefing, a post or a fallback point nobody holds, that its weapons can
+// engage the body from, no farther than SHIFT_WALK, with no spotted enemy
+// inside SHIFT_CLEAR, by a walk its men make without hesitation. Cover there
+// and a place on the body's flank (FLANK_ARC off the line from the body to
+// the garrison) each count as much as the danger of the walk. One squad per
+// SHIFT_GAP and never more than SHIFT_SHARE of the squads on foot, so a feint
+// cannot empty the line. A shifted squad with nothing to shoot at for RETURN
+// goes back where it was.
+//
+// Tried first and dropped: a firing position on a ring 45 to 80 m from the
+// body, from the first quiet half minute. Six squads of a garrison left
+// cover inside three minutes, none reached its position (shot down 40 to
+// 100 m short), and the attack won in 3.1 minutes instead of 5.7 (open,
+// seed 2). A squad waiting in ambush is not idle, and ground the garrison did
+// not prepare is not a position.
+const SHIFT_QUIET_TICKS = 30 * 30;
+const SHIFT_RETURN_TICKS = 90 * 30;
+const SHIFT_GAP_TICKS = 15 * 30;
+const SHIFT_FIT = 0.6;
+const SHIFT_MASS = 4;
+const SHIFT_MASS_RADIUS = 25;
+const SHIFT_STANDOFF = 70;
+const SHIFT_CLEAR = 40;
+const SHIFT_WALK = 80;
+const SHIFT_SHARE = 0.5;
+const FLANK_ARC = [Math.PI * 0.28, Math.PI * 0.61]; // 50 to 110 degrees
 // RE-LAY. A squad on an arc, with spotted enemy inside its weapons' range and
 // none of them inside the arc, turns the arc onto the nearest. Not more often
 // than this: shifting a tripod gun and its crew takes that long.
@@ -254,6 +288,10 @@ export class RedCommander {
   private lostNoted = new Set<number>(); // squads wiped on a post already listed in lostPosts
   private reserveSent = new Set<number>();
   private relaidTick = new Map<number, number>();
+  private quietSince = new Map<number, number>(); // squadId -> the eval since which none of its men has had a target
+  private shifted = new Map<number, { x: number; y: number }>(); // squadId -> the post it left for a firing position
+  private shiftTick = -SHIFT_GAP_TICKS;
+  private fightTick = -1; // the eval a man of the side first had a target
   private withdrawSmokeTick = new Map<number, number>();
   private withdrawing = new Set<number>(); // squads whose smoke is out and whose move back is the next eval's
   private heAim: { x: number; y: number } | null = null; // the HE mission's aim point, while one runs
@@ -440,7 +478,7 @@ export class RedCommander {
   // The commander's voice (#787): what it has just decided, for its OWN
   // side's ticker. Output only. It says nothing about the enemy — what a side
   // may know of its enemy comes from the sim's sightings, not from here.
-  private say(sim: Sim, kind: 'reserve-committed' | 'culminated' | 'smoke-objective' | 'fell-back' | 'counterattack', at?: { x: number; y: number }): void {
+  private say(sim: Sim, kind: 'reserve-committed' | 'culminated' | 'smoke-objective' | 'fell-back' | 'counterattack' | 'shifted', at?: { x: number; y: number }): void {
     const p = at ?? this.centroid(sim, this.committedTeamIds().flatMap((id) => sim.teams[id].soldierIds));
     sim.report({ kind, x: p.x, y: p.y, side: this.cfg.side, name: 'HQ' });
   }
@@ -912,7 +950,7 @@ export class RedCommander {
       const distToPost = Math.hypot(c.x - post.x, c.y - post.y);
       const moving = members.filter((s) => s.path).length > members.length / 2;
       const team = sim.teams[squad.teamIds[0]];
-      if (this.fallBack(sim, squad, post, fit, seen) || this.counterattack(sim, squad, fit)) continue;
+      if (this.fallBack(sim, squad, post, fit, seen) || this.counterattack(sim, squad, fit) || this.shift(sim, squad, post, fit, seen, members, distToPost <= 8 && !moving)) continue;
       if (distToPost > 8 && !moving) {
         // Off its post and standing: back onto it. With a contact on the post
         // that is a counterattack; without one it is a squad that routed and
@@ -933,7 +971,11 @@ export class RedCommander {
             sim.orderSquad(squad.id, { kind: 'defend', x: post.x, y: post.y }, undefined, true);
           }
         };
-        if (order === null) {
+        if (order === null && this.shifted.has(squad.id)) {
+          const at = this.densest(seen, SHIFT_MASS_RADIUS, SHIFT_MASS) ?? this.nearest(seen, post);
+          const center = at ? Math.atan2(at.y - post.y, at.x - post.x) : 0;
+          sim.orderSquad(squad.id, { kind: 'defend', x: post.x, y: post.y, ...(at ? { arc: [center - DEFEND_ARC_HALF, center + DEFEND_ARC_HALF] as [number, number] } : {}) }, undefined, true);
+        } else if (order === null) {
           const longRange = members.some((s) => {
             const w: WeaponDef = WEAPONS[s.weapon];
             return !!w.heat || w.range >= 150;
@@ -956,7 +998,8 @@ export class RedCommander {
   // See FALLBACK_THREAT. True when the squad was ordered back this eval.
   private fallBack(sim: Sim, squad: Squad, post: { x: number; y: number }, fit: number, seen: { x: number; y: number }[]): boolean {
     const taken = this.fallbacksTaken.get(squad.id) ?? 0;
-    const next = this.cfg.fallback?.[squad.id]?.[taken];
+    const home = this.shifted.get(squad.id); // off its post on a shift: it falls back onto the post it left
+    const next = home ?? this.cfg.fallback?.[squad.id]?.[taken];
     if (!next || fit === 0 || sim.tick - (this.fellBackTick.get(squad.id) ?? -Infinity) < FALLBACK_COOLDOWN_TICKS) return false;
     const approach = this.cfg.approach;
     let near = 0;
@@ -985,9 +1028,12 @@ export class RedCommander {
       this.withdrawing.add(squad.id);
       return true;
     }
-    this.lostPosts.push({ x: post.x, y: post.y, sector: this.cfg.sectorOf?.[squad.id] ?? -1, tick: sim.tick });
+    if (home) this.shifted.delete(squad.id);
+    else {
+      this.lostPosts.push({ x: post.x, y: post.y, sector: this.cfg.sectorOf?.[squad.id] ?? -1, tick: sim.tick });
+      this.fallbacksTaken.set(squad.id, taken + 1);
+    }
     this.postNow.set(squad.id, next);
-    this.fallbacksTaken.set(squad.id, taken + 1);
     this.fellBackTick.set(squad.id, sim.tick);
     sim.orderSquad(squad.id, { kind: 'move', x: next.x, y: next.y }, undefined, true);
     this.say(sim, 'fell-back', post);
@@ -1007,6 +1053,89 @@ export class RedCommander {
     this.retake(sim, squad, target, Math.hypot(c.x - target.x, c.y - target.y));
     this.say(sim, 'counterattack', target);
     return true;
+  }
+
+  // See SHIFT_QUIET_TICKS. True when the squad was ordered off the ground it holds this eval.
+  private shift(sim: Sim, squad: Squad, post: { x: number; y: number }, fit: number, seen: { x: number; y: number }[], members: { targetId: number; weapon: keyof typeof WEAPONS }[], settled: boolean): boolean {
+    const engaged = members.some((s) => s.targetId >= 0);
+    if (engaged && this.fightTick < 0) this.fightTick = sim.tick;
+    if (engaged || !this.quietSince.has(squad.id)) {
+      this.quietSince.set(squad.id, sim.tick);
+      return false;
+    }
+    if (!settled || this.fightTick < 0) return false;
+    const quiet = sim.tick - Math.max(this.quietSince.get(squad.id)!, this.fightTick);
+    const home = this.shifted.get(squad.id);
+    if (home) {
+      if (quiet < SHIFT_RETURN_TICKS) return false;
+      this.shifted.delete(squad.id);
+      this.postNow.set(squad.id, home);
+      this.quietSince.set(squad.id, sim.tick);
+      sim.orderSquad(squad.id, { kind: 'move', x: home.x, y: home.y }, undefined, true);
+      return true;
+    }
+    if (quiet < SHIFT_QUIET_TICKS || sim.tick - this.shiftTick < SHIFT_GAP_TICKS || fit < squad.soldierIds.length * SHIFT_FIT) return false;
+    const onFoot = (q: Squad): boolean => !this.cfg.reserve?.includes(q.id) && !sim.emplacements.some((e) => q.teamIds.includes(e.crewTeamId));
+    if (!onFoot(squad)) return false;
+    if (this.shifted.size >= Math.ceil(sim.squads.filter((q) => q.side === this.cfg.side && this.cfg.posts[q.id] && onFoot(q)).length * SHIFT_SHARE)) return false;
+    const body = this.densest(seen, SHIFT_MASS_RADIUS, SHIFT_MASS);
+    if (!body || Math.hypot(body.x - post.x, body.y - post.y) < SHIFT_STANDOFF) return false;
+    const spot = this.shiftSpot(sim, squad, post, body, Math.max(...members.map((s) => WEAPONS[s.weapon].range)) * BOF_RANGE_FRAC, seen);
+    if (!spot) return false;
+    this.shifted.set(squad.id, post);
+    this.postNow.set(squad.id, spot);
+    this.shiftTick = sim.tick;
+    this.quietSince.set(squad.id, sim.tick);
+    sim.orderSquad(squad.id, { kind: 'move', x: spot.x, y: spot.y }, undefined, true);
+    this.say(sim, 'shifted', post);
+    return true;
+  }
+
+  // The briefed position a shifting squad goes to, or null when none is
+  // better than where it stands. Honest vision: `body` and `seen` are the
+  // side's own sightings, and every candidate is its own briefing.
+  private shiftSpot(sim: Sim, squad: Squad, post: { x: number; y: number }, body: { x: number; y: number }, reach: number, seen: { x: number; y: number }[]): { x: number; y: number } | null {
+    if (this.canEngage(sim, post, body, reach)) return null; // it can fight the body from its post: its arc is the re-lay's business
+    const team = sim.teams[squad.teamIds[0]];
+    const posts = Object.values(this.cfg.posts);
+    const centre = this.mid(posts);
+    const front = Math.atan2(centre.y - body.y, centre.x - body.x); // from the body toward what it is attacking
+    const held = sim.squads
+      .filter((q) => q.side === this.cfg.side && q.id !== squad.id && q.soldierIds.some((id) => sim.soldiers[id].alive && !sim.soldiers[id].downed))
+      .map((q) => this.postNow.get(q.id) ?? this.cfg.posts[q.id])
+      .filter((p) => !!p);
+    let best: { x: number; y: number } | null = null;
+    let bestScore = -Infinity;
+    for (const p of [...posts, ...Object.values(this.cfg.fallback ?? {}).flat()]) {
+      const walk = Math.hypot(p.x - post.x, p.y - post.y);
+      if (walk > SHIFT_WALK || walk < 8) continue;
+      if (held.some((o) => Math.hypot(o.x - p.x, o.y - p.y) < 6)) continue;
+      if (seen.some((e) => Math.hypot(e.x - p.x, e.y - p.y) < SHIFT_CLEAR)) continue;
+      if (!this.canEngage(sim, p, body, reach)) continue;
+      const v = orderVerdict(sim, team, { kind: 'move', x: p.x, y: p.y });
+      if (v.verdict !== 'comply') continue;
+      const off = Math.abs(Math.atan2(Math.sin(Math.atan2(p.y - body.y, p.x - body.x) - front), Math.cos(Math.atan2(p.y - body.y, p.x - body.x) - front)));
+      const flank = off >= FLANK_ARC[0] && off <= FLANK_ARC[1] ? 1 : 0;
+      const score = flank + (sim.inCover(p.x, p.y) ? 1 : 0) - v.danger - walk / SHIFT_WALK;
+      if (score > bestScore) {
+        bestScore = score;
+        best = p;
+      }
+    }
+    return best;
+  }
+
+  private nearest(ps: { x: number; y: number }[], to: { x: number; y: number }): { x: number; y: number } | null {
+    let best: { x: number; y: number } | null = null;
+    let bd = Infinity;
+    for (const p of ps) {
+      const d = Math.hypot(p.x - to.x, p.y - to.y);
+      if (d < bd) {
+        bd = d;
+        best = p;
+      }
+    }
+    return best;
   }
 
   // A committed reserve closing on the post it was sent to retake: a charge

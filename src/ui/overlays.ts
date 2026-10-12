@@ -807,6 +807,7 @@ const COMMAND: Partial<Record<UnitEvent['kind'], [string, string]>> = {
   'smoke-objective': ['SMOKE ON OBJECTIVE', C_STEADY],
   'fell-back': ['FALLING BACK', C_WARN],
   counterattack: ['COUNTERATTACK', C_STEADY],
+  shifted: ['MOVING TO THE FIGHT', C_STEADY],
 };
 const MAX_KIAS = 12;
 const KIA_CELL = 8; // world meters — casualties inside a cell share one stack

@@ -499,6 +499,7 @@ export interface UnitEvent {
     | 'smoke-objective'
     | 'fell-back' // a defending squad gave up its post for the next one back
     | 'counterattack' // a local reserve went in to retake a lost post
+    | 'shifted' // a defending squad with nothing to shoot at left its post for a firing position on the attack
     | 'grenade' // a man threw one: `id` is the thrower
     // The same sighting as 'closing' below, when the team coming is the
     // DEFENDER's (a counterattack), and a team seen going back toward its own
